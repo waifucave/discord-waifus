@@ -2,7 +2,8 @@
 // winter model layer's.
 //
 // - `user/providers.json`: gateway provider ids that winter spells differently are renamed
-//   (`google-ai-studio` → `google`, `qwen` → `alibaba`); an existing key under the new id wins.
+//   (`google-ai-studio` → `google`, `qwen` → `alibaba`); an existing key under the new id wins, and
+//   the old entry is archived (owner-private) before it is removed.
 // - every `user/waifus/<id>/waifu.json` and `user/assistant/config.json`: flat `providerId` /
 //   `modelId` / `params` become nested `model: {providerId, modelId, effort?}` by MODEL FAMILY
 //   (the table below); a model whose family is not curated is unset and reported in
@@ -10,6 +11,9 @@
 //   `reasoning.effort` (or `reasoning.enabled: false` → `none`) is carried over when it is a
 //   reasoning effort at all; `model-effort-check` then keeps it only if the route lists it.
 // - waifus also lose `contextWindow`, `personaDigest` and `tools.toolUse`.
+// - Nothing is lost: every document is copied to `user/.archive/living-cast/models/<scope>.json`
+//   (the spec's Living cast archive, §7.4 / §11.2) before it is rewritten, and a warning (with the
+//   old model as `previous`) is written before the document it is about.
 //
 // The tables are static so the step's outcome never depends on the installed catalog. Idempotent:
 // a file already in the new shape is left byte-identical.
@@ -19,6 +23,7 @@ import path from "node:path";
 import { atomicWriteJson } from "../../storage/atomic.js";
 import { isObject, readJsonOrUndefined } from "./memorySupport.js";
 import { appendModelWarnings, type ModelWarning } from "../../models/modelWarnings.js";
+import { CURATED_FAMILY_ROUTES, type CuratedFamily } from "../../models/defaults.js";
 
 /** Gateway provider id → winter provider id (only the ids that differ). */
 export const GATEWAY_TO_WINTER_PROVIDER: Readonly<Record<string, string>> = {
@@ -30,35 +35,10 @@ export function winterProviderId(gatewayProviderId: string): string {
   return GATEWAY_TO_WINTER_PROVIDER[gatewayProviderId] ?? gatewayProviderId;
 }
 
-type Family = "muse-contributor" | "haiku" | "sonnet" | "deepseek-flash" | "luna" | "sol";
+type Family = CuratedFamily;
 
 /** Curated model family → its route, direct and through OpenRouter (spec §9.2). */
-export const FAMILY_ROUTES: Readonly<Record<Family, { direct: { providerId: string; modelId: string }; openrouter: { providerId: string; modelId: string } }>> = {
-  "muse-contributor": {
-    direct: { providerId: "meta", modelId: "muse-spark-1.3-contributor" },
-    openrouter: { providerId: "openrouter", modelId: "meta/muse-spark-1.3-contributor" }
-  },
-  haiku: {
-    direct: { providerId: "anthropic", modelId: "claude-haiku-5-5" },
-    openrouter: { providerId: "openrouter", modelId: "anthropic/claude-haiku-5.5" }
-  },
-  sonnet: {
-    direct: { providerId: "anthropic", modelId: "claude-sonnet-5-5" },
-    openrouter: { providerId: "openrouter", modelId: "anthropic/claude-sonnet-5.5" }
-  },
-  "deepseek-flash": {
-    direct: { providerId: "deepseek", modelId: "deepseek-flash" },
-    openrouter: { providerId: "openrouter", modelId: "deepseek/deepseek-v4.1-flash" }
-  },
-  luna: {
-    direct: { providerId: "openai", modelId: "gpt-6-luna" },
-    openrouter: { providerId: "openrouter", modelId: "openai/gpt-6-luna" }
-  },
-  sol: {
-    direct: { providerId: "openai", modelId: "gpt-6.1-sol" },
-    openrouter: { providerId: "openrouter", modelId: "openai/gpt-6.1-sol" }
-  }
-};
+export const FAMILY_ROUTES = CURATED_FAMILY_ROUTES;
 
 /**
  * The family of a gateway model id (an OpenRouter id without its `vendor/` prefix). Only curated
@@ -118,10 +98,12 @@ export function convertModelFields(data: Record<string, unknown>, scope: string,
       const effort = effortFromParams(data.params);
       data.model = { ...route, ...(effort ? { effort } : {}) };
     } else {
+      const previous = `${flatProviderId ? `${flatProviderId}/` : ""}${flatModelId}`;
       warning = {
         scope,
         code: "model_unmapped",
-        detail: `${flatProviderId ? `${flatProviderId}/` : ""}${flatModelId} has no curated equivalent; pick a model again.`
+        detail: `${previous} has no curated equivalent; pick a model again.`,
+        previous
       };
     }
     changed = true;
@@ -153,18 +135,47 @@ export function convertModelFields(data: Record<string, unknown>, scope: string,
   return { changed, ...(warning ? { warning } : {}) };
 }
 
+/** The Living cast archive (spec §7.4, §11.2). */
+export const LIVING_CAST_ARCHIVE_DIR = path.join("user", ".archive", "living-cast");
+
+/** `user/.archive/living-cast/models/<scope>.json`; `waifu:<id>` becomes `waifu-<id>.json`. */
+export function modelArchivePath(dataRoot: string, scope: string): string {
+  return path.join(dataRoot, LIVING_CAST_ARCHIVE_DIR, "models", `${scope.replace(/[^A-Za-z0-9._-]/gu, "-")}.json`);
+}
+
+/** Owner-private copy of provider entries replaced by a rename (keys included). */
+export function providerArchivePath(dataRoot: string): string {
+  return path.join(dataRoot, LIVING_CAST_ARCHIVE_DIR, "providers.json");
+}
+
+/** Copies a document to the archive once: the first original is the one kept. */
+async function archiveOriginal(filePath: string, original: unknown): Promise<void> {
+  if ((await readJsonOrUndefined(filePath)) !== undefined) return;
+  await atomicWriteJson(filePath, original);
+}
+
 async function renameProviderKeys(dataRoot: string): Promise<boolean> {
   const filePath = path.join(dataRoot, "user", "providers.json");
   const data = await readJsonOrUndefined(filePath);
   if (!isObject(data) || !isObject(data.providers)) return false;
   const providers = data.providers;
   let changed = false;
+  const archived: Record<string, unknown> = {};
   for (const [from, to] of Object.entries(GATEWAY_TO_WINTER_PROVIDER)) {
     const entry = providers[from];
     if (entry === undefined) continue;
     if (providers[to] === undefined && isObject(entry)) providers[to] = { ...entry, providerId: to };
+    // The new id already had its own key: the old one is archived, never silently dropped.
+    else archived[from] = entry;
     delete providers[from];
     changed = true;
+  }
+  if (Object.keys(archived).length > 0) {
+    const archivePath = providerArchivePath(dataRoot);
+    const existing = await readJsonOrUndefined(archivePath);
+    const kept = isObject(existing) && isObject(existing.providers) ? existing.providers : {};
+    // atomicWriteJson writes 0600: the archive holds keys, like providers.json.
+    await atomicWriteJson(archivePath, { providers: { ...archived, ...kept } });
   }
   if (changed) await atomicWriteJson(filePath, data);
   return changed;
@@ -182,30 +193,27 @@ export async function listWaifuFiles(dataRoot: string): Promise<Array<{ id: stri
   return entries.sort().map((entry) => ({ id: entry, filePath: path.join(waifusRoot, entry, "waifu.json") }));
 }
 
+/** Converts one document: archive the original, then the warning, then the rewritten file. */
+async function migrateDocument(dataRoot: string, filePath: string, scope: (data: Record<string, unknown>) => string, o: { waifu: boolean }): Promise<boolean> {
+  const data = await readJsonOrUndefined(filePath);
+  if (!isObject(data)) return false;
+  const original = structuredClone(data);
+  const resolvedScope = scope(data);
+  const outcome = convertModelFields(data, resolvedScope, o);
+  if (!outcome.changed) return false;
+  await archiveOriginal(modelArchivePath(dataRoot, resolvedScope), original);
+  if (outcome.warning) await appendModelWarnings(dataRoot, [outcome.warning]);
+  await atomicWriteJson(filePath, data);
+  return true;
+}
+
 export async function migrateLivingCastModels(dataRoot: string): Promise<string | undefined> {
   let changed = await renameProviderKeys(dataRoot);
-  const warnings: Array<Omit<ModelWarning, "at">> = [];
   for (const { id, filePath } of await listWaifuFiles(dataRoot)) {
-    const data = await readJsonOrUndefined(filePath);
-    if (!isObject(data)) continue;
-    const scope = `waifu:${typeof data.id === "string" && data.id ? data.id : id}`;
-    const outcome = convertModelFields(data, scope, { waifu: true });
-    if (outcome.warning) warnings.push(outcome.warning);
-    if (outcome.changed) {
-      await atomicWriteJson(filePath, data);
-      changed = true;
-    }
+    const scope = (data: Record<string, unknown>) => `waifu:${typeof data.id === "string" && data.id ? data.id : id}`;
+    if (await migrateDocument(dataRoot, filePath, scope, { waifu: true })) changed = true;
   }
   const assistantPath = path.join(dataRoot, "user", "assistant", "config.json");
-  const assistant = await readJsonOrUndefined(assistantPath);
-  if (isObject(assistant)) {
-    const outcome = convertModelFields(assistant, "assistant", { waifu: false });
-    if (outcome.warning) warnings.push(outcome.warning);
-    if (outcome.changed) {
-      await atomicWriteJson(assistantPath, assistant);
-      changed = true;
-    }
-  }
-  if (warnings.length > 0) await appendModelWarnings(dataRoot, warnings);
+  if (await migrateDocument(dataRoot, assistantPath, () => "assistant", { waifu: false })) changed = true;
   return changed ? "living-cast-models-v1" : undefined;
 }

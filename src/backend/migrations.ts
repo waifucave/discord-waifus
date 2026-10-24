@@ -1061,6 +1061,8 @@ async function collectJsonFilesRecursive(dir: string): Promise<string[]> {
   for (const entry of entries) {
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      // `user/.archive/` holds verbatim copies of pre-migration documents: never re-stamped.
+      if (entry.name === ".archive") continue;
       files.push(...(await collectJsonFilesRecursive(entryPath)));
     } else if (entry.isFile() && entry.name.endsWith(".json")) {
       files.push(entryPath);

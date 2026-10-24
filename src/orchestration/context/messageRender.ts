@@ -98,8 +98,9 @@ function isImageAttachment(a: RawAttachment): boolean {
   return mimeFromFilename(a.filename) !== undefined;
 }
 
-function imageRef(a: RawAttachment): ImageRef {
+function imageRef(a: RawAttachment, conversationKey: string | undefined): ImageRef {
   return {
+    ...(conversationKey ? { conversationKey } : {}),
     key: attachmentKey(a.url, a.id),
     attachmentId: a.id,
     url: a.url,
@@ -158,11 +159,15 @@ function renderSystem(m: RawDiscordMessage): string | null {
   }
 }
 
-/** The full Phase 4 renderer (spec 9.5 table). Pure and deterministic. */
+/**
+ * The full Phase 4 renderer (spec 9.5 table). Pure and deterministic. `o.conversationKey` tags the
+ * image refs with their conversation, so caching them adds them to its durable image index.
+ */
 export function renderDiscordMessage(
   m: RawDiscordMessage,
   dir: GuildDirectoryView,
-  tz: string
+  tz: string,
+  o: { conversationKey?: string } = {}
 ): { body: string; images: ImageRef[]; kind: "default" | "system" } | null {
   const conversational =
     m.type === DISCORD_MESSAGE_TYPE.default ||
@@ -180,7 +185,7 @@ export function renderDiscordMessage(
   if (content) lines.push(content);
   const images: ImageRef[] = [];
   for (const attachment of m.attachments) {
-    if (isImageAttachment(attachment)) images.push(imageRef(attachment));
+    if (isImageAttachment(attachment)) images.push(imageRef(attachment, o.conversationKey));
     else lines.push(renderAttachmentLine(attachment));
   }
   for (const embed of m.embeds) {
@@ -193,7 +198,7 @@ export function renderDiscordMessage(
     const forwarded = clip(renderDiscordTokens(snapshot.content, m, dir, tz), FORWARD_CONTENT_MAX);
     lines.push(forwarded ? `[forwarded] ${forwarded}` : "[forwarded]");
     for (const attachment of snapshot.attachments) {
-      if (isImageAttachment(attachment)) images.push(imageRef(attachment));
+      if (isImageAttachment(attachment)) images.push(imageRef(attachment, o.conversationKey));
       else lines.push(renderAttachmentLine(attachment));
     }
   }

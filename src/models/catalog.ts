@@ -14,9 +14,10 @@ import {
   type WinterProviderDescriptor
 } from "@yanlinglabs/winter-provider-catalog";
 
-import { DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK } from "./defaults.js";
+import { estimateCostUsd } from "@yanlinglabs/winter-provider-runtime";
+import { CURATED_FAMILY_ROUTES, DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK } from "./defaults.js";
 
-export { DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK };
+export { CURATED_FAMILY_ROUTES, DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK };
 
 export type ModelRoute = { providerId: string; modelId: string };
 /** A stored model choice: a route plus an optional reasoning effort from the route's own list. */
@@ -98,11 +99,38 @@ export function catalogProvider(providerId: string, catalog: WinterCatalog = ins
 }
 
 /**
- * The W7 feature check: OpenRouter routes are offered only once the installed winter can replay
- * reasoning through OpenRouter (spec §9.2, §9.5 W7). W7 ships "catalog continuation for those rows",
- * so a row whose reasoning continuation is still `none` predates it. A route without reasoning has
- * nothing to replay. This is the single switch for W7; winter 0.0.55 has no OpenRouter
- * continuation, so every curated OpenRouter route stays hidden there.
+ * Priced-ness, decided once for the whole app: a route is priced when the catalog's price comes from
+ * the vendor's official docs (exactly when winter's `estimateCostUsd` returns a `list` basis). The
+ * curated list's `pricing`, the price cap, the usage ledger's cost and the `model_unpriced` warning
+ * all use this.
+ */
+export function isPricedRoute(descriptor: Pick<WinterModelDescriptor, "pricing">): boolean {
+  return descriptor.pricing?.source === "official-doc";
+}
+
+/** The list prices of a priced route, else undefined. */
+export function listPricing(descriptor: Pick<WinterModelDescriptor, "pricing">): NonNullable<WinterModelDescriptor["pricing"]>["value"] | undefined {
+  return isPricedRoute(descriptor) ? descriptor.pricing!.value : undefined;
+}
+
+/** winter's list-price estimate for a call's usage on a priced route, else undefined. */
+export function listPricedEstimate(
+  usage: Parameters<typeof estimateCostUsd>[0] | undefined,
+  descriptor: WinterModelDescriptor | undefined
+): ReturnType<typeof estimateCostUsd> | undefined {
+  if (!usage || !descriptor || !isPricedRoute(descriptor)) return undefined;
+  return estimateCostUsd(usage, descriptor);
+}
+
+/** The route keeps reasoning state that a later turn must replay (its continuation is not `none`). */
+function needsReasoningReplay(descriptor: WinterModelDescriptor): boolean {
+  const reasoning = descriptor.reasoning;
+  return reasoning !== undefined && reasoning.supported.value === true && reasoning.continuation !== "none";
+}
+
+/**
+ * Whether the installed winter can replay this OpenRouter row's reasoning (W7 ships "catalog
+ * continuation for those rows"): a row without reasoning, or one whose continuation is not `none`.
  */
 export function openRouterReasoningReplaySupported(descriptor: WinterModelDescriptor): boolean {
   const reasoning = descriptor.reasoning;
@@ -110,18 +138,40 @@ export function openRouterReasoningReplaySupported(descriptor: WinterModelDescri
   return reasoning.continuation !== "none";
 }
 
+/** The vendor's own route for an OpenRouter row: the curated family pair, else the row named by its upstream id. */
+export function directCounterpart(descriptor: WinterModelDescriptor, catalog: WinterCatalog): WinterModelDescriptor | undefined {
+  for (const routes of Object.values(CURATED_FAMILY_ROUTES)) {
+    if (routeKey(routes.openrouter) === descriptor.key) return catalogModel(routes.direct, catalog);
+  }
+  return catalog.models.find((model) => model.key === descriptor.upstreamId && model.providerId !== "openrouter");
+}
+
+/**
+ * The W7 feature check (spec §9.2, §9.5 W7): an OpenRouter route is hidden only when its family
+ * needs reasoning replay (the vendor's own route has a continuation) and the installed winter
+ * cannot replay it through OpenRouter (the OpenRouter row's continuation is still `none`). A family
+ * with no reasoning state to replay (Muse Spark: continuation `none` on both rows) is offered
+ * either way. Without a known direct counterpart the route is assumed to need replay.
+ */
+export function openRouterRouteOffered(descriptor: WinterModelDescriptor, catalog: WinterCatalog): boolean {
+  if (openRouterReasoningReplaySupported(descriptor)) return true;
+  const direct = directCounterpart(descriptor, catalog);
+  return direct !== undefined && !needsReasoningReplay(direct);
+}
+
 function hiddenReason(
   descriptor: WinterModelDescriptor | undefined,
   provider: WinterProviderDescriptor | undefined,
-  maxOutputUsdPerMTok: number
+  maxOutputUsdPerMTok: number,
+  catalog: WinterCatalog
 ): HiddenRouteReason | undefined {
   if (!descriptor || !provider) return "not_in_catalog";
   if (provider.risk.class === "blocked") return "provider_blocked";
   if (descriptor.status === "deprecated" || descriptor.status === "blocked") return "deprecated";
   if (descriptor.toolCalling.value !== "native") return "no_tool_calling";
-  const output = descriptor.pricing?.value.outputPerMTokUsd;
+  const output = listPricing(descriptor)?.outputPerMTokUsd;
   if (typeof output === "number" && output > maxOutputUsdPerMTok) return "over_price_cap";
-  if (descriptor.providerId === "openrouter" && !openRouterReasoningReplaySupported(descriptor)) {
+  if (descriptor.providerId === "openrouter" && !openRouterRouteOffered(descriptor, catalog)) {
     return "openrouter_reasoning_replay";
   }
   return undefined;
@@ -133,7 +183,7 @@ export function isContributorRoute(descriptor: Pick<WinterModelDescriptor, "key"
 
 export function curatedModelOf(descriptor: WinterModelDescriptor, provider: WinterProviderDescriptor): CuratedModel {
   const route = parseRouteKey(descriptor.key)!;
-  const pricing = descriptor.pricing?.value;
+  const pricing = listPricing(descriptor);
   const reasoning = descriptor.reasoning;
   const efforts = reasoning && reasoning.supported.value === true ? [...reasoning.efforts] : [];
   return {
@@ -177,7 +227,7 @@ export function curatedCatalog(options: CuratedCatalogOptions = {}): CuratedCata
     const route = parseRouteKey(id);
     const descriptor = route ? catalog.models.find((model) => model.key === id) : undefined;
     const provider = route ? catalog.providers.find((candidate) => candidate.id === route.providerId) : undefined;
-    const reason = hiddenReason(descriptor, provider, cap);
+    const reason = hiddenReason(descriptor, provider, cap, catalog);
     if (reason) hidden.push({ id, reason });
     else models.push(curatedModelOf(descriptor!, provider!));
   }

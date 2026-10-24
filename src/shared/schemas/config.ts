@@ -168,7 +168,8 @@ export const DEFAULT_MODELS_CONFIG = {
 const MODEL_ROUTE_RE = /^[a-z0-9][a-z0-9._-]*\/\S+$/u;
 const MODELS_FIELDS = {
   allowed: z.array(z.string().regex(MODEL_ROUTE_RE, "Use a winter route key such as anthropic/claude-sonnet-5-5.")).max(100),
-  maxOutputUsdPerMTok: z.number().positive().max(1000)
+  // D6: never above $10 per million output tokens; the owner may only lower it.
+  maxOutputUsdPerMTok: z.number().positive().max(10)
 };
 const ModelsConfigSchema = z
   .object({

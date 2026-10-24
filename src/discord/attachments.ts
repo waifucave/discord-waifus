@@ -17,6 +17,7 @@ import { appDataPath } from "../config/paths.js";
 import type { DiscordConfig } from "../shared/schemas/config.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import type { ImageRef } from "../shared/schemas/discordMessage.js";
+import { recordConversationImages } from "./imageIndex.js";
 
 export type ImageFetchPurpose = "inline" | "ocr";
 export type ImageFetchFailure =
@@ -219,6 +220,22 @@ export class DiscordImageFetcher implements ImageFetcher {
   }
 
   async get(
+    ref: ImageRef,
+    o: { signal?: AbortSignal; purpose: ImageFetchPurpose; refreshUrl?: ImageUrlRefresher }
+  ): Promise<ImageFetchResult> {
+    const result = await this.getCached(ref, o);
+    // The conversation's durable image index (forget purges from it without the runtime).
+    if (result.ok && ref.conversationKey) {
+      await recordConversationImages(this.options.dataRoot, ref.conversationKey, [ref.key]).catch((error: unknown) => {
+        this.options.logger?.warn("Conversation image index write failed", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
+    return result;
+  }
+
+  private async getCached(
     ref: ImageRef,
     o: { signal?: AbortSignal; purpose: ImageFetchPurpose; refreshUrl?: ImageUrlRefresher }
   ): Promise<ImageFetchResult> {

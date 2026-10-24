@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MIGRATION_STEPS, runMigrations } from "../src/backend/migrations.js";
@@ -9,7 +9,9 @@ import {
   FAMILY_ROUTES,
   mapGatewayModel,
   migrateLivingCastModels,
+  modelArchivePath,
   modelFamily,
+  providerArchivePath,
   winterProviderId
 } from "../src/backend/migrationSteps/livingCastModels.js";
 import { checkStoredModelEfforts } from "../src/backend/migrationSteps/modelEffortCheck.js";
@@ -147,7 +149,7 @@ describe("convertModelFields", () => {
     const data: Record<string, unknown> = { providerId: "openai", modelId: "gpt-5-mini", params: {}, contextWindow: 20 };
     expect(convertModelFields(data, "assistant", { waifu: false })).toEqual({
       changed: true,
-      warning: { scope: "assistant", code: "model_unmapped", detail: expect.stringContaining("openai/gpt-5-mini") }
+      warning: { scope: "assistant", code: "model_unmapped", detail: expect.stringContaining("openai/gpt-5-mini"), previous: "openai/gpt-5-mini" }
     });
     expect(data).toEqual({ contextWindow: 20 });
   });
@@ -216,17 +218,60 @@ describe("living-cast-models-v1 on a data root", () => {
     expect(providers.providers.alibaba!.apiKey).toBe("q-new");
 
     const warnings = await readModelWarnings(dataRoot);
-    expect(warnings.map((warning) => [warning.scope, warning.code]).sort()).toEqual([
-      ["waifu:muse", "model_unmapped"],
-      ["waifu:opus", "model_unmapped"]
+    expect(warnings.map((warning) => [warning.scope, warning.code, warning.previous]).sort()).toEqual([
+      ["waifu:muse", "model_unmapped", "meta/muse-spark-1.3"],
+      ["waifu:opus", "model_unmapped", "anthropic/claude-opus-4-7"]
     ]);
+  });
+
+  it("archives every original document before rewriting it, and the replaced provider key (owner-private)", async () => {
+    const dataRoot = await root();
+    await seed(dataRoot);
+    const originalOpus = await readJson(dataRoot, "user/waifus/opus/waifu.json");
+    const originalAssistant = await readJson(dataRoot, "user/assistant/config.json");
+    await migrateLivingCastModels(dataRoot);
+
+    expect(modelArchivePath(dataRoot, "waifu:opus")).toBe(path.join(dataRoot, "user", ".archive", "living-cast", "models", "waifu-opus.json"));
+    expect(JSON.parse(await readFile(modelArchivePath(dataRoot, "waifu:opus"), "utf8"))).toEqual(originalOpus);
+    expect(JSON.parse(await readFile(modelArchivePath(dataRoot, "assistant"), "utf8"))).toEqual(originalAssistant);
+    for (const id of ["aria", "mina", "muse", "none"]) {
+      expect(JSON.parse(await readFile(modelArchivePath(dataRoot, `waifu:${id}`), "utf8")), id).toHaveProperty("schemaVersion");
+    }
+
+    // qwen's key lost to the existing alibaba key: archived, then removed.
+    const archive = JSON.parse(await readFile(providerArchivePath(dataRoot), "utf8")) as { providers: Record<string, { apiKey: string }> };
+    expect(Object.keys(archive.providers)).toEqual(["qwen"]);
+    expect(archive.providers.qwen!.apiKey).toBe("q-old");
+    if (process.platform !== "win32") expect((await stat(providerArchivePath(dataRoot))).mode & 0o777).toBe(0o600);
+  });
+
+  it("re-running after an interrupted run keeps the first original and does not duplicate warnings", async () => {
+    const dataRoot = await root();
+    await seed(dataRoot);
+    const originalOpus = await readJson(dataRoot, "user/waifus/opus/waifu.json");
+    await migrateLivingCastModels(dataRoot);
+    // As if the run had stopped after the warning but before the rewrite: the old document is back.
+    await writeJson(dataRoot, "user/waifus/opus/waifu.json", { ...originalOpus, persona: "edited later" });
+    expect(await migrateLivingCastModels(dataRoot)).toBe("living-cast-models-v1");
+    expect(JSON.parse(await readFile(modelArchivePath(dataRoot, "waifu:opus"), "utf8"))).toEqual(originalOpus);
+    const warnings = (await readModelWarnings(dataRoot)).filter((warning) => warning.scope === "waifu:opus");
+    expect(warnings).toHaveLength(1);
+    expect(await readJson(dataRoot, "user/waifus/opus/waifu.json")).toMatchObject({ persona: "edited later" });
   });
 
   it("is idempotent: a second run changes nothing and adds no warning", async () => {
     const dataRoot = await root();
     await seed(dataRoot);
     await migrateLivingCastModels(dataRoot);
-    const files = ["user/waifus/aria/waifu.json", "user/waifus/opus/waifu.json", "user/assistant/config.json", "user/providers.json", "app/model-warnings.json"];
+    const files = [
+      "user/waifus/aria/waifu.json",
+      "user/waifus/opus/waifu.json",
+      "user/assistant/config.json",
+      "user/providers.json",
+      "app/model-warnings.json",
+      "user/.archive/living-cast/models/waifu-opus.json",
+      "user/.archive/living-cast/providers.json"
+    ];
     const before = await Promise.all(files.map((file) => readFile(path.join(dataRoot, file), "utf8")));
     expect(await migrateLivingCastModels(dataRoot)).toBeUndefined();
     const after = await Promise.all(files.map((file) => readFile(path.join(dataRoot, file), "utf8")));
@@ -252,6 +297,15 @@ describe("living-cast-models-v1 on a data root", () => {
     expect(first.applied).toContain("living-cast-models-v1");
     const second = await runMigrations(dataRoot);
     expect(second.applied).toEqual([]);
+  });
+
+  it("the schema stamp leaves the archive verbatim", async () => {
+    const dataRoot = await root();
+    await writeJson(dataRoot, "user/waifus/old/waifu.json", { ...waifu("old", { providerId: "anthropic", modelId: "claude-opus-4-7" }), schemaVersion: 1 });
+    await runMigrations(dataRoot);
+    expect((await readJson(dataRoot, "user/waifus/old/waifu.json")).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    const archived = JSON.parse(await readFile(modelArchivePath(dataRoot, "waifu:old"), "utf8")) as Record<string, unknown>;
+    expect(archived).toMatchObject({ schemaVersion: 1, providerId: "anthropic", modelId: "claude-opus-4-7" });
   });
 });
 

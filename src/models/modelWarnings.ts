@@ -1,7 +1,7 @@
 // Model warnings the owner must act on (Living cast spec §9.2, §9.4): a migrated model with no
 // curated equivalent, or a stored effort the route no longer lists. Persisted in
 // `app/model-warnings.json` by the migration and the boot check, shown in `/api/runtime`, and
-// cleared for a scope when the owner saves a model for it.
+// cleared for a scope when the owner saves an offered model for it (never by unsetting one).
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -13,6 +13,8 @@ export const ModelWarningSchema = z.object({
   scope: z.string().min(1),
   code: z.enum(["model_unmapped", "effort_dropped"]),
   detail: z.string(),
+  /** The model the scope had before (`<providerId>/<modelId>`), shown as "was: …". */
+  previous: z.string().optional(),
   at: z.string()
 });
 export type ModelWarning = z.infer<typeof ModelWarningSchema>;

@@ -22,18 +22,11 @@ When replies return, check in order: `GET /api/status` — is `discord.connected
 
 ## She doesn't answer DMs
 
-Expected right now too (Living cast in progress). Once DMs are answered again, run `list_dms`
-(or `GET /api/dms?waifuId=…`) and read the latest run of that conversation:
-`rate_limited` / `notice_sent` — the user hit her DM limit (`rateLimit.freesAt` says when it frees;
-she answers the next message after that); `undeliverable` — Discord refused the send (error 50007:
-the user closed DMs from server members or blocked the bot), retried only after the user writes
-again; `blocked` / `empty` — her draft was rejected or empty (not counted against the limit);
-`failed` — a model or provider error. No conversation at all means the DM never reached her:
-check `GET /api/runtime` → `discord.dm` (is she in `eligibleWaifus`, `intentActive: true`?) and
-its warnings: `dm_bot_shared:<botId>` (two enabled waifus on one bot — DMs off for that bot),
-`dm_missing_model:<waifuId>`, `dm_intent_pending_reconnect:<botId>` (reload Discord). `dm.allowDms`
-must be on for her. While the runtime is paused DMs are recorded but not answered; resuming answers
-the ones from the last `discord.dm.resumeWindowMinutes` (60).
+Expected right now too (Living cast in progress): DMs are not answered yet. To check she will be
+able to once they are: `dm.allowDms` must be on for her, and `GET /api/runtime` → `discord.dm`
+must list her in `eligibleWaifus` with `intentActive: true`. Its warnings name what is wrong:
+`dm_bot_shared:<botId>` (two enabled waifus on one bot — DMs off for that bot),
+`dm_missing_model:<waifuId>`, `dm_intent_pending_reconnect:<botId>` (reload Discord).
 
 ## Provider/model 400s
 
@@ -112,7 +105,7 @@ start.
 
 ## Fast diagnosis tools
 
-- `list_dms` — DM conversations with the rate limit and the latest run: THE tool for "why didn't she answer my DM".
+- `list_dms` — DM conversations with their rate limit.
 - `get_runtime_status` — includes `discord.warnings` with live per-channel permission failures
   (e.g. "riko cannot send in channel … — check the channel permissions in Discord").
 - `list_models` — the curated models with their efforts and whether each provider has a key.

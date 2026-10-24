@@ -54,7 +54,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | POST | /api/waifus/:id/assets/pfp · /banner | Upload raw image bytes (png/jpeg/webp/gif, max 8 MB). Stored under `user/waifus/:id/` only — nothing applies it to the Discord bot or shows it yet. |
 | GET | /api/servers | Guilds with channels and their waifu lists. |
 | GET | /api/servers/:guildId | One guild. |
-| PUT | /api/servers/:guildId | Partial server settings: `paused`, `channels` (wholesale), and settings the Living cast rebuild still carries (`compaction`, ...). |
+| PUT | /api/servers/:guildId | Partial server settings: `paused` and `channels` (wholesale). Older fields (`orchestratorMode`, `compaction`, `contextWindows`, `tools`) are kept on disk but nothing reads them until the Living cast rebuild replaces them. |
 | DELETE | /api/servers/:guildId | Remove the guild config incl. rosters. |
 | PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, threads?}` — one channel; omitted fields keep their value. `threads` is `"inherit"` (default: threads and forum posts under it share its cast) or `"off"`. |
 | GET | /api/servers/:guildId/threads | The threads and forum posts the bot has seen (`threadId`, `parentId`, `name`, `kind`, `archived`, `locked`, `lastActivityAt`); guild id must be a snowflake. |
@@ -62,7 +62,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET/POST | /api/servers/:guildId/members·roles·emojis(/refresh) | Guild caches. |
 | GET | /api/discord-bots | Bot entries (tokens redacted). |
 | PUT | /api/discord-bots | `{orchestrator?, waifus?}` — each entry needs `enabled`; a sent `waifus` array replaces the list, omitted tokens are kept per id. |
-| GET/PUT | /api/assistant/config | The assistant's own `model` (unset: the first configured waifu's model). |
+| GET/PUT | /api/assistant/config | The assistant's own `model` (unset: a waifu's model that is offered, has a key and is not a contributor variant; none → the assistant does not run). |
 | GET | /api/assistant/conversations | Conversation list, most recent first. |
 | POST | /api/assistant/conversations | New chat conversation → `{conversationId}`. |
 | DELETE | /api/assistant/conversations/:id | Delete a conversation. |
@@ -72,7 +72,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/assistant/conversations/:id/stream | SSE: turn/tool events and live `text_delta` fragments of the reply (never stored). |
 | POST | /api/people/:userId/forget | `{confirm: true, dryRun?}` — the owner's forget of one Discord user. Today it deletes every DM with them (`user/dms/<userId>/` incl. rate-limit counters, conversations, cached DM images) and returns counts (`dmContexts`, `dmStates`, `dmLimits`, `cachedImages`). Audited `people.forget`. |
 | GET | /api/dms | DM conversations, newest first: `?waifuId&userId&limit≤200` → `{conversations: [{conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: {used, max, windowMinutes, limited, freesAt?} \| null, lastRun?}]}`. Never message text. |
-| GET | /api/dms/:waifuId/:userId | `{state, rateLimit}`: DM state incl. `recentRuns` (status `sent`, `tool_only`, `empty`, `blocked`, `rate_limited`, `notice_sent`, `superseded`, `interrupted`, `failed`, `undeliverable`) — the DM "why quiet". 404 when there is no DM. |
+| GET | /api/dms/:waifuId/:userId | `{state, rateLimit}`: DM state (older versions' run records may still be listed under `recentRuns`; no new ones are written while the Living cast is being built). 404 when there is no DM. |
 | POST | /api/dms/:waifuId/:userId/forget | `{confirm: true, scope: "conversation" \| "all", dryRun?}` → `{dryRun, scope, deleted: {dmContexts, dmStates, recentRuns, cachedImages}}`. Never resets the rate limit. Audited `dm.forget`. |
 | GET | /api/logs?limit=N | Recent backend log entries (max 500). |
 | GET | /api/docs · /api/docs/:slug | This knowledge base. |
@@ -111,7 +111,9 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   428 without one, 409 on mismatch. Other writes accept an optional revision; omitting it is
   last-writer-wins.
 - **Models**: a waifu's or the assistant's `model` is replaced as a whole; omit it to keep the
-  stored one, send `null` to unset it. Saving a model clears that scope's `models.warnings`. The
+  stored one, send `null` to unset it. A stored model is only re-validated when the write changes
+  it, so a record whose model is no longer offered can still be edited. Saving an offered model
+  clears that scope's `models.warnings` (unsetting never does). The
   curated list is `config.toml` `[models]` `allowed` (route keys) filtered by the installed winter
   catalog and `maxOutputUsdPerMTok` (default 10); OpenRouter routes stay hidden until the installed
   winter can replay reasoning through OpenRouter. Contributor (training) variants are only ever an
@@ -121,10 +123,6 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   Waifu `verbosity`, `customInstructions` and `scheduleInPrompt` are plain optional fields: omit
   them and the stored value is kept. A waifu body may still carry `promptLayout`; it is accepted,
   ignored and logged once (the layout editor was removed). A channel PUT that omits a field keeps its current value.
-- **Compaction (servers)**: whether and when a conversation is summarized is `compaction` (`enabled`, `triggerRatio` 0.3-0.95,
-  `maxMessages` 20-200, `keepRecent` 5-120, `waitTimeoutMs` 0-30000), which merges key by key over
-  the app-level `compaction` config; send `null` for a key to inherit again. `keepRecent` is capped
-  at 60% of `maxMessages`.
 - **Image fetching (app config `discord.images`)**: one fetcher downloads Discord images for both
   OCR and inline images. `maxBytes` (default 5 MiB, 64 KiB-20 MiB), `fetchTimeoutMs` (default
   5000, 500-30000), `memoryCacheMb` (64), `diskCacheMb` (256), `diskCacheTtlHours` (168). Set them
@@ -132,26 +130,11 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   starts (restart to be sure). Whatever `maxBytes` allows, an image is only sent inline when it is
   at most 3.75 MiB (3,932,160 bytes, the most that stays under Anthropic's 5 MB per-image limit
   once base64-encoded); a larger one is shown as its OCR text or `[image]`.
-- **Message debounce (app config `discord.debounce`)**: `serverMs` (default 1200) /
-  `serverMaxWaitMs` (4000) and `dmMs` (1500) / `dmMaxWaitMs` (8000). A burst of human messages
-  in a channel (or DM) waits until it has been quiet for `serverMs` (`dmMs`), at most
-  `serverMaxWaitMs` (`dmMaxWaitMs`) after its first message, and then costs one pass. A message
-  aborts that channel's own pass if it has not started sending yet; a pass in another channel is
-  only interrupted when the burst fires. `serverMs: 0` starts a pass on every message at once (the
-  old behaviour). Timer wakes for a channel with a pending burst are dropped; `/run` runs now and
-  `/stop` cancels the burst; a shutdown turns pending bursts into wakes for the next boot.
-- **DM runtime (app config `discord.dm`)**: `maxConcurrentRuns` (default 4: DM replies generated at
-  once across all waifus) and `resumeWindowMinutes` (default 60: after a restart or a resume, DMs
-  that arrived at most this long ago are answered; older ones are left). DMs and their rate limit
-  are configured per waifu (`dm.*`, waifus.md). `GET /api/runtime` reports `discord.dm`:
+- **Settings kept for the Living cast**: `discord.debounce`, `discord.dm.maxConcurrentRuns`,
+  `discord.dm.resumeWindowMinutes` and `discord.deletedMessages` are still stored and validated, but
+  nothing uses them while the Living cast is being built (nobody replies yet). DMs and their rate
+  limit are configured per waifu (`dm.*`, waifus.md). `GET /api/runtime` reports `discord.dm`:
   `{eligibleWaifus: [{waifuId, botId, intentActive}], warnings}`.
-- **Deleted messages (app config `discord.deletedMessages`)**: `redactRecent` (default 20, 0-200)
-  is how many of the newest messages in a conversation are rewritten to "(message deleted)" when
-  they are deleted on Discord. Older deleted messages keep their cached text until the next
-  compaction or context restart, so prompt caching survives. Set with
-  `PUT /api/config {"discord": {"deletedMessages": {"redactRecent": 20}}}`; it applies when the
-  Discord runtime next starts. Edits never start a reply (except an edit that adds a waifu mention
-  to the newest human message within two minutes); the waifus learn about them from a note.
 - **Deprecated OCR keys**: `ocr.maxImageBytes` and `ocr.timeoutMs` no longer control fetching. A
   value left at its default (8 MiB / 1500 ms) is ignored; a changed value still raises the fetch
   limit to the larger of it and `discord.images` (a deprecation warning is logged). Move such

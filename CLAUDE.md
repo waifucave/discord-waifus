@@ -71,12 +71,19 @@ OpenRouter reasoning-replay feature check); `credentials.ts` reads keys live fro
 `user/providers.json` and passes them inline per call (the gateway-era provider ids
 `google-ai-studio`/`qwen` map to `google`/`alibaba`); `errors.ts` maps winter errors to app kinds
 (`context_overflow`, `quota`, `billing`, `rate_limit`, `auth`, `aborted`, `other`; quota/billing
-open provider cooldowns in `providerAlerts.ts`); `summarize.ts` is the compaction summarize helper;
+open provider cooldowns in `providerAlerts.ts`; the retired gateway's billing codes and phrases are
+ported, so Anthropic's 400 "credit balance is too low" is `billing`). A `ModelCallError` carries
+`committed` (part of the answer had arrived) and is `retryable` only when winter says so and
+nothing was committed; `imageOverflow` marks an image refusal. `summarize.ts` is the compaction
+summarize helper;
 `modelWarnings.ts` persists upgrade/boot warnings (`app/model-warnings.json`). Usage purposes are
 `life`, `maintenance`, `detector`, `compaction`, `assistant` (older lines keep their legacy
 purposes). Without a request cap, a route the catalog gives no `maxOutputTokens` gets
 `DEFAULT_OUTPUT_CAP_TOKENS`. Cost prefers winter's `reportedCostUsd` (0 is a real value) over the
-list-price estimate.
+list-price estimate; failed and aborted lines are priced whenever usage is known. The captured
+query/reply log (Activity, `/api/events`, diagnostics) never carries reasoning: `nativeState`,
+signatures, encrypted reasoning and thinking blocks are stripped from the log copy
+(`withoutReasoningPayloads` in `src/shared/queryLog.ts`); the provider still gets them.
 
 **Migrations** (`src/backend/migrations.ts`, `src/backend/migrationSteps/`): steps are `once`
 (legacy shape conversions, recorded in `app/migrations.json`), `once-per-app-version` (outcome
@@ -90,7 +97,10 @@ loss), global pending observations and dream cursor, the URL-keyed OCR cache cle
 `server-drop-enabled-flags-v1`. Living cast L1 added `living-cast-models-v1` (once: gateway
 provider ids → winter ids, each waifu/assistant model → nested `model: {providerId, modelId,
 effort?}` by family, drops `params`, `contextWindow`, `personaDigest`, `tools.toolUse`; unmapped
-models are unset and reported in `GET /api/runtime` → `models.warnings`) and
+models are unset and reported in `GET /api/runtime` → `models.warnings` with the old model as
+`previous`; each original document is archived first under `user/.archive/living-cast/models/`,
+which the schema stamp never touches, and a replaced provider key under
+`user/.archive/living-cast/providers.json`) and
 `living-cast-model-effort-check` (every boot: drops a stored effort the installed catalog no longer
 lists for that route). Phase 4 must ship as a minor release (2.112.0): its
 memory migrations cannot be read by 2.111.x, and downgrade is unsupported. Never
@@ -126,7 +136,13 @@ PUT shim in `src/api/server.ts`.
   keeps older messages out for good. Routes: `GET /api/dms`, `GET /api/dms/:waifuId/:userId`,
   `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`) and the owner's
   `POST /api/people/:userId/forget` (DM part in L1, `dm/forgetUser.ts`; L2 adds the life scrub).
-  DM bots register a BotDM-only `/forget`. DMs get no replies until L2.
+  DM bots register a BotDM-only `/forget`. DMs get no replies until L2. Forget records for L2
+  (`dm/forgotten.ts`): the owner's forget-user adds `{userId, at}` to `user/people/forgotten.json`
+  (spec §7.5); a DM `/forget everything` queues `{userId, at, source}` in
+  `user/waifus/<id>/life/pending-scrubs.json` (spec §7.3). Images a conversation showed are indexed
+  durably in `user/conversations/<key>/images.json` (`src/discord/imageIndex.ts`: the fetcher and
+  OCR record refs that carry `conversationKey`), so a forget purges cached bytes and OCR text with
+  or without the runtime (a legacy `ledger.json`'s image refs are read too).
 
 **Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, the assistant config, servers incl. `threads.json`, `dms/<userId>/` DM state and rate-limit counters), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`src/api/ids.ts`: `assertSafeId` rejects dot-only ids; guild/channel/user ids must be Discord snowflakes via `assertSnowflakeId`).
 
@@ -134,7 +150,7 @@ PUT shim in `src/api/server.ts`.
 
 **Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen yet — Phase 7 uses it for live status). API types are mirrored in `src/frontend/api/types.ts` — these must stay in sync with `src/shared/schemas/domain.ts` manually (no codegen). Every model choice (Cast, Onboarding, Settings → Assistant) uses `components/ModelPicker.tsx` over `GET /api/models` (route + effort); the Direction and Memory screens are gone.
 
-**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else the first enabled waifu's model; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change.
+**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else an enabled waifu's model that is offered, keyed and not a contributor variant; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change.
 
 **Remote management** (`src/remote/`, `src/backend/remoteAccess/`): the host and remote gateway both
 use the same signed `ts-connect` helper package resolver and authenticated WIPC supervisor. The
@@ -268,9 +284,12 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
 - winter is the source of truth for model facts (context window, output cap, image input, reasoning
   efforts, continuation, prices). There is no in-app model table: `src/models/catalog.ts` only
   filters the installed catalog through the curated allow list (`[models] allowed`), the price cap
-  (`[models] maxOutputUsdPerMTok`) and feature checks. Routes the installed catalog lacks are
-  hidden, and OpenRouter routes stay hidden until the catalog's reasoning `continuation` is not
-  `none` (winter W7).
+  (`[models] maxOutputUsdPerMTok`, at most $10 per million output tokens, D6) and feature checks.
+  Routes the installed catalog lacks are hidden. An OpenRouter route is hidden only when its family
+  keeps reasoning state (the vendor's own route has a `continuation`) and the OpenRouter row still
+  says `none` (winter W7); a family with nothing to replay (Muse Spark) is offered either way.
+  Priced-ness is decided once (`isPricedRoute`: official-doc prices) for `/api/models`, the price
+  cap, ledger costs and the `model_unpriced` notice.
 - Meta Muse Spark contributor variants enable training and must remain an explicit user choice; the
   picker labels them and the assistant only picks one when asked.
 - `src/models/assemble.ts` folds `streamTurn` events into one `ProviderMessageLike` (text, tool

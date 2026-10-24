@@ -1,9 +1,11 @@
 // winter provider failure → app error kind (Living cast spec §9.1).
 //
 // - `context_overflow`: the adapter's own `contextOverflow` verdict (never parsed from text).
-// - `quota`: a subscription-quota `rate_limit` stream event, or `insufficient_quota` / a usage-window
-//   code on a 429.
-// - `billing`: what winter itself classifies as `billing_error` (402, billing codes).
+// - `quota`: a subscription-quota `rate_limit` stream event, `insufficient_quota` / a usage-window
+//   code, or (the gateway's rule) a 429 whose code names a quota, an insufficiency or a usage limit.
+// - `billing`: what winter itself classifies as `billing_error` (402, billing codes), plus the
+//   retired gateway's billing codes and phrases on any non-auth refusal (Anthropic answers "Your
+//   credit balance is too low" with a 400 `invalid_request_error`, which winter calls `bad_request`).
 // - `rate_limit`, `auth`: winter's own codes.
 // - `aborted`: the caller's signal (never retried, never a provider alert).
 // - `other`: everything else (server, network, stall, timeout, bad request, capability refusals).
@@ -15,6 +17,29 @@ export type ModelErrorKind = "context_overflow" | "quota" | "billing" | "rate_li
 /** Provider codes that mean "the account's quota is used up", not "slow down". */
 const QUOTA_PROVIDER_CODES = new Set(["insufficient_quota", "usage_limit_reached", "usage_limit_exceeded"]);
 
+// Ported in full from the retired gateway's classifier (its errors.ts isBillingError / isQuotaError):
+// codes and message phrases meaning "the account cannot pay", distinct from "going too fast". The
+// phrases are matched on winter's message, which carries the provider's own error message
+// (`HTTP 400 — <message>`, or the stream error frame's detail).
+const BILLING_CODES = new Set(["billing_error", "billing_hard_limit_reached", "billing_not_active", "credit_balance_too_low", "insufficient_credits"]);
+const BILLING_PHRASES = [/credit balance is too low/i, /insufficient (credits|balance|funds)/i, /requires more credits/i];
+
+/** True when a failure means the provider account cannot pay. */
+export function isBillingFailure(error: ProviderError): boolean {
+  if (error.code === "auth" || error.code === "aborted") return false;
+  if (toSdkAssistantMessageError(error) === "billing_error") return true;
+  if (error.status === 402) return true;
+  if (error.providerCode !== undefined && BILLING_CODES.has(error.providerCode)) return true;
+  return BILLING_PHRASES.some((phrase) => phrase.test(error.message));
+}
+
+/** The gateway's quota code rule: on a 429, a code naming a quota, an insufficiency or a usage limit. */
+function isQuotaCodeOn429(error: ProviderError): boolean {
+  const code = error.providerCode;
+  if (code === undefined || (error.code !== "rate_limit" && error.status !== 429)) return false;
+  return code.includes("quota") || code.includes("insufficient") || code.startsWith("usage_limit");
+}
+
 const MAX_MESSAGE_CHARS = 400;
 
 export class ModelCallError extends Error {
@@ -24,21 +49,36 @@ export class ModelCallError extends Error {
   readonly code: string;
   readonly status?: number;
   readonly providerCode?: string;
+  /** winter's verdict AND nothing was committed: a partly streamed call is never retried. */
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
+  /** The stream had begun (bytes of the answer reached us) before the failure. */
+  readonly committed: boolean;
+  /** The request was refused for its images (too many, or one past a limit): compaction does not fix it. */
+  readonly imageOverflow: boolean;
 
   constructor(
     kind: ModelErrorKind,
     message: string,
-    details: { code?: string; status?: number; providerCode?: string; retryable?: boolean; retryAfterMs?: number } = {}
+    details: {
+      code?: string;
+      status?: number;
+      providerCode?: string;
+      retryable?: boolean;
+      retryAfterMs?: number;
+      committed?: boolean;
+      imageOverflow?: boolean;
+    } = {}
   ) {
     super(message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}...` : message);
     this.kind = kind;
     this.code = details.code ?? kind;
     if (details.status !== undefined) this.status = details.status;
     if (details.providerCode !== undefined) this.providerCode = details.providerCode;
-    this.retryable = details.retryable ?? false;
+    this.committed = details.committed === true;
+    this.retryable = (details.retryable ?? false) && !this.committed;
     if (details.retryAfterMs !== undefined) this.retryAfterMs = details.retryAfterMs;
+    this.imageOverflow = details.imageOverflow === true;
   }
 }
 
@@ -46,26 +86,33 @@ export class ModelCallError extends Error {
 export function modelErrorKind(error: ProviderError, o: { subscriptionQuota?: boolean } = {}): ModelErrorKind {
   if (error.contextOverflow === true) return "context_overflow";
   if (error.code === "aborted") return "aborted";
+  // Quota before billing: winter files `insufficient_quota` / `usage_limit_*` under billing_error,
+  // but they reset with the quota window, so they get the shorter quota cooldown.
   if (error.providerCode !== undefined && QUOTA_PROVIDER_CODES.has(error.providerCode)) return "quota";
   if (error.code === "rate_limit" && o.subscriptionQuota === true) return "quota";
-  if (toSdkAssistantMessageError(error) === "billing_error" || error.providerCode === "billing_error") return "billing";
+  if (isBillingFailure(error)) return "billing";
+  if (isQuotaCodeOn429(error)) return "quota";
   if (error.code === "rate_limit") return "rate_limit";
   if (error.code === "auth") return "auth";
   return "other";
 }
 
-export function fromProviderError(error: ProviderError, o: { subscriptionQuota?: boolean } = {}): ModelCallError {
-  return new ModelCallError(modelErrorKind(error, o), error.message, {
+export function fromProviderError(error: ProviderError, o: { subscriptionQuota?: boolean; committed?: boolean } = {}): ModelCallError {
+  const kind = modelErrorKind(error, o);
+  return new ModelCallError(kind, error.message, {
     code: error.code,
     ...(error.status !== undefined ? { status: error.status } : {}),
     ...(error.providerCode !== undefined ? { providerCode: error.providerCode } : {}),
-    retryable: error.retryable,
-    ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {})
+    // A quota or billing failure never clears by retrying (winter may call such a 429 retryable).
+    retryable: error.retryable && kind !== "billing" && kind !== "quota",
+    ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+    committed: o.committed === true,
+    imageOverflow: error.imageOverflow === true
   });
 }
 
 /** Anything thrown on the call path → a ModelCallError (bounded message, no raw bodies). */
-export function toModelCallError(error: unknown, o: { subscriptionQuota?: boolean } = {}): ModelCallError {
+export function toModelCallError(error: unknown, o: { subscriptionQuota?: boolean; committed?: boolean } = {}): ModelCallError {
   if (error instanceof ModelCallError) return error;
   return fromProviderError(normalizeThrown(error), o);
 }

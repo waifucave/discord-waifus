@@ -7,7 +7,7 @@
 // `org`, `cacheTtl: "1h"` and (winter W3) `messageCacheTtl: { rolling: "1h" }`. `messages` may never
 // carry a `role: "system"` entry.
 
-import { estimateCostUsd, createMemoryCredentialStore, shouldRequestSummary } from "@yanlinglabs/winter-provider-runtime";
+import { createMemoryCredentialStore, shouldRequestSummary } from "@yanlinglabs/winter-provider-runtime";
 import type {
   ConnectionProfile,
   ContentBlockLike,
@@ -23,8 +23,8 @@ import { recordProviderQuery, recordProviderReply, type QueryRole } from "../sha
 import type { UsagePurpose } from "../shared/schemas/usage.js";
 import { NoopUsageLedger, sharedUsageLedger, usageFields, type ModelUsage, type UsageLedger } from "../orchestration/usageLedger.js";
 import { sharedProviderAlerts, type ProviderAlerts } from "../orchestration/providerAlerts.js";
-import { assembleTurn, ProviderStreamError, messageText, messageToolCalls, type AssemblySink, type WinterStopReason } from "./assemble.js";
-import { routeKey, type ModelRoute } from "./catalog.js";
+import { assembleTurn, ProviderStreamError, messageText, messageToolCalls, type AssemblySink, type WinterStopReason, type WinterUsage } from "./assemble.js";
+import { listPricedEstimate, routeKey, type ModelRoute } from "./catalog.js";
 import { createProviderCredentialsLookup, inlineAuthRef, type ProviderKeyLookup } from "./credentials.js";
 import { fromProviderError, ModelCallError, toModelCallError } from "./errors.js";
 import { sharedWinterRuntime, type WinterRuntime } from "./winter.js";
@@ -119,12 +119,24 @@ type WinterTurnRequest = TurnRequest & { messageCacheTtl?: { rolling?: "5m" | "1
 /**
  * The call's cost: the provider's own reported figure when there is one (winter W5: OpenRouter's
  * `reportedCostUsd`, where 0 is a real value), else winter's list-price estimate. Undefined for an
- * unpriced route.
+ * unpriced route (`listPricedEstimate` decides priced-ness the same way `/api/models` does).
  */
 export function callCostUsd(usage: (ModelUsage & { reportedCostUsd?: number }) | undefined, estimate: { costUsd: number; costBasis: string } | undefined): number | undefined {
   const reported = usage?.reportedCostUsd;
   if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) return reported;
   return estimate && estimate.costBasis === "list" ? estimate.costUsd : undefined;
+}
+
+/** The adapter ended the stream with `done: aborted`: keeps what the fold had counted. */
+class TurnAbortedError extends Error {
+  override name = "TurnAbortedError";
+  constructor(
+    readonly usage: WinterUsage | undefined,
+    /** Part of the answer (text, a tool call or reasoning) had arrived. */
+    readonly committed: boolean
+  ) {
+    super("The model call was aborted.");
+  }
 }
 
 const QUERY_ROLE: Record<UsagePurpose, QueryRole> = {
@@ -236,6 +248,7 @@ export class ModelClient {
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     let queryId: number | undefined;
     const role = QUERY_ROLE[attribution.purpose];
+    let descriptor: ResolvedModel["descriptor"];
 
     try {
       const resolved = this.resolve(route);
@@ -244,7 +257,7 @@ export class ModelClient {
         throw new ModelCallError("auth", `Provider ${resolved.providerId} has no API key configured.`, { code: "missing_credentials" });
       }
       const adapter = resolved.adapter;
-      const descriptor = resolved.descriptor;
+      descriptor = resolved.descriptor;
       const capabilities = descriptor ? adapter.capabilities(descriptor) : undefined;
       const rendered = this.winter.renderer.render([...request.messages], new Map(), {
         family: adapter.family,
@@ -299,11 +312,11 @@ export class ModelClient {
         throw toModelCallError(error);
       }
       const assembled = await assembleTurn(stream, { origin, signal, ...(sink ? { sink } : {}) });
-      if (assembled.stopReason === "aborted" || request.signal?.aborted) {
-        throw new ModelCallError("aborted", "The model call was aborted.", { code: "aborted" });
-      }
+      // Only the stream decides: a call whose stream completed is a completed call, even when the
+      // caller aborts right after.
+      if (assembled.stopReason === "aborted") throw new TurnAbortedError(assembled.usage, assembled.message.content.length > 0);
       const usage = assembled.usage;
-      const priced = callCostUsd(usage, usage && descriptor ? estimateCostUsd(usage, descriptor) : undefined);
+      const priced = callCostUsd(usage, listPricedEstimate(usage, descriptor));
       const toolCalls = messageToolCalls(assembled.message);
       const finishReason = finishReasonOf(assembled.stopReason, toolCalls.length);
       const durationMs = this.now() - startedMs;
@@ -328,19 +341,30 @@ export class ModelClient {
       };
     } catch (raw) {
       let error: ModelCallError;
-      if (raw instanceof ProviderStreamError) error = fromProviderError(raw.providerError, { subscriptionQuota: raw.subscriptionQuota });
-      else error = toModelCallError(raw);
+      let committed = false;
+      if (raw instanceof ProviderStreamError) {
+        committed = raw.committed;
+        error = fromProviderError(raw.providerError, { subscriptionQuota: raw.subscriptionQuota, committed });
+      } else if (raw instanceof TurnAbortedError) {
+        committed = raw.committed;
+        error = new ModelCallError("aborted", raw.message, { code: "aborted", committed });
+      } else {
+        error = toModelCallError(raw);
+        committed = error.committed;
+      }
       if (request.signal?.aborted && error.kind !== "aborted") {
-        error = new ModelCallError("aborted", "The model call was aborted.", { code: "aborted" });
+        error = new ModelCallError("aborted", "The model call was aborted.", { code: "aborted", committed });
       } else if (!request.signal?.aborted && timeout.aborted && error.kind === "aborted") {
-        error = new ModelCallError("other", "The model call timed out.", { code: "timeout", retryable: true });
+        // A timeout is retryable only when nothing of the answer had arrived.
+        error = new ModelCallError("other", "The model call timed out.", { code: "timeout", retryable: true, committed });
       }
       this.alerts?.report(route.providerId, error);
-      const partialUsage = raw instanceof ProviderStreamError ? raw.usage : undefined;
+      const partialUsage = raw instanceof ProviderStreamError || raw instanceof TurnAbortedError ? raw.usage : undefined;
+      const partialCost = callCostUsd(partialUsage, listPricedEstimate(partialUsage, descriptor));
       void this.ledger.record({
         ...entryBase,
         status: error.kind === "aborted" ? "aborted" : "failed",
-        ...usageFields(partialUsage),
+        ...usageFields(partialUsage, partialCost),
         errorKind: error.kind,
         durationMs: this.now() - startedMs
       });

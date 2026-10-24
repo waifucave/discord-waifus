@@ -156,7 +156,62 @@ describe("model writes (waifus and the assistant)", () => {
   });
 });
 
+async function writeWaifu(root: string, id: string, extra: Record<string, unknown> = {}): Promise<void> {
+  const file = path.join(root, "user", "waifus", id, "waifu.json");
+  await mkdir(path.dirname(file), { recursive: true });
+  const name = id[0]!.toUpperCase() + id.slice(1);
+  await writeFile(file, JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), id, name, displayName: name, persona: "p", ...extra }));
+}
+
+describe("editing records whose model is no longer offered (review I3)", () => {
+  // Never curated, so it is unoffered on every winter version.
+  const RETIRED = { providerId: "anthropic", modelId: "claude-opus-4-7" };
+
+  it("a persona edit that resends the stored model succeeds; changing the model is validated", async () => {
+    const { app, root } = await makeApp();
+    await writeWaifu(root, "riko", { model: RETIRED });
+    // The Cast editor's save shape: every field, the model included.
+    const edit = await app.inject({ method: "PUT", url: "/api/waifus/riko", payload: { revision: 1, persona: "edited", model: RETIRED, botId: null } });
+    expect(edit.statusCode, edit.body).toBe(200);
+    expect(edit.json()).toMatchObject({ persona: "edited", model: RETIRED });
+    // Same route, a different effort is a change: validated (and refused).
+    const effort = await app.inject({ method: "PUT", url: "/api/waifus/riko", payload: { revision: 2, model: { ...RETIRED, effort: "high" } } });
+    expect(effort.statusCode).toBe(400);
+    const other = await app.inject({ method: "PUT", url: "/api/waifus/riko", payload: { revision: 2, model: { providerId: "openai", modelId: "gpt-4o" } } });
+    expect(other.json()).toMatchObject({ details: { error: "model_not_available" } });
+  });
+
+  it("the assistant config resaves an unoffered stored model unchanged", async () => {
+    const { app, root } = await makeApp();
+    const file = path.join(root, "user", "assistant", "config.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 1, updatedAt: new Date().toISOString(), model: RETIRED }));
+    const same = await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: RETIRED } });
+    expect(same.statusCode, same.body).toBe(200);
+    expect((await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: { providerId: "openai", modelId: "gpt-4o" } } })).statusCode).toBe(400);
+  });
+});
+
 describe("/api/runtime models.warnings", () => {
+  it("keeps an unmapped model's record until a real model is saved; shows her name and the old model (review I4)", async () => {
+    const { app, root } = await makeApp();
+    await writeWaifu(root, "opus");
+    await appendModelWarnings(root, [
+      { scope: "waifu:opus", code: "model_unmapped", detail: "anthropic/claude-opus-4-7 has no curated equivalent; pick a model again.", previous: "anthropic/claude-opus-4-7" }
+    ]);
+    // The Cast editor sends `model: null` for a waifu without a model: never clears the record.
+    const persona = await app.inject({ method: "PUT", url: "/api/waifus/opus", payload: { revision: 1, persona: "edited", model: null, botId: null } });
+    expect(persona.statusCode, persona.body).toBe(200);
+    expect(await readModelWarnings(root)).toHaveLength(1);
+
+    const view = (await app.inject({ method: "GET", url: "/api/runtime" })).json<{ models: { warnings: Array<Record<string, unknown>> } }>().models.warnings;
+    expect(view).toContainEqual(expect.objectContaining({ scope: "waifu:opus", label: "Opus", code: "model_unmapped", previous: "anthropic/claude-opus-4-7" }));
+
+    const picked = await app.inject({ method: "PUT", url: "/api/waifus/opus", payload: { revision: 2, model: { providerId: "openai", modelId: "gpt-6-luna" } } });
+    expect(picked.statusCode, picked.body).toBe(200);
+    expect(await readModelWarnings(root)).toEqual([]);
+  });
+
   it("shows persisted migration warnings and live unavailable choices; saving a model clears that scope", async () => {
     const { app, root } = await makeApp();
     await appendModelWarnings(root, [{ scope: "waifu:opus", code: "model_unmapped", detail: "anthropic/claude-opus-4-7 has no curated equivalent; pick a model again." }]);

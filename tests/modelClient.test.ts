@@ -241,6 +241,17 @@ describe("ModelClient usage ledger (spec §9.1)", () => {
     expect(failure).toMatchObject({ kind: "other", code: "server", status: 500 });
     expect(lines).toEqual([expect.objectContaining({ status: "failed", errorKind: "other", inputTokens: 7 })]);
   });
+
+  it("prices a failed line whenever its usage is known", async () => {
+    const chat = fakeAdapter(CHAT_COMPLETIONS, [
+      () => errorTurn({ code: "server", message: "boom", status: 500, retryable: false }, [{ type: "message_start" }, { type: "usage", inputTokens: 1_000_000, outputTokens: 0 }])
+    ]);
+    const { client, lines } = harness({ adapters: [chat] });
+    await client.call(request()).catch(() => undefined);
+    // deepseek-flash lists $0.30 per million input tokens.
+    expect(lines[0]).toMatchObject({ status: "failed", inputTokens: 1_000_000 });
+    expect(lines[0]!.costUsd).toBeCloseTo(0.3, 6);
+  });
 });
 
 describe("ModelClient errors and alerts", () => {
@@ -293,6 +304,22 @@ describe("ModelClient errors and alerts", () => {
     expect(alerts.snapshot()).toMatchObject([{ providerId: "deepseek", kind: "billing" }]);
   });
 
+  it("Anthropic's credit-balance 400 opens the billing cooldown (review I7)", async () => {
+    const anthropic = fakeAdapter(ANTHROPIC_MESSAGES, [
+      () =>
+        errorTurn({
+          code: "bad_request",
+          status: 400,
+          providerCode: "invalid_request_error",
+          message: "HTTP 400 — Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+          retryable: false
+        })
+    ]);
+    const { client, alerts } = harness({ adapters: [anthropic] });
+    await expect(client.call(request({ route: SONNET }))).rejects.toMatchObject({ kind: "billing" });
+    expect(alerts.snapshot()).toMatchObject([{ providerId: "anthropic", kind: "billing" }]);
+  });
+
   it("a throw inside the adapter becomes a typed ModelCallError", async () => {
     const chat = fakeAdapter(CHAT_COMPLETIONS, [
       () =>
@@ -334,7 +361,58 @@ describe("ModelClient abort and timeout", () => {
     const chat = fakeAdapter(CHAT_COMPLETIONS, [hangingTurn()]);
     const { client, lines } = harness({ adapters: [chat] });
     const failure = await client.call(request({ timeoutMs: 20 })).catch((error: unknown) => error);
-    expect(failure).toMatchObject({ kind: "other", code: "timeout", retryable: true });
+    expect(failure).toMatchObject({ kind: "other", code: "timeout", retryable: true, committed: false });
     expect(lines).toEqual([expect.objectContaining({ status: "failed", errorKind: "other" })]);
+  });
+
+  it("a timeout after part of the answer arrived is not retryable (review I6)", async () => {
+    const chat = fakeAdapter(CHAT_COMPLETIONS, [hangingTurn([{ type: "message_start" }, { type: "text_delta", text: "half an ans" }])]);
+    const { client } = harness({ adapters: [chat] });
+    const failure = await client.call(request({ timeoutMs: 20 })).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ kind: "other", code: "timeout", retryable: false, committed: true });
+  });
+
+  it("a retryable provider error is retryable only while nothing was committed (review I6)", async () => {
+    const early = fakeAdapter(CHAT_COMPLETIONS, [() => errorTurn({ code: "server", message: "overloaded", status: 503, retryable: true })]);
+    const before = await harness({ adapters: [early] }).client.call(request()).catch((error: unknown) => error);
+    expect(before).toMatchObject({ code: "server", retryable: true, committed: false });
+
+    const late = fakeAdapter(CHAT_COMPLETIONS, [
+      () => errorTurn({ code: "network", message: "socket closed", retryable: true }, [{ type: "message_start" }, { type: "text_delta", text: "Hel" }])
+    ]);
+    const after = await harness({ adapters: [late] }).client.call(request()).catch((error: unknown) => error);
+    expect(after).toBeInstanceOf(ModelCallError);
+    expect(after).toMatchObject({ code: "network", retryable: false, committed: true });
+  });
+
+  it("an abort reported as done:aborted keeps the fold's partial usage, priced", async () => {
+    const chat = fakeAdapter(CHAT_COMPLETIONS, [
+      hangingTurn([{ type: "message_start" }, { type: "text_delta", text: "so" }, { type: "usage", inputTokens: 1_000_000, outputTokens: 10 }])
+    ]);
+    const { client, lines } = harness({ adapters: [chat] });
+    const controller = new AbortController();
+    const pending = client.call(request({ signal: controller.signal }));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ kind: "aborted" });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ status: "aborted", inputTokens: 1_000_000, outputTokens: 10, usageKnown: true });
+    expect(lines[0]!.costUsd).toBeGreaterThan(0);
+  });
+
+  it("a call whose stream completed is ok even when the caller aborts right after", async () => {
+    const controller = new AbortController();
+    const chat = fakeAdapter(CHAT_COMPLETIONS, [
+      () =>
+        (async function* () {
+          for (const event of textTurn("done in time")) yield event;
+          controller.abort();
+        })()
+    ]);
+    const { client, lines } = harness({ adapters: [chat] });
+    const result = await client.call(request({ signal: controller.signal }));
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.text).toBe("done in time");
+    expect(lines).toEqual([expect.objectContaining({ status: "ok" })]);
   });
 });

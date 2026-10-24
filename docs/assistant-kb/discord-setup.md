@@ -80,8 +80,8 @@ the user writes again. Counters survive restarts and a user's `/forget`.
 In DMs her bot offers `/forget what:<this conversation|everything about me>`, answered privately
 with a 30-second Confirm button. "this conversation" deletes the DM transcript; "everything"
 also deletes the DM state. Neither resets the rate limit. The owner's full forget is
-`POST /api/people/:userId/forget`.
-Server slash commands (`/run`, `/print`, …) exist only in servers.
+`POST /api/people/:userId/forget`. Until the Living cast ships, "everything" also leaves a record
+so her old memories about that user are left out when they move to her notes.
 
 ## Connection
 

@@ -160,8 +160,17 @@ describe("assistant tools", () => {
       expect(JSON.parse(read).model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
       const refused = await executeAssistantTool(ctx, "set_assistant_model", JSON.stringify({ model: { providerId: "openai", modelId: "gpt-4o" } }));
       expect(refused).toContain("model_not_available");
-      const unset = await executeAssistantTool(ctx, "set_assistant_model", JSON.stringify({ model: null }));
+      const unset = await executeAssistantTool(ctx, "set_assistant_model", JSON.stringify({ unset: true }));
       expect(JSON.parse(unset)).not.toHaveProperty("model");
+      // The schema matches what the tool accepts: a model object or the unset flag.
+      const schema = toolDefs().find((tool) => tool.name === "set_assistant_model")!.inputSchema as {
+        properties: Record<string, { type: string }>;
+        required?: string[];
+      };
+      expect(schema.properties.model!.type).toBe("object");
+      expect(schema.properties.unset!.type).toBe("boolean");
+      expect(schema.required ?? []).toEqual([]);
+      expect(JSON.parse(await executeAssistantTool(ctx, "set_assistant_model", "{}"))).toHaveProperty("error");
     } finally {
       await app.close();
     }

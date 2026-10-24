@@ -82,7 +82,7 @@ routes (`/api/orchestrator/*`, `/api/stage-manager/*`, `/api/reviewer/*`, `/api/
 removed. Discord intake connects and logs `Living cast not yet wired (L2)` for each accepted
 message; nothing replies until the life loop ships.
 
-`GET /api/runtime` adds `models.warnings`: `{scope, code, detail, at?}` entries for model choices
+`GET /api/runtime` adds `models.warnings`: `{scope, label, code, detail, at?, previous?}` entries (`label` is the waifu's name, `previous` the model before) for model choices
 that need attention (`model_unmapped`, `effort_dropped` from the upgrade and boot checks;
 `model_unavailable` and `model_unpriced` computed live).
 
@@ -164,7 +164,7 @@ device must be activated and paired again.
   decision-only models, never offered as waifu models.
 - `GET /api/assistant/config`
 - `PUT /api/assistant/config` — `{ "model": { "providerId", "modelId", "effort"? } | null }`, the
-  dashboard assistant's model (unset: the first enabled waifu's model).
+  dashboard assistant's model (unset: a waifu's model that is offered, has a key and is not a contributor variant; none → the assistant does not run).
 
 Server files keep their `orchestratorMode`, `oneShot` and `contextWindows` fields untouched until
 the Living cast rebuild replaces them; nothing reads them in this release.
@@ -224,10 +224,11 @@ provider that already has a stored key. `catalogVersion` is the installed
 contextWindow?, maxOutputTokens?, imageInput, efforts, defaultEffort?, pricing?, contributor,
 promptCaching, credentialsConfigured }`. `hidden` lists allowed routes that are not offered, as
 `{ id, reason }` with `reason` one of `not_in_catalog`, `provider_blocked`, `deprecated`,
-`no_tool_calling`, `over_price_cap` (`config.toml` `[models] maxOutputUsdPerMTok`, default 10) or
-`openrouter_reasoning_replay` (the installed winter cannot replay reasoning through OpenRouter).
-Waifu and assistant writes accept only offered routes (`400 model_not_available`) and only efforts
-the route lists (`400 unsupported_effort`).
+`no_tool_calling`, `over_price_cap` (`config.toml` `[models] maxOutputUsdPerMTok`, default and
+maximum 10) or `openrouter_reasoning_replay` (the family keeps reasoning state the installed winter
+cannot replay through OpenRouter). Waifu and assistant writes accept only offered routes
+(`400 model_not_available`) and only efforts the route lists (`400 unsupported_effort`); a stored
+model is only re-validated when the write changes it.
 
 Credential writes accept:
 

@@ -87,6 +87,46 @@ const fakeClient = () =>
   );
 
 describe("assistant chat API", () => {
+  it("borrows only an offered, keyed, non-contributor waifu model, and says why when there is none", async () => {
+    const client = scriptedAssistantClient(() => ({ text: "hi" }));
+    const { app } = await makeApp({ assistantClient: client });
+    try {
+      const send = async () => {
+        const created = await app.inject({ method: "POST", url: "/api/assistant/conversations" });
+        return app.inject({
+          method: "POST",
+          url: `/api/assistant/conversations/${created.json().conversationId as string}/messages`,
+          payload: { content: "hello" }
+        });
+      };
+      // An enabled waifu on the Muse Spark contributor route, with a key: never borrowed silently.
+      await app.inject({ method: "PUT", url: "/api/providers/meta/credentials", payload: { apiKey: "sk-meta" } });
+      await app.inject({
+        method: "POST",
+        url: "/api/waifus",
+        payload: { id: "muse", name: "Muse", displayName: "Muse", enabled: true, model: { providerId: "meta", modelId: "muse-spark-1.3-contributor" } }
+      });
+      // A waifu on DeepSeek, before its provider has a key: skipped too.
+      await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "dee", name: "Dee", displayName: "Dee", model: ASSISTANT_TEST_MODEL } });
+      const refused = await send();
+      expect(refused.statusCode).toBe(503);
+      expect(refused.body).toContain("No model is set for the assistant");
+      expect(client.requests).toHaveLength(0);
+
+      await app.inject({ method: "PUT", url: "/api/providers/deepseek/credentials", payload: { apiKey: "sk-test" } });
+      const borrowed = await send();
+      expect(borrowed.statusCode, borrowed.body).toBe(200);
+      expect(client.requests.at(-1)!.route).toEqual(ASSISTANT_TEST_MODEL);
+
+      // An explicit contributor choice is the owner's: used as configured.
+      await app.inject({ method: "PUT", url: "/api/assistant/config", payload: { model: { providerId: "meta", modelId: "muse-spark-1.3-contributor" } } });
+      expect((await send()).statusCode).toBe(200);
+      expect(client.requests.at(-1)!.route).toMatchObject({ providerId: "meta", modelId: "muse-spark-1.3-contributor" });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("runs a turn end-to-end through the fake pipeline and real tools", async () => {
     const { app } = await makeApp({ assistantClient: fakeClient() });
     try {

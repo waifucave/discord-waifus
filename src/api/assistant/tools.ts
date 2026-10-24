@@ -444,23 +444,32 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "get_assistant_config",
     description:
-      "Read the assistant's own model setting. When it is unset the assistant uses the first configured waifu's model.",
+      "Read the assistant's own model setting. When it is unset the assistant borrows a waifu's model (an offered, " +
+      "non-contributor model whose provider has a key), or does not run.",
     parameters: NO_ARGS,
     execute: async (ctx) => (await inject(ctx, { method: "GET", url: "/api/assistant/config" })).body
   },
   {
     name: "set_assistant_model",
     description:
-      "Set the assistant's own model: {providerId, modelId, effort?} from list_models, or null to fall back to " +
-      "the first configured waifu's model.",
+      "Set the assistant's own model: pass `model` {providerId, modelId, effort?} from list_models, or `unset: true` " +
+      "to clear it (the assistant then borrows a waifu's model: only an offered, non-contributor model whose " +
+      "provider has a key).",
     parameters: {
+      // One string `type` per node (Google's proto schemas reject ["object", "null"]): unsetting is
+      // its own flag rather than a nullable model.
       type: "object",
-      properties: { model: MODEL_CHOICE_PARAMETER },
-      required: ["model"],
+      properties: {
+        model: MODEL_CHOICE_PARAMETER,
+        unset: { type: "boolean", description: "true clears the assistant's model; omit `model` then." }
+      },
       additionalProperties: false
     },
-    execute: async (ctx, args) =>
-      revisionedPut(ctx, "/api/assistant/config", () => ({ model: args.model ?? null }))
+    execute: async (ctx, args) => {
+      if (args.unset === true || args.model === null) return revisionedPut(ctx, "/api/assistant/config", () => ({ model: null }));
+      if (!args.model || typeof args.model !== "object") return JSON.stringify({ error: "Pass `model` from list_models, or `unset: true`." });
+      return revisionedPut(ctx, "/api/assistant/config", () => ({ model: args.model }));
+    }
   },
   {
     name: "forget_user",

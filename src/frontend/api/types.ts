@@ -38,7 +38,11 @@ export type ModelsResponse = {
   hidden: Array<{ id: string; reason: string }>;
 };
 
-export type ModelWarning = { scope: string; code: string; detail: string; at?: string };
+/**
+ * A model notice from `/api/runtime`: `scope` is `waifu:<id>`, `assistant` or `models`; `label` names
+ * it for people (her display name); `previous` is the model it had before (`provider/model`).
+ */
+export type ModelWarning = { scope: string; label?: string; code: string; detail: string; at?: string; previous?: string };
 
 export type Revisioned = {
   schemaVersion: number;

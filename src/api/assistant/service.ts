@@ -53,33 +53,51 @@ function modelChoiceOf(value: unknown): ModelChoice | undefined {
 }
 
 /**
- * The assistant runs on its own configured model (`user/assistant/config.json`) when set, otherwise
- * on the first configured waifu's model (enabled waifus first). Living cast spec §9.3.
+ * The assistant runs on its own configured model (`user/assistant/config.json`) when set. Otherwise
+ * it borrows a waifu's model (enabled waifus first), but only one that is offered, whose provider
+ * has a key, and that is not a contributor (training) variant: training is never chosen silently.
+ * With no such model it does not run and says why. Living cast spec §9.3.
  */
-async function resolveAssistantTarget(
+export async function resolveAssistantTarget(
   app: FastifyInstance,
   dataRoot: string,
   principal: RequestPrincipal,
   delegation?: AssistantDelegation
 ): Promise<AssistantTarget> {
-  const assistant = await getJson(app, principal, delegation, "/api/assistant/config");
-  let route = modelChoiceOf(assistant?.model);
-  if (!route) {
-    const waifus = await getJson(app, principal, delegation, "/api/waifus");
-    const list = (waifus?.waifus as Array<Record<string, unknown>> | undefined) ?? [];
-    const ordered = [...list.filter((waifu) => waifu.enabled === true), ...list.filter((waifu) => waifu.enabled !== true)];
-    for (const waifu of ordered) {
-      route = modelChoiceOf(waifu.model);
-      if (route) break;
+  const [assistant, models] = await Promise.all([
+    getJson(app, principal, delegation, "/api/assistant/config"),
+    getJson(app, principal, delegation, "/api/models")
+  ]);
+  const offered = new Map(
+    ((models?.models as Array<Record<string, unknown>> | undefined) ?? []).map((model) => [String(model.id), model])
+  );
+  const hasKey = createProviderCredentialsLookup(dataRoot);
+  const configured = modelChoiceOf(assistant?.model);
+  if (configured) {
+    if (!offered.has(routeKey(configured))) {
+      return { ok: false, reason: `The assistant's model ${routeKey(configured)} is not offered any more. Pick another in Settings → Assistant.` };
     }
+    if (!hasKey(configured.providerId)) {
+      return { ok: false, reason: `Provider ${configured.providerId} has no API key configured (assistant model ${routeKey(configured)}).` };
+    }
+    return { ok: true, route: configured };
   }
-  if (!route) {
-    return { ok: false, reason: "No model is configured for the assistant. Pick one in Settings → Assistant, or give a waifu a model." };
+  const waifus = await getJson(app, principal, delegation, "/api/waifus");
+  const list = (waifus?.waifus as Array<Record<string, unknown>> | undefined) ?? [];
+  const ordered = [...list.filter((waifu) => waifu.enabled === true), ...list.filter((waifu) => waifu.enabled !== true)];
+  for (const waifu of ordered) {
+    const route = modelChoiceOf(waifu.model);
+    if (!route) continue;
+    const model = offered.get(routeKey(route));
+    if (!model || model.contributor === true || !hasKey(route.providerId)) continue;
+    return { ok: true, route };
   }
-  if (!createProviderCredentialsLookup(dataRoot)(route.providerId)) {
-    return { ok: false, reason: `Provider ${route.providerId} has no API key configured (assistant model ${routeKey(route)}).` };
-  }
-  return { ok: true, route };
+  return {
+    ok: false,
+    reason:
+      "No model is set for the assistant. Pick one in Settings → Assistant. (Without one it borrows a waifu's model, " +
+      "but only an offered, non-contributor model whose provider has a key.)"
+  };
 }
 
 function assistantSystemPrompt(snapshot: {

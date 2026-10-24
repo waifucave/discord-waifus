@@ -1,5 +1,55 @@
 import { redactSecrets } from "../backend/redaction.js";
 
+/**
+ * Keys that carry provider-opaque or reasoning state on a message or block: winter's `nativeState`
+ * (encrypted reasoning items, exposed DeepSeek reasoning), Anthropic thinking `signature`s, OpenAI
+ * `encrypted_content`, OpenRouter `reasoning_details` and their camel-case twins.
+ */
+const OPAQUE_KEYS = new Set([
+  "nativeState",
+  "signature",
+  "encrypted_content",
+  "encryptedContent",
+  "reasoning_content",
+  "reasoningContent",
+  "reasoning_details",
+  "reasoningDetails",
+  "exposed_reasoning",
+  "exposedReasoning",
+  "thought_signature",
+  "thoughtSignature"
+]);
+/** Content blocks that are reasoning (readable or redacted): logged as a bare marker. */
+const REASONING_BLOCK_TYPES = new Set(["thinking", "redacted_thinking", "reasoning"]);
+const MAX_DEPTH = 32;
+
+function isPlainObject(value: object): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * The query/reply log copy of a payload without reasoning: opaque keys dropped, reasoning blocks
+ * replaced by `{type, omitted: true}`. The captured traffic is visible in Activity, the events
+ * stream and diagnostics; the model's reasoning and its replay state never are. The request sent
+ * to the provider is untouched (this only shapes the log copy).
+ */
+export function withoutReasoningPayloads(value: unknown, depth = 0): unknown {
+  if (depth > MAX_DEPTH) return "[omitted]";
+  if (Array.isArray(value)) return value.map((entry) => withoutReasoningPayloads(entry, depth + 1));
+  if (value !== null && typeof value === "object" && isPlainObject(value)) {
+    const record = value as Record<string, unknown>;
+    if (typeof record.type === "string" && REASONING_BLOCK_TYPES.has(record.type)) return { type: record.type, omitted: true };
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(record)) {
+      if (OPAQUE_KEYS.has(key)) continue;
+      out[key] = withoutReasoningPayloads(entry, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 /** Which caller made a model call (the usage purposes, spec §9.3). */
 export type QueryRole = "life" | "maintenance" | "detector" | "compaction" | "assistant";
 
@@ -64,7 +114,7 @@ export function recordProviderQuery(role: QueryRole, body: Record<string, unknow
     id: nextQueryId++,
     time: new Date().toISOString(),
     role,
-    payload: redactSecrets(payload)
+    payload: redactSecrets(withoutReasoningPayloads(payload) as CapturedQuery["payload"])
   };
   recentQueryEntries.push(entry);
   if (recentQueryEntries.length > MAX_RECENT) recentQueryEntries.shift();
@@ -86,7 +136,7 @@ export function recordProviderReply(
     queryId,
     status,
     ok,
-    payload: redactSecrets(payload)
+    payload: redactSecrets(withoutReasoningPayloads(payload))
   };
   recentReplyEntries.push(entry);
   if (recentReplyEntries.length > MAX_RECENT) recentReplyEntries.shift();

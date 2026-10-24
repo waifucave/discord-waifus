@@ -28,6 +28,8 @@ import { noteActiveChatParticipant } from "./stores/participants.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
 import { dmForget, type DmConversation, type DmForgetHooks, type DmForgetInput, type DmForgetResult } from "./dm/dmForget.js";
 import { forgetUser, type ForgetUserResult } from "./dm/forgetUser.js";
+import { queuePendingScrub } from "./dm/forgotten.js";
+import { forgetConversationImageIndex } from "../discord/imageIndex.js";
 import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
 
 export type { RuntimeOrchestratorOptions } from "./runtimeShared.js";
@@ -229,6 +231,7 @@ export class RuntimeOrchestrator {
         const conversation: ConversationRef = { kind: "guild", guildId, channelId: threadId };
         this.conversations.forget(conversation);
         await rm(this.options.storage.dataPath(conversationDirPath(conversationKey(conversation))), { recursive: true, force: true });
+        forgetConversationImageIndex(this.options.storage.dataRoot, conversationKey(conversation));
         if (o.removeEntry) await this.removeStoredChannelEntry(guildId, threadId);
       } catch (error) {
         this.options.logger.warn("Failed to forget a thread", {
@@ -384,17 +387,23 @@ export class RuntimeOrchestrator {
     };
   }
 
-  /** A confirmed DM `/forget` (spec 9.1.5, O3). Never touches the rate-limit counters. */
+  /**
+   * A confirmed DM `/forget` (spec 9.1.5, O3). Never touches the rate-limit counters. "everything"
+   * also queues a scrub of the user for her (spec §7.3, §7.5): until the life loop runs it, her old
+   * memories stay archived and are left out when they become notes.
+   */
   async handleDmForgetCommand(event: DiscordDmForgetCommandEvent): Promise<string> {
+    const everything = event.scope === "everything";
+    if (everything) await queuePendingScrub(this.options.storage, event.waifuId, event.userId, new Date());
     const result = await this.forgetDm({
       userId: event.userId,
       waifuId: event.waifuId,
-      scope: event.scope === "everything" ? "all" : "conversation"
+      scope: everything ? "all" : "conversation"
     });
     this.options.logger.info("DM forget command handled", { waifuId: event.waifuId, scope: result.scope, ...result.deleted });
-    return event.scope === "everything"
-      ? "Done: I forgot our private chat and everything I remembered about you."
-      : "Done: I forgot our private chat.";
+    return everything
+      ? "Done: I deleted our private chat, and everything else I remember about you is marked to be forgotten."
+      : "Done: I deleted our private chat.";
   }
 }
 

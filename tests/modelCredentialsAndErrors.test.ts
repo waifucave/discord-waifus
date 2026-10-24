@@ -54,6 +54,31 @@ describe("winter error → app error kind (spec §9.1)", () => {
     ["429 after a subscription-quota event", error({ code: "rate_limit", status: 429 }), { subscriptionQuota: true }, "quota"],
     ["billing provider code", error({ code: "bad_request", status: 400, providerCode: "billing_error" }), undefined, "billing"],
     ["HTTP 402", error({ code: "bad_request", status: 402 }), undefined, "billing"],
+    // Anthropic's "credit balance is too low" is an HTTP 400 invalid_request_error (review I7).
+    [
+      "Anthropic credit balance too low (400)",
+      error({ code: "bad_request", status: 400, providerCode: "invalid_request_error", message: "HTTP 400 — Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." }),
+      undefined,
+      "billing"
+    ],
+    [
+      "credit balance too low in a stream error frame",
+      error({ code: "bad_request", providerCode: "invalid_request_error", message: "the provider ended the stream with an error frame (invalid_request_error): Your credit balance is too low" }),
+      undefined,
+      "billing"
+    ],
+    ["insufficient credits phrase", error({ code: "bad_request", status: 400, message: "HTTP 400 — Insufficient credits for this request" }), undefined, "billing"],
+    ["insufficient balance phrase (DeepSeek)", error({ code: "bad_request", status: 400, message: "HTTP 400 — Insufficient Balance" }), undefined, "billing"],
+    ["insufficient funds phrase", error({ code: "server", status: 500, message: "HTTP 500 — insufficient funds" }), undefined, "billing"],
+    ["requires more credits phrase (OpenRouter)", error({ code: "bad_request", status: 400, message: "HTTP 400 — This request requires more credits, or fewer max_tokens." }), undefined, "billing"],
+    ["billing_hard_limit_reached code", error({ code: "bad_request", status: 400, providerCode: "billing_hard_limit_reached" }), undefined, "billing"],
+    ["billing_not_active code", error({ code: "bad_request", status: 400, providerCode: "billing_not_active" }), undefined, "billing"],
+    ["credit_balance_too_low code", error({ code: "bad_request", status: 400, providerCode: "credit_balance_too_low" }), undefined, "billing"],
+    ["insufficient_credits code on a 429", error({ code: "rate_limit", status: 429, providerCode: "insufficient_credits" }), undefined, "billing"],
+    ["a billing phrase on an auth failure stays auth", error({ code: "auth", status: 401, message: "HTTP 401 — credit balance is too low" }), undefined, "auth"],
+    ["quota code on a 429 (gateway rule)", error({ code: "rate_limit", status: 429, providerCode: "monthly_quota_exceeded" }), undefined, "quota"],
+    ["usage_limit_* code on a 429", error({ code: "rate_limit", status: 429, providerCode: "usage_limit_hit" }), undefined, "quota"],
+    ["a quota-looking code on a 400 is not a quota", error({ code: "bad_request", status: 400, providerCode: "quota_project_missing" }), undefined, "other"],
     ["plain 429", error({ code: "rate_limit", status: 429 }), undefined, "rate_limit"],
     ["bad key", error({ code: "auth", status: 401 }), undefined, "auth"],
     ["server", error({ code: "server", status: 503 }), undefined, "other"],
@@ -68,6 +93,20 @@ describe("winter error → app error kind (spec §9.1)", () => {
     expect(mapped).toBeInstanceOf(ModelCallError);
     expect(mapped).toMatchObject({ kind: "rate_limit", code: "rate_limit", status: 429, providerCode: "rate_limit_exceeded", retryable: true, retryAfterMs: 1500 });
     expect(mapped.message.length).toBeLessThanOrEqual(403);
+  });
+
+  it("is never retryable once the stream committed, and never for quota or billing", () => {
+    const retryable = error({ code: "server", status: 503, retryable: true });
+    expect(fromProviderError(retryable)).toMatchObject({ retryable: true, committed: false });
+    expect(fromProviderError(retryable, { committed: true })).toMatchObject({ retryable: false, committed: true });
+    expect(fromProviderError(error({ code: "rate_limit", status: 429, providerCode: "insufficient_quota", retryable: true }))).toMatchObject({ kind: "quota", retryable: false });
+    expect(new ModelCallError("other", "timed out", { retryable: true, committed: true }).retryable).toBe(false);
+  });
+
+  it("carries winter's image refusal", () => {
+    const refused = fromProviderError(error({ code: "bad_request", status: 400, imageOverflow: true, message: "HTTP 400 — too many images" }));
+    expect(refused).toMatchObject({ kind: "other", imageOverflow: true });
+    expect(fromProviderError(error({ code: "bad_request", status: 400 })).imageOverflow).toBe(false);
   });
 
   it("normalizes anything thrown, and passes ModelCallErrors through", () => {

@@ -364,6 +364,22 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const config = await loadAppConfig(options.dataRoot);
     assertModelChoiceValid(choice, { allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok });
   };
+  const modelOffered = async (choice: ModelChoice): Promise<boolean> =>
+    assertModelAllowed(choice).then(
+      () => true,
+      () => false
+    );
+  // A model patch is validated only when it changes the stored model, so a record whose model is no
+  // longer offered can still be edited (and resent unchanged). Returns whether the saved model is a
+  // real, offered choice: only then does the write clear that scope's model warnings.
+  const checkModelPatch = async (current: ModelChoice | undefined, patch: ModelChoice | null | undefined): Promise<boolean> => {
+    if (!patch) return false;
+    if (!sameModelChoice(current, patch)) {
+      await assertModelAllowed(patch);
+      return true;
+    }
+    return modelOffered(patch);
+  };
   // Spec 8.6: waifu bodies may still carry the removed `promptLayout`; it is ignored. Log it once
   // per process so a stale client is findable without flooding the log on every save.
   let promptLayoutIgnoredLogged = false;
@@ -652,16 +668,19 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.get("/api/assistant/config", async () => readAssistantConfig(storage));
   app.put("/api/assistant/config", async (request) => {
     const body = AssistantConfigBodySchema.parse(request.body);
-    if (body.model) await assertModelAllowed(body.model);
+    let pickedModel = false;
     const saved = await storage.updateRevisionedJson({
       resourceKey: "assistant",
       relativePath: "user/assistant/config.json",
       schema: AssistantConfigSchema,
       fallback: emptyAssistantConfig(),
       expectedRevision: expectedRevision(request, body),
-      transform: (current) => pruneUndefined({ ...current, model: applyModelPatch(current.model, body.model) })
+      transform: async (current) => {
+        pickedModel = await checkModelPatch(current.model, body.model);
+        return pruneUndefined({ ...current, model: applyModelPatch(current.model, body.model) });
+      }
     });
-    if (body.model !== undefined) await clearModelWarnings(options.dataRoot, "assistant");
+    if (pickedModel) await clearModelWarnings(options.dataRoot, "assistant");
     return saved;
   });
 
@@ -770,14 +789,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const body = UpdateWaifuBodySchema.parse(request.body);
     noteIgnoredPromptLayout(request.body);
     requireRevision(request, body);
-    if (body.model) await assertModelAllowed(body.model);
+    let pickedModel = false;
     const saved = await storage.updateRevisionedJson({
       resourceKey: `waifu:${waifuId}`,
       relativePath: waifuRelativePath(waifuId),
       schema: WaifuConfigSchema,
       fallback: await readWaifu(storage, waifuId),
       expectedRevision: expectedRevision(request, body),
-      transform: (current) => {
+      transform: async (current) => {
+        pickedModel = await checkModelPatch(current.model, body.model);
         const {
           revision: _revision,
           schemaVersion: _schemaVersion,
@@ -797,7 +817,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         });
       }
     });
-    if (body.model !== undefined) await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
+    if (pickedModel) await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
     // Intents are fixed at login (spec 9.1): re-log only bots whose DM intents changed.
     await reconcileDmIntents();
     return saved;
@@ -1262,6 +1282,10 @@ function emptyAssistantConfig(): AssistantConfig {
   return AssistantConfigSchema.parse(createEmptyRevisionedFile({}));
 }
 
+function sameModelChoice(a: ModelChoice | undefined, b: ModelChoice): boolean {
+  return a !== undefined && a.providerId === b.providerId && a.modelId === b.modelId && a.effort === b.effort;
+}
+
 /** `null` unsets, a choice replaces, `undefined` keeps the stored model. */
 function applyModelPatch(current: ModelChoice | undefined, patch: ModelChoice | null | undefined): ModelChoice | undefined {
   if (patch === undefined) return current;
@@ -1281,7 +1305,8 @@ async function modelsResponse(dataRoot: string) {
   };
 }
 
-type ModelWarningView = { scope: string; code: string; detail: string; at?: string };
+/** A model warning as `/api/runtime` shows it: `label` names the scope for people (her name, not `waifu:<id>`). */
+type ModelWarningView = { scope: string; label: string; code: string; detail: string; at?: string; previous?: string };
 
 /** Persisted model warnings plus live ones: unpriced curated routes and stored choices the catalog no longer offers. */
 async function modelWarnings(storage: StorageService, dataRoot: string): Promise<ModelWarningView[]> {
@@ -1293,19 +1318,25 @@ async function modelWarnings(storage: StorageService, dataRoot: string): Promise
   ]);
   const curated = curatedCatalog({ allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok });
   const offered = new Set(curated.models.map((model) => model.id));
+  const names = new Map(waifus.map((waifu) => [`waifu:${waifu.id}`, waifu.displayName || waifu.name || waifu.id]));
+  const labelOf = (scope: string): string => {
+    if (scope === "assistant") return "Assistant";
+    if (scope === "models") return "Models";
+    return names.get(scope) ?? (scope.startsWith("waifu:") ? scope.slice("waifu:".length) : scope);
+  };
   const live: ModelWarningView[] = curated.models
     .filter((model) => !model.pricing)
-    .map((model) => ({ scope: "models", code: "model_unpriced", detail: `${model.id} has no price; its cost counts as 0 toward budgets.` }));
+    .map((model) => ({ scope: "models", label: labelOf("models"), code: "model_unpriced", detail: `${model.id} has no price; its cost counts as 0 toward budgets.` }));
   const unavailable = (scope: string, model: ModelChoice | undefined) => {
     if (!model) return;
     const id = `${model.providerId}/${model.modelId}`;
     if (offered.has(id)) return;
     const hidden = curated.hidden.find((entry) => entry.id === id);
-    live.push({ scope, code: "model_unavailable", detail: `${id} is not offered${hidden ? ` (${hidden.reason})` : ""}.` });
+    live.push({ scope, label: labelOf(scope), code: "model_unavailable", detail: `${id} is not offered${hidden ? ` (${hidden.reason})` : ""}.`, previous: id });
   };
   for (const waifu of waifus) unavailable(`waifu:${waifu.id}`, waifu.model);
   unavailable("assistant", assistant?.model);
-  return [...persisted, ...live];
+  return [...persisted.map((warning) => ({ ...warning, label: labelOf(warning.scope) })), ...live];
 }
 
 async function readProviderCredentials(storage: StorageService): Promise<ProviderCredentialsFile> {

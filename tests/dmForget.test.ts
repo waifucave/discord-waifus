@@ -1,13 +1,17 @@
 // DM deletion scopes (spec 9.1.4), the DM /forget command (9.1.5, O3) and the /api/dms routes
 // (9.8): manifest, id validation, listing without message bodies, forget with audit.
 
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiServer } from "../src/api/server.js";
 import { ROUTE_POLICY_MANIFEST } from "../src/api/routePolicyManifest.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
+import { DiscordImageFetcher } from "../src/discord/attachments.js";
+import { readConversationImageKeys } from "../src/discord/imageIndex.js";
 import { conversationKey } from "../src/orchestration/context/keys.js";
+import { OCR_RESULTS_DIR, ocrCacheKey } from "../src/orchestration/ocr.js";
+import { readForgottenPeople, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
@@ -105,13 +109,76 @@ describe("dmForget scopes", () => {
 
   it("the DM /forget command forgets for that waifu and user only and never resets the limiter", async () => {
     const { root, storage, runtime } = await world();
-    expect(await runtime.handleDmForgetCommand({ waifuId: "aria", botId: "aria-bot", userId: USER, scope: "conversation" })).toMatch(/forgot our private chat/);
+    expect(await runtime.handleDmForgetCommand({ waifuId: "aria", botId: "aria-bot", userId: USER, scope: "conversation" })).toBe("Done: I deleted our private chat.");
     expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
     expect(await readDmState(storage, USER, "aria")).toBeDefined();
-    expect(await runtime.handleDmForgetCommand({ waifuId: "aria", botId: "aria-bot", userId: USER, scope: "everything" })).toMatch(/everything/);
+    expect(await readPendingScrubs(storage, "aria")).toEqual([]);
+    expect(await runtime.handleDmForgetCommand({ waifuId: "aria", botId: "aria-bot", userId: USER, scope: "everything" })).toMatch(/marked to be forgotten/);
     expect(await readDmState(storage, USER, "aria")).toBeUndefined();
     expect((await readDmLimit(storage, USER, "aria")).replyTimestamps).toHaveLength(1);
+    // L1 cannot scrub her memories yet: the request is queued for her (spec §7.3), durably.
+    expect(await readPendingScrubs(storage, "aria")).toEqual([{ userId: USER, at: expect.any(String), source: "dm_forget_everything" }]);
+    expect(await readForgottenPeople(storage)).toEqual([]);
     await runtime.stop();
+  });
+
+  it("the owner's forget-user records the person in user/people/forgotten.json (a dry run does not)", async () => {
+    const { root, storage, runtime } = await world();
+    await forgetUser(storage, { discordUserId: USER, dryRun: true });
+    expect(await readForgottenPeople(storage)).toEqual([]);
+    await runtime.forgetUser({ discordUserId: USER });
+    const first = await readForgottenPeople(storage);
+    expect(first).toEqual([{ userId: USER, at: expect.any(String) }]);
+    expect(JSON.parse(await readFile(path.join(root, "user", "people", "forgotten.json"), "utf8"))).toEqual({ forgotten: first });
+    // A second forget keeps one entry per person and moves `at` forward.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await forgetUser(storage, { discordUserId: USER });
+    const second = await readForgottenPeople(storage);
+    expect(second).toHaveLength(1);
+    expect(second[0]!.at > first[0]!.at).toBe(true);
+    await runtime.stop();
+  });
+});
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+
+describe("forget purges cached images and OCR without the runtime (review I5)", () => {
+  it("reads the durable image index and a legacy ledger; counts bytes and OCR text exactly", async () => {
+    const { root, storage } = await world();
+    // An image cached for the DM (the fetcher records it in the conversation's index).
+    const fetcher = new DiscordImageFetcher({
+      dataRoot: root,
+      fetch: (async () => new Response(PNG, { headers: { "content-type": "image/png" } })) as unknown as typeof fetch
+    });
+    const fetched = await fetcher.get(
+      { key: "att:1300000000000000011", url: "https://cdn.discordapp.com/attachments/7/1300000000000000011/a.png", conversationKey: KEY },
+      { purpose: "inline" }
+    );
+    expect(fetched.ok).toBe(true);
+    expect(await readConversationImageKeys(root, KEY)).toEqual(["att:1300000000000000011"]);
+    // An image an older version kept in the conversation ledger, with only its OCR text cached.
+    await writeFile(
+      path.join(root, "user", "conversations", KEY, "ledger.json"),
+      JSON.stringify({ entries: { a: { id: "1300000000000000012", images: [{ key: "att:1300000000000000012", url: "https://cdn.discordapp.com/x.png" }] } } })
+    );
+    const ocrFile = path.join(root, "app", "cache", "ocr", OCR_RESULTS_DIR, `${ocrCacheKey("att:1300000000000000012")}.json`);
+    await mkdir(path.dirname(ocrFile), { recursive: true });
+    await writeFile(ocrFile, JSON.stringify({ schemaVersion: 2, text: "menu", engine: "bundled-tesseract", expiresAt: new Date(Date.now() + 3_600_000).toISOString() }));
+    const imageFiles = path.join(root, "app", "cache", "images");
+    expect((await readdir(imageFiles)).length).toBeGreaterThan(0);
+
+    // The API path with no runtime behind it.
+    const { app } = await api(storage, root);
+    const dry = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true, dryRun: true } });
+    expect(dry.statusCode, dry.body).toBe(200);
+    expect(dry.json()).toMatchObject({ dryRun: true, cachedImages: 2 });
+    expect(await exists(ocrFile)).toBe(true);
+
+    const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
+    expect(done.json()).toMatchObject({ dryRun: false, cachedImages: 2, dmContexts: 1 });
+    expect(await exists(ocrFile)).toBe(false);
+    expect((await readdir(imageFiles)).filter((name) => name.endsWith(".bin"))).toEqual([]);
+    expect(await exists(path.join(root, "user", "conversations", KEY))).toBe(false);
   });
 });
 

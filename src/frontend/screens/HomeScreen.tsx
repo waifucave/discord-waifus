@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useApi } from "../api/useApi";
 import { api } from "../api/client";
 import type { ProvidersResponse, RuntimeState, ServersResponse, WaifusResponse } from "../api/types";
@@ -26,6 +27,10 @@ export function HomeScreen({
   const anyProvider = (providers.data?.providers ?? []).some((p) => p.credentials.configured);
   const discord = runtime.data?.discord;
   const warnings = runtime.data?.models?.warnings ?? [];
+  const [allNotices, setAllNotices] = useState(false);
+  const NOTICE_PREVIEW = 4;
+  const shownWarnings = allNotices ? warnings : warnings.slice(0, NOTICE_PREVIEW);
+  const hiddenNotices = warnings.length - shownWarnings.length;
 
   const meta: Record<string, { text: string; needsSetup?: boolean }> = {
     cast: {
@@ -117,26 +122,47 @@ export function HomeScreen({
           </span>
         </button>
 
-        <div style={{ gridColumn: 4, gridRow: "3 / 5", display: "flex", flexDirection: "column", gap: "var(--line)", background: "var(--ink)", minHeight: 0, overflow: "hidden" }}>
+        <div
+          style={{
+            gridColumn: 4,
+            gridRow: "3 / 5",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--line)",
+            background: "var(--ink)",
+            minHeight: 0,
+            overflowY: allNotices ? "auto" : "hidden"
+          }}
+        >
           <div className="cell" style={{ padding: "12px 20px 10px", flex: "none" }}>
-            <span className="t-micro">Model notices</span>
+            <span className="t-micro">Model notices{warnings.length > 0 ? ` · ${warnings.length}` : ""}</span>
           </div>
           {warnings.length === 0 && (
             <div className="cell" style={{ flex: 1, padding: 20 }}>
               <span className="t-mute t-small">Every stored model choice is on the curated list.</span>
             </div>
           )}
-          {warnings.slice(0, 6).map((warning, index, shown) => (
-            <div className="cell" style={{ padding: "12px 20px", flex: index === shown.length - 1 ? 1 : "none" }} key={`${warning.scope}-${warning.code}-${index}`}>
+          {shownWarnings.map((warning, index) => (
+            <div
+              className="cell"
+              style={{ padding: "12px 20px", flex: index === shownWarnings.length - 1 && hiddenNotices === 0 && !allNotices ? 1 : "none" }}
+              key={`${warning.scope}-${warning.code}-${index}`}
+            >
               <div className="t-micro" style={{ marginBottom: 3 }}>
-                {warning.scope}
+                {warning.label ?? warning.scope}
                 <span className="chip butter" style={{ marginLeft: 8 }}>{warning.code}</span>
               </div>
-              <div className="t-small" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+              <div className="t-small" style={allNotices ? undefined : { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                 {warning.detail}
               </div>
+              {warning.previous && <div className="t-mute t-small">was: {warning.previous}</div>}
             </div>
           ))}
+          {(hiddenNotices > 0 || allNotices) && warnings.length > NOTICE_PREVIEW && (
+            <button className="cell clickable" style={{ padding: "10px 20px", flex: 1, textAlign: "left" }} onClick={() => setAllNotices((open) => !open)}>
+              <span className="t-micro">{allNotices ? "Show fewer" : `${hiddenNotices} more…`}</span>
+            </button>
+          )}
         </div>
 
         <div className="cell" style={{ gridColumn: "2 / 4", gridRow: 4, display: "flex", alignItems: "flex-end", padding: "20px 26px" }}>

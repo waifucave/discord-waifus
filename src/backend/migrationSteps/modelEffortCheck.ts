@@ -29,7 +29,8 @@ function checkDocument(data: Record<string, unknown>, scope: string, catalog: Wi
   return {
     scope,
     code: "effort_dropped",
-    detail: `Effort "${dropped}" is not listed for ${model.providerId}/${model.modelId}; the route's default applies.`
+    detail: `Effort "${dropped}" is not listed for ${model.providerId}/${model.modelId}; the route's default applies.`,
+    previous: `${model.providerId}/${model.modelId} (effort ${dropped})`
   };
 }
 
@@ -46,9 +47,10 @@ export async function checkStoredModelEfforts(dataRoot: string, catalog: WinterC
     const warning = checkDocument(data, resolvedScope, catalog);
     if (!warning) continue;
     warnings.push(warning);
+    // The warning first: a crash between the two writes never loses what was dropped.
+    await appendModelWarnings(dataRoot, [warning]);
     await atomicWriteJson(filePath, data);
   }
   if (warnings.length === 0) return undefined;
-  await appendModelWarnings(dataRoot, warnings);
   return `model-effort-check-${warnings.length}`;
 }

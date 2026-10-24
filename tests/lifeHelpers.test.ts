@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 import { isAvailable } from "../src/life/availability.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, stripLeadingTranscriptHeader, typingDelayMs } from "../src/life/outbound.js";
 import { normalizeName, wordBoundaryIncludes } from "../src/life/text.js";
+import { entryHeader, entryLine, lineMessageOf, type LineMessage } from "../src/life/render.js";
+import { EMPTY_GUILD_DIRECTORY } from "../src/orchestration/context/messageRender.js";
+import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 
 describe("outbound checks (spec §6.3)", () => {
   it("typing delay is 30 ms per character, clamped to 0.6–4.5 s", () => {
@@ -45,5 +48,56 @@ describe("availability and names", () => {
     expect(normalizeName("  Ária ")).toBe(normalizeName("ária"));
     expect(wordBoundaryIncludes("hey aria, you there?", "aria")).toBe(true);
     expect(wordBoundaryIncludes("mariachi band", "aria")).toBe(false);
+  });
+});
+
+describe("message lines (moved from the context engine's transcript renderer, spec §15)", () => {
+  const at = new Date(Date.UTC(2026, 9, 24, 14, 2)).toISOString();
+  const SELF = ["aria-bot"];
+  const kevin: LineMessage = { id: "1", authorId: "kevin", authorName: "Kevin", at, body: "text" };
+  const own: LineMessage = { ...kevin, id: "0", authorId: "aria-bot", authorName: "Aria", body: "hi" };
+  const reply: LineMessage = { ...kevin, id: "2", replyToId: "1" };
+  const replyToMe: LineMessage = { ...kevin, id: "3", replyToId: "0" };
+  const refs = new Map([["1", "k3"], ["2", "k4"], ["3", "k5"], ["0", "a1"]]);
+  const byId = new Map([kevin, own, reply, replyToMe].map((message) => [message.id, message]));
+  const view = { refs, lookup: (id: string) => byId.get(id), selfAuthorIds: SELF, timeZone: "UTC" };
+
+  it("renders `[14:02 #k3] Kevin: text`", () => {
+    expect(entryLine(kevin, view)).toBe("[14:02 #k3] Kevin: text");
+    expect(entryLine({ ...kevin, body: "" }, view)).toBe("[14:02 #k3] Kevin:");
+    expect(entryLine({ ...kevin, id: "9", authorName: "" }, view)).toBe("[14:02] Unknown: text");
+  });
+
+  it("marks replies `↩#ref`, `↩you` and `↩Name`", () => {
+    expect(entryHeader(reply, view)).toBe("[14:02 #k4 ↩#k3]");
+    expect(entryHeader(replyToMe, view)).toBe("[14:02 #k5 ↩you]");
+    const olderKevin: LineMessage = { ...kevin, id: "9", replyToId: "8" };
+    const lookupOlder = (id: string) => (id === "8" ? { ...kevin, id: "8" } : byId.get(id));
+    expect(entryHeader(olderKevin, { ...view, lookup: lookupOlder })).toBe("[14:02 ↩Kevin]");
+    // A reply to something unknown and unreferenced shows no marker.
+    expect(entryHeader({ ...kevin, id: "10", replyToId: "404" }, view)).toBe("[14:02]");
+  });
+
+  it("works on conversation cache messages, in the owner's time zone", () => {
+    const raw: RawDiscordMessage = {
+      id: "2",
+      channelId: "c",
+      authorId: "kevin",
+      authorName: "Kevin",
+      authorIsBot: false,
+      createdAt: at,
+      type: 19,
+      content: "agreed",
+      attachments: [],
+      embeds: [],
+      stickers: [],
+      snapshots: [],
+      referenceMessageId: "1",
+      mentions: { users: {}, roles: {}, channels: {} }
+    };
+    const message = lineMessageOf(raw, EMPTY_GUILD_DIRECTORY, "UTC")!;
+    expect(message).toEqual({ id: "2", authorId: "kevin", authorName: "Kevin", at, body: "agreed", replyToId: "1" });
+    expect(entryLine(message, view)).toBe("[14:02 #k4 ↩#k3] Kevin: agreed");
+    expect(entryHeader(message, { ...view, timeZone: "Europe/Berlin" })).toBe("[16:02 #k4 ↩#k3]");
   });
 });

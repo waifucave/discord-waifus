@@ -19,9 +19,11 @@ winter provider catalog installed with the app. The app offers a short curated l
 `GET /api/models` returns every offered route as `{providerId, modelId}` with its display name,
 the reasoning efforts it accepts, its price, whether it is a contributor variant, and whether its
 provider has a key. Routes the list names but the installed catalog lacks, routes above the price
-cap (`config.toml` `[models] maxOutputUsdPerMTok`, default $10 per million output tokens) and
-OpenRouter routes (until the installed winter can replay reasoning through OpenRouter) are listed
-under `hidden` with the reason.
+cap (`config.toml` `[models] maxOutputUsdPerMTok`, default and maximum $10 per million output
+tokens) and OpenRouter routes whose family keeps reasoning state the installed winter cannot replay
+through OpenRouter are listed under `hidden` with the reason. A route is priced only when the
+catalog's price comes from the vendor's docs; an unpriced route stays offered, counts as $0 and
+shows a `model_unpriced` notice.
 
 The curated families: Muse Spark (contributor), Claude Haiku and Sonnet, DeepSeek Flash, GPT Luna
 and GPT Sol — each directly from its vendor and through OpenRouter.
@@ -33,12 +35,15 @@ Only pick one when the user explicitly asks for it.
 
 - **Waifus** — each waifu has her own `model: {providerId, modelId, effort?}`; personality quality
   dominates. Waifus on image-capable models see images natively; others get OCR text.
-- **Assistant** — the dashboard helper; `PUT /api/assistant/config {"model": ...}`. Unset, it uses
-  the first configured waifu's model.
+- **Assistant** — the dashboard helper; `PUT /api/assistant/config {"model": ...}`. Unset, it borrows
+  a waifu's model (enabled waifus first), but only one that is offered, whose provider has a key and
+  that is not a contributor variant; with none it does not run and says to pick one.
 
 `effort` must be one of the efforts `GET /api/models` lists for that route (for example
 `low`/`high`/`max`); omit it for the route's default. A stored effort the installed catalog no
-longer lists is dropped at boot and reported in `GET /api/runtime` → `models.warnings`.
+longer lists is dropped at boot and reported in `GET /api/runtime` → `models.warnings` (with the
+old choice as `previous`). A stored model is only re-checked when a write changes it, so a waifu
+whose model is no longer offered can still be edited.
 
 ## Upgrades from the gateway era
 
@@ -46,7 +51,9 @@ The old per-model `params` (temperature etc.) are gone. At upgrade, each waifu's
 to its curated family (for example any Claude Sonnet → `anthropic/claude-sonnet-5-5`, any
 DeepSeek Flash → `deepseek/deepseek-flash`) and a stored reasoning effort carried over. A model with
 no curated family (Opus, `-pro` tiers, other vendors) was unset and is listed in
-`models.warnings` as `model_unmapped`: pick a new model for that waifu.
+`models.warnings` as `model_unmapped` with the old model as `previous` (the Cast shows "was: …"):
+pick a new model for that waifu. Every document's pre-upgrade copy is kept under
+`user/.archive/living-cast/models/`.
 
 ## Secrets without exposure
 

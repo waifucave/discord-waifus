@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { DiscordBotsFile, ModelsResponse, WaifuConfig, WaifusResponse } from "../api/types";
+import type { DiscordBotsFile, ModelWarning, ModelsResponse, RuntimeState, WaifuConfig, WaifusResponse } from "../api/types";
 import { characterHue, type ViewId } from "../nav";
 import { FootRow, HeadRow } from "./scaffold";
 import { ModelPicker } from "../components/ModelPicker";
@@ -22,13 +22,20 @@ export function CastScreen({
   return <CastMosaic onNavigate={onNavigate} />;
 }
 
+/** The model a waifu had before a notice (an upgrade with no curated equivalent, a dropped effort, a retired route). */
+export function previousModelFor(warnings: readonly ModelWarning[] | undefined, waifuId: string): string | undefined {
+  return (warnings ?? []).find((warning) => warning.scope === `waifu:${waifuId}` && warning.previous)?.previous;
+}
+
 /* ================= mosaic ================= */
 
 function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const bots = useApi<DiscordBotsFile>((s) => api.discordBots(s), []);
+  const runtime = useApi<RuntimeState>((s) => api.runtime(s), []);
   const cast = waifus.data?.waifus ?? [];
   const botIds = new Set((bots.data?.waifus ?? []).map((b) => b.id));
+  const notices = runtime.data?.models?.warnings;
 
   const talking = cast.filter((w) => w.enabled && w.model).length;
   const unconfigured = cast.filter((w) => !w.model || !w.botId).length;
@@ -53,6 +60,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
           {cast.map((waifu, index) => {
             const hue = characterHue(index);
             const missing = !waifu.model || !waifu.botId || !botIds.has(waifu.botId ?? "");
+            const previous = previousModelFor(notices, waifu.id);
             const wide = index === 0;
             return (
               <button
@@ -70,6 +78,11 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                   <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
                     {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · bot linked" : " · no bot"}
                   </div>
+                  {previous && (
+                    <div className="t-micro t-mute" style={{ marginTop: 4, textTransform: "none", letterSpacing: "0.04em" }}>
+                      was: {previous}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
                   <span className="t-micro">{waifu.enabled ? (waifu.model ? "ready" : "no model") : "disabled"}</span>
@@ -109,6 +122,8 @@ function CharacterEditor({
   const creating = characterId === "__new__";
   const models = useApi<ModelsResponse>((s) => api.models(s), []);
   const bots = useApi<DiscordBotsFile>((s) => api.discordBots(s), []);
+  const runtime = useApi<RuntimeState | undefined>(async (s) => (creating ? undefined : api.runtime(s)), [characterId]);
+  const previousModel = creating ? undefined : previousModelFor(runtime.data?.models?.warnings, characterId);
   const remote = useApi<WaifuConfig | undefined>(
     async (s) => (creating ? undefined : api.waifu(characterId, s)),
     [characterId]
@@ -288,6 +303,11 @@ function CharacterEditor({
             unsetHint="She stays quiet until she has a model."
           />
         </div>
+        {previousModel && (
+          <div className="cell" style={{ padding: 16, flex: "none" }}>
+            <Notice tone="warn">Was: {previousModel}. Pick a model from the list to replace it.</Notice>
+          </div>
+        )}
         {models.error && (
           <div className="cell" style={{ padding: 16, flex: "none" }}>
             <Notice tone="warn">The model list could not be loaded. Your saved model is kept.</Notice>

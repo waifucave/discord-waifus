@@ -8,6 +8,7 @@ import type { Worker as TesseractWorker } from "tesseract.js";
 import { Logger } from "../backend/logger.js";
 import { appDataPath } from "../config/paths.js";
 import { attachmentKey, DiscordImageFetcher, type ImageFetcher } from "../discord/attachments.js";
+import { recordConversationImages } from "../discord/imageIndex.js";
 import type { ImageRef } from "../shared/schemas/discordMessage.js";
 import { OcrConfig } from "../shared/schemas/config.js";
 import { AttachmentImage, ContextMessage } from "./contextMessages.js";
@@ -102,10 +103,30 @@ export class ImageOcrService {
    * Cached OCR text for an image without running OCR (the inline-image freeze rule reads it "at
    * that moment", spec 8.4). Undefined when OCR is disabled, not cached, expired or empty.
    */
-  async cachedText(ref: Pick<ImageRef, "url"> & { key?: string }): Promise<string | undefined> {
+  async cachedText(ref: Pick<ImageRef, "url"> & { key?: string; conversationKey?: string }): Promise<string | undefined> {
     if (!this.options.config.enabled) return undefined;
-    const text = await this.readCache(ocrCacheKey(ref.key ?? attachmentKey(ref.url)));
+    const imageKey = ref.key ?? attachmentKey(ref.url);
+    const text = await this.readCache(ocrCacheKey(imageKey));
+    if (text) await this.noteConversationImage(ref.conversationKey, imageKey);
     return text ? clipOcrText(text, this.options.config.maxTextCharsPerImage) : undefined;
+  }
+
+  /** The conversation's durable image index: its OCR text is purged with it on a forget. */
+  private async noteConversationImage(conversationKey: string | undefined, imageKey: string): Promise<void> {
+    if (!conversationKey) return;
+    await recordConversationImages(this.options.dataRoot, conversationKey, [imageKey]).catch((error: unknown) => {
+      this.options.logger.warn("Conversation image index write failed", { message: errorMessage(error) });
+    });
+  }
+
+  /** The image keys among `keys` that have cached OCR text, for an exact deletion count. */
+  async cachedKeys(keys: readonly string[]): Promise<string[]> {
+    const found: string[] = [];
+    for (const key of new Set(keys)) {
+      const exists = await stat(this.cachePath(ocrCacheKey(key))).then(() => true, () => false);
+      if (exists) found.push(key);
+    }
+    return found;
   }
 
   /**
@@ -114,10 +135,11 @@ export class ImageOcrService {
    * (spec 8.4 freeze rule: the text frozen at first render is what every later build shows).
    */
   async textFor(
-    ref: Pick<ImageRef, "url"> & { key?: string; contentType?: string },
+    ref: Pick<ImageRef, "url"> & { key?: string; contentType?: string; conversationKey?: string },
     o: { timeoutMs: number; signal?: AbortSignal }
   ): Promise<string | undefined> {
     if (!this.options.config.enabled) return undefined;
+    await this.noteConversationImage(ref.conversationKey, ref.key ?? attachmentKey(ref.url));
     const job = this.extractImageText({ url: ref.url, ...(ref.contentType ? { contentType: ref.contentType } : {}) }, { signal: o.signal });
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<undefined>((resolve) => {
