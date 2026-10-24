@@ -19,6 +19,20 @@ orchestrator have a model and its provider a key? Then read `GET /api/orchestrat
 if decisions exist but say `no_reply`, the director is choosing silence (read its reasoning); if there are no decisions,
 the message never reached the runtime (bot lacks channel access or intents).
 
+## She doesn't answer DMs
+
+Run `list_dms` (or `GET /api/dms?waifuId=…`) and read the latest run of that conversation:
+`rate_limited` / `notice_sent` — the user hit her DM limit (`rateLimit.freesAt` says when it frees;
+she answers the next message after that); `undeliverable` — Discord refused the send (error 50007:
+the user closed DMs from server members or blocked the bot), retried only after the user writes
+again; `blocked` / `empty` — her draft was rejected or empty (not counted against the limit);
+`failed` — a model or provider error. No conversation at all means the DM never reached her:
+check `GET /api/runtime` → `discord.dm` (is she in `eligibleWaifus`, `intentActive: true`?) and
+its warnings: `dm_bot_shared:<botId>` (two enabled waifus on one bot — DMs off for that bot),
+`dm_missing_model:<waifuId>`, `dm_intent_pending_reconnect:<botId>` (reload Discord). `dm.allowDms`
+must be on for her. While the runtime is paused DMs are recorded but not answered; resuming answers
+the ones from the last `discord.dm.resumeWindowMinutes` (60).
+
 ## Provider/model 400s
 
 - "unsupported_parameter" on save: the model doesn't support that param — the error names the
@@ -146,6 +160,7 @@ cannot be downgraded to 2.111.x (the migrated memory store is not readable there
 ## Fast diagnosis tools
 
 - `get_orchestrator_history` — recent decisions with reasoning: THE tool for "why did/didn't she reply".
+- `list_dms` — DM conversations with the rate limit and the latest run: THE tool for "why didn't she answer my DM".
 - `get_runtime_status` — includes `discord.warnings` with live per-channel permission failures
   (e.g. "riko cannot send in channel … — check the channel permissions in Discord").
 - If the orchestrator is enabled with no model, that is the free deterministic mode, not a

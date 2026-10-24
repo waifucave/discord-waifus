@@ -27,6 +27,12 @@ Everything configurable on a character: persona, style, model, params, schedule,
   prompt after the persona, for extra behaviour rules that don't belong in the character sketch.
 - `scheduleInPrompt` — boolean, default true. When false, her schedule (what she is doing right
   now) is left out of the prompt. Shown in the dashboard as "Mention her schedule in the prompt".
+- `dm` — private chats with her own bot (see discord-setup.md "Direct messages"):
+  `allowDms` (default false), `rateLimit` (`{maxReplies, windowMinutes}`, default 30 per 60, `null`
+  = unlimited, counted per Discord user), `notifyWhenLimited` (default true) and `limitNotice` (max
+  300 characters, "" = the built-in notice). In DMs `add_memory` follows `tools.toolUse`, and
+  memories she saves there are DM-origin ("learned in a private chat") about that user. Her prompt
+  always says to keep what someone told her in private to herself unless they raise it.
 
 ## Persona digest
 

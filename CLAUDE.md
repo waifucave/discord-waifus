@@ -86,7 +86,8 @@ leaves the data root byte-identical (`tests/phase4Acceptance.test.ts`). Phase 4 
 gateway-0.4.0 param cleanup, prompt-layout removal, explicit server context windows, global
 memory origin/subjects with a one-time cross-guild dedupe (its own marker file survives ledger
 loss), global pending observations and dream cursor, the URL-keyed OCR cache cleanup and the
-`ocr.cacheTtlHours` 24 -> 168 default move. Phase 4 must ship as a minor release (2.112.0): its
+`ocr.cacheTtlHours` 24 -> 168 default move. Phase 5 added `orchestrator-history-per-guild-v1` and
+`server-drop-enabled-flags-v1`. Phase 4 must ship as a minor release (2.112.0): its
 memory migrations cannot be read by 2.111.x, and downgrade is unsupported. Never
 change a shipped step's id or meaning: add a new step with a new id, keep the removed steps' ids
 in the history comment, and register it before the schema-version stamp, which stays last.
@@ -95,9 +96,55 @@ PUT shim in `src/api/server.ts`.
 
 **Restart resume** (`src/orchestration/restartResume.ts`): at boot, a planner inspects each channel's persisted decisions and timers and schedules catch-up wakes. A human message that arrived while the process was down outranks any restored timer (the executor fetches fresh context best-effort to detect this), so deploy-window messages get a prompt reply instead of waiting out an old idle schedule.
 
+**Discord features (Phase 5, spec 9):**
+- *Conversation cache and guild directory* (`src/discord/conversationCache.ts`,
+  `guildDirectory.ts`, `gatewayFeed.ts`): `ConversationMessageCache` is the context engine's
+  message source. It keeps recent raw messages per conversation, fed by REST pages, gateway events
+  (messages, edits, deletes, reactions) and our own sends (published before
+  `sendWaifuMessage`/`sendDirectMessage` return). A conversation is trusted after a REST sync while
+  its gateway scope (`guild`, or `dm:<waifuId>` per DM bot) stays connected; trusted reads make no
+  REST call, so a pass usually costs 0 fetches. Reactions are event-fed summaries (never
+  `users.fetch`) and reach the tail only. `GuildDirectory` keeps roles, emojis, channels and members
+  current from gateway events (members by message authors, single fetches for unknown mentions and a
+  periodic list refresh; the privileged GuildMembers intent is opt-in via
+  `discord.guildMembersIntent`).
+- *Per-guild decision history*: `user/servers/<guildId>/orchestrator-history.json` (300 per guild);
+  `GET /api/orchestrator/history` merges guilds (plus `history-legacy.json`) unless `guildId` is
+  given. Server/channel `enabled` flags are gone: a channel is live when it has an enabled waifu,
+  server `paused` is the kill switch.
+- *Edits, deletes, threads*: edits of sealed ledger entries become `edit` notes; deletes follow the
+  hybrid rule (`discord.deletedMessages.redactRecent`, recent or unsealed → "(message deleted)",
+  older → marked and left out of the next summary); edits never trigger runs except an edit adding a
+  waifu mention to the newest human message. Threads/forum posts are their own conversations that
+  inherit the parent's cast unless the channel's `threads` is `"off"` (`stores/threads.ts`,
+  `threads.json`).
+- *Debounce* (`src/orchestration/debounce.ts`, `discord.debounce.*`): human messages in a channel
+  are coalesced (`serverMs` 1200 / `serverMaxWaitMs` 4000) into one `message-burst:<id>` run; an
+  arriving message aborts that channel's own pre-send run, another channel's run is only preempted
+  at fire time, timer wakes for a channel with a pending burst are dropped, `/run` and `/stop`
+  cancel it, pause cancels all, shutdown turns pending bursts into persisted wakes.
+  `RuntimeOrchestrator` without a `debounce` option fires at once (`serverMs: 0`, the old
+  behaviour); the backend passes the config.
+- *DMs* (`src/orchestration/dm/`): a waifu with `dm.allowDms` answers DMs to her own bot as a 1:1
+  conversation `dm_<user>_<waifu>` through `DmRunner` (no orchestrator; same waifu harness, model,
+  global memories and compaction; `PickNextWaifu` never listed; `add_memory` iff `tools.toolUse`,
+  saved with `origin: { dm: true }` and the user as subject). Eligibility (`computeDmEligibility`):
+  enabled waifu with a model, the only enabled waifu on an enabled waifu bot. Only eligible bots log
+  in with `[Guilds, DirectMessages, DirectMessageReactions]`; a waifu write calls
+  `reconcileDmIntents()`, which re-logs only bots whose intents changed. Per conversation one slot
+  (`idle | generating | sending`), debounced by `discord.debounce.dmMs`/`dmMaxWaitMs`, a global
+  semaphore (`discord.dm.maxConcurrentRuns`), and a per-user rate limit (`dm.rateLimit`, pure math in
+  `rateLimit.ts`; one fixed-template notice per limited period, no model call). State lives in
+  `user/dms/<userId>/<waifuId>.json` (run records = the DM "why quiet"), counters in
+  `user/dms/<userId>/limits/<waifuId>.json`, which only the owner's forget-user removes. Shutdown
+  keeps `pending*`, pause clears it, boot/resume scans recent DM states and catches up inside
+  `discord.dm.resumeWindowMinutes`. DM log lines carry ids and status only. Routes: `GET /api/dms`,
+  `GET /api/dms/:waifuId/:userId`, `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`); DM
+  bots register a BotDM-only `/forget` with a confirm button; orchestrator commands are guild-only.
+
 **Model pipeline** (`src/orchestration/pipeline/`): every model call goes through `gatewayPipeline.ts`, which builds and sends requests via `@waifucave/gateway` (see below). `resolveTarget.ts` resolves `(providerId?, modelId)` pairs, `params.ts` leniently conforms stored params to the target model, `timeline.ts` holds the decision-note serializers. Context-engine prompts are sent verbatim; the pipeline only demotes stray system messages and writes the usage-ledger line. `src/providers/` holds only shared request/role types (`types.ts`) — the old in-app catalog/pipelines are gone.
 
-**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers, memories, histories, and `conversations/<key>/` with the context engine's ledger, refs and per-agent `contexts/*.json`), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`assertSafeId` rejects dot-only ids; guild/channel ids must be Discord snowflakes via `assertSnowflakeId`).
+**Storage** (`src/storage/storageService.ts`, `src/shared/schemas/domain.ts`): everything user-owned is a revisioned JSON file under `~/.dc-waifus/user/` (providers, discord-bots, waifus, servers incl. per-guild decision history and `threads.json`, memories, `dms/<userId>/` DM state and rate-limit counters, and `conversations/<key>/` with the context engine's ledger, refs and per-agent `contexts/*.json`), except `user/usage/YYYY-MM-DD.jsonl`, the append-only usage ledger. Writes use atomic temp-file swap with per-resource locks. Zod schemas in `src/shared/schemas/` are the authority for both on-disk format and API I/O — change them and the migrations together. `resolveDataPath` throws if the joined path escapes the data root, but that is a backstop — any route that builds a path from a request id must still validate it first (`src/api/ids.ts`: `assertSafeId` rejects dot-only ids; guild/channel/user ids must be Discord snowflakes via `assertSnowflakeId`).
 
 **API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu and memory writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. `params` on waifu/agent-config PUTs merge server-side — an explicit `null` value unsets a key, omission keeps it — so dashboard editors must send `null` for keys the user removed (see `mergeParamsPatch`). `waifu.botId` uses the same null-to-unset pattern.
 

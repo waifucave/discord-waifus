@@ -83,7 +83,10 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/memories | Query params: waifuId, q, status, limit, and provenance filters guildId (learned in that server), origin=dm, subjectUserId. |
 | POST | /api/memories | Add a memory record (optional guildId/channelId provenance and subjects); reports `duplicateOf` without blocking. |
 | PUT/DELETE | /api/memories/:memoryId | Edit / remove; body `recordRevision` (preferred) or legacy `revision`. |
-| POST | /api/memories/forget-user | `{discordUserId, confirm: true, dryRun?}` — forget one Discord user: deletes memories about them and their queued observations, replaces their stored messages with `(removed)`; returns counts. |
+| POST | /api/memories/forget-user | `{discordUserId, confirm: true, dryRun?}` — forget one Discord user: deletes memories about them and their queued observations, replaces their stored messages with `(removed)`, and deletes every DM with them (`user/dms/<userId>/` incl. rate-limit counters); returns counts (`memories`, `observations`, `ledgers`, `ledgerEntries`, `dmContexts`, `dmStates`, `dmLimits`, `cachedImages`). |
+| GET | /api/dms | DM conversations, newest first: `?waifuId&userId&limit≤200` → `{conversations: [{conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: {used, max, windowMinutes, limited, freesAt?} \| null, lastRun?, context?: {epoch, lastCompaction?}}]}`. Never message text. |
+| GET | /api/dms/:waifuId/:userId | `{state, rateLimit, context?}`: DM state incl. `recentRuns` (status `sent`, `tool_only`, `empty`, `blocked`, `rate_limited`, `notice_sent`, `superseded`, `interrupted`, `failed`, `undeliverable`) — the DM "why quiet". 404 when there is no DM. |
+| POST | /api/dms/:waifuId/:userId/forget | `{confirm: true, scope: "conversation" \| "all", dryRun?}` → `{dryRun, scope, deleted: {dmContexts, dmStates, recentRuns, memories, observations, cachedImages}}`. Never resets the rate limit. Audited `dm.forget`. |
 | GET | /api/logs?limit=N | Recent backend log entries (max 500). |
 | GET | /api/docs · /api/docs/:slug | This knowledge base. |
 | GET | /api/events | SSE firehose: logs, runtime, captured model queries/replies. |
@@ -145,6 +148,19 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   starts (restart to be sure). Whatever `maxBytes` allows, an image is only sent inline when it is
   at most 3.75 MiB (3,932,160 bytes, the most that stays under Anthropic's 5 MB per-image limit
   once base64-encoded); a larger one is shown as its OCR text or `[image]`.
+- **Message debounce (app config `discord.debounce`)**: `serverMs` (default 1200) /
+  `serverMaxWaitMs` (4000) and `dmMs` (1500) / `dmMaxWaitMs` (8000). A burst of human messages
+  in a channel (or DM) waits until it has been quiet for `serverMs` (`dmMs`), at most
+  `serverMaxWaitMs` (`dmMaxWaitMs`) after its first message, and then costs one pass. A message
+  aborts that channel's own pass if it has not started sending yet; a pass in another channel is
+  only interrupted when the burst fires. `serverMs: 0` starts a pass on every message at once (the
+  old behaviour). Timer wakes for a channel with a pending burst are dropped; `/run` runs now and
+  `/stop` cancels the burst; a shutdown turns pending bursts into wakes for the next boot.
+- **DM runtime (app config `discord.dm`)**: `maxConcurrentRuns` (default 4: DM replies generated at
+  once across all waifus) and `resumeWindowMinutes` (default 60: after a restart or a resume, DMs
+  that arrived at most this long ago are answered; older ones are left). DMs and their rate limit
+  are configured per waifu (`dm.*`, waifus.md). `GET /api/runtime` reports `discord.dm`:
+  `{eligibleWaifus: [{waifuId, botId, intentActive}], warnings}`.
 - **Deleted messages (app config `discord.deletedMessages`)**: `redactRecent` (default 20, 0-200)
   is how many of the newest messages in a conversation are rewritten to "(message deleted)" when
   they are deleted on Discord. Older deleted messages keep their cached text until the next

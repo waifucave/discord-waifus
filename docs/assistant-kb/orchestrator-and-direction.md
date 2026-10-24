@@ -14,6 +14,11 @@ gateway's required JSON-schema path:
 Decisions, reasoning, and outcomes are recorded in `GET /api/orchestrator/history` (newest
 first). Manual trigger: `POST /api/runtime/trigger/orchestrator {"guildId","channelId"}`.
 
+Human messages are debounced (`discord.debounce.serverMs`, default 1.2 s, at most
+`serverMaxWaitMs` 4 s after the first): someone typing three quick lines gets one decision that
+sees all three. A new message stops that channel's decision if no reply has started sending yet.
+DMs never go through the orchestrator (see discord-setup.md "Direct messages").
+
 ### What the orchestrator sees
 
 It reads the same channel transcript the waifus do (`[14:02 #k3] Kevin: text`, with the same
