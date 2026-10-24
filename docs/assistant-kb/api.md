@@ -55,7 +55,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | POST | /api/waifus/:id/assets/pfp · /banner | Upload raw image bytes (png/jpeg/webp/gif, max 8 MB). Stored under `user/waifus/:id/` only — nothing applies it to the Discord bot or shows it yet. |
 | GET | /api/servers | Guilds with channels and their waifu lists. |
 | GET | /api/servers/:guildId | One guild. |
-| PUT | /api/servers/:guildId | Partial server settings: `paused` and `channels` (wholesale). Older fields (`orchestratorMode`, `compaction`, `contextWindows`, `tools`) are kept on disk but nothing reads them until the Living cast rebuild replaces them. |
+| PUT | /api/servers/:guildId | Partial server settings: `paused`, `channels` (wholesale) and `detector` (`{target}` override of the addressee detector; `""` = off here, `null` = inherit). The director-era fields were removed by a migration and are ignored if sent. |
 | DELETE | /api/servers/:guildId | Remove the guild config incl. rosters. |
 | PUT | /api/servers/:guildId/channels/:channelId | `{enabledWaifuIds?, name?, threads?}` — one channel; omitted fields keep their value. `threads` is `"inherit"` (default: threads and forum posts under it share its cast) or `"off"`. |
 | GET | /api/servers/:guildId/threads | The threads and forum posts the bot has seen (`threadId`, `parentId`, `name`, `kind`, `archived`, `locked`, `lastActivityAt`); guild id must be a snowflake. |
@@ -73,7 +73,7 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
 | GET | /api/assistant/conversations/:id/stream | SSE: turn/tool events and live `text_delta` fragments of the reply (never stored). |
 | POST | /api/people/:userId/forget | `{confirm: true, dryRun?}` — the owner's forget of one Discord user. Today it deletes every DM with them (`user/dms/<userId>/` incl. rate-limit counters, conversations, cached DM images) and returns counts (`dmContexts`, `dmStates`, `dmLimits`, `cachedImages`). Audited `people.forget`. |
 | GET | /api/dms | DM conversations, newest first: `?waifuId&userId&limit≤200` → `{conversations: [{conversationKey, waifuId, userId, userDisplayName?, lastInboundAt?, lastReplyAt?, rateLimit: {used, max, windowMinutes, limited, freesAt?} \| null, lastRun?}]}`. Never message text. |
-| GET | /api/dms/:waifuId/:userId | `{state, rateLimit}`: DM state (older versions' run records may still be listed under `recentRuns`; no new ones are written while the Living cast is being built). 404 when there is no DM. |
+| GET | /api/dms/:waifuId/:userId | `{state, rateLimit}`: DM state (the `living-cast-dm-state-v1` migration dropped the old `recentRuns` and `pending*` fields). 404 when there is no DM. |
 | POST | /api/dms/:waifuId/:userId/forget | `{confirm: true, scope: "conversation" \| "all", dryRun?}` → `{dryRun, scope, deleted: {dmContexts, dmStates, recentRuns, cachedImages}}`. Never resets the rate limit. Audited `dm.forget`. |
 | GET | /api/logs?limit=N | Recent backend log entries (max 500). |
 | GET | /api/docs · /api/docs/:slug | This knowledge base. |
@@ -134,10 +134,11 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   starts (restart to be sure). Whatever `maxBytes` allows, an image is only sent inline when it is
   at most 3.75 MiB (3,932,160 bytes, the most that stays under Anthropic's 5 MB per-image limit
   once base64-encoded); a larger one is shown as its OCR text or `[image]`.
-- **Settings kept for the Living cast**: `discord.debounce`, `discord.dm.maxConcurrentRuns`,
-  `discord.dm.resumeWindowMinutes` and `discord.deletedMessages` are still stored and validated, but
-  nothing uses them while the Living cast is being built (nobody replies yet). DMs and their rate
-  limit are configured per waifu (`dm.*`, waifus.md). `GET /api/runtime` reports `discord.dm`:
+- **Living cast settings**: `discord.debounce` (`dmMs` 30 s quiet timer, `dmMaxWaitMs` 180 s cap
+  for DM wakes), `discord.dm.resumeWindowMinutes` (the boot catch-up window), `life.*` (turn,
+  context, image, send, wake, watch and maintenance limits; `life.webFetch.*` for page reading),
+  `search.*` (web search caps; 0 disables) and `detector.target`. DMs and their rate limit are
+  configured per waifu (`dm.*`, waifus.md). `GET /api/runtime` reports `discord.dm`:
   `{eligibleWaifus: [{waifuId, botId, intentActive}], warnings}`.
 - **Deprecated OCR keys**: `ocr.maxImageBytes` and `ocr.timeoutMs` no longer control fetching. A
   value left at its default (8 MiB / 1500 ms) is ignored; a changed value still raises the fetch

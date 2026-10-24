@@ -5,9 +5,9 @@ Creating the bot applications and wiring them to your server.
 ## Why several bots
 
 Every waifu runs as her own Discord bot application. That's what gives each character her own
-name, avatar, and presence. The `orchestrator` entry is one more application: it still hosts the
-server slash commands and directory refreshes and must log in for the waifu bots to connect. For a
-five-waifu cast you create six applications total (1 orchestrator + 5 waifus).
+name, avatar, and presence. The House bot (stored as the `orchestrator` entry) is one more application: it reads the rooms, hosts the
+owner slash commands `/wake` and `/print` and directory refreshes, and must log in for the waifu bots to connect. For a
+five-waifu cast you create six applications total (1 House bot + 5 waifus).
 
 ## Per application (Discord Developer Portal)
 
@@ -21,7 +21,7 @@ five-waifu cast you create six applications total (1 orchestrator + 5 waifus).
 
 ## In the app
 
-Settings → App, "Discord bots" section (or `PUT /api/discord-bots`): the orchestrator entry plus
+Settings → App, "Discord bots" section (or `PUT /api/discord-bots`): the House bot (`orchestrator` key) plus
 a `waifus` array of entries — each `{id, displayName, applicationId, token, enabled}`. Then link
 each waifu to her bot by setting the waifu's `botId` to the bot entry's `id` (or use
 `POST /api/waifus/:id/link-bot`, below).
@@ -79,16 +79,16 @@ the user writes again. Counters survive restarts and a user's `/forget`.
 
 In DMs her bot offers `/forget what:<this conversation|everything about me>`, answered privately
 with a 30-second Confirm button. "this conversation" deletes the DM transcript; "everything"
-also deletes the DM state. Neither resets the rate limit. The owner's full forget is
-`POST /api/people/:userId/forget`. Until the Living cast ships, "everything" also leaves a record
-so her old memories about that user are left out when they move to her notes.
+also deletes the DM state and scrubs that user from her life and notes (at most once per 6 hours;
+a later request is queued for her nightly maintenance). Neither resets the rate limit. The owner's
+full forget is `POST /api/people/:userId/forget`.
 
 ## Connection
 
 The app connects on start when `runtime.autoConnectDiscord` is on (default `true`). There is no
 dashboard toggle for it yet: set it in `config.toml` under `[runtime]` or with
 `PUT /api/config {"runtime": {"autoConnectDiscord": false}}`. Check
-`GET /api/status` → `discord.connected` / `orchestratorConnected` / `waifuBotCount`; warnings
+`GET /api/status` → `discord.connected` / `houseConnected` / `waifuBotCount`; warnings
 list bots that failed (bad token, missing intents).
 
 ## Wiring a character's bot (canonical flow)

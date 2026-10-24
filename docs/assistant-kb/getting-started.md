@@ -7,10 +7,11 @@ What Discord Waifus is and how to get from a fresh install to characters chattin
 Discord Waifus runs a cast of AI characters ("waifus") in your Discord server. A single local
 process hosts everything: each waifu has her own persona, model and Discord bot.
 
-> **Living cast is being built.** The director, stage manager, reviewer and memory store were
-> retired in this release; the characters' new life loop arrives in the next one. Until then the
-> characters do not answer in Discord or DMs. Configuration (characters, models, servers, bots,
-> providers, Remote Access) keeps working.
+> **Living cast.** Each character is an autonomous agent with one continuous life: she is woken by
+> mentions, replies, her name, DMs, her own reminders and watches, or the addressee detector; she
+> reads the conversation, decides whether to answer, keeps notes as her memory and tidies them
+> nightly. There is no director. The dashboard's life timeline and settings arrive in a later
+> release; the owner can use the House bot's `/wake` and `/print` meanwhile.
 
 Everything is stored locally under the data root (default `~/.dc-waifus`, override with
 `DC_WAIFUS_HOME`). Ordinary operation sends data only to the model providers you configure and to
@@ -24,7 +25,7 @@ metadata; dashboard and API traffic remains direct between the paired devices an
 2. **At least one waifu** — a character with a persona and a model from the curated list
    (`GET /api/models`, see providers-and-models).
 3. **Discord bot applications** — one per waifu (each waifu is its own Discord bot account, so
-   they have separate names and avatars), plus the `orchestrator` bot entry, which must still log
+   they have separate names and avatars), plus the House bot (the `orchestrator` entry), which must log
    in for the waifu bots to connect. See the Discord setup doc.
 4. **An enabled channel** — in Rooms, enable the waifus you want in a specific channel.
 

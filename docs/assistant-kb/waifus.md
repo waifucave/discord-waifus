@@ -31,10 +31,11 @@ at upgrade; writes that still send them are accepted and ignored.
 
 ## How she runs
 
-> **Living cast is being built.** The director, stage manager, reviewer and memory store were
-> retired in this release; the characters' new life loop arrives in the next one. Until then the
-> characters do not answer in Discord or DMs. Configuration (characters, models, servers, bots,
-> providers, Remote Access) keeps working.
+> **Living cast.** She lives one continuous life: wakes (mentions, replies, her name, DMs, her
+> reminders and watches, the addressee detector), reads before answering, may stay quiet, keeps
+> notes (`user/waifus/<id>/notes/`, `MEMORY.md` as the index) and tidies them nightly. She sleeps in
+> her sleep window (wakes are held for a morning summary), stops at her daily budget
+> (`life.dailyBudgetUsd`) and can search and read the web.
 
 Images are fetched with the app config `discord.images` limits; only images up to 3.75 MiB are
 ever sent inline, larger ones become their OCR text or `[image]`.

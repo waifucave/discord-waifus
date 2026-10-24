@@ -13,17 +13,19 @@ Common failures, what they look like, and where to look.
 
 ## Nothing replies in Discord
 
-Expected right now: the Living cast rebuild is in progress and nobody replies yet (the log shows
-`Living cast not yet wired (L2)` for each message the runtime accepted). Configuration still works.
+Each waifu decides for herself whether to answer: she is woken by mentions, replies, her name,
+DMs, reminders, watches, or the addressee detector, reads the conversation and may choose to stay
+quiet. She also does not wake while asleep (her sleep window), over her daily budget, or while the
+server is paused, and a DM waits for 30 seconds of quiet first.
 
-When replies return, check in order: `GET /api/status` — is `discord.connected` true and
+If nothing ever replies, check in order: `GET /api/status` — is `discord.connected` true and
 `waifuBotCount` > 0? Does the channel list at least one waifu (Rooms), and is the server not
 `paused`? Does she have a model (`GET /api/runtime` → `models.warnings`) and its provider a key?
 
 ## She doesn't answer DMs
 
-Expected right now too (Living cast in progress): DMs are not answered yet. To check she will be
-able to once they are: `dm.allowDms` must be on for her, and `GET /api/runtime` → `discord.dm`
+A DM wakes her after 30 seconds without a new message (at most 3 minutes), and she may still
+choose not to answer. If she never answers DMs: `dm.allowDms` must be on for her, and `GET /api/runtime` → `discord.dm`
 must list her in `eligibleWaifus` with `intentActive: true`. Its warnings name what is wrong:
 `dm_bot_shared:<botId>` (two enabled waifus on one bot — DMs off for that bot),
 `dm_missing_model:<waifuId>`, `dm_intent_pending_reconnect:<botId>` (reload Discord).

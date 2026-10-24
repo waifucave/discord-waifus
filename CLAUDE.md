@@ -41,23 +41,40 @@ prebuilt React SPA and Discord runtime. When Remote Access is enabled, that host
 platform-specific `ts-connect` child. `waifus remote` is a separate local Node gateway with no
 Discord runtime and supervises its own remote-role helper child.
 
-**Startup pipeline** (`src/backend/server.ts:startBackend`): acquire the exclusive host lock `app/host.lock` (`src/storage/instanceLock.ts`: pid + OS process start time + nonce; a second host on the same data root fails fast, stale locks are broken; the remote gateway role does not take it) → `runMigrations` (`src/backend/migrations.ts`; legacy shape steps run once and are recorded in the `app/migrations.json` ledger, the frozen legacy model-id remap re-runs per app version, and invariant checks such as remote-state hardening and the stored-effort check run every boot — a missing/corrupt ledger, or an `app/runtime.json` written by a different version than the ledger's, re-runs every idempotent step; new steps get a new id) → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `RuntimeOrchestrator` → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process; they verify the pid against the lock's start time (or pid.json `startedAt`) before reporting or signalling it, so a pid reused after a crash is treated as stale. Start times come from `ps` on macOS/Linux; Windows falls back to pid liveness.
+**Startup pipeline** (`src/backend/server.ts:startBackend`): acquire the exclusive host lock `app/host.lock` (`src/storage/instanceLock.ts`: pid + OS process start time + nonce; a second host on the same data root fails fast, stale locks are broken; the remote gateway role does not take it) → `runMigrations` (`src/backend/migrations.ts`; legacy shape steps run once and are recorded in the `app/migrations.json` ledger, the frozen legacy model-id remap re-runs per app version, and invariant checks such as remote-state hardening and the stored-effort check run every boot — a missing/corrupt ledger, or an `app/runtime.json` written by a different version than the ledger's, re-runs every idempotent step; new steps get a new id) → `loadAppConfig` → instantiate `StorageService` (per-resource locking JSON store rooted at the data root) → optional Discord connect (`maybeConnectDiscord`, gated by `runtime.autoConnectDiscord`) → build `CastRuntime` (which starts the `LivingCast`) → mount API via `createApiServer`. Runtime state is persisted to `~/.dc-waifus/runtime.json` so `waifus status`/`stop` can find the live process; they verify the pid against the lock's start time (or pid.json `startedAt`) before reporting or signalling it, so a pid reused after a crash is treated as stale. Start times come from `ps` on macOS/Linux; Windows falls back to pid liveness.
 
-**Living cast (in progress, spec `docs/specs/2026-10-24-living-cast-design.md`)**: the
-director/orchestrator, stage manager, reviewer, memory store, dreams, persona digests, the
-per-channel run loop, restart resume, the epoch context engine and the waifu reply path were
-removed in L1 (spec §11.1, §15). Until L2 wires the intake, wake router and life loop (§3, §4),
-`RuntimeOrchestrator` (`src/orchestration/runtime.ts`) keeps the Discord lifecycle, guild/channel
-sync, thread tracking, DM eligibility, forget and pause/resume, and only logs
-`Living cast not yet wired (L2)` for each accepted guild message or DM: **nobody replies between L1
-and L2**. Pieces kept for L2 per the spec's keep/move table: `src/life/` (outbound text checks in
-`outbound.ts`, availability, text helpers, and the addressee detector's native-choice protocol,
-catalog and local Laya worker in `life/detector/`); `src/orchestration/context/` (message
-rendering, time format, token estimates/calibration, image freeze limits, conversation keys and
-compaction helpers); `debounce.ts`, `dm/` (store, rate limit, forget), `stores/*`,
-`providerAlerts.ts`, `usageLedger.ts`, OCR. Server files still carry `orchestratorMode`, `oneShot`,
-`contextWindows` and `tools` until L2 replaces them; nothing reads them and the Rooms UI no longer
-edits them. Slash commands stay registered.
+**Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1 and L2 done, L3 = API,
+settings registry, CLI and dashboard)**: each waifu is an autonomous agent with one continuous
+life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
+lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
+`LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: guild bursts coalesce
+2 s, DMs wait for a 30 s quiet timer capped at 180 s, mentions/replies/names/`@everyone`/shared
+roles/watches map straight to wakes, everything else goes to the addressee detector in
+`detector/`) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
+per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
+staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
+(`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, host-wide
+`life.maxConcurrentTurns`; notifications, the tool loop, the unsent-reply check, caps) →
+`ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks [A, B] snapshotted per
+epoch, the epoch's log with permanent time lines, and compaction (`compaction.ts`) keeps the last
+three complete turns. Tools live in `tools/` (messages, notes, planning, web), web search/fetch in
+`search.ts` over `web/` (a temporary attributed port of winter's web tools: Exa's hosted MCP,
+keyless by default with the `exa` provider credential as fallback, and an SSRF-checked page fetcher
+with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
+`log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `watches.json`,
+`schedule.json`, `maintenance.jsonl`, `pending-scrubs.json`, `usage.json`) and her notes in
+`user/waifus/<id>/notes/` (`MEMORY.md` index). Boot repairs every life (`repair.ts`), runs queued
+owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
+fires reminders, drops expired watches, sends the `morning` batch when sleep ends and runs nightly
+maintenance with any pending scrubs (`maintenance.ts`). The House bot owns
+`/wake` and `/print` (Administrator only, checked again at run time); DM bots keep `/forget`.
+Tests: `tests/life*.test.ts` over `tests/lifeFixtures.ts` (fake Discord, fixed clock, scripted
+winter fakes), goldens in `tests/golden/__snapshots__/` (owner review), the cache simulation in
+`tests/eval/cacheHit.test.ts`, and the live eval `tests/eval/lifeLive.eval.test.ts` (skipped unless
+`WAIFUS_EVAL_LIVE=1`; needs the owner's keys and approval). The whole suite runs behind a
+loopback-only `fetch` (`tests/setup/noNetwork.ts`). The word "orchestrator" survives only in
+migrations, the bots-file key (`discord-bots.json` `orchestrator` = the House bot), the archive
+path and the legacy usage purpose.
 
 **Model layer** (`src/models/`, spec §9): every model call goes through `ModelClient`
 (`client.ts`, `call` and `stream`) on winter's provider runtime: winter route resolution → winter's
@@ -80,7 +97,7 @@ tap saw it; a bare `message_start` or role-only chunk is not) and is `retryable`
 says so and nothing was committed; `imageOverflow` marks an image refusal. `summarize.ts` is the compaction
 summarize helper;
 `modelWarnings.ts` persists upgrade/boot warnings (`app/model-warnings.json`). Usage purposes are
-`life`, `maintenance`, `detector`, `compaction`, `assistant` (older lines keep their legacy
+`life`, `maintenance`, `detector`, `compaction`, `assistant`, `web` (older lines keep their legacy
 purposes). Without a request cap, a route the catalog gives no `maxOutputTokens` gets
 `DEFAULT_OUTPUT_CAP_TOKENS`. Cost prefers winter's `reportedCostUsd` (0 is a real value) over the
 list-price estimate; failed and aborted lines are priced whenever usage is known. The captured
@@ -105,7 +122,16 @@ models are unset and reported in `GET /api/runtime` → `models.warnings` with t
 which the schema stamp never touches, and a replaced provider key under
 `user/.archive/living-cast/providers.json`) and
 `living-cast-model-effort-check` (every boot: drops a stored effort the installed catalog no longer
-lists for that route). Phase 4 must ship as a minor release (2.112.0): its
+lists for that route). Living cast L2 added five once-steps (`LIVING_CAST_L2_STEP_IDS`, spec §11.2,
+in `migrationSteps/livingCast*.ts`): `living-cast-memories-to-notes-v1` (the memory store becomes
+each waifu's notes; forgotten and pending-scrub users are left out; a corrupt forget record stops
+the step), `living-cast-archive-director-v1` (director/stage-manager/reviewer data, guild
+histories and sessions, conversation ledgers and contexts move under `user/.archive/living-cast/`;
+a ledger's image keys are folded into `images.json` first), `living-cast-dm-state-v1`,
+`living-cast-server-fields-v1` and `living-cast-app-config-v1`. Retired data shapes the migrations
+still read live in `migrationSteps/legacySchemas.ts`; nothing else imports it. Legacy-step tests
+run `MIGRATION_STEPS` minus the L2 ids; `tests/livingCastMigrations.test.ts` covers the L2 steps on
+a realistic main-era root. Phase 4 must ship as a minor release (2.112.0): its
 memory migrations cannot be read by 2.111.x, and downgrade is unsupported. Never
 change a shipped step's id or meaning: add a new step with a new id, keep the removed steps' ids
 in the history comment, and register it before the schema-version stamp, which stays last.
@@ -114,8 +140,8 @@ PUT shim in `src/api/server.ts`.
 
 **Discord features (Phase 5, spec 9):**
 - *Conversation cache and guild directory* (`src/discord/conversationCache.ts`,
-  `guildDirectory.ts`, `gatewayFeed.ts`): `ConversationMessageCache` is the message source L2's life
-  loop builds on. It keeps recent raw messages per conversation, fed by REST pages, gateway events
+  `guildDirectory.ts`, `gatewayFeed.ts`): `ConversationMessageCache` is the life's message source
+  (`readPage` serves `read_messages`). It keeps recent raw messages per conversation, fed by REST pages, gateway events
   (messages, edits, deletes, reactions) and our own sends (published before
   `sendWaifuMessage`/`sendDirectMessage` return). A conversation is trusted after a REST sync while
   its gateway scope (`guild`, or `dm:<waifuId>` per DM bot) stays connected; trusted reads make no
@@ -128,8 +154,8 @@ PUT shim in `src/api/server.ts`.
   enabled waifu, server `paused` is the kill switch.
 - *Threads*: threads/forum posts are their own conversations that inherit the parent's cast
   unless the channel's `threads` is `"off"` (`stores/threads.ts`, `threads.json`).
-- *Debounce* (`src/orchestration/debounce.ts`, `discord.debounce.*`): the keyed debouncer is kept
-  for L2's intake; nothing schedules runs in L1.
+- *Debounce* (`src/orchestration/debounce.ts`, `discord.debounce.*`): the keyed debouncer behind
+  the intake's DM quiet timer (`dmMs` 30 s, `dmMaxWaitMs` 180 s).
 - *DMs* (`src/orchestration/dm/`): eligibility (`computeDmEligibility`: enabled waifu with a model,
   the only enabled waifu on an enabled waifu bot) decides which bots log in with
   `[Guilds, DirectMessages, DirectMessageReactions]`; a waifu write calls `reconcileDmIntents()`,
@@ -138,17 +164,22 @@ PUT shim in `src/api/server.ts`.
   Every forget writes a floor message id (`floorMessageId`) so `ConversationMessageCache.setFloor`
   keeps older messages out for good. Routes: `GET /api/dms`, `GET /api/dms/:waifuId/:userId`,
   `POST /api/dms/:waifuId/:userId/forget` (`src/api/dms.ts`) and the owner's
-  `POST /api/people/:userId/forget` (DM part in L1, `dm/forgetUser.ts`; L2 adds the life scrub).
-  DM bots register a BotDM-only `/forget`. DMs get no replies until L2. Forget records for L2
-  (`dm/forgotten.ts`): the owner's forget-user adds `{userId, at}` to `user/people/forgotten.json`
-  (spec §7.5); a DM `/forget everything` queues `{userId, at, source}` in
-  `user/waifus/<id>/life/pending-scrubs.json` (spec §7.3); only a missing record file reads as
-  empty, an unreadable one is moved aside to `<name>.corrupt-<ts>` with a warning. Images a
+  `POST /api/people/:userId/forget` (the DM part in `dm/forgetUser.ts`, then the life scrub of
+  every waifu with a life or notes, `src/life/forget.ts`). DM bots register a BotDM-only `/forget`.
+  Forget records (`dm/forgotten.ts`): the owner's forget-user adds `{userId, at}` to
+  `user/people/forgotten.json` (spec §7.5) and queues an `owner_forget` entry in each life's
+  `pending-scrubs.json` before scrubbing, cleared once the scrub ran; without a running runtime
+  (Discord offline) the entries stay queued and run when that life next starts. A DM
+  `/forget everything` inside the 6-hour window queues a `dm_forget_everything` entry for nightly
+  maintenance (spec §7.3). Only a missing record file reads as empty; an unreadable one is moved
+  aside to `<name>.corrupt-<ts>` with a warning on update and stops readers that must not guess
+  (`ForgetRecordCorruptError`). Images a
   conversation showed are indexed durably in `user/conversations/<key>/images.json` (+ an
   append-only overflow past 5,000 keys; `src/discord/imageIndex.ts`), so a forget purges cached
   bytes and OCR text with or without the runtime (a legacy `ledger.json`'s image refs are read
-  too). The fetcher and OCR record only refs that carry `conversationKey`, and nothing in L1 sets
-  it: L2's life image path must render with `renderDiscordMessage(..., { conversationKey })`. Index
+  too). The fetcher and OCR record only refs that carry `conversationKey`; the life's image path
+  renders with `renderDiscordMessage(..., { conversationKey })`, so a forget also purges images and
+  OCR text a life fetched (`tests/lifeImages.test.ts`). Index
   writes and the directory's removal share one per-conversation queue
   (`forgetConversationImageIndex`), and a write never recreates a missing conversation directory.
 

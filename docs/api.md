@@ -76,11 +76,13 @@ the same operational status but not the host process ID, bind port, data root, l
 absolute host paths, or helper IPC path. Local status/runtime responses retain their intended host
 details.
 
-**Living cast is in progress.** The director, stage manager, reviewer, memory store and their
-routes (`/api/orchestrator/*`, `/api/stage-manager/*`, `/api/reviewer/*`, `/api/memories*`,
-`/api/runtime/trigger/*`, `/api/runtime/stop`, `/api/waifus/:id/digest`, `/api/llm/*`) were
-removed. Discord intake connects and logs `Living cast not yet wired (L2)` for each accepted
-message; nothing replies until the life loop ships.
+**Living cast.** Each waifu is an autonomous agent with her own life (spec
+`docs/specs/2026-10-24-living-cast-design.md`). The director, stage manager, reviewer, memory store
+and their routes (`/api/orchestrator/*`, `/api/stage-manager/*`, `/api/reviewer/*`,
+`/api/memories*`, `/api/runtime/trigger/*`, `/api/runtime/stop`, `/api/waifus/:id/digest`,
+`/api/llm/*`) were removed. The life's own API (timeline, notes, wakes, settings registry) comes
+with the dashboard work (spec §14); until then the owner uses the House bot's `/wake` and `/print`
+(Administrator only) and the routes below.
 
 `GET /api/runtime` adds `models.warnings`: `{scope, label, code, detail, at?, previous?, dismissible}`
 entries (`label` is the waifu's name, `previous` the model before) for model choices that need
@@ -90,11 +92,11 @@ persisted notices clear when its model is changed to an offered one, when the wa
 with `DELETE /api/runtime/model-warnings/:scope` (`waifu:<id>` or `assistant`, URL-encoded) →
 `{scope, dismissed}`. A save that leaves the model as it was never clears them.
 
-Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the runtime orchestrator in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
+Normal configuration changes apply at runtime. `PUT /api/config`, `PUT /api/discord-bots`, and `POST /api/runtime/reload` rebuild Discord clients and the cast runtime in-process without restarting HTTP. Only HTTP host/port changes require the next process start.
 
 During startup, HTTP binds before Discord auto-connect completes. `/api/status` and `/api/runtime` set optional `discord.connecting` while Discord login is in progress. If Discord auto-connect fails with a transient DNS or network error, the backend keeps Discord offline and retries automatically. Retry metadata is optional: `retrying`, `retryAttempt`, `nextRetryAt`, `lastError`, and `lastErrorAt`.
 
-Each configured bot logs in independently, so one bad waifu token no longer takes the others offline. `discord.bots` (optional) lists every configured bot as `{ botId, displayName, kind: "orchestrator" | "waifu", state: "connected" | "connecting" | "error" | "disabled" | "missing_token", errorCode?, error?, closeCode?, nextRetryAt?, updatedAt }`. `errorCode` is one of `invalid_token`, `disallowed_intents`, `invalid_intents`, `gateway_rejected`, `network`, `orchestrator_unavailable`, or `unknown`. Bots with `enabled: false` never log in. The orchestrator bot is required: if it cannot log in (or Discord later ends its session with an unrecoverable close code such as 4004 or 4014), every waifu client is disconnected too. Waifu bots that fail on a network error retry on their own; resumable gateway errors are left to discord.js and no longer restart every bot.
+Each configured bot logs in independently, so one bad waifu token no longer takes the others offline. `discord.houseConnected` says whether the House bot (stored under the `orchestrator` key of `discord-bots.json`) is online. `discord.bots` (optional) lists every configured bot as `{ botId, displayName, kind: "house" | "waifu", state: "connected" | "connecting" | "error" | "disabled" | "missing_token", errorCode?, error?, closeCode?, nextRetryAt?, updatedAt }`. `errorCode` is one of `invalid_token`, `disallowed_intents`, `invalid_intents`, `gateway_rejected`, `network`, `house_unavailable`, or `unknown`. Bots with `enabled: false` never log in. The House bot is required: if it cannot log in (or Discord later ends its session with an unrecoverable close code such as 4004 or 4014), every waifu client is disconnected too. Waifu bots that fail on a network error retry on their own; resumable gateway errors are left to discord.js and no longer restart every bot.
 
 ## Remote state and clean
 
@@ -170,8 +172,18 @@ device must be activated and paired again.
 - `PUT /api/assistant/config` — `{ "model": { "providerId", "modelId", "effort"? } | null }`, the
   dashboard assistant's model (unset: a waifu's model that is offered, has a key and is not a contributor variant; none → the assistant does not run).
 
-Server files keep their `orchestratorMode`, `oneShot` and `contextWindows` fields untouched until
-the Living cast rebuild replaces them; nothing reads them in this release.
+`GET /api/discord-bots` returns `{ orchestrator, waifus }`: the `orchestrator` key holds the House
+bot (the key name is kept for stored data), `waifus` the waifu bots.
+
+`PUT /api/config` also takes the Living cast sections: `life` (turn, context, image, send, wake,
+watch and maintenance limits, and `life.webFetch`), `search` (web search caps; 0 disables) and
+`detector` (`target`, "" for none). Bounds are in spec §11.3. The optional Exa key for web search
+is a provider credential (`PUT /api/providers/exa/credentials`), not config.
+
+The `living-cast-server-fields-v1` migration removed the server fields the director used
+(mode, one-shot target, context windows, tools, compaction, memory limit); a server keeps only an
+optional `detector: { target }` override (absent inherits, "" turns the detector off there,
+`null` in a `PUT` removes it).
 
 Config is backed by `config.toml` under the data root. Default config:
 
@@ -218,8 +230,9 @@ OCR is used only as a fallback for models that are not marked as vision-capable.
 
 `GET /api/providers` returns `{ revision, updatedAt, catalogVersion, providers }`. `providers`
 lists, as `{ id, displayName, docsUrl?, credentials }`, every provider that serves a curated route
-in the installed winter catalog, the detector's decision providers (`openai`, `openrouter`) and any
-provider that already has a stored key. `catalogVersion` is the installed
+in the installed winter catalog, the detector's decision providers (`openai`, `openrouter`), `exa`
+(an optional key for web search; search works without one) and any provider that already has a
+stored key. `catalogVersion` is the installed
 `@yanlinglabs/winter-provider-catalog` version.
 
 `GET /api/models` returns the curated model list (Living cast spec 9.2):
@@ -287,14 +300,20 @@ Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif`
 
 `:guildId` and `:channelId` must be Discord snowflakes (17–20 digits). A channel is active when its `enabledWaifuIds` list is non-empty; a server is live unless its `paused` flag is set, and restart catch-up skips paused servers and channels without waifus. The old server and channel `enabled` flags were removed; request bodies may still carry them for one release, where they are ignored (and logged). Use the server's `paused` flag to silence a whole guild.
 
-Member and emoji refresh endpoints use the configured orchestrator bot token. Member refresh requires Discord permissions/intents that allow member listing. Emoji refresh caches guild custom emojis in `user/servers/<guild-id>/emojis.json`.
+Member and emoji refresh endpoints use the configured House bot token. Member refresh requires Discord permissions/intents that allow member listing. Emoji refresh caches guild custom emojis in `user/servers/<guild-id>/emojis.json`.
 
 ## People
 
-- `POST /api/people/:userId/forget` — `{ "confirm": true, "dryRun"?: boolean }`. Forgets one Discord user: in this
-  release the DM part (DM history and state, rate-limit counters, cached images; the DM floor
-  message ids are kept so old messages stay out of context). The Living cast rebuild adds the life
-  scrub. `dryRun` reports counts without deleting.
+- `POST /api/people/:userId/forget` — `{ "confirm": true, "dryRun"?: boolean }`. Forgets one
+  Discord user (spec §7.5): the DM part (DM history and state, rate-limit counters, cached images
+  and OCR text; the DM floor message ids are kept so old messages stay out of context), a record in
+  `user/people/forgotten.json`, then a scrub of every waifu with a life or notes (her summary
+  rewritten without him, his wakes, watches, reminders and DM handle removed, her notes cleaned by a
+  notes session, a new epoch, then a verification pass). The response adds `lives`:
+  `[{ waifuId, removedLines, removedSentences, needsReview: [{ where, line }], queued? }]`. With
+  Discord offline (no cast runtime) the scrubs are queued and run when each life next starts; the
+  response then lists those waifus in `livesQueued`. `dryRun` reports the DM counts without
+  deleting or scrubbing. Discord history itself is not deleted.
 
 ## Conflict Semantics
 
