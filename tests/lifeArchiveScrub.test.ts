@@ -8,7 +8,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { scrubArchive } from "../src/life/archiveScrub.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
-import { recentQueries, recordProviderQuery } from "../src/shared/queryLog.js";
+import { onCapturedTrafficForgotten, recentQueries, recordProviderQuery } from "../src/shared/queryLog.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -174,20 +174,42 @@ describe("the archive scrub (D-b)", () => {
     // Sam is three characters: only his id-bound records go.
     expect(((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id)).toEqual(["k1", "k2", "k3", "m1", "k4"]);
   });
+
+  it("a file nested too deep is counted unreadable and the scrub carries on (review F8)", async () => {
+    const root = await archivedRoot();
+    // Our own data is never this deep, but a hand-edited file could be: no stack overflow.
+    await write(root, `${A}/orchestrator/deep.json`, `${"[".repeat(20_000)}${JSON.stringify({ authorId: KEVIN })}${"]".repeat(20_000)}`);
+    const result = await scrubArchive(root, { userId: KEVIN, names: ["Kevin"] });
+    expect(result.unreadable).toBeGreaterThanOrEqual(1);
+    expect(result.removed).toBeGreaterThan(0);
+    // The files after the deep one were still scrubbed.
+    expect(((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id)).toEqual(["m1", "s1"]);
+  });
 });
 
 describe("the owner's forget-user, step 1 (§7.5)", () => {
-  it("drops him from member and participant lists, scrubs the archive and clears the captured traffic", async () => {
+  it("drops him from member and participant lists, scrubs the archive and forgets his captured traffic (only his)", async () => {
     const root = await archivedRoot();
     const storage = new StorageService(root);
-    recordProviderQuery("life", { messages: [{ role: "user", content: "Kevin said hi" }] });
-    expect(recentQueries().length).toBeGreaterThan(0);
+    recordProviderQuery("assistant", { messages: [{ role: "user", content: "Kevin said hi" }] });
+    recordProviderQuery("detector", { messages: [{ role: "user", content: `<@${KEVIN}> is here` }] });
+    recordProviderQuery("assistant", { messages: [{ role: "user", content: "Mina runs the bake sale" }] });
+    const forgotten: Array<(text: string) => boolean> = [];
+    const unsubscribe = onCapturedTrafficForgotten((matches) => forgotten.push(matches));
     const result = await forgetUser(storage, { discordUserId: KEVIN, names: ["Kevin"] });
+    unsubscribe();
     expect(result.memberLists).toBe(2);
     expect(result.archive).toMatchObject({ unreadable: 1 });
     expect(((await read(root, `user/servers/${GUILD}/members.json`)).members as Array<{ userId: string }>).map((member) => member.userId)).toEqual([MINA]);
     expect(((await read(root, `user/servers/${GUILD}/active-chat-participants/${CHANNEL}.json`)).participants as Array<{ userId: string }>).map((entry) => entry.userId)).toEqual([MINA]);
-    expect(recentQueries()).toEqual([]);
+    // Review F12: everyone else's Activity stays; the `/api/events` replay is told the same matcher.
+    const captured = JSON.stringify(recentQueries());
+    expect(captured).not.toContain("Kevin");
+    expect(captured).not.toContain(KEVIN);
+    expect(captured).toContain("Mina runs the bake sale");
+    expect(forgotten).toHaveLength(1);
+    expect(forgotten[0]!(`{"content":"<@${KEVIN}>"}`)).toBe(true);
+    expect(forgotten[0]!(`{"content":"Mina runs the bake sale"}`)).toBe(false);
     // A dry run changes nothing.
     const dry = await forgetUser(storage, { discordUserId: MINA, dryRun: true });
     expect(dry.archive).toBeUndefined();

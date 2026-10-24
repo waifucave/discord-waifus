@@ -219,26 +219,36 @@ export function subscribeReplies(listener: ReplyListener): () => void {
   return () => replyListeners.delete(listener);
 }
 
-const clearListeners = new Set<() => void>();
+/** Whether a serialized entry carries the person (their id or a name only they have). */
+export type TrafficMatch = (serialized: string) => boolean;
+
+const forgetListeners = new Set<(matches: TrafficMatch) => void>();
+
+function dropMatching<T>(entries: T[], matches: TrafficMatch): number {
+  const kept = entries.filter((entry) => !matches(JSON.stringify(entry)));
+  const removed = entries.length - kept.length;
+  if (removed > 0) entries.splice(0, entries.length, ...kept);
+  return removed;
+}
 
 /**
- * Forget (Living cast §7.5): the in-memory traffic buffers go — the captured queries and replies
- * and, through the listeners, the `/api/events` replay — so nothing a forgotten person said is
- * replayed to a reconnecting dashboard.
+ * Forget (Living cast §7.5, F12): the in-memory captured queries and replies that carry the person
+ * go, and through the listeners so do the matching `/api/events` replay records, so nothing they
+ * said is replayed to a reconnecting dashboard. Everyone else's entries stay.
  */
-export function clearCapturedTraffic(): void {
-  recentQueryEntries.length = 0;
-  recentReplyEntries.length = 0;
-  for (const listener of clearListeners) {
+export function forgetCapturedTraffic(matches: TrafficMatch): number {
+  const removed = dropMatching(recentQueryEntries, matches) + dropMatching(recentReplyEntries, matches);
+  for (const listener of forgetListeners) {
     try {
-      listener();
+      listener(matches);
     } catch {
       // a listener never stops the others
     }
   }
+  return removed;
 }
 
-export function onCapturedTrafficCleared(listener: () => void): () => void {
-  clearListeners.add(listener);
-  return () => clearListeners.delete(listener);
+export function onCapturedTrafficForgotten(listener: (matches: TrafficMatch) => void): () => void {
+  forgetListeners.add(listener);
+  return () => forgetListeners.delete(listener);
 }

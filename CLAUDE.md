@@ -191,13 +191,20 @@ PUT shim in `src/api/server.ts`.
   forget-user an `owner_forget` entry per life (runs now, or when that life next starts if Discord
   is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
   or at nightly maintenance inside the 6-hour window, spec §7.3); an entry is cleared only when
-  its scrub finished (a failed notes scrub keeps it). The owner's forget-user also adds `{userId,
-  at}` to `user/people/forgotten.json`, drops the person from member/participant lists, scrubs the
-  Living cast archive (`src/life/archiveScrub.ts`, D-b) and clears the captured traffic. Only a
+  its scrub finished (a failed notes scrub keeps it). The owner's forget-user is a durable job
+  (`user/people/forget-jobs.json`, written before anything is removed, cleared when every part
+  succeeded, resumed whole by `startBackend` before Discord connects): it adds `{userId, at}` to
+  `user/people/forgotten.json`, writes or raises every DM floor first (a floor is never lowered or
+  lost), removes the DM data and `user/dms/<userId>/` except `limits/`, whose files are reset to
+  the floor alone, drops the person from member/participant lists, scrubs the Living cast archive
+  (`src/life/archiveScrub.ts`, D-b; a file nested deeper than 256 levels counts as unreadable)
+  and the kept copies of unreadable forget records; each part runs on its own. Every forget path
+  drops the captured traffic and `/api/events` replay records that carry the person (their id or a
+  name only they have, `personMatcher`), never anyone else's. Only a
   missing record file reads as empty; an unreadable `forgotten.json` stops readers that must not
   guess (`ForgetRecordCorruptError`; intake then hides previews and skips the detector, with an
-  owner notice), and an update keeps a `<name>.corrupt-<ts>` copy and carries over every entry it
-  can still read; a torn `pending-scrubs.json` is salvaged on read. Images a
+  owner notice), and an update keeps a `<name>.corrupt-<ts>` copy (deleted after 7 days) and
+  carries over every entry it can still read; a torn `pending-scrubs.json` is salvaged on read. Images a
   conversation showed are indexed durably in `user/conversations/<key>/images.json` (+ an
   append-only overflow past 5,000 keys; `src/discord/imageIndex.ts`), so a forget purges cached
   bytes and OCR text with or without the runtime (a legacy `ledger.json`'s image refs are read

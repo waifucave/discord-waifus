@@ -29,7 +29,8 @@ import { noteActiveChatParticipant } from "./stores/participants.js";
 import { observeThread, parentSharesCast, readThreads, removeThread } from "./stores/threads.js";
 import { dmForget, type DmConversation, type DmForgetHooks, type DmForgetInput, type DmForgetResult } from "./dm/dmForget.js";
 import { forgetUser, type ForgetUserResult } from "./dm/forgetUser.js";
-import { clearCapturedTraffic } from "../shared/queryLog.js";
+import { forgetCapturedTraffic } from "../shared/queryLog.js";
+import { personMatcher } from "../life/text.js";
 import { forgetConversationImageIndex } from "../discord/imageIndex.js";
 import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
 import { LivingCast } from "../life/livingCast.js";
@@ -436,7 +437,7 @@ export class CastRuntime {
       if (o.background) this.trackBackground(life);
       else await life;
     }
-    if (!input.dryRun) clearCapturedTraffic();
+    if (!input.dryRun) forgetCapturedTraffic(personMatcher(input.userId, prepared?.identity.names));
     return result;
   }
 

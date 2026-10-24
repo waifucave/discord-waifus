@@ -59,7 +59,7 @@ import { StorageConflictError } from "../storage/errors.js";
 import { StorageService } from "../storage/storageService.js";
 import { AuditStore } from "../storage/auditStore.js";
 import { OperationStore } from "../storage/operationStore.js";
-import { onCapturedTrafficCleared, recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
+import { onCapturedTrafficForgotten, recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
 import { registerDmRoutes } from "./dms.js";
@@ -380,7 +380,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     logger.subscribe?.((entry) => publishGlobalEvent("log", entry)),
     subscribeQueries((entry) => publishGlobalEvent("query", entry)),
     subscribeReplies((entry) => publishGlobalEvent("reply", entry)),
-    onCapturedTrafficCleared(() => globalEvents.clearReplay())
+    onCapturedTrafficForgotten((matches) => void globalEvents.dropReplay((record) => matches(JSON.stringify(record.data))))
   ].filter((unsubscribe): unsubscribe is () => void => unsubscribe !== undefined);
   app.addHook("onClose", async () => {
     for (const unsubscribe of sourceUnsubscribers) unsubscribe();

@@ -316,13 +316,17 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
 
 - `POST /api/people/:userId/forget` — `{ "confirm": true, "dryRun"?: boolean }`. Forgets one
   Discord user (spec §7.5), best effort. First every waifu with a life folder or notes gets a
-  queued scrub carrying the names collected now. Then the DM part (DM history and state, rate-limit
-  counters, cached images and OCR text; the DM floor message ids are kept so old messages stay out
-  of context), a record in `user/people/forgotten.json`, the user's removal from every server's
+  queued scrub carrying the names collected now. Then a durable job (resumed whole at the next start
+  if the host stops or a part fails; the request then fails with the first error): a record in
+  `user/people/forgotten.json`, the DM floor message ids written or raised first (never lowered, so
+  old messages stay out of context), the DM part (DM history and state, cached images and OCR text;
+  the rate-limit counters are reset and `dmLimits` counts the limits files that now keep only their
+  floor), the user's removal from every server's
   member and active-chat participant lists (`memberLists`), a scrub of the whole Living cast
   archive under `user/.archive/living-cast/` (`archive: { files, removed, unreadable, skipped }`;
   keys and model choices are never touched), and the in-memory captured traffic (Activity, the
-  `/api/events` replay) is cleared. Then each life's scrub: her summary rewritten without him, his
+  `/api/events` replay) loses every entry carrying the user's id or a name only they have (other
+  people's entries stay). Then each life's scrub: her summary rewritten without him, his
   wakes, watches, reminders, DM cursor and handle removed, her notes cleaned by a notes session,
   notes that are his deleted whole, a new epoch, then a verification pass. The response adds
   `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes, needsReview: [{ where, line }],

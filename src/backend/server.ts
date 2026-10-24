@@ -19,6 +19,8 @@ import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
 import { GuildDirectory } from "../discord/guildDirectory.js";
 import { listWaifus, readDiscordBotsFile } from "../orchestration/stores/config.js";
 import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
+import { resumeForgetJobs } from "../orchestration/dm/forgetUser.js";
+import { pruneForgetRecordCopies } from "../orchestration/dm/forgotten.js";
 import { CastRuntime } from "../orchestration/runtime.js";
 import { ImageOcrService } from "../orchestration/ocr.js";
 import { DiscordImageFetcher, sharedImageFetcherConfig } from "../discord/attachments.js";
@@ -120,6 +122,12 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
     const storage = new StorageService(options.dataRoot, {
       onLockWait: (resourceKey, waitMs) => logger.warn("Storage lock wait exceeded threshold", { resourceKey, waitMs })
     });
+    // An owner's forget that a crash or a failure left unfinished runs again before anything reads
+    // the DMs (Living cast §7.5); old copies of unreadable forget records go.
+    await resumeForgetJobs(storage, { logger }).catch((error: unknown) => {
+      logger.warn("Unfinished forgets could not be resumed", { message: error instanceof Error ? error.message : String(error) });
+    });
+    await pruneForgetRecordCopies(storage, new Date()).catch(() => undefined);
     const runtime = createRuntimeState({
       pid: process.pid,
       startedAt: new Date().toISOString(),

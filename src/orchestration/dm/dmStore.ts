@@ -211,6 +211,11 @@ export function compareSnowflakes(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** The later of two floors: a forget only ever raises the floor, never lowers it. */
+export function laterFloor(current: string | undefined, next: string): string {
+  return current !== undefined && compareSnowflakes(current, next) > 0 ? current : next;
+}
+
 /** True when the message is newer than the floor (or there is none). */
 export function aboveFloor(messageId: string, floor: string | undefined): boolean {
   return floor === undefined || compareSnowflakes(messageId, floor) > 0;

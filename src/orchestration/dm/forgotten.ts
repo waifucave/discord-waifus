@@ -18,9 +18,11 @@
 // that can still be read out of it: whole entries when the JSON parses, else each `{…}` object
 // with a user id, else each bare `"userId": "<id>"` (forgotten as of now, queued as an owner
 // scrub). Pending scrubs are salvaged the same way on read, so a queued scrub is never lost to a
-// torn file.
+// torn file. A forget scrubs those copies too (the person's entries, or the lines carrying them),
+// and a copy older than 7 days goes whole: its salvage was merged when it was made.
 
-import { readFile, rename } from "node:fs/promises";
+import { readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { Logger } from "../../backend/logger.js";
 import { resolveDataPath } from "../../config/paths.js";
 import type { StorageService } from "../../storage/storageService.js";
@@ -227,4 +229,79 @@ export async function removePendingScrubs(storage: StorageService, waifuId: stri
     const scrubs = existing.filter((entry) => !done.some((ran) => ran.userId === entry.userId && ran.at === entry.at));
     await atomicWriteJson(file, { scrubs });
   });
+}
+
+/** Kept copies of unreadable record files live this long (their salvage was merged when made). */
+export const CORRUPT_COPY_RETENTION_MS = 7 * 24 * 3_600_000;
+const COPY_NAME = /^(?:forgotten|pending-scrubs)\.json\.corrupt-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/u;
+
+async function listNames(dir: string): Promise<string[]> {
+  return readdir(dir).then((names) => names.sort(), () => [] as string[]);
+}
+
+/** Every kept copy of an unreadable forget record: `forgotten.json` and each life's pending scrubs. */
+async function forgetRecordCopies(dataRoot: string): Promise<Array<{ file: string; madeAt: number | undefined }>> {
+  const dirs = [resolveDataPath(dataRoot, "user", "people")];
+  for (const waifuId of await listNames(resolveDataPath(dataRoot, "user", "waifus"))) {
+    if (/^\.+$/u.test(waifuId)) continue;
+    dirs.push(resolveDataPath(dataRoot, "user", "waifus", waifuId, "life"));
+  }
+  const copies: Array<{ file: string; madeAt: number | undefined }> = [];
+  for (const dir of dirs) {
+    for (const name of await listNames(dir)) {
+      const match = COPY_NAME.exec(name);
+      if (!match) continue;
+      const madeAt = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`);
+      copies.push({ file: path.join(dir, name), madeAt: Number.isFinite(madeAt) ? madeAt : undefined });
+    }
+  }
+  return copies;
+}
+
+async function copyAge(copy: { file: string; madeAt: number | undefined }, now: Date): Promise<number> {
+  const madeAt = copy.madeAt ?? (await stat(copy.file).then((info) => info.mtimeMs, () => now.getTime()));
+  return now.getTime() - madeAt;
+}
+
+/** Deletes kept copies older than 7 days (boot, and every forget). Returns how many went. */
+export async function pruneForgetRecordCopies(storage: Pick<StorageService, "dataRoot">, now: Date): Promise<number> {
+  let removed = 0;
+  for (const copy of await forgetRecordCopies(storage.dataRoot)) {
+    if ((await copyAge(copy, now)) < CORRUPT_COPY_RETENTION_MS) continue;
+    await rm(copy.file, { force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
+/**
+ * Forget (§7.5): the kept copies lose the person. A copy that parses loses the person's entries;
+ * one that does not loses every line `carries` matches (their id or a name only they have).
+ * Old copies go whole first. Returns the copies changed or deleted.
+ */
+export async function scrubForgetRecordCopies(
+  storage: Pick<StorageService, "dataRoot">,
+  o: { userId: string; carries: (text: string) => boolean; now: Date }
+): Promise<number> {
+  let changed = await pruneForgetRecordCopies(storage, o.now);
+  for (const copy of await forgetRecordCopies(storage.dataRoot)) {
+    const raw = await readFile(copy.file, "utf8").catch(() => undefined);
+    if (raw === undefined) continue;
+    let next: string;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isRecord(parsed)) throw new Error("not an object");
+      const field = Array.isArray(parsed.forgotten) ? "forgotten" : Array.isArray(parsed.scrubs) ? "scrubs" : undefined;
+      if (!field) throw new Error("no list");
+      const entries = parsed[field] as unknown[];
+      const kept = entries.filter((entry) => !(isRecord(entry) && entry.userId === o.userId));
+      next = kept.length === entries.length ? raw : `${JSON.stringify({ ...parsed, [field]: kept }, null, 2)}\n`;
+    } catch {
+      next = raw.split("\n").filter((line) => !o.carries(line)).join("\n");
+    }
+    if (next === raw) continue;
+    await writeFile(copy.file, next, { encoding: "utf8", mode: 0o600 });
+    changed += 1;
+  }
+  return changed;
 }

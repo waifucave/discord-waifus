@@ -37,6 +37,22 @@ describe("EventStream", () => {
     ]);
   });
 
+  it("forget drops only the matching replay records; everyone else's still replay (review F12)", () => {
+    const stream = new EventStream<{ who: string }>({ streamEpoch: bytes16(0x13) });
+    const first = stream.publish("item", { who: "kevin" });
+    stream.publish("item", { who: "mina" });
+    stream.publish("item", { who: "kevin" });
+    stream.publish("item", { who: "sam" });
+    const before = stream.retainedBytes();
+    expect(stream.dropReplay((record) => record.data.who === "kevin")).toBe(2);
+    expect(stream.retainedCount()).toBe(2);
+    expect(stream.retainedBytes()).toBeLessThan(before);
+    const recovery = stream.recover(first);
+    expect(recovery.snapshotRequired).toBe(false);
+    expect(recovery.records.map((record) => record.data.who)).toEqual(["mina", "sam"]);
+    expect(stream.dropReplay(() => false)).toBe(0);
+  });
+
   it("requires a snapshot for first use, epoch mismatch, malformed/future cursors, and replay gaps", () => {
     const stream = new EventStream<{ value: number }>({
       streamEpoch: bytes16(0x13),

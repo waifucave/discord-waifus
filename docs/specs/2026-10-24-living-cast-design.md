@@ -730,8 +730,16 @@ conversation` runs steps 0–2 only.
    that user's messages written at or before `at` render as `(removed)` in `read_messages`,
    previews, the detector state and watch matching. Newer messages render normally. The owner's
    forget-user also removes the person from every server's `members.json` and active-chat
-   participant lists, scrubs the whole archive (below) and clears the in-memory captured traffic
-   (Activity, the `/api/events` replay).
+   participant lists, scrubs the whole archive (below) and the kept copies of unreadable forget
+   records. Its rate-limit counters are reset, but each `limits/<waifu>.json` stays with its floor
+   alone; every floor (for a DM, a DM state or a limits file) is written or raised first, before
+   anything is removed, and a floor is never lowered or lost (two forgets in a row, a DM forget
+   then the owner's). This part is a durable job (`user/people/forget-jobs.json`, with the names),
+   written before anything is removed and cleared only when every part succeeded; each part runs
+   on its own, and a job a crash or a failure left behind runs again, whole, at the next start
+   (before Discord connects). Every forget (owner or DM, with or without a runtime) drops the
+   in-memory captured traffic and `/api/events` replay records that carry the person (the id or a
+   unique name, never a weak one); everyone else's entries stay.
 2. **Summary without the person**: abort her turn; write the compaction summary with **no kept
    turns** and every name (unique and shared) listed for omission (on failure, an empty summary).
    The new epoch does **not** start yet (`pendingEpochStart`); no turn can run in between because

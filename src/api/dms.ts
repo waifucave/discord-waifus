@@ -9,7 +9,8 @@ import { conversationKey } from "../orchestration/context/keys.js";
 import { dmForget } from "../orchestration/dm/dmForget.js";
 import { queuePendingScrub } from "../orchestration/dm/forgotten.js";
 import { storedIdentity, waifusWithLife } from "../life/forget.js";
-import { clearCapturedTraffic } from "../shared/queryLog.js";
+import { forgetCapturedTraffic } from "../shared/queryLog.js";
+import { personMatcher } from "../life/text.js";
 import { assessDmLimit } from "../orchestration/dm/rateLimit.js";
 import { listDmStates, readDmLimitIfExists, readDmState } from "../orchestration/dm/dmStore.js";
 import { readWaifu } from "../orchestration/stores/config.js";
@@ -100,10 +101,12 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
     }
     // No cast runtime: her life scrub is queued (names read before the DM state goes) and runs when
     // her life next starts (`all`) or at her nightly maintenance (`conversation`).
+    let names: readonly string[] = [];
     if (!input.dryRun) {
       const waifu = await readWaifu(o.storage, waifuId).catch(() => undefined);
       if (waifu && (await waifusWithLife(o.storage)).some((candidate) => candidate.id === waifuId)) {
         const identity = await storedIdentity(o.storage, waifu, userId);
+        names = identity.names;
         await queuePendingScrub(o.storage, waifuId, userId, new Date(), {
           source: body.scope === "all" ? "owner_forget" : "dm_forget_conversation",
           names: identity.names,
@@ -112,7 +115,7 @@ export function registerDmRoutes(app: FastifyInstance, o: DmRouteOptions): void 
       }
     }
     const result = await dmForget(o.storage, input);
-    if (!input.dryRun) clearCapturedTraffic();
+    if (!input.dryRun) forgetCapturedTraffic(personMatcher(userId, names));
     return { dryRun: result.dryRun, scope: result.scope, deleted: result.deleted };
   });
 }

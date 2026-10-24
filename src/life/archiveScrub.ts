@@ -17,7 +17,8 @@
 // with the person's id, minus every name another subject or a waifu has and every weak name.
 //
 // Never touched: `providers.json` (keys) and `models/` (model choices, no people). Files that do not
-// parse are left as they are and counted (`unreadable`); other file types are counted as `skipped`.
+// parse, or nest deeper than 256 levels (only a hand-edited file could), are left as they are and
+// counted (`unreadable`); one such file never stops the rest. Other file types are `skipped`.
 
 import { lstat, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -64,7 +65,9 @@ function aboutPerson(record: JsonObject, match: Matcher): boolean {
 }
 
 /** Drops records about the person anywhere in a JSON document (never the document itself). */
-function scrubJson(node: Json, match: Matcher, counter: { removed: number }): Json {
+function scrubJson(node: Json, match: Matcher, counter: { removed: number }, depth = 0): Json {
+  // Bounded: a hand-edited file nested deeper than any of ours is refused, never a stack overflow.
+  if (depth > MAX_SCRUB_DEPTH) throw new TooDeepError();
   if (Array.isArray(node)) {
     const kept: Json[] = [];
     for (const item of node) {
@@ -72,7 +75,7 @@ function scrubJson(node: Json, match: Matcher, counter: { removed: number }): Js
         counter.removed += 1;
         continue;
       }
-      kept.push(scrubJson(item, match, counter));
+      kept.push(scrubJson(item, match, counter, depth + 1));
     }
     return kept;
   }
@@ -83,7 +86,7 @@ function scrubJson(node: Json, match: Matcher, counter: { removed: number }): Js
         counter.removed += 1;
         continue;
       }
-      kept[key] = scrubJson(value, match, counter);
+      kept[key] = scrubJson(value, match, counter, depth + 1);
     }
     return kept;
   }
@@ -93,8 +96,14 @@ function scrubJson(node: Json, match: Matcher, counter: { removed: number }): Js
 /** One JSON document without the records about a person (the migration's memory folder filter). */
 export function scrubJsonForPerson(value: unknown, userId: string, names: readonly string[] = []): { value: unknown; removed: number } {
   const counter = { removed: 0 };
-  const next = scrubJson(value as Json, { userId, names: names.filter((name) => !isWeakName(name)) }, counter);
-  return { value: next, removed: counter.removed };
+  try {
+    const next = scrubJson(value as Json, { userId, names: names.filter((name) => !isWeakName(name)) }, counter);
+    return { value: next, removed: counter.removed };
+  } catch (error) {
+    // Nested deeper than any of ours: left as it is (like an unreadable file).
+    if (error instanceof TooDeepError) return { value, removed: 0 };
+    throw error;
+  }
 }
 
 /** The user ids a memory record is about (subjects and DM provenance). */
@@ -217,20 +226,51 @@ export async function scrubArchive(dataRoot: string, input: ArchiveScrubInput): 
 
   const files = (await walk(root)).filter((file) => file !== "memories.json" && !file.startsWith(`conversations${path.sep}dm_${userId}_`));
   for (const file of files) {
+    // One file never stops the scrub: anything it cannot handle (too deep, unreadable, a failed
+    // write) is left as it is and counted (F8).
+    try {
+      await scrubArchivedFile(root, file, { input, match, mine, droppedRecords, result });
+    } catch (error) {
+      result.unreadable += 1;
+      input.logger?.warn("An archived file could not be scrubbed; the forget scrub left it as it is", {
+        file: path.posix.join(...file.split(path.sep)),
+        reason: error instanceof TooDeepError ? "too_deep" : "error"
+      });
+    }
+  }
+  return result;
+}
+
+/** Nesting deeper than this is not ours (a hand-edited file): such a file is left and counted. */
+const MAX_SCRUB_DEPTH = 256;
+
+class TooDeepError extends Error {
+  constructor() {
+    super("archived document nested too deeply");
+  }
+}
+
+async function scrubArchivedFile(
+  root: string,
+  file: string,
+  o: { input: ArchiveScrubInput; match: Matcher; mine: (record: JsonObject) => boolean; droppedRecords: ReadonlySet<string>; result: ArchiveScrubResult }
+): Promise<void> {
+  const { input, match, mine, droppedRecords, result } = o;
+  {
     const full = path.join(root, file);
     const segments = file.split(path.sep);
     if (input.waifuId) {
       // Her slice: her omitted lines and the memory folder's records that are hers.
       const omittedFile = segments[0] === "notes-omitted" && segments.length === 2;
       const memoryFolder = segments[0] === "memory";
-      if (!omittedFile && !memoryFolder) continue;
-      if (omittedFile && file !== path.join("notes-omitted", `${input.waifuId.replace(/[^A-Za-z0-9._-]/gu, "-")}.json`)) continue;
+      if (!omittedFile && !memoryFolder) return;
+      if (omittedFile && file !== path.join("notes-omitted", `${input.waifuId.replace(/[^A-Za-z0-9._-]/gu, "-")}.json`)) return;
     }
     if (file.endsWith(".jsonl")) {
       const raw = await readFile(full, "utf8").catch(() => undefined);
       if (raw === undefined) {
         result.unreadable += 1;
-        continue;
+        return;
       }
       let removed = 0;
       const lines = raw.split("\n").filter((line) => {
@@ -252,17 +292,17 @@ export async function scrubArchive(dataRoot: string, input: ArchiveScrubInput): 
         result.files += 1;
         await atomicWriteText(full, lines.join("\n"));
       }
-      continue;
+      return;
     }
     if (!file.endsWith(".json")) {
       result.skipped += 1;
-      continue;
+      return;
     }
     const read = await readJson(full);
     if (!read.ok) {
       result.unreadable += 1;
       input.logger?.warn("An archived file could not be read; the forget scrub left it as it is", { file: path.posix.join(...segments) });
-      continue;
+      return;
     }
     const counter = { removed: 0 };
     let next: Json;
@@ -285,20 +325,20 @@ export async function scrubArchive(dataRoot: string, input: ArchiveScrubInput): 
       await atomicWriteJson(full, next);
     }
   }
-  return result;
 }
 
 /** Records of `waifuId` about the person, in any list of the document. */
-function scrubOwned(node: Json, match: Matcher, waifuId: string, counter: { removed: number }): Json {
+function scrubOwned(node: Json, match: Matcher, waifuId: string, counter: { removed: number }, depth = 0): Json {
+  if (depth > MAX_SCRUB_DEPTH) throw new TooDeepError();
   if (Array.isArray(node)) {
     return node.flatMap((item) => {
       if (isObject(item) && item.waifuId === waifuId && (memoryUserIds(item).includes(match.userId) || aboutPerson(item, match))) {
         counter.removed += 1;
         return [];
       }
-      return [scrubOwned(item, match, waifuId, counter)];
+      return [scrubOwned(item, match, waifuId, counter, depth + 1)];
     });
   }
-  if (isObject(node)) return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, scrubOwned(value, match, waifuId, counter)]));
+  if (isObject(node)) return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, scrubOwned(value, match, waifuId, counter, depth + 1)]));
   return node;
 }

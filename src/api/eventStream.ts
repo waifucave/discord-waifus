@@ -126,10 +126,17 @@ export class EventStream<T> {
     return cursor;
   }
 
-  /** Drops the replay buffer (forget): a client resuming from an older cursor gets a fresh snapshot. */
-  clearReplay(): void {
-    this.records.length = 0;
-    this.replayBytes = 0;
+  /**
+   * Forget: drops the replay records `drop` matches; everyone else's stay. A client resuming from
+   * an older cursor simply never receives the dropped ones.
+   */
+  dropReplay(drop: (record: { event: string; data: T }) => boolean): number {
+    const kept = this.records.filter((record) => !drop(record));
+    const removed = this.records.length - kept.length;
+    if (removed === 0) return 0;
+    this.records.splice(0, this.records.length, ...kept);
+    this.replayBytes = kept.reduce((total, record) => total + record.bytes, 0);
+    return removed;
   }
 
   recover(lastEventId?: string): EventStreamRecovery<T> {

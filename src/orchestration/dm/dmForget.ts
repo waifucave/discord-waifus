@@ -3,10 +3,11 @@
 // `conversation`: the DM conversation directory (`user/conversations/dm_<user>_<waifu>/`: refs and
 // whatever earlier versions kept there) and the conversation's cached images and OCR text. `all`: also the DM state file. Neither scope touches the rate-limit counters in
 // `user/dms/<userId>/limits/` (users can never reset the limiter); only the owner's forget-user
-// removes the whole `user/dms/<userId>/` directory.
+// resets them (to the floor alone) and removes the rest of `user/dms/<userId>/`.
 //
 // The bot cannot delete the user's own messages, so a forget also writes a floor message id into
-// the limits file (which survives): nothing at or below it is ever read back into the conversation.
+// the limits file (which survives; a floor is only ever raised): nothing at or below it is ever read
+// back into the conversation.
 //
 // The images to purge come from the conversation's durable image index (and a legacy ledger's image
 // refs), read before the directory goes, plus whatever the live conversation cache shows: the API
@@ -21,7 +22,7 @@ import type { StorageService } from "../../storage/storageService.js";
 import { forgetConversationImageIndex, readConversationImageKeys } from "../../discord/imageIndex.js";
 import { conversationDirPath, conversationKey } from "../context/keys.js";
 import { ImageOcrService } from "../ocr.js";
-import { dmFloorAt, dmStatePath, dmStateResource, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
+import { dmFloorAt, dmStatePath, dmStateResource, laterFloor, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
 
 export type DmForgetScope = "conversation" | "all";
 
@@ -68,7 +69,7 @@ async function exists(storage: StorageService, ...segments: string[]): Promise<b
 }
 
 /** Waifus with a DM conversation directory or state for this user. */
-async function dmWaifuIdsForUser(storage: StorageService, userId: string): Promise<string[]> {
+export async function dmWaifuIdsForUser(storage: StorageService, userId: string): Promise<string[]> {
   const ids = new Set<string>();
   try {
     for (const entry of await readdir(storage.dataPath("user", "conversations"), { withFileTypes: true })) {
@@ -109,7 +110,7 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
       await hooks.beforeDelete?.(conversation);
       // The floor first: whatever happens next, old messages are never read back.
       const floor = dmFloorAt((hooks.now ?? (() => new Date()))());
-      await updateDmLimit(storage, input.userId, waifuId, (current) => ({ ...current, floorMessageId: floor }));
+      await updateDmLimit(storage, input.userId, waifuId, (current) => ({ ...current, floorMessageId: laterFloor(current.floorMessageId, floor) }));
       if (images.length > 0) await purge(images);
     }
     deleted.cachedImages += cached.size;

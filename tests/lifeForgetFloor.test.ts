@@ -2,14 +2,19 @@
 // DM state file and keeps the floor only in `limits/<waifu>.json`; boot must load floors from there,
 // and `read_messages` checks the floor itself, so the person's old DMs are never readable again
 // when they write after the restart. Both the DM `/forget everything` and the owner's forget-user.
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { conversationKey } from "../src/orchestration/context/keys.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
-import { listDmStates, readDmFloor } from "../src/orchestration/dm/dmStore.js";
-import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
+import { compareSnowflakes, dmFloorAt, listDmStates, readDmFloor, readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
+import { forgetUser, pendingForgetJobs, resumeForgetJobs } from "../src/orchestration/dm/forgetUser.js";
+import { readForgottenPeople } from "../src/orchestration/dm/forgotten.js";
+import { forgetCapturedTraffic, recentQueries, recordProviderQuery } from "../src/shared/queryLog.js";
 import { COMPACTION_INSTRUCTION } from "../src/life/compaction.js";
 import { textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { closeWorlds, dmOf, KEVIN, lifeWorld, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { dmRoot } from "./dmFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -33,8 +38,30 @@ const reader: ScriptedTurn = (request) => {
   return textTurn("(nothing to send)");
 };
 
+const SEQUENCES = [
+  "DM /forget everything",
+  "owner forget-user",
+  // Review F1: the owner's forget used to delete the limits file a DM forget had left (the floor's
+  // only copy), and a second owner forget deleted the floor the first one wrote.
+  "DM /forget everything, then owner forget-user",
+  "owner forget-user twice"
+] as const;
+
+async function forgetBy(w: LifeWorld, how: (typeof SEQUENCES)[number]): Promise<void> {
+  if (how.startsWith("DM")) await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "all" }, { now: w.clock.now });
+  if (how === "DM /forget everything") return;
+  if (how.startsWith("DM")) w.clock.advance(60_000);
+  await forgetUser(w.storage, { discordUserId: KEVIN }, { now: w.clock.now });
+  if (how !== "owner forget-user twice") return;
+  w.clock.advance(60_000);
+  const floor = await readDmFloor(w.storage, KEVIN, "aria");
+  await forgetUser(w.storage, { discordUserId: KEVIN }, { now: w.clock.now });
+  // Raised, never lost.
+  expect(compareSnowflakes((await readDmFloor(w.storage, KEVIN, "aria"))!, floor!)).toBeGreaterThan(0);
+}
+
 describe("a forgotten DM after a restart", () => {
-  for (const how of ["DM /forget everything", "owner forget-user"] as const) {
+  for (const how of SEQUENCES) {
     it(`${how}: the old messages are not readable when the person writes again`, async () => {
       const w = await lifeWorld(roots, { scripts: [reader] });
       vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
@@ -46,8 +73,7 @@ describe("a forgotten DM after a restart", () => {
       expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain("cardamom");
 
       w.clock.advance(60_000);
-      if (how === "DM /forget everything") await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "all" }, { now: w.clock.now });
-      else await forgetUser(w.storage, { discordUserId: KEVIN }, { now: w.clock.now });
+      await forgetBy(w, how);
       expect(await listDmStates(w.storage)).toEqual([]);
       expect(await readDmFloor(w.storage, KEVIN, "aria")).toBeDefined();
 
@@ -74,4 +100,75 @@ describe("a forgotten DM after a restart", () => {
       expect(seen).not.toContain("(removed)");
     });
   }
+});
+
+describe("an unfinished owner forget (review F1, F8)", () => {
+  const PERSON = "300000000000000077";
+  const OTHER = "300000000000000088";
+
+  async function seeded() {
+    const { root, storage } = await dmRoot(roots);
+    const now = new Date().toISOString();
+    await updateDmState(storage, { userId: PERSON, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, userDisplayName: "Quillon" }));
+    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, replyTimestamps: [now], limitNoticeSentAt: now, autoMessageIds: ["1300000000000000009"] }));
+    await mkdir(path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON })), { recursive: true });
+    return { root, storage };
+  }
+
+  it("a failing part leaves the job queued; the rest runs, the traffic goes, and the next boot finishes it", async () => {
+    const { root, storage } = await seeded();
+    const conversation = path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON }));
+    recordProviderQuery("assistant", { messages: [{ role: "user", content: `about <@${PERSON}>: hi` }] });
+    recordProviderQuery("assistant", { messages: [{ role: "user", content: `about <@${OTHER}>: hello` }] });
+    const at = new Date("2026-10-20T10:00:00.000Z");
+    const failing = forgetUser(storage, { discordUserId: PERSON, names: ["Quillon"] }, {
+      now: () => at,
+      beforeDelete: async () => {
+        throw new Error("disk went away");
+      }
+    });
+    await expect(failing).rejects.toThrow("disk went away");
+    // The floor and the record were written before the failure; the DM conversation is still there.
+    expect(await readDmFloor(storage, PERSON, "aria")).toBe(dmFloorAt(at));
+    expect((await readForgottenPeople(storage)).map((entry) => entry.userId)).toEqual([PERSON]);
+    expect(await readdir(conversation)).toEqual([]);
+    expect(await pendingForgetJobs(storage)).toEqual([{ userId: PERSON, at: at.toISOString(), names: ["Quillon"] }]);
+    // Whatever failed, the captured traffic lost the person (and only the person).
+    const captured = JSON.stringify(recentQueries());
+    expect(captured).not.toContain(PERSON);
+    expect(captured).toContain(OTHER);
+
+    // The next boot runs the whole job again.
+    expect(await resumeForgetJobs(storage)).toBe(1);
+    expect(await readDmState(storage, PERSON, "aria")).toBeUndefined();
+    await expect(readdir(conversation)).rejects.toMatchObject({ code: "ENOENT" });
+    const limits = await readDmLimit(storage, PERSON, "aria");
+    expect(limits).toMatchObject({ replyTimestamps: [], autoMessageIds: [], floorMessageId: dmFloorAt(at) });
+    expect(limits.limitNoticeSentAt).toBeUndefined();
+    expect(await pendingForgetJobs(storage)).toEqual([]);
+    forgetCapturedTraffic((entry) => entry.includes(OTHER));
+  });
+
+  it("a crash after the job was written: the boot resume runs every part, with the job's time", async () => {
+    const { root, storage } = await seeded();
+    const at = "2026-10-21T08:30:00.000Z";
+    await mkdir(path.join(root, "user", "people"), { recursive: true });
+    await writeFile(path.join(root, "user", "people", "forget-jobs.json"), JSON.stringify({ jobs: [{ userId: PERSON, at }] }));
+    expect(await resumeForgetJobs(storage)).toBe(1);
+    expect(await readDmState(storage, PERSON, "aria")).toBeUndefined();
+    expect(await readDmFloor(storage, PERSON, "aria")).toBe(dmFloorAt(new Date(at)));
+    expect(await readForgottenPeople(storage)).toEqual([{ userId: PERSON, at }]);
+    expect(await readdir(path.join(root, "user", "dms", PERSON))).toEqual(["limits"]);
+    expect(await pendingForgetJobs(storage)).toEqual([]);
+  });
+
+  it("a resumed older job never lowers a later floor", async () => {
+    const { root, storage } = await seeded();
+    const later = dmFloorAt(new Date("2026-10-22T00:00:00.000Z"));
+    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, floorMessageId: later }));
+    await mkdir(path.join(root, "user", "people"), { recursive: true });
+    await writeFile(path.join(root, "user", "people", "forget-jobs.json"), JSON.stringify({ jobs: [{ userId: PERSON, at: "2026-10-21T08:30:00.000Z" }] }));
+    await resumeForgetJobs(storage);
+    expect(await readDmFloor(storage, PERSON, "aria")).toBe(later);
+  });
 });
