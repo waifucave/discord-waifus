@@ -119,7 +119,7 @@ describe("pinned images (§5.3)", () => {
     expect(before.inlineImageCount).toBe(1);
     // The image's bytes are gone from the cache and from Discord.
     const key = before.shownImageKeys[0]!;
-    fetcher.failKeys.set(key, "not_found");
+    fetcher.failKeys.set(key, "http_error");
     const again = w.discord.post(ROOM, `<@${ARIA_BOT}> did you see it?`, { mentions: { [ARIA_BOT]: "Aria" } });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: again.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: again });
     await w.cast.settle();
