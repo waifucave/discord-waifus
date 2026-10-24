@@ -105,6 +105,12 @@ describe("runMigrations", () => {
     const root = await makeTempRoot();
     roots.push(root);
 
+    await writeJson(root, "user/servers/guild-1/server.json", {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      guildId: "guild-1"
+    });
     await writeJson(root, "user/orchestrator/history.json", {
       schemaVersion: 1,
       revision: 0,
@@ -167,12 +173,15 @@ describe("runMigrations", () => {
       "migrate-orchestrator-history-to-responding-waifus",
       "migrate-retrigger-pacing-1",
       "migrate-scheduled-retrigger-at-1",
+      "migrate-orchestrator-history-per-guild-2",
       "stamp-schema-version-2"
     ]);
-    const history = await readJson<{ decisions: Array<Record<string, unknown>> }>(
+    // The legacy shapes were converted, then the file was split per guild (newest first).
+    const split = await readJson<{ decisions: Array<Record<string, unknown>> }>(
       root,
-      "user/orchestrator/history.json"
+      "user/servers/guild-1/orchestrator-history.json"
     );
+    const history = { decisions: [...split.decisions].reverse() };
     expect(history.decisions[0]).toMatchObject({
       id: "reply-chain",
       action: "reply",

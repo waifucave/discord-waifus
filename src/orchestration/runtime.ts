@@ -261,7 +261,7 @@ export class RuntimeOrchestrator {
     if (this.options.discord.listGuilds) {
       await syncGuilds(this.options);
     }
-    await healPendingOrchestratorDecisions(this.options.storage);
+    await healPendingOrchestratorDecisions(this.options.storage, this.options.logger);
     await this.memoryJobs.scheduleDreamRuns();
     if (this.options.isPaused?.()) {
       // A paused runtime stays silent across restarts/reloads: no catch-up wakes, no resumed

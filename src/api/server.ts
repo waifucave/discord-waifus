@@ -18,6 +18,7 @@ import { RuntimeOrchestrator } from "../orchestration/runtime.js";
 import { clearOcrArtifacts } from "../orchestration/ocr.js";
 import { forgetUser } from "../orchestration/memoryForget.js";
 import { loadSubjectDirectory, resolveSubjectsInText } from "../orchestration/memorySubjects.js";
+import { readMergedOrchestratorHistory, readOrchestratorHistoryForGuild } from "../orchestration/stores/decisionHistory.js";
 import { readThreads } from "../orchestration/stores/threads.js";
 import { ChannelThreadsModeSchema } from "../shared/schemas/threads.js";
 import { applyMemoryCandidate, bumpMemoryRecord, emptyMemoryStore, readMemoryStore, updateMemoryStore } from "../orchestration/stores/memories.js";
@@ -46,8 +47,6 @@ import {
   MemoryStoreSchema,
   MemoryKindSchema,
   MemorySubjectSchema,
-  OrchestratorHistoryFile,
-  OrchestratorHistoryFileSchema,
   OrchestratorPromptSectionsSchema,
   ProviderCredentialsFile,
   ProviderCredentialsFileSchema,
@@ -263,6 +262,7 @@ const UpdateWaifuBodySchema = WaifuConfigSchema.omit({ personaDigest: true }).pa
 // drift on) their inline definitions.
 const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
   revision: z.number().int().nonnegative().optional(),
+  // Spec 9.7: the server `enabled` flag was removed. Accepted and ignored for one release (logged).
   enabled: z.boolean().optional(),
   // Truly-optional re-declarations: .partial() alone still lets ZodDefault manufacture
   // values for absent keys, which would reset stored state on unrelated PUTs
@@ -288,7 +288,7 @@ const ServerConfigBodySchema = ServerConfigSchema.partial().extend({
 const ChannelConfigBodySchema = z.object({
   revision: z.number().int().nonnegative().optional(),
   name: z.string().optional(),
-  // Omitted keeps the stored flag; only a channel first created through this route defaults on.
+  // Spec 9.7: the channel `enabled` flag was removed. Accepted and ignored for one release (logged).
   enabled: z.boolean().optional(),
   enabledWaifuIds: z.array(z.string()).optional(),
   // Spec 9.5 / O2: "inherit" (default) lets threads and forum posts under this channel share its
@@ -441,6 +441,21 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (promptLayoutIgnoredLogged || !isPlainRecord(rawBody) || !("promptLayout" in rawBody)) return;
     promptLayoutIgnoredLogged = true;
     logger.warn("Ignoring `promptLayout` in a waifu request body: the prompt layout editor was removed.");
+  };
+  // Spec 9.7: server and channel bodies may still carry the removed `enabled` flag for one
+  // release. It is ignored (never stored); logged once per process like `promptLayout`.
+  let enabledFlagIgnoredLogged = false;
+  const noteIgnoredEnabledFlag = (rawBody: unknown, scope: "server" | "channel"): void => {
+    if (enabledFlagIgnoredLogged || !isPlainRecord(rawBody)) return;
+    const channelsCarryIt =
+      scope === "server" &&
+      isPlainRecord(rawBody.channels) &&
+      Object.values(rawBody.channels).some((channel) => isPlainRecord(channel) && "enabled" in channel);
+    if (!("enabled" in rawBody) && !channelsCarryIt) return;
+    enabledFlagIgnoredLogged = true;
+    logger.warn(
+      `Ignoring \`enabled\` in a ${scope} request body: the server/channel enabled flags were removed; use \`paused\` and a channel's enabledWaifuIds.`
+    );
   };
   if (options.updateActivity) installUpdateActivity(app, options.updateActivity);
   const globalEvents = new EventStream<unknown>();
@@ -690,8 +705,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   app.get("/api/orchestrator/history", async (request) => {
     const query = HistoryQuerySchema.parse(request.query);
-    const history = await readOrchestratorHistory(storage);
-    return { ...history, decisions: filterHistoryEntries(history.decisions, query) };
+    // Decisions are stored per guild (spec 9.3): a guildId reads that guild's file, otherwise every
+    // guild file plus the legacy no-guild decisions are merged, newest first.
+    if (query.guildId) assertSnowflakeId(query.guildId);
+    const history = query.guildId
+      ? await readOrchestratorHistoryForGuild(storage, query.guildId)
+      : await readMergedOrchestratorHistory(storage, logger);
+    // Bounded by default (200, spec 9.3), on the merged and the per-guild path alike.
+    return { ...history, decisions: filterHistoryEntries(history.decisions, { ...query, limit: query.limit ?? 200 }) };
   });
 
   app.get("/api/stage-manager/config", async () => readAgentConfig(storage, "stage-manager"));
@@ -1018,6 +1039,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   app.put("/api/servers/:guildId", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const body = ServerConfigBodySchema.parse(request.body);
+    noteIgnoredEnabledFlag(request.body, "server");
     const fallback = ServerConfigSchema.parse({
       ...createRevisionedBase(),
       guildId
@@ -1029,7 +1051,14 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       fallback,
       expectedRevision: expectedRevision(request, body),
       transform: (current) => {
-        const { revision: _revision, schemaVersion: _schemaVersion, updatedAt: _updatedAt, guildId: _guildId, ...patch } = body;
+        const {
+          revision: _revision,
+          schemaVersion: _schemaVersion,
+          updatedAt: _updatedAt,
+          guildId: _guildId,
+          enabled: _enabled,
+          ...patch
+        } = body;
         return {
           ...current,
           ...patch,
@@ -1070,7 +1099,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
       }
       await rm(serverPath, { recursive: true, force: true });
-      return { accepted: true, message: `Server ${guildId} configuration removed (sessions and rosters included).` };
+      return { accepted: true, message: `Server ${guildId} configuration removed (sessions, rosters and decision history included).` };
     });
   });
 
@@ -1114,6 +1143,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const { guildId } = parseIdParam(request.params, "guildId");
     const { channelId } = parseIdParam(request.params, "channelId");
     const body = ChannelConfigBodySchema.parse(request.body);
+    noteIgnoredEnabledFlag(request.body, "channel");
     return storage.updateRevisionedJson({
       resourceKey: `server:${guildId}`,
       relativePath: serverRelativePath(guildId),
@@ -1130,7 +1160,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
           [channelId]: {
             channelId,
             name: body.name ?? current.channels[channelId]?.name,
-            enabled: body.enabled ?? current.channels[channelId]?.enabled ?? true,
             enabledWaifuIds: body.enabledWaifuIds ?? current.channels[channelId]?.enabledWaifuIds ?? [],
             ...((body.threads ?? current.channels[channelId]?.threads)
               ? { threads: body.threads ?? current.channels[channelId]!.threads }
@@ -1585,14 +1614,6 @@ async function updateAgentConfig(
       return next;
     }
   });
-}
-
-async function readOrchestratorHistory(storage: StorageService): Promise<OrchestratorHistoryFile> {
-  return storage.readJson("user/orchestrator/history.json", OrchestratorHistoryFileSchema, emptyOrchestratorHistory());
-}
-
-function emptyOrchestratorHistory(): OrchestratorHistoryFile {
-  return OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }));
 }
 
 async function readStageManagerHistory(storage: StorageService): Promise<StageManagerHistoryFile> {

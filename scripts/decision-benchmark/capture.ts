@@ -12,7 +12,19 @@ async function captureRemote() {
   const root = path.join(process.env.HOME!, ".dc-waifus");
   const runtime = JSON.parse(await fs.readFile(path.join(root, "app/runtime.json"), "utf8"));
   const config = JSON.parse(await fs.readFile(path.join(root, "user/orchestrator/config.json"), "utf8"));
-  const history = JSON.parse(await fs.readFile(path.join(root, "user/orchestrator/history.json"), "utf8"));
+  // Decision history is per guild since Phase 5 (spec 9.3): count every guild file plus the
+  // no-guild legacy file; hosts that have not migrated yet still have the global file.
+  const countDecisions = async (file: string): Promise<number> => {
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, "utf8"));
+      return Array.isArray(parsed.decisions) ? parsed.decisions.length : 0;
+    } catch { return 0; }
+  };
+  let storedDecisionCount = await countDecisions(path.join(root, "user/orchestrator/history.json"))
+    + await countDecisions(path.join(root, "user/orchestrator/history-legacy.json"));
+  for (const entry of await fs.readdir(path.join(root, "user/servers")).catch(() => [] as string[])) {
+    storedDecisionCount += await countDecisions(path.join(root, "user/servers", entry, "orchestrator-history.json"));
+  }
   const ac = new AbortController();
   try {
     const response = await fetch(`http://127.0.0.1:${runtime.port}/api/events`, {
@@ -38,7 +50,7 @@ async function captureRemote() {
       });
       return { capturedAt: new Date().toISOString(), appVersion: runtime.packageVersion,
         baseline: { providerId: config.providerId, modelId: config.modelId },
-        storedDecisionCount: history.decisions.length, samples: paired };
+        storedDecisionCount, samples: paired };
     }
     throw new Error("snapshot_incomplete");
   } finally { ac.abort(); }

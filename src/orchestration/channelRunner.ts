@@ -1,3 +1,4 @@
+import path from "node:path";
 // Per-channel run loop: one run slot per guild with human/manual preemption and a deduped
 // preemption queue, orchestrator decisions (model / deterministic / one-shot) with guardrails and
 // overrides, decision recording, retrigger timers, crash-recovery wakes and restart resume.
@@ -33,10 +34,9 @@ import { GatewayPipelineError, TruncatedOutputError } from "./pipeline/params.js
 import {
   OrchestratorDecisionHistoryEntry,
   OrchestratorDecisionStatus,
-  OrchestratorHistoryFileSchema,
   OrchestratorResponderOutcome,
   ServerConfig,
-  createEmptyRevisionedFile
+  ServerConfigSchema
 } from "../shared/schemas/domain.js";
 import { nowIso } from "../shared/schemas/common.js";
 import { ChannelSessionStateSchema, type RetriggerWake, createEmptyChannelSessionState } from "./session.js";
@@ -79,6 +79,7 @@ import {
   appendOrchestratorHistory,
   readCompletedOrchestratorDecisionsForChannel,
   readOrchestratorDecision,
+  readOrchestratorHistoryForGuild,
   updateOrchestratorResponderOutcome
 } from "./stores/decisionHistory.js";
 import { noteActiveChatParticipantsFromContext } from "./stores/participants.js";
@@ -152,19 +153,22 @@ export class ChannelRunner {
     await new Promise((resolve) => setTimeout(resolve, this.options.restartResumeDelayMs ?? 5000));
     if (this.hooks.isStopping() || this.options.isPaused?.()) return;
     const guildIds = await listKnownGuildIds(this.options.storage);
-    const history = await this.options.storage.readJson(
-      "user/orchestrator/history.json",
-      OrchestratorHistoryFileSchema,
-      OrchestratorHistoryFileSchema.parse(createEmptyRevisionedFile({ decisions: [] }))
-    );
     for (const guildId of guildIds) {
+      // Read-only: resume must never (re)create a server that was deleted or has no server.json.
       let server: ServerConfig;
       try {
-        server = await ensureServer(this.options.storage, guildId);
+        server = await this.options.storage.readJson(
+          path.join("user", "servers", guildId, "server.json"),
+          ServerConfigSchema
+        );
       } catch {
         continue;
       }
-      if (!server.enabled) continue;
+      // A paused server stays quiet through a restart (the kill switch, spec 9.7); channels without
+      // waifus are skipped below. There is no separate server/channel `enabled` flag any more.
+      if (server.paused) continue;
+      // Decisions are stored per guild (spec 9.3); newest first.
+      const history = await readOrchestratorHistoryForGuild(this.options.storage, guildId);
       // Resumed replies in one guild run one after another (never preempting each other).
       const resumes: Array<() => Promise<void>> = [];
       for (const channel of Object.values(server.channels)) {
@@ -894,7 +898,7 @@ export class ChannelRunner {
       for (const strippedEntry of guarded.stripped) {
         const outcome = responderOutcomes[strippedEntry.index];
         if (outcome) {
-          await updateOrchestratorResponderOutcome(this.options.storage, decisionId, outcome.id, {
+          await updateOrchestratorResponderOutcome(this.options.storage, guildId, decisionId, outcome.id, {
             directiveStripped: strippedEntry.reason
           });
           this.options.logger.info("Stripped orchestrator directive", {
@@ -914,7 +918,7 @@ export class ChannelRunner {
 
       if (decision.action === "no_reply") {
         // A pause is final the moment it is recorded.
-        await this.commitDecision(prepared, decisionId, usage);
+        await this.commitDecision(guildId, prepared, decisionId, usage);
         let seconds = decision.retriggerAfterSeconds ?? RETRIGGER_DEFAULT_SECONDS;
         if (timerWakeSeconds) {
           seconds = Math.max(seconds, Math.ceil(timerWakeSeconds * 1.5));
@@ -941,7 +945,7 @@ export class ChannelRunner {
       } finally {
         // The executor has finalized the decision (completed / interrupted / failed) by now, so its
         // note carries the real outcome; a decision still pending is never rendered.
-        await this.commitDecision(prepared, decisionId, usage);
+        await this.commitDecision(guildId, prepared, decisionId, usage);
       }
       const { attemptedCount, executedCount } = execution;
       if (attemptedCount === 0) {
@@ -1012,9 +1016,9 @@ export class ChannelRunner {
    * A decision still pending (its finalization failed) is never rendered. Best-effort: a failed
    * write only costs the director this one note.
    */
-  private async commitDecision(prepared: PreparedContext, decisionId: string, usage: Usage | undefined): Promise<void> {
+  private async commitDecision(guildId: string, prepared: PreparedContext, decisionId: string, usage: Usage | undefined): Promise<void> {
     try {
-      const entry = await readOrchestratorDecision(this.options.storage, decisionId);
+      const entry = await readOrchestratorDecision(this.options.storage, guildId, decisionId);
       // Name the messages the decision produced by their refs (assigned now if they have not
       // reached the ledger yet; refs are stable per conversation), so the note's place in the
       // transcript does not matter.
@@ -1086,7 +1090,7 @@ export class ChannelRunner {
         messageIds: []
       })
     );
-    await appendOrchestratorHistory(this.options.storage, {
+    const recorded = await appendOrchestratorHistory(this.options.storage, {
       id: input.decisionId,
       guildId: input.guildId,
       channelId: input.channelId,
@@ -1100,6 +1104,12 @@ export class ChannelRunner {
       responderOutcomes,
       createdAt: nowIso()
     });
+    if (!recorded) {
+      this.options.logger.warn("Orchestrator decision not recorded: the server's folder is gone", {
+        guildId: input.guildId,
+        channelId: input.channelId
+      });
+    }
     this.options.logger.info("Orchestrator decision recorded", {
       guildId: input.guildId,
       channelId: input.channelId,

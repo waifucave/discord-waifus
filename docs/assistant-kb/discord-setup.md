@@ -34,10 +34,9 @@ button for this; it is API-only.
 Rooms → pick the server → per channel, toggle the waifus that may speak there
 (`PUT /api/servers/:guildId/channels/:channelId` with `enabledWaifuIds`; both ids must be
 Discord snowflakes). A channel is active exactly when its `enabledWaifuIds` list is non-empty,
-and a waifu missing from that list never speaks there, whatever the orchestrator wants. The
-channel's `enabled` flag is stored (the dashboard mirrors it from the list) but the runtime does
-not read it, so setting `enabled: false` with waifus still listed does not silence the channel —
-empty the list instead (or pause the server with `PUT /api/servers/:guildId {"paused": true}`).
+and a waifu missing from that list never speaks there, whatever the orchestrator wants. There is no
+separate channel or server `enabled` flag: empty the list to silence a channel, or pause the
+server with `PUT /api/servers/:guildId {"paused": true}` (Rooms → the server switch).
 
 ## Threads and forum posts
 

@@ -221,7 +221,6 @@ export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;
 export const ServerConfigSchema = RevisionedRecordSchema.extend({
   guildId: z.string().min(1),
   name: z.string().optional(),
-  enabled: z.boolean().default(false),
   // B29: optional overrides (precedence: explicit server override > agent/waifu `contextWindow`).
   // Files written before Phase 4 carry all three keys; they parse unchanged until the
   // server-context-windows-explicit-v1 migration drops keys equal to the old defaults.
@@ -242,7 +241,8 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
   // Per-guild kill switch for the stage manager's automatic work (idle observers + dreams).
   stageManagerEnabled: z.boolean().default(true),
   // Temporary per-guild mute: messages are observed (sessions stay warm) but nothing runs
-  // and nothing is scheduled until unpaused. Distinct from channel enabled flags.
+  // and nothing is scheduled until unpaused. This is the server's kill switch (spec 9.7): the
+  // old server/channel `enabled` flags are gone, a channel is live when it has an enabled waifu.
   paused: z.boolean().default(false),
   tools: ServerToolSettingsSchema,
   channels: z.record(
@@ -250,7 +250,6 @@ export const ServerConfigSchema = RevisionedRecordSchema.extend({
     z.object({
       channelId: z.string().min(1),
       name: z.string().optional(),
-      enabled: z.boolean().default(false),
       enabledWaifuIds: z.array(z.string()).default([]),
       // Spec 9.5 / O2: do this channel's threads and forum posts inherit its cast ("inherit") or
       // stay silent ("off")? Absent means "inherit" (kept optional, not defaulted, so older writers
