@@ -236,6 +236,58 @@ describe("addressee detector (§4.3)", () => {
     expect((await reasons(w, "aria")).length + (await reasons(w, "mina")).length).toBe(2);
   });
 
+  it("a burst is direct when any message in it is, also one arriving after the mention (M9)", async () => {
+    const w = await world();
+    w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
+    for (const [text, o] of [
+      [`<@${ARIA_BOT}> are you there`, { mentions: { [ARIA_BOT]: "Aria" } }],
+      ["also what's for dinner?", {}]
+    ] as const) {
+      const message = w.discord.post(ROOM, text, o);
+      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria", "mina"], authorIsWaifu: false, raw: message });
+    }
+    await w.cast.settle();
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
+    expect(w.detector.calls).toEqual([]);
+    expect(await reasons(w, "aria")).toEqual(["mention"]);
+    expect(await reasons(w, "mina")).toEqual([]);
+  });
+
+  it("one wake per message: the detector skips a waifu her watch already woke for the burst; others can still be picked (D-c)", async () => {
+    const w = await world();
+    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
+      ...file,
+      watches: [
+        {
+          id: "w1",
+          note: "brownies",
+          createdAt: w.clock.now().toISOString(),
+          expiresAt: new Date(w.clock.ms + 86_400_000).toISOString(),
+          once: false,
+          bindings: [{ placeKey: ROOM_KEY, words: ["brownie"] }],
+          fires: []
+        }
+      ]
+    }));
+    // The detector picks her: she already has the watch wake, so nothing more.
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    await say(w, "brownie emergency, help");
+    expect(await reasons(w, "aria")).toEqual(["watch"]);
+    expect(await reasons(w, "mina")).toEqual([]);
+    // "anyone": the draw leaves her out.
+    w.clock.advance(11 * 60_000);
+    w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
+    await say(w, "who has a brownie pan?");
+    expect(await reasons(w, "mina")).toEqual(["detector"]);
+    // Another waifu chosen by name is still woken.
+    w.clock.advance(11 * 60_000);
+    w.detector.answer = { choice: "waifu_1", probabilities: { waifu_1: 1 } };
+    await say(w, "brownie pans are overrated, right?");
+    expect(await reasons(w, "mina")).toEqual(["detector", "detector"]);
+    expect((await queued(w, "aria")).immediate.every((wake) => wake.reason === "watch")).toBe(true);
+  });
+
   it("on failure: anyone for a question or the first human message in 10 minutes, else nothing; never retried", async () => {
     const w = await world();
     w.detector.answer = new Error("detector_timeout");

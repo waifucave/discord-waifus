@@ -114,7 +114,13 @@ Per accepted guild message (human or configured waifu bot, in a cast channel or 
 
 Bursts: the channel debounce (`discord.debounce.serverMs` 1200 / `serverMaxWaitMs` 4000) applies to
 the **detector only**. Direct reasons and watches go straight to the wake queue, which coalesces on
-its own (§4.6).
+its own (§4.6). Every human message joins the burst, direct or not, so a burst is direct when any
+message in it is, also a plain message that arrives after the mention within the debounce window.
+
+One wake per message (owner decision D-c): when a waifu's watch fired for any message in the
+burst, the detector skips her for that burst. `waifu_<i>` naming her wakes nobody; the `anyone`
+draw leaves her out; other waifus can still be picked. A burst whose whole cast was woken by
+watches never reaches the detector.
 
 Edits: an edit that adds a mention of her to a human message less than 2 minutes old counts as a
 `mention` (the existing rule), once. Other edits and deletes never wake anyone (§10.3).

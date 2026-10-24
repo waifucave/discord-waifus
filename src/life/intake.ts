@@ -69,7 +69,17 @@ export type GuildMessageInput = {
   raw?: RawDiscordMessage;
 };
 
-type Burst = { messageIds: string[]; direct: boolean; authorId?: string; authorName?: string; guildId: string; channelId: string; castWaifuIds: string[] };
+type Burst = {
+  messageIds: string[];
+  direct: boolean;
+  /** Waifus a watch woke for a message in this burst: the detector skips them (D-c). */
+  watched: string[];
+  authorId?: string;
+  authorName?: string;
+  guildId: string;
+  channelId: string;
+  castWaifuIds: string[];
+};
 
 type DmBurst = { messageIds: string[]; userName?: string };
 
@@ -161,6 +171,7 @@ export class Intake {
     const mentionedUsers = new Set(Object.keys(raw.mentions.users));
     const mentionedRoles = new Set(Object.keys(raw.mentions.roles));
     const directWakes: Array<{ waifu: WaifuConfig; wake: Wake; shared: boolean }> = [];
+    const watched = new Set<string>();
     for (const waifu of waifus) {
       const selfIds = await selfAuthorIds(deps.storage, waifu);
       const own = selfIds.includes(raw.authorId);
@@ -193,6 +204,7 @@ export class Intake {
       for (const { watch, matched } of fired) {
         await this.o.router.route(waifu.id, { id: newWakeId(), reason: "watch", watchId: watch.id, matched, note: watch.note, ...base }, { guildId: input.guildId });
       }
+      if (fired.length > 0) watched.add(waifu.id);
     }
     // Several waifus woken by one @everyone / shared role ping are staggered by 0–20 s (§4.1).
     const sharedCount = directWakes.filter((entry) => entry.shared).length;
@@ -204,16 +216,19 @@ export class Intake {
       else await routed;
     }
     if (!human) return;
-    const burst = this.bursts.get(placeKey);
-    if (directWakes.length > 0) {
-      if (burst) burst.direct = true;
-      this.lastHumanAt.set(placeKey, raw.createdAt);
-      return;
-    }
-    const next: Burst = burst ?? { messageIds: [], direct: false, guildId: input.guildId, channelId: input.channelId, castWaifuIds: input.castWaifuIds };
+    // Every human message joins the place's burst. A burst with any direct message in it (before or
+    // after the others, M9) never reaches the detector; a waifu whose watch fired for a message in it
+    // is skipped by the detector for the burst (D-c: one wake per message), others can still be picked.
+    const next: Burst = this.bursts.get(placeKey) ?? { messageIds: [], direct: false, watched: [], guildId: input.guildId, channelId: input.channelId, castWaifuIds: input.castWaifuIds };
     next.messageIds.push(raw.id);
-    next.authorId = raw.authorId;
-    next.authorName = fromName;
+    if (directWakes.length > 0) {
+      next.direct = true;
+      this.lastHumanAt.set(placeKey, raw.createdAt);
+    } else {
+      next.authorId = raw.authorId;
+      next.authorName = fromName;
+    }
+    for (const waifuId of watched) if (!next.watched.includes(waifuId)) next.watched.push(waifuId);
     next.castWaifuIds = input.castWaifuIds;
     this.bursts.set(placeKey, next);
     const debounce = deps.config().discord.debounce;
@@ -243,6 +258,9 @@ export class Intake {
     const target = server?.detector?.target ?? deps.config().detector.target;
     const waifus = (await this.castWaifus(burst.castWaifuIds)).filter((waifu) => waifu.model);
     if (waifus.length === 0) return [];
+    // D-c: a waifu her watch already woke for this burst gets no second wake from the detector.
+    const watched = new Set(burst.watched);
+    if (waifus.every((waifu) => watched.has(waifu.id))) return [];
     const newestId = burst.messageIds[burst.messageIds.length - 1]!;
     const page = await deps.conversations.readPage({ conversation, limit: 12 }).catch(() => ({ messages: [] as RawDiscordMessage[] }));
     const dir = await this.view(burst.guildId);
@@ -301,7 +319,8 @@ export class Intake {
     if (newestMessage) this.lastHumanAt.set(placeKey, newestMessage.createdAt);
     let chosen: string | undefined;
     if (choice.startsWith("waifu_")) chosen = question.candidates[Number(choice.slice(6))]?.waifuId;
-    else if (choice === "anyone" || choice === "fallback:anyone") chosen = await this.drawFor(waifus, conversation, now);
+    else if (choice === "anyone" || choice === "fallback:anyone") chosen = await this.drawFor(waifus.filter((waifu) => !watched.has(waifu.id)), conversation, now);
+    if (chosen && watched.has(chosen)) chosen = undefined;
     const woke: string[] = [];
     if (chosen) {
       const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
