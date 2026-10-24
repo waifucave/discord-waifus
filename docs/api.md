@@ -335,8 +335,9 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   nightly maintenance. With Discord offline (no cast runtime) the scrubs are queued and run when
   each life next starts; the response then lists those waifus in `livesQueued`. `dryRun` reports
   the DM counts without deleting or scrubbing. Not covered: Discord history itself, what she
-  already said in rooms, usage-ledger lines and app logs (ids only), cached guild images until
-  their TTL, data outside this host, and the 15-minute web page cache.
+  already said in rooms, usage-ledger lines and app logs (ids only), cached guild images, and any
+  DM image no image index recorded, until the disk cache expires them (168 hours by default), data
+  outside this host, and the 15-minute web page cache.
 
 ## Conflict Semantics
 

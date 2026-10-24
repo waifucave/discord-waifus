@@ -10,6 +10,7 @@ import { FakeImageFetcher } from "./contextFixtures.js";
 import { CHANNEL, closeWorlds, KEVIN, ROOM, ROOM_KEY, type LifeWorld } from "./lifeFixtures.js";
 import type { FakeAnthropic } from "./eval/fakeAnthropic.js";
 import { blocksOf, dmWake, isCompaction, isMaintenance, lifeTurn, realAnthropicWorld as wireWorld, roomWake, unmarked } from "./eval/lifeWire.js";
+import { modelTokens } from "./eval/tokenModel.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -119,6 +120,68 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
     expect(dropped).toBeGreaterThan(0);
     const firstOfEpoch = w.ledger.lines.filter((line) => line.purpose === "life")[lifeRequests.indexOf(server.exchanges[compactionIndex + 1]!)];
     expect(firstOfEpoch?.thinkingBlocksDropped).toBe(dropped);
+  });
+
+  it("mixed content (CJK, Hangul, code, emoji, URLs, an image) stays within the documented margin of the budget", async () => {
+    const BUDGET = 32_000;
+    const ENGLISH = [
+      "```ts\nconst bake = (minutes: number) => oven.set({ celsius: 180, minutes });\nbake(25);\n```",
+      "see https://cdn.example.net/a/very/long/path/to/the/recipe/card/with/many/segments/and-a-query?x=1&y=2&z=3 for the card",
+      "melt the butter with the dark chocolate, then fold in the flour and a pinch of salt before baking"
+    ];
+    const DENSE = [
+      "今日は抹茶のブラウニーを焼きました。バターと砂糖をよく混ぜて、卵を一つずつ加えます。焼き時間は二十五分です。",
+      "🍫🧁🍰🥐🍪 so good!! 😋😋 https://bake.example/recipes/matcha-brownies?ref=discord&utm_source=chat",
+      "오늘 브라우니를 구웠어요. 정말 맛있어요! 다음에는 말차를 넣어 볼게요."
+    ];
+    /** The largest life request on the wire, over the budget, after she reads every page of `posts` (oldest first). */
+    const largestOver = async (posts: string[]): Promise<number> => {
+      const { w, server } = await realAnthropicWorld({ config: (config) => ({ ...config, life: { ...config.life, maxContextTokens: BUDGET } }), options: { images: new FakeImageFetcher() } });
+      // The provider's count is script-aware here (tests/eval/tokenModel.ts): CJK about 1.2 tokens
+      // a character, emoji about 3, an image 1,600 tokens against the estimate's flat 1,000.
+      server.sim.tokenizer = (json) => modelTokens(JSON.parse(json) as unknown);
+      // Two English turns first: the calibration settles on English before the pages arrive.
+      server.next = lifeTurn(() => "bake-club/#general");
+      await roomWake(w, "morning!", 0);
+      await roomWake(w, "what are we baking?", 0);
+      let reads = 0;
+      server.next = (body) => {
+        if (isMaintenance(body)) return { text: "nothing to tidy" };
+        if (isCompaction(body)) return { text: "Earlier: Kevin asked about recipes; I read a lot of them." };
+        const results = blocksOf(body.messages[body.messages.length - 1]!).filter((block) => block.type === "tool_result");
+        if (results.length === 0 || reads < 14) {
+          reads += 1;
+          // Each read goes one page further back (before the oldest ref the last page showed).
+          const oldest = results.length > 0 ? /#([a-z0-9]+)\]/u.exec(JSON.stringify(results))?.[1] : undefined;
+          return { thinking: `reading page ${reads}`, toolCalls: [{ name: "read_messages", input: { place: "bake-club/#general", limit: 10, ...(oldest ? { before: `#${oldest}` } : {}) } }] };
+        }
+        return { thinking: "enough", text: "(done reading)" };
+      };
+      posts.forEach((text, index) =>
+        w.discord.post(ROOM, `${text} #${index}`, {
+          authorId: "300000000000000077",
+          authorName: "Mina",
+          ...(index === 5 ? { attachments: [{ id: "9402", url: `https://cdn.discordapp.com/attachments/${CHANNEL}/9402/matcha.png`, filename: "matcha.png", contentType: "image/png", size: 2048, width: 64, height: 64 }] } : {})
+        })
+      );
+      await roomWake(w, "find me the best recipe", 0);
+      const lifeRequests = server.exchanges.filter((entry) => !isCompaction(entry.body) && !isMaintenance(entry.body));
+      expect(server.exchanges.some((entry) => isCompaction(entry.body)), "the turn crossed the budget").toBe(true);
+      return Math.max(...lifeRequests.map((entry) => entry.usage.total)) / BUDGET;
+    };
+    // Every page a mix; then the worst case, a change of script near the budget: she reads newest
+    // first, so English pages (about 3,800 tokens each) bring the turn up and the dense ones (the
+    // oldest, about 13,000 tokens a page) arrive last, while the calibration still says English.
+    const mixedThroughout = Array.from({ length: 150 }, (_, index) => [...ENGLISH, ...DENSE][index % 6]!.repeat(10));
+    const scriptChange = [...Array.from({ length: 40 }, (_, index) => DENSE[index % 3]!.repeat(30)), ...Array.from({ length: 30 }, (_, index) => ENGLISH[index % 3]!.repeat(14))];
+    const [mixedMargin, changeMargin] = [await largestOver(mixedThroughout), await largestOver(scriptChange)];
+    // The documented margin (spec §12): measured 0.91 and 0.84 of the budget with the script-aware
+    // estimate (characters / 3.5 alone sent 1.02 and 1.29). The bound allows 5% for the per-script
+    // error the calibration has not caught up with yet.
+    for (const margin of [mixedMargin!, changeMargin!]) {
+      expect(margin).toBeGreaterThan(0.6);
+      expect(margin).toBeLessThanOrEqual(1.05);
+    }
   });
 
   it("prefix stability holds through an inline image, a folded wake and an interrupted turn", async () => {

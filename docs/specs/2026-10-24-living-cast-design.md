@@ -366,7 +366,8 @@ Each line: `{seq, at, kind, message}`.
 - **Context cap.** The compaction budget is `min(life.maxContextTokens (96,000), model window −
   output reserve)`, so lives stay below long-context price tiers (Haiku 5.5 above 100K, GPT-6 above
   272K). Before **every** call, if the estimated request exceeds the budget, the loop treats it as a
-  `context_overflow` (§5.6), so a long turn cannot cross a price tier.
+  `context_overflow` (§5.6), so a long turn cannot cross a price tier. The estimate is
+  script-aware and calibrated; its measured margin is in §12 ("Budget margin").
 - **How the system prompt is passed.** `ModelClient` sets `system` = A + "\n\n" + B,
   `systemBlocks` = [A, B] (scope `org`) and `cacheTtl: "1h"`. `messages` never contains a
   `role:"system"` entry (the Anthropic adapter would turn it into a mid-conversation system
@@ -803,8 +804,9 @@ forget-user always runs everything immediately.
 
 Limits of the scrub, stated to the owner in the dashboard: Discord history itself is not deleted
 (the bot can't delete other people's messages), and whatever she already said in rooms stays there.
-Also kept: usage-ledger lines and app logs (ids only, never text), cached guild images until their
-TTL, anything outside this host, and the 15-minute web page cache. Name matching is best effort:
+Also kept: usage-ledger lines and app logs (ids only, never text), cached guild images, and any DM
+image no image index recorded, until the disk cache expires them (`discord.images.diskCacheTtlHours`, 168
+hours by default), anything outside this host, and the 15-minute web page cache. Name matching is best effort:
 shared names are only listed for review.
 
 Unreadable forget records fail closed: an unreadable `forgotten.json` hides every human message's
@@ -1107,9 +1109,18 @@ upgrades each host by hand. Downgrade is unsupported.
   first call (kept turns are stripped, §5.6).
 - **Budget inside a turn**: a turn that grows past `life.maxContextTokens` is compacted before the
   next call, never sent: measured by the provider, no sent request exceeds the budget by more than
-  the token calibration's lag (characters / 3.5 times an EMA of measured / estimated; 10% in the
-  test, whose turn climbs to about 92% of the budget). The first call of a new epoch reports
-  exactly the thinking blocks its kept turns lost on the wire.
+  the token calibration's lag (the estimate is script-aware character units / 3.5 times an EMA of
+  measured / estimated; 10% in the test, whose turn climbs to about 92% of the budget). The
+  estimate counts a CJK, kana, Hangul or Thai character as a token and an emoji as two (plain
+  characters / 3.5 undercounts CJK about fourfold). **Budget margin, from data** (the loopback
+  provider counting CJK at about 1.2 tokens a character, emoji at 3 and an image at 1,600 tokens):
+  with every page mixed (CJK, Hangul, code, emoji, URLs, an image) the largest sent request was
+  0.91 of the budget; with English pages first and dense pages of about 13,000 tokens arriving
+  near the budget while the calibration still says English, 0.84. Plain characters / 3.5 sent 1.02
+  and 1.29 in the same runs. The remaining error is the per-script miscount (dense text about 20%,
+  an image up to 600 tokens) times the share of content the calibration has not seen yet, so the
+  test allows 5%. The first call of a new epoch reports exactly the thinking blocks its kept turns
+  lost on the wire.
 - **Images**: an image re-read in the same epoch renders as text; per-epoch count and byte caps;
   a pinned image that disappears forces a compaction.
 - **Prefix stability**: every request is a prefix of the next within an epoch, block by block (a

@@ -35,7 +35,9 @@ export type WireBody = {
 
 type FlatBlock = { section: "tools" | "system" | "messages"; role: string; json: string; tokens: number; ttlMs?: number };
 
-const tokensOf = (json: string) => Math.max(1, Math.ceil(json.length / 4));
+/** How many tokens a block costs: its JSON or the block itself (default: JSON characters / 4). */
+export type BlockTokenizer = (json: string, block: unknown) => number;
+const charsOver4: BlockTokenizer = (json) => Math.max(1, Math.ceil(json.length / 4));
 const ttlOf = (mark: { ttl?: string } | undefined) => (mark ? (mark.ttl === "1h" ? ONE_HOUR_MS : FIVE_MINUTES_MS) : undefined);
 
 function withoutMark<T extends { cache_control?: unknown }>(block: T): Omit<T, "cache_control"> {
@@ -43,23 +45,23 @@ function withoutMark<T extends { cache_control?: unknown }>(block: T): Omit<T, "
   return rest;
 }
 
-function flatten(body: WireBody): FlatBlock[] {
+function flatten(body: WireBody, tokensOf: BlockTokenizer): FlatBlock[] {
   const out: FlatBlock[] = [];
   if (body.tools?.length) {
     const json = JSON.stringify(body.tools.map(withoutMark));
     const mark = body.tools.find((tool) => tool.cache_control)?.cache_control;
-    out.push({ section: "tools", role: "tools", json, tokens: tokensOf(json), ...(mark ? { ttlMs: ttlOf(mark)! } : {}) });
+    out.push({ section: "tools", role: "tools", json, tokens: tokensOf(json, body.tools), ...(mark ? { ttlMs: ttlOf(mark)! } : {}) });
   }
   const system = typeof body.system === "string" ? [{ type: "text", text: body.system } as WireBlock] : (body.system ?? []);
   for (const block of system) {
     const json = JSON.stringify(withoutMark(block));
-    out.push({ section: "system", role: "system", json, tokens: tokensOf(json), ...(block.cache_control ? { ttlMs: ttlOf(block.cache_control)! } : {}) });
+    out.push({ section: "system", role: "system", json, tokens: tokensOf(json, block), ...(block.cache_control ? { ttlMs: ttlOf(block.cache_control)! } : {}) });
   }
   for (const message of body.messages) {
     const blocks: WireBlock[] = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
     for (const block of blocks) {
       const json = JSON.stringify(withoutMark(block));
-      out.push({ section: "messages", role: message.role, json, tokens: tokensOf(json), ...(block.cache_control ? { ttlMs: ttlOf(block.cache_control)! } : {}) });
+      out.push({ section: "messages", role: message.role, json, tokens: tokensOf(json, block), ...(block.cache_control ? { ttlMs: ttlOf(block.cache_control)! } : {}) });
     }
   }
   return out;
@@ -76,6 +78,8 @@ export type CacheUsage = {
 };
 
 export class AnthropicCacheSim {
+  /** Tests may swap in a script-aware count (tests/eval/tokenModel.ts). */
+  tokenizer: BlockTokenizer = charsOver4;
   private readonly entries = new Map<string, { expires: number; ttlMs: number }>();
 
   constructor(private readonly o: { now: () => number; minCacheableTokens?: number; lookback?: number }) {}
@@ -83,7 +87,7 @@ export class AnthropicCacheSim {
   process(body: WireBody): CacheUsage {
     const now = this.o.now();
     for (const [hash, entry] of this.entries) if (entry.expires <= now) this.entries.delete(hash);
-    const flat = flatten(body);
+    const flat = flatten(body, this.tokenizer);
     const breakpoints = flat.flatMap((block, index) => (block.ttlMs !== undefined ? [index] : []));
     if (breakpoints.length > MAX_BREAKPOINTS) throw new Error(`Anthropic rejects more than ${MAX_BREAKPOINTS} cache breakpoints; the request carries ${breakpoints.length}.`);
     const messageSeed = JSON.stringify([body.tool_choice ?? null, body.thinking ?? null]);

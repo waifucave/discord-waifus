@@ -1,7 +1,7 @@
 import type { ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import { describe, expect, it } from "vitest";
 import { installedCatalog } from "../src/models/catalog.js";
-import { estimateTokens, IMAGE_TOKENS, resolveTokenBudget } from "../src/orchestration/context/tokens.js";
+import { estimateTokens, IMAGE_TOKENS, resolveTokenBudget, textUnits } from "../src/orchestration/context/tokens.js";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/shared/schemas/compaction.js";
 
 const settings = { ...DEFAULT_COMPACTION_SETTINGS };
@@ -44,6 +44,21 @@ describe("estimateTokens", () => {
     ];
     expect(estimateTokens(messages)).toBe(10 + 2 * IMAGE_TOKENS);
     expect(estimateTokens(messages, { ratio: 2 })).toBe(20 + 2 * IMAGE_TOKENS);
+  });
+
+  it("counts a CJK, kana or Hangul character as a token and an emoji as two; ASCII stays characters / 3.5", () => {
+    expect(textUnits("plain ascii text")).toBe("plain ascii text".length);
+    expect(estimateTokens([{ role: "user", content: "抹茶".repeat(50) }])).toBe(100);
+    expect(estimateTokens([{ role: "user", content: "ブラウニー오늘" }])).toBe(7);
+    expect(estimateTokens([{ role: "user", content: "🍫".repeat(10) }])).toBe(20);
+    // Accented Latin is still one unit a character.
+    expect(textUnits("café")).toBe(4);
+    // Every text source is counted the same way: system blocks, tool results, tool inputs.
+    const messages: ProviderMessageLike[] = [
+      { role: "assistant", content: [{ type: "tool_use", id: "1", name: "t", input: { q: "抹茶" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "1", content: "抹茶" }] }
+    ];
+    expect(estimateTokens(messages, { system: ["抹茶"] })).toBe(Math.ceil((1 + textUnits(JSON.stringify({ q: "抹茶" })) + 7 + 7) / 3.5));
   });
 
   it("includes tool definitions", () => {
