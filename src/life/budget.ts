@@ -20,6 +20,18 @@ export class DailyCost {
     else this.cache.clear();
   }
 
+  /**
+   * A call she just made (its ledger line is written in the background): the cached figure for the
+   * day includes it at once, so the next check does not wait for the cache to expire.
+   */
+  add(waifuId: string, usd: number, now: Date): void {
+    const cached = this.cache.get(waifuId);
+    if (!cached || usd <= 0) return;
+    const p = localParts(now, this.timeZone);
+    const day = `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+    if (cached.day === day) cached.cost += usd;
+  }
+
   /** USD spent by `waifuId` in the local day containing `now`. */
   async today(waifuId: string, now: Date): Promise<number> {
     const p = localParts(now, this.timeZone);

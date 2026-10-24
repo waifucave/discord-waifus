@@ -166,7 +166,11 @@ Evaluated in this order for every wake candidate:
    Kevin") instead of starting turns.
 4. **Sleep**: defer (§4.5).
 5. **Daily budget** (`waifu.life.dailyBudgetUsd`, default none): when her cost for the local day
-   reaches it, defer to the next local day.
+   reaches it, defer to the next local day. It is checked again when a turn starts (wakes queued
+   before the budget ran out are deferred the same way) and after every call of a running turn
+   (the turn ends with `[system] turn ended: daily budget reached`); a deferred batch, whatever
+   deferred it, is never released as a `morning` wake while she is over budget. Owner wakes are
+   exempt throughout.
 6. **Room loop guard** (`life.maxWaifuTriggeredTurns`, default 0 = off): when set, after that many
    waifu-authored messages in one place have woken someone since the last human message there,
    further waifu-authored messages in that place stop producing wakes. Each message counts once,

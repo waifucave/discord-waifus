@@ -90,7 +90,8 @@ export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "bu
     places: { ...queue.deferred.places },
     items: [...queue.deferred.items]
   };
-  const keepsNote = wake.reason === "reminder" || wake.reason === "watch" || wake.reason === "owner" || wake.reason === "followup";
+  // A `morning` batch deferred again (her budget ran out before she read it) is carried whole.
+  const keepsNote = wake.reason === "reminder" || wake.reason === "watch" || wake.reason === "owner" || wake.reason === "followup" || wake.reason === "morning";
   if (keepsNote) deferred.items.push(wake);
   if (wake.placeKey && (wake.reason !== "reminder" && wake.reason !== "followup")) {
     const place = { ...(deferred.places[wake.placeKey] ?? emptyPlace()) };
@@ -107,6 +108,29 @@ export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "bu
 
 export async function deferWake(storage: StorageService, waifuId: string, wake: Wake, reason: "sleep" | "budget", now: Date): Promise<void> {
   await updateLifeFile(storage, waifuId, "wakes", (queue) => withDeferred(queue, wake, reason, now));
+}
+
+/**
+ * Moves the immediate wakes `keep` rejects into `deferred` (her budget ran out after they were
+ * queued, §4.4 guard 5); returns how many immediate wakes remain.
+ */
+export async function deferImmediate(storage: StorageService, waifuId: string, reason: "sleep" | "budget", now: Date, keep: (wake: Wake) => boolean): Promise<number> {
+  let remaining = 0;
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    const kept = queue.immediate.filter(keep);
+    remaining = kept.length;
+    if (kept.length === queue.immediate.length) return queue;
+    let next: WakeQueue = { ...queue, immediate: kept };
+    for (const wake of queue.immediate) if (!keep(wake)) next = withDeferred(next, wake, reason, now);
+    // The deferred batch is released by the budget rule (her next local day), whatever paused it first.
+    return { ...next, deferred: { ...next.deferred, reason } };
+  });
+  return remaining;
+}
+
+/** Marks the deferred batch as waiting for her budget (it is released on her next local day under budget). */
+export async function deferForBudget(storage: StorageService, waifuId: string): Promise<void> {
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => (queue.deferred.reason === "budget" ? queue : { ...queue, deferred: { ...queue.deferred, reason: "budget" } }));
 }
 
 export function hasDeferred(queue: WakeQueue): boolean {

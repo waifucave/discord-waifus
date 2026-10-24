@@ -38,7 +38,8 @@ import { buildLifeRequest, estimateRequest, lifeBudget, PinnedImageMissingError 
 import type { KeyedMutex, Semaphore } from "./sync.js";
 import { lifeTool } from "./tools/index.js";
 import { toolError, type ToolOutput, type TurnScratch } from "./tools/types.js";
-import { DIRECT_REASONS, pendingWakeCount, requeueWakes, takeImmediate } from "./wakeQueue.js";
+import { deferImmediate, DIRECT_REASONS, pendingWakeCount, requeueWakes, takeImmediate } from "./wakeQueue.js";
+import type { DailyCost } from "./budget.js";
 import { readDmFloor } from "../orchestration/dm/dmStore.js";
 import { compareIds } from "../discord/rawMessage.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
@@ -70,6 +71,8 @@ export type LifeHost = {
   turns: Semaphore;
   hooks?: LifeHostHooks;
   activity?: LifeActivity;
+  /** Her spend for the local day (§4.4 guard 5), checked again when a turn starts and while it runs. */
+  cost?: DailyCost;
 };
 
 /** How long a life waits before trying again when the app was sealed for an update. */
@@ -95,6 +98,10 @@ type TurnRun = {
   startedMs: number;
   lastEstimate: number;
   selfIds: string[];
+  /** What is left of her daily budget when the turn started (undefined: no budget). */
+  budgetLeftUsd?: number;
+  /** What this turn's calls cost so far. */
+  spentUsd: number;
 };
 
 type TurnOutcome = "idle" | "again";
@@ -242,6 +249,13 @@ export class Life {
   // ---- one turn -----------------------------------------------------------------------------------
 
   /** Handles and unread counts for the places a set of wakes names. */
+  /** What is left of her daily budget today (undefined: she has none). */
+  private async budgetLeft(waifu: WaifuConfig): Promise<number | undefined> {
+    const budget = waifu.life.dailyBudgetUsd;
+    if (budget === null || budget === undefined || !this.host.cost) return undefined;
+    return budget - (await this.host.cost.today(this.waifuId, this.deps.now()));
+  }
+
   private async notificationView(wakes: readonly Wake[], quietKeys: readonly string[], selfIdList: readonly string[]): Promise<NotificationView> {
     const deps = this.deps;
     const keys = new Set([...wakes.flatMap((wake) => (wake.placeKey ? [wake.placeKey] : [])), ...quietKeys]);
@@ -370,6 +384,16 @@ export class Life {
       this.retryAfter(cooling + 1_000);
       return "idle";
     }
+    // Her daily budget is spent (wakes queued before it ran out, or a morning batch released over
+    // it): every wake but the owner's waits for her next local day, like guard 5 (§4.4).
+    const budgetLeftUsd = await this.budgetLeft(waifu);
+    if (budgetLeftUsd !== undefined && budgetLeftUsd <= 0) {
+      const kept = await deferImmediate(deps.storage, this.waifuId, "budget", deps.now(), (wake) => wake.reason === "owner");
+      if (kept === 0) {
+        deps.logger.info("Life daily budget reached; wakes deferred", { category: "life", waifuId: this.waifuId });
+        return "idle";
+      }
+    }
     state = await this.prepareEpoch(waifu, model, state, signal);
     // An interrupted compaction (pause, shutdown, a reload) changed nothing; no wakes are taken.
     if (signal.aborted) return "idle";
@@ -394,7 +418,9 @@ export class Life {
       signal,
       startedMs: nowMs,
       lastEstimate: state.lastRequestTokens ?? 0,
-      selfIds
+      selfIds,
+      ...(budgetLeftUsd !== undefined ? { budgetLeftUsd } : {}),
+      spentUsd: 0
     };
     const content: ContentBlockLike[] = [];
     if (followUpDue) content.push({ type: "text", text: FOLLOW_UP_NOTE });
@@ -417,6 +443,8 @@ export class Life {
     const config = () => deps.config();
     // Recomputed each time: a direct wake folded in mid-turn counts too (review I1).
     const direct = () => run.wakes.some((wake) => (wake.reasons ?? [wake.reason]).some((reason) => DIRECT_REASONS.has(reason)));
+    // Her daily budget ran out during this turn (owner wakes are exempt, like guard 5).
+    const overBudget = () => run.budgetLeftUsd !== undefined && !run.wakes.some((wake) => wake.reason === "owner") && run.spentUsd >= run.budgetLeftUsd;
     let unsentChecked = false;
     let rounds = 0;
     let badRequests = 0;
@@ -464,6 +492,10 @@ export class Life {
       badRequests = 0;
       await this.append(run, "assistant", result.message);
       rounds += 1;
+      if (result.costUsd !== undefined) {
+        run.spentUsd += result.costUsd;
+        this.host.cost?.add(this.waifuId, result.costUsd, deps.now());
+      }
       const raw = estimateRequest(request);
       const usage = result.usage;
       run.state = await updateLifeState(deps.storage, this.waifuId, (current) => {
@@ -494,7 +526,7 @@ export class Life {
       }
       const calls = result.toolCalls;
       if (calls.length === 0) {
-        if (!unsentChecked && direct() && result.text.trim() && run.scratch.sentPlaces.size === 0) {
+        if (!unsentChecked && direct() && result.text.trim() && run.scratch.sentPlaces.size === 0 && !overBudget()) {
           unsentChecked = true;
           await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: UNSENT_REPLY_NOTE }, { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }] });
           deps.logger.info("Life unsent-reply check", { category: "life", waifuId: this.waifuId, turnId: run.turnId });
@@ -503,7 +535,14 @@ export class Life {
         return this.endTurn(run, rounds, result.finishReason === "length" ? "length" : "done");
       }
       const executed = await this.runTools(run, calls, result.finishReason === "length");
-      const capped = rounds >= config().life.maxToolRounds ? "max tool rounds" : deps.now().getTime() - run.startedMs >= config().life.maxTurnMs ? "max turn time" : undefined;
+      const capped =
+        rounds >= config().life.maxToolRounds
+          ? "max tool rounds"
+          : deps.now().getTime() - run.startedMs >= config().life.maxTurnMs
+            ? "max turn time"
+            : overBudget()
+              ? "daily budget reached"
+              : undefined;
       // A turn that ends here (capped or interrupted) never folds new wakes in: she could not answer
       // them; they stay queued for her next turn (review I1).
       const folded = run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);

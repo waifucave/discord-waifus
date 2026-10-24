@@ -168,6 +168,9 @@ export function morningBatch(
       lines.push(`  · ${parts.join(" · ")}`);
     } else if (item.reason === "followup") {
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
+    } else if (item.reason === "morning" && item.batch) {
+      // An earlier batch she never read (her budget ran out first): its lines without its header.
+      lines.push(...item.batch.slice(1));
     }
   }
   return lines;

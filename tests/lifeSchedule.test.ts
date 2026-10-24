@@ -97,6 +97,29 @@ describe("sleep and the morning batch (§4.5, §4.7)", () => {
     expect(queue.immediate.map((wake) => wake.reason)).toEqual(["morning"]);
     expect(queue.immediate[0]!.batch![0]).toBe("- while you were away (since 14:00):");
   });
+
+  it("a sleep batch she wakes up to over budget waits for her next local day", async () => {
+    const w = await sleepyWorld({
+      waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", availability: ASLEEP_13_15, life: { dailyBudgetUsd: 0.5 }, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } }]
+    });
+    await say(w, `<@${ARIA_BOT}> you up?`, { mentions: { [ARIA_BOT]: "Aria" } });
+    expect((await readLifeFile(w.storage, "aria", "wakes")).deferred.reason).toBe("sleep");
+    // She spent her budget before her nap (14:00 is inside it; the line is from this morning).
+    const day = w.clock.now().toISOString().slice(0, 10);
+    await mkdir(path.join(w.root, "user/usage"), { recursive: true });
+    await appendFile(path.join(w.root, "user/usage", `${day}.jsonl`), `${JSON.stringify({ at: "2026-10-24T09:00:00.000Z", waifuId: "aria", purpose: "life", costUsd: 0.75 })}\n`);
+    w.cast.cost.invalidate();
+    w.clock.ms = Date.parse("2026-10-24T15:01:00.000Z");
+    await w.cast.scheduler.tick();
+    let queue = await readLifeFile(w.storage, "aria", "wakes");
+    expect(queue.immediate).toEqual([]);
+    expect(queue.deferred.reason).toBe("budget");
+    w.clock.ms = Date.parse("2026-10-25T00:05:00.000Z");
+    w.cast.cost.invalidate();
+    await w.cast.scheduler.tick();
+    queue = await readLifeFile(w.storage, "aria", "wakes");
+    expect(queue.immediate.map((wake) => wake.reason)).toEqual(["morning"]);
+  });
 });
 
 describe("reminders (§6.6, §5.7)", () => {

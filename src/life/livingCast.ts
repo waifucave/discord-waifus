@@ -186,7 +186,7 @@ export class LivingCast {
   life(waifuId: string): Life {
     let life = this.lives.get(waifuId);
     if (!life) {
-      life = new Life(waifuId, { deps: this.deps, mutex: this.mutex, turns: this.turns, activity: this.activity });
+      life = new Life(waifuId, { deps: this.deps, mutex: this.mutex, turns: this.turns, activity: this.activity, cost: this.cost });
       this.lives.set(waifuId, life);
     }
     return life;

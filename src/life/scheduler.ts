@@ -23,7 +23,7 @@ import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
 import { pruneExpiredWatches } from "./watches.js";
-import { hasDeferred, newWakeId, takeDeferred } from "./wakeQueue.js";
+import { deferForBudget, hasDeferred, newWakeId, takeDeferred } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import { selfAuthorIds } from "./people.js";
@@ -177,9 +177,12 @@ export class Scheduler {
     if (!hasDeferred(queue) && !queue.deferred.reason) return;
     const availability = availabilityAt(waifu.availability, now, deps.timeZone);
     if (availability.state === "asleep") return;
-    if (queue.deferred.reason === "budget") {
-      const budget = waifu.life.dailyBudgetUsd;
-      if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) return;
+    // Never released over her daily budget, whatever deferred it: a batch held for sleep that she
+    // wakes up to over budget waits for her next local day instead.
+    const budget = waifu.life.dailyBudgetUsd;
+    if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) {
+      if (queue.deferred.reason !== "budget") await deferForBudget(deps.storage, waifu.id);
+      return;
     }
     const places = await this.morningPlaces(waifu, queue.deferred);
     const handles = new Map<string, string>();

@@ -1,6 +1,8 @@
 // Turn endings (Living cast spec §5.2, §5.6; review I1, I2, I4, I6, M6, M8, M13): what happens to
 // her wakes when a turn is capped, interrupted, compacted, refused or blocked by a provider
 // cooldown. Scripted winter fakes, temp data root; no live calls.
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { FOLLOW_UP_NOTE, REFUSED_RESULT, UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
@@ -194,6 +196,37 @@ describe("turn endings", () => {
     release();
     await Promise.all([held, aria]);
     expect(w.anthropic.calls).toHaveLength(2);
+  });
+
+  it("a turn stops when her daily budget runs out during it", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", life: { dailyBudgetUsd: 0.0001 } }],
+      scripts: [() => toolTurn([{ name: "list_places", input: {} }]), () => textTurn("should not run")]
+    });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await reminder(w, "first");
+    await w.cast.life("aria").runNow();
+    expect(w.anthropic.calls).toHaveLength(1);
+    expect(JSON.stringify((await lastLine(w)).message)).toContain("[system] turn ended: daily budget reached");
+  });
+
+  it("wakes queued before her budget ran out wait for the next day; the owner's wake still runs", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", life: { dailyBudgetUsd: 0.5 } }], scripts: script(textTurn("hi owner")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await mentionWake(w, "w-mention");
+    await mkdir(path.join(w.root, "user/usage"), { recursive: true });
+    await appendFile(path.join(w.root, "user/usage", `${w.clock.now().toISOString().slice(0, 10)}.jsonl`), `${JSON.stringify({ at: w.clock.now().toISOString(), waifuId: "aria", purpose: "life", costUsd: 0.75 })}\n`);
+    await w.cast.life("aria").runNow();
+    expect(w.anthropic.calls).toEqual([]);
+    let queue = await readLifeFile(w.storage, "aria", "wakes");
+    expect(queue.immediate).toEqual([]);
+    expect(queue.deferred).toMatchObject({ reason: "budget", places: { [ROOM_KEY]: { mentions: 1 } } });
+    await enqueueWake(w.storage, "aria", { id: "w-owner", reason: "owner", note: "test", at: w.clock.now().toISOString() });
+    await w.cast.life("aria").runNow();
+    // Her answer, then the unsent-reply check (the owner's wake is direct and exempt from the budget).
+    expect(w.anthropic.calls).toHaveLength(2);
+    queue = await readLifeFile(w.storage, "aria", "wakes");
+    expect(queue.deferred.reason).toBe("budget");
   });
 
   it("a failed turn's follow-up is armed again after a restart (M13)", async () => {
