@@ -12,7 +12,6 @@
 //   it takes her life lock, so it never overlaps a turn. Pending scrubs run with it.
 
 import { listWaifus } from "../orchestration/stores/config.js";
-import { readPendingScrubs } from "../orchestration/dm/forgotten.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { Reminder, Wake, WakeQueue } from "../shared/schemas/life.js";
 import type { DailyCost } from "./budget.js";
@@ -205,7 +204,6 @@ export class Scheduler {
     const deps = this.o.deps;
     if (this.maintaining.has(waifu.id)) return;
     const state = await readLifeState(deps.storage, waifu.id);
-    const pending = await readPendingScrubs(deps.storage, waifu.id).catch(() => []);
     const due = maintenanceDue(waifu, deps.now(), deps.timeZone, deps.config().life.maintenanceHourLocal, state.lastMaintenanceAt);
     if (!due) return;
     this.maintaining.add(waifu.id);
@@ -215,6 +213,5 @@ export class Scheduler {
     } finally {
       this.maintaining.delete(waifu.id);
     }
-    void pending;
   }
 }

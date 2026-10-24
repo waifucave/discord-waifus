@@ -67,7 +67,8 @@ export type WakeRouterOptions = {
 
 export class WakeRouter {
   readonly loopGuard: LoopGuard;
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  /** Staggered wakes waiting on their timers, with the resolver that ends them on close. */
+  private readonly timers = new Map<ReturnType<typeof setTimeout>, () => void>();
   private closed = false;
 
   constructor(private readonly o: WakeRouterOptions) {
@@ -76,7 +77,10 @@ export class WakeRouter {
 
   close(): void {
     this.closed = true;
-    for (const timer of this.timers) clearTimeout(timer);
+    for (const [timer, drop] of this.timers) {
+      clearTimeout(timer);
+      drop();
+    }
     this.timers.clear();
   }
 
@@ -91,7 +95,7 @@ export class WakeRouter {
           this.routeNow(waifuId, wake, context).then(resolve, () => resolve("dropped"));
         }, delay);
         timer.unref?.();
-        this.timers.add(timer);
+        this.timers.set(timer, () => resolve("dropped"));
       });
     }
     return this.routeNow(waifuId, wake, context);

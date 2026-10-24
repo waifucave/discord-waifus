@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, closeWorlds, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
@@ -8,6 +8,7 @@ import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
 
 const roots: string[] = [];
 afterEach(async () => {
+  await closeWorlds();
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 

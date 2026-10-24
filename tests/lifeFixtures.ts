@@ -255,13 +255,34 @@ export type LifeWorld = {
   chat: FakeAdapter;
   responses: FakeAdapter;
   ledger: MemoryLedger;
+  models: ModelClient;
   config: AppConfig;
   setConfig(patch: (config: AppConfig) => AppConfig): void;
+  /** A process restart: a new LivingCast (fresh caches) over the same data root, fake Discord and models. */
+  restart(options?: Partial<LivingCastOptions>): LivingCast;
 };
+
+const openCasts = new Set<LivingCast>();
+
+/** Stops every LivingCast built by lifeWorld (timers, lives) — call in afterEach before removing roots. */
+export async function closeWorlds(): Promise<void> {
+  const casts = [...openCasts];
+  openCasts.clear();
+  await Promise.all(casts.map((cast) => cast.stop().catch(() => undefined)));
+}
 
 export async function lifeWorld(
   roots: string[],
-  o: { waifus?: WaifuSeed[]; cast?: string[]; scripts?: ScriptedTurn[]; config?: (config: AppConfig) => AppConfig; options?: Partial<LivingCastOptions>; paused?: () => boolean } = {}
+  o: {
+    waifus?: WaifuSeed[];
+    cast?: string[];
+    scripts?: ScriptedTurn[];
+    config?: (config: AppConfig) => AppConfig;
+    options?: Partial<LivingCastOptions>;
+    paused?: () => boolean;
+    /** A ModelClient of the test's own (e.g. the real winter adapters against a loopback server). */
+    models?: (o: { ledger: MemoryLedger; clock: Clock }) => ModelClient;
+  } = {}
 ): Promise<LifeWorld> {
   const root = await makeTempRoot("dc-waifus-life-");
   roots.push(root);
@@ -274,29 +295,35 @@ export async function lifeWorld(
   const chat = fakeAdapter(CHAT_COMPLETIONS, o.scripts ?? []);
   const responses = fakeAdapter(OPENAI_RESPONSES, o.scripts ?? []);
   const ledger = new MemoryLedger();
-  const models = new ModelClient({ winter: fakeWinter(anthropic, chat, responses), credentials: () => "test-key", usageLedger: ledger, now: () => clock.ms });
+  const models = o.models ? o.models({ ledger, clock }) : new ModelClient({ winter: fakeWinter(anthropic, chat, responses), credentials: () => "test-key", usageLedger: ledger, now: () => clock.ms });
   let config = AppConfigSchema.parse(o.config ? o.config(structuredClone(DEFAULT_APP_CONFIG)) : DEFAULT_APP_CONFIG);
   const logger = quietLogger() as never;
-  const directory = new GuildDirectory({ storage, logger, transport: async () => undefined });
-  const conversations = new ConversationMessageCache({ discord: () => discord, logger, directory });
-  const cast = new LivingCast({
-    storage,
-    logger,
-    discord: () => discord,
-    conversations,
-    directory,
-    models,
-    config: () => config,
-    isPaused: o.paused ?? (() => false),
-    usageLedger: NoopUsageLedger,
-    credentials: () => "test-key",
-    now: clock.now,
-    timeZone: TZ,
-    random: () => 0,
-    sleep: async () => undefined,
-    manualScheduler: true,
-    ...o.options
-  });
+  const build = (options: Partial<LivingCastOptions> = {}): LivingCast => {
+    const directory = new GuildDirectory({ storage, logger, transport: async () => undefined });
+    const conversations = new ConversationMessageCache({ discord: () => discord, logger, directory });
+    const built = new LivingCast({
+      storage,
+      logger,
+      discord: () => discord,
+      conversations,
+      directory,
+      models,
+      config: () => config,
+      isPaused: o.paused ?? (() => false),
+      usageLedger: NoopUsageLedger,
+      credentials: () => "test-key",
+      now: clock.now,
+      timeZone: TZ,
+      random: () => 0,
+      sleep: async () => undefined,
+      manualScheduler: true,
+      ...o.options,
+      ...options
+    });
+    openCasts.add(built);
+    return built;
+  };
+  const cast = build();
   return {
     root,
     storage,
@@ -307,12 +334,14 @@ export async function lifeWorld(
     chat,
     responses,
     ledger,
+    models,
     get config() {
       return config;
     },
     setConfig(patch) {
       config = AppConfigSchema.parse(patch(structuredClone(config)));
-    }
+    },
+    restart: build
   };
 }
 

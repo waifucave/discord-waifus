@@ -197,7 +197,11 @@ export class Intake {
     // Several waifus woken by one @everyone / shared role ping are staggered by 0–20 s (§4.1).
     const sharedCount = directWakes.filter((entry) => entry.shared).length;
     for (const entry of directWakes) {
-      await this.o.router.route(entry.waifu.id, entry.wake, { guildId: input.guildId, stagger: entry.shared && sharedCount > 1 });
+      const stagger = entry.shared && sharedCount > 1;
+      const routed = this.o.router.route(entry.waifu.id, entry.wake, { guildId: input.guildId, stagger });
+      // A staggered wake waits on its own timer; it never holds up intake or the other waifus.
+      if (stagger) void this.track(routed);
+      else await routed;
     }
     if (!human) return;
     const burst = this.bursts.get(placeKey);
