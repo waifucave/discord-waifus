@@ -8,6 +8,7 @@ import { readLifeFile, readLifeLog, readLifeState, updateLifeState } from "../sr
 import { CUT_OFF_RESULT, FOLLOW_UP_NOTE, REFUSED_RESULT, UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { lifeLocks } from "../src/life/paths.js";
+import { TOKEN_ESTIMATOR_VERSION } from "../src/orchestration/context/tokens.js";
 import { ModelClient } from "../src/models/client.js";
 import { ProviderAlerts } from "../src/orchestration/providerAlerts.js";
 import type { ProviderEvent } from "@yanlinglabs/winter-provider-runtime";
@@ -35,6 +36,25 @@ const lastLine = async (w: LifeWorld) => {
 async function untilCalls(w: LifeWorld, count: number): Promise<void> {
   for (let tries = 0; w.anthropic.calls.length < count && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
 }
+
+describe("token calibration", () => {
+  it("a ratio learned under the old estimator is dropped and learned again (third review, minor 6)", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("(nothing to send)", { inputTokens: 4_000, outputTokens: 20 }), textTurn("(nothing to send)", { inputTokens: 4_000, outputTokens: 20 })) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    // Learned under characters / 3.5 alone: for a CJK-heavy life about 2x too high now.
+    await updateLifeState(w.storage, "aria", (state) => ({ ...state, tokenCalibration: { ratio: 2, samples: 40, updatedAt: w.clock.now().toISOString() } }));
+    await reminder(w, "water the plants");
+    await w.cast.life("aria").runNow();
+    const first = (await readLifeState(w.storage, "aria")).tokenCalibration;
+    // Started over: one sample, this estimator's version, a ratio of this call alone.
+    expect(first).toMatchObject({ samples: 1, estimator: TOKEN_ESTIMATOR_VERSION });
+    // The next turn builds on it (same version).
+    w.clock.advance(60_000);
+    await reminder(w, "feed the cat");
+    await w.cast.life("aria").runNow();
+    expect((await readLifeState(w.storage, "aria")).tokenCalibration).toMatchObject({ samples: 2, estimator: TOKEN_ESTIMATOR_VERSION });
+  });
+});
 
 describe("turn endings", () => {
   it("a wake arriving in a capped round is never folded in: it stays queued and starts the next turn (I1)", async () => {

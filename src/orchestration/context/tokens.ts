@@ -7,17 +7,23 @@ import type { CompactionSettings } from "../../shared/schemas/compaction.js";
 const CHARS_PER_TOKEN = 3.5;
 export const IMAGE_TOKENS = 1_000;
 const DEFAULT_MAX_OUTPUT_CAP = 8_192;
+/**
+ * The estimator's version, stored with a life's token calibration: a ratio learned under another
+ * estimate (version 1 was plain characters / 3.5) is dropped and learned again.
+ */
+export const TOKEN_ESTIMATOR_VERSION = 2;
 
 /** Scripts a tokenizer spends about a token per character on (CJK, kana, Hangul, Thai). */
 const DENSE_CHARS = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}]/gu;
-const EMOJI = /\p{Extended_Pictographic}/gu;
+/** Emoji parts: pictographs, flag letters (regional indicators), skin tones and the keycap mark. */
+const EMOJI = /[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}⃣]/gu;
 const NON_ASCII = /[^\x00-\x7f]/u;
 
 /**
  * Character units of a text: one per UTF-16 unit, plus 2.5 per dense-script character (so it
- * counts as a whole token) and 2.5 per emoji unit (an emoji, two units, as two tokens). Plain
- * characters / 3.5 undercounts CJK about fourfold, and the calibration alone would lag every
- * change of script (spec §12, budget margin).
+ * counts as a whole token) and 2.5 per emoji unit (an emoji, two units, as two tokens; a flag or a
+ * skin-toned emoji, four units, as four). Plain characters / 3.5 undercounts CJK about fourfold,
+ * and the calibration alone would lag every change of script (spec §12, budget margin).
  */
 export function textUnits(text: string): number {
   if (!NON_ASCII.test(text)) return text.length;

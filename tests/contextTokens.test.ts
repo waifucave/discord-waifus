@@ -51,6 +51,10 @@ describe("estimateTokens", () => {
     expect(estimateTokens([{ role: "user", content: "抹茶".repeat(50) }])).toBe(100);
     expect(estimateTokens([{ role: "user", content: "ブラウニー오늘" }])).toBe(7);
     expect(estimateTokens([{ role: "user", content: "🍫".repeat(10) }])).toBe(20);
+    // Flags (two regional indicators) and skin-toned emoji count as four tokens, a keycap as two.
+    expect(estimateTokens([{ role: "user", content: "🇯🇵" }])).toBe(4);
+    expect(estimateTokens([{ role: "user", content: "👍🏽" }])).toBe(4);
+    expect(estimateTokens([{ role: "user", content: "1️⃣" }])).toBe(2);
     // Accented Latin is still one unit a character.
     expect(textUnits("café")).toBe(4);
     // Every text source is counted the same way: system blocks, tool results, tool inputs.

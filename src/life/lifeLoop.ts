@@ -22,6 +22,7 @@ import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
 import { ModelCallError } from "../models/errors.js";
 import { ImageBuildAbortedError } from "../orchestration/context/images.js";
 import { emaTokenCalibration } from "../orchestration/context/compaction.js";
+import { TOKEN_ESTIMATOR_VERSION } from "../orchestration/context/tokens.js";
 import { promptTokensOf } from "../orchestration/usageLedger.js";
 import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
@@ -81,6 +82,11 @@ const SEALED_RETRY_MS = 30_000;
 const COOLDOWN_KINDS = new Set(["quota", "billing"]);
 
 /** Her curated route, or undefined when she has no offered model. */
+/** Her token calibration, unless it was learned under another estimator (then it starts over). */
+export function currentCalibration<T extends { estimator?: number | undefined }>(calibration: T | undefined): T | undefined {
+  return calibration?.estimator === TOKEN_ESTIMATOR_VERSION ? calibration : undefined;
+}
+
 export function lifeModelOf(deps: Pick<LifeDeps, "catalog">, waifu: WaifuConfig): CuratedModel | undefined {
   if (!waifu.model) return undefined;
   return findCuratedModel(waifu.model, deps.catalog());
@@ -473,7 +479,7 @@ export class Life {
         throw error;
       }
       deps.images?.setPins?.(this.waifuId, request.imageKeys);
-      const ratio = run.state.tokenCalibration?.ratio;
+      const ratio = currentCalibration(run.state.tokenCalibration)?.ratio;
       const estimate = estimateRequest(request, ratio);
       run.lastEstimate = estimate;
       const budget = lifeBudget(run.model, config().life.maxContextTokens);
@@ -513,12 +519,13 @@ export class Life {
       const raw = estimateRequest(request);
       const usage = result.usage;
       run.state = await updateLifeState(deps.storage, this.waifuId, (current) => {
+        const previous = currentCalibration(current.tokenCalibration);
         const calibration = usage
-          ? emaTokenCalibration({ previous: current.tokenCalibration, promptTokens: promptTokensOf(usage), rawEstimate: raw, imageCount: request.imageCount, now: deps.now() })
+          ? emaTokenCalibration({ ...(previous ? { previous } : {}), promptTokens: promptTokensOf(usage), rawEstimate: raw, imageCount: request.imageCount, now: deps.now() })
           : undefined;
         return {
           ...current,
-          ...(calibration ? { tokenCalibration: calibration } : {}),
+          ...(calibration ? { tokenCalibration: { ...calibration, estimator: TOKEN_ESTIMATOR_VERSION } } : {}),
           lastRequestTokens: estimate,
           epochStrippedThinkingBlocks: undefined,
           currentTurn: current.currentTurn ? { ...current.currentTurn, rounds } : current.currentTurn

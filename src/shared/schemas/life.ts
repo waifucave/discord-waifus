@@ -74,7 +74,9 @@ export type CurrentTurn = z.infer<typeof CurrentTurnSchema>;
 export const TokenCalibrationSchema = z.object({
   ratio: z.number().positive(),
   samples: z.number().int().nonnegative(),
-  updatedAt: IsoDateStringSchema
+  updatedAt: IsoDateStringSchema,
+  /** The estimator it was learned under (`TOKEN_ESTIMATOR_VERSION`); absent = version 1, dropped. */
+  estimator: z.number().int().positive().optional()
 });
 
 export const LifeStateSchema = RevisionedRecordSchema.extend({

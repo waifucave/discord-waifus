@@ -1133,8 +1133,11 @@ upgrades each host by hand. Downgrade is unsupported.
   next call, never sent: measured by the provider, no sent request exceeds the budget by more than
   the token calibration's lag (the estimate is script-aware character units / 3.5 times an EMA of
   measured / estimated; 10% in the test, whose turn climbs to about 92% of the budget). The
-  estimate counts a CJK, kana, Hangul or Thai character as a token and an emoji as two (plain
-  characters / 3.5 undercounts CJK about fourfold). **Budget margin, from data** (the loopback
+  estimate counts a CJK, kana, Hangul or Thai character as a token, an emoji as two and a flag or a
+  skin-toned emoji as four (plain characters / 3.5 undercounts CJK about fourfold). A life's
+  calibration is stored with the estimator's version (`tokenCalibration.estimator`); one learned
+  under another estimator (absent: plain characters / 3.5) is dropped and learned again, so an
+  upgraded CJK-heavy life never runs with a ratio twice too high. **Budget margin, from data** (the loopback
   provider counting CJK at about 1.2 tokens a character, emoji at 3 and an image at 1,600 tokens):
   with every page mixed (CJK, Hangul, code, emoji, URLs, an image) the largest sent request was
   0.91 of the budget; with English pages first and dense pages of about 13,000 tokens arriving
