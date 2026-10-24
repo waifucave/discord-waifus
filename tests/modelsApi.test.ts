@@ -99,13 +99,19 @@ describe("/api/providers over the winter catalog", () => {
       providers: Array<{ id: string; displayName: string; credentials: { configured: boolean; keyHint?: string } }>;
     }>();
     expect(body.catalogVersion).toMatch(/winter/);
-    expect(body.providers.map((provider) => provider.id).sort()).toEqual(["anthropic", "deepseek", "meta", "openai", "openrouter"]);
+    // The model providers, plus the optional Exa web-search key (Living cast §6.8).
+    expect(body.providers.map((provider) => provider.id).sort()).toEqual(["anthropic", "deepseek", "exa", "meta", "openai", "openrouter"]);
+    expect(body.providers.find((provider) => provider.id === "exa")).toMatchObject({ displayName: "Exa (web search)", credentials: { configured: false } });
     expect(body.providers.find((provider) => provider.id === "openrouter")?.credentials).toMatchObject({ configured: true, keyHint: "****7890" });
     expect(body).not.toHaveProperty("gatewayProviders");
     // A provider outside the curated list appears once it has a key (so it can be removed).
     await app.inject({ method: "PUT", url: "/api/providers/xai/credentials", payload: { apiKey: "xai-key-12345678" } });
     const again = (await app.inject({ method: "GET", url: "/api/providers" })).json<{ providers: Array<{ id: string }> }>();
     expect(again.providers.map((provider) => provider.id)).toContain("xai");
+    // The Exa key is stored like a model key (and never echoed back).
+    const exa = await app.inject({ method: "PUT", url: "/api/providers/exa/credentials", payload: { apiKey: "exa-key-abcdef123456" } });
+    expect(exa.statusCode, exa.body).toBe(200);
+    expect(exa.body).not.toContain("exa-key-abcdef123456");
   });
 });
 

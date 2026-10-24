@@ -9,8 +9,14 @@ import { catalogProvider, curatedCatalog, findCuratedModel, routeKey, type Curat
 import type { ModelChoice } from "../shared/schemas/domain.js";
 import { badRequest } from "./errors.js";
 
-/** A winter catalog LLM provider; anything else is refused. */
+/** Non-model credentials the app stores beside the model keys (Living cast §6.8: the Exa key). */
+export const APP_CREDENTIAL_PROVIDERS: Readonly<Record<string, { displayName: string; docsUrl: string }>> = {
+  exa: { displayName: "Exa (web search)", docsUrl: "https://docs.exa.ai/reference/getting-started" }
+};
+
+/** A winter catalog LLM provider or an app credential provider (`exa`); anything else is refused. */
 export function assertKnownProvider(providerId: string): void {
+  if (Object.hasOwn(APP_CREDENTIAL_PROVIDERS, providerId)) return;
   const provider = catalogProvider(providerId);
   if (!provider || provider.scope !== "llm") {
     throw badRequest(`Unknown provider: ${providerId}`, { error: "unknown_provider", providerId });
