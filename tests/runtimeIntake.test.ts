@@ -118,8 +118,8 @@ describe("runtime facade", () => {
     await runtime.handleWaifuAutocomplete({ commandName: "wake", guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: collect });
     await runtime.handleWaifuAutocomplete({ commandName: "print", guildId: GUILD, channelId: CHANNEL, focusedValue: "MI", respond: collect });
     await runtime.handleWaifuAutocomplete({ commandName: "print", guildId: GUILD, channelId: CHANNEL, focusedValue: "old", respond: collect });
-    // /wake: this server's cast only. /print: every waifu, a disabled one too (the layout seeds Lumi and Mira).
-    expect(choices).toEqual([[{ name: "Aria", value: "aria" }], [{ name: "Lumi", value: "lumi" }, { name: "Mina", value: "mina" }, { name: "Mira", value: "mira" }], [{ name: "Old", value: "old" }]]);
+    // /wake: this server's cast only. /print: every waifu, a disabled one too (the layout seeds Lumi).
+    expect(choices).toEqual([[{ name: "Aria", value: "aria" }], [{ name: "Lumi", value: "lumi" }, { name: "Mina", value: "mina" }], [{ name: "Old", value: "old" }]]);
     await runtime.stop();
   });
 });

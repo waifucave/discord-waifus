@@ -138,7 +138,7 @@ start.
 
 - `list_dms` — DM conversations with their rate limit.
 - `get_runtime_status` — includes `discord.warnings` with live per-channel permission failures
-  (e.g. "riko cannot send in channel … — check the channel permissions in Discord").
+  (e.g. "juno cannot send in channel … — check the channel permissions in Discord").
 - `list_models` — the curated models with their efforts and whether each provider has a key.
 - `get_life` — a waifu's status and recent life log (content from private chats left out).
 - `get_usage` — model calls and cost by day, waifu, purpose or model.
