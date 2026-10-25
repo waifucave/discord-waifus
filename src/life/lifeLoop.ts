@@ -322,6 +322,19 @@ export class Life {
     run.lines.push(line);
   }
 
+  /**
+   * The turn became a DM turn (a call resolved to a DM place, or a DM wake folded in): web entries
+   * it already put on the dashboard's list become private (D14), and later ones are recorded so.
+   */
+  private async markDmTurn(run: TurnRun): Promise<void> {
+    const wasDm = run.scratch.dm === true;
+    run.scratch.dm = true;
+    if (wasDm || !run.scratch.webEntries) return;
+    await this.deps.web?.markTurnPrivate(run.turnId).catch((error: unknown) => {
+      this.deps.logger.warn("Could not mark a DM turn's web searches private", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
   /** First epoch, a pending epoch start, a configuration change or a between-turns trigger (§5.6). */
   private async prepareEpoch(waifu: WaifuConfig, model: CuratedModel, state: LifeState, signal: AbortSignal): Promise<LifeState> {
     const deps = this.deps;
@@ -453,7 +466,9 @@ export class Life {
       pendingNotices: current.pendingNotices.slice(notices.length),
       ...(followUpDue && current.failedTurn ? { failedTurn: { ...current.failedTurn, followUpDone: true } } : {})
     }));
-    await this.append(run, "notifications", { role: "user", content }, { dmWakes: wakes.some((wake) => isDmPlaceKey(wake.placeKey)) || quiet.some((line) => isDmPlaceKey(line.placeKey)) });
+    const dmWakes = wakes.some((wake) => isDmPlaceKey(wake.placeKey)) || quiet.some((line) => isDmPlaceKey(line.placeKey));
+    if (dmWakes) run.scratch.dm = true;
+    await this.append(run, "notifications", { role: "user", content }, { dmWakes });
     deps.logger.info("Life turn started", { category: "life", waifuId: this.waifuId, turnId, wakes: wakes.length, reasons: [...new Set(wakes.map((wake) => wake.reason))] });
     return this.rounds(run);
   }
@@ -574,6 +589,7 @@ export class Life {
       const wakesBefore = run.wakes.length;
       const folded = run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);
       const dmFolded = run.wakes.slice(wakesBefore).some((wake) => isDmPlaceKey(wake.placeKey));
+      if (dmFolded || executed.dmCalls.length > 0) await this.markDmTurn(run);
       const tail: ContentBlockLike[] = [...folded];
       if (capped) tail.push({ type: "text", text: `[system] turn ended: ${capped}` });
       if (executed.interrupted) tail.push({ type: "text", text: "[system] interrupted" });

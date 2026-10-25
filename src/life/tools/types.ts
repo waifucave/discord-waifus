@@ -30,6 +30,13 @@ export type TurnScratch = {
   dmUsersSent: Set<string>;
   /** web_fetch calls this turn (`life.webFetch.maxPerTurn`). */
   fetches: number;
+  /**
+   * A DM turn (D14, spec §14.4): its wakes include a DM, or a call resolved to a DM place. Its web
+   * searches and fetches are recorded as private (`dm: true`) on the dashboard's list.
+   */
+  dm?: boolean;
+  /** Searches and fetches recorded on the dashboard's list this turn (marked private if the turn becomes a DM turn). */
+  webEntries?: number;
 };
 
 export type ToolContext = {

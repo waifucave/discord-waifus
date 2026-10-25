@@ -506,7 +506,7 @@ function ModelsTab() {
 
 function SearchTab() {
   const config = useApi<AppConfig>((s) => api.getConfig(s), []);
-  const usage = useApi<SearchUsage>((s) => api.searchUsage(s), []);
+  const usage = useApi<SearchUsage>((s) => api.searchUsage(false, s), []);
   const [key, setKey] = useState("");
   const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | undefined>(undefined);
   const saveKey = async () => {

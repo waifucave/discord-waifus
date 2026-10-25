@@ -19,6 +19,7 @@ import {
   LifeStatusResponseSchema,
   NeedsReviewDismissResponseSchema,
   NeedsReviewResponseSchema,
+  SearchUsageResponseSchema,
   WakeResponseSchema
 } from "../src/shared/schemas/api.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
@@ -299,6 +300,40 @@ describe("owner actions on a life", () => {
     expect(after.lastCompaction).toMatchObject({ reason: "reset", summarized: false, fromEpoch: before.epoch });
     // Kept the usual 7 days, unlike a forget's.
     expect(await readLifeLog(w.storage, "aria", before.epoch)).toEqual(oldLog);
+  });
+});
+
+describe("GET /api/search/usage", () => {
+  it("shows a DM turn's queries only on a local reveal (review: DM turns)", async () => {
+    const w = await lifeWorld(roots, {});
+    await mkdir(path.join(w.root, "user", "search"), { recursive: true });
+    await writeFile(
+      path.join(w.root, "user", "search", "usage.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        revision: 1,
+        updatedAt: AT,
+        day: "2026-10-24",
+        searches: 2,
+        fetches: 0,
+        recent: [
+          { at: AT, waifuId: "aria", kind: "search", query: "how to tell a friend you are pregnant", ok: true, turnId: "t1", dm: true },
+          { at: AT, waifuId: "aria", kind: "search", query: "lemon tart", ok: true, turnId: "t2" }
+        ]
+      })
+    );
+    const app = await apiFor(w);
+    const plain = SearchUsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/search/usage" })).json());
+    expect(plain.includePrivate).toBe(false);
+    expect(plain.recent.map((entry) => entry.query)).toEqual(["lemon tart", "[private chat redacted]"]);
+    expect(JSON.stringify(plain)).not.toContain("pregnant");
+    expect(JSON.stringify(plain)).not.toContain("turnId");
+    const local = SearchUsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/search/usage?includePrivate=1" })).json());
+    expect(local.recent[1]).toMatchObject({ query: "how to tell a friend you are pregnant", dm: true });
+    const remoteAsk = await dispatchInternal(app, remote(), undefined, { method: "GET", url: "/api/search/usage?includePrivate=1" });
+    expect(remoteAsk.statusCode).toBe(403);
+    const remotePlain = await dispatchInternal(app, remote(), undefined, { method: "GET", url: "/api/search/usage" });
+    expect(remotePlain.body).not.toContain("pregnant");
   });
 });
 

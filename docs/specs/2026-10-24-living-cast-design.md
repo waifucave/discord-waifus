@@ -1262,7 +1262,7 @@ an ignored one 1.
 | `GET/DELETE /api/waifus/:id/watches[/:wid]`, `GET/DELETE /api/waifus/:id/schedule[/:rid]` | |
 | `GET /api/models` | §9.2 |
 | `GET/PUT /api/detector/config`, `GET /api/detector/history?guildId` | |
-| `GET /api/search/usage` | Today's counts and recent queries. |
+| `GET /api/search/usage` | Today's counts and recent queries; a DM turn's queries (`dm: true`) only with a local `includePrivate=1` (§14.4). |
 | `GET /api/usage?from&to&groupBy=waifu|purpose|model|day|turn|place` | Reads the usage ledger (local-day boundaries, `tz` override). |
 | `POST /api/people/:userId/forget {confirm, dryRun?}` | Replaces `/api/memories/forget-user`; returns the §7.5 result (202 with `pending` when a part did not finish). |
 | `GET /api/waifus/:id/life/needs-review`, `DELETE …/life/needs-review/:itemId` | The forget review lines (§7.5) per waifu; dismiss one by its id (L3, §14.4). |
@@ -1315,7 +1315,10 @@ Choices L3 made where the sections above leave room (owner review welcome):
   next entry) becomes `[private chat redacted]`. Notifications render names without `"` or line
   breaks and quoted parts without line breaks, so a quote always closes on its line. Outside DM
   turns, a result line naming a DM place (a `list_watches` line) is cut at the reference. DM wake
-  previews and notes in the queue are hidden. `includePrivate=1` / `--private` show everything,
+  previews and notes in the queue are hidden. Web searches and fetches of a DM turn are recorded
+  `dm: true` in `user/search/usage.json` (with their `turnId`; a turn that becomes a DM turn after a
+  search marks its earlier entries), and `GET /api/search/usage` and the Life screen's "Web searches
+  today" show their text only on a local reveal. `includePrivate=1` / `--private` show everything,
   local only; the dashboard assistant and Remote Access never get it.
 - **Owner wake with Discord offline** (or while the cast is stopping for a reload) is queued in her
   `wakes.json` (`outcome: "queued_offline"`) and runs when the cast connects.

@@ -486,7 +486,8 @@ export const api = {
     const qs = params.toString();
     return request<UsageResponse>("GET", `/api/usage${qs ? `?${qs}` : ""}`, { signal });
   },
-  searchUsage: (signal?: AbortSignal) => request<SearchUsage>("GET", "/api/search/usage", { signal }),
+  searchUsage: (includePrivate: boolean, signal?: AbortSignal) =>
+    request<SearchUsage>("GET", `/api/search/usage${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
   detectorConfig: (signal?: AbortSignal) => request<DetectorConfigResponse>("GET", "/api/detector/config", { signal }),
   putDetectorConfig: (target: string) => request<DetectorConfigResponse>("PUT", "/api/detector/config", { body: { target } }),
   detectorModels: (signal?: AbortSignal) => request<DetectorModelsResponse>("GET", "/api/detector/models", { signal }),

@@ -284,7 +284,9 @@ export const SearchUsageResponseSchema = z.object({
   }),
   /** An Exa key is saved (`exa` provider credential); search also works keyless. */
   exaKeyConfigured: z.boolean(),
-  recent: z.array(z.object({ at: IsoDateStringSchema, waifuId: z.string(), kind: z.enum(["search", "fetch"]), query: z.string(), ok: z.boolean() }))
+  includePrivate: z.boolean(),
+  /** Newest first. A DM turn's entry (`dm: true`) reads `[private chat redacted]` unless `includePrivate` (local). */
+  recent: z.array(z.object({ at: IsoDateStringSchema, waifuId: z.string(), kind: z.enum(["search", "fetch"]), query: z.string(), ok: z.boolean(), dm: z.boolean().optional() }))
 });
 
 export const USAGE_GROUP_KEYS = ["day", "waifu", "purpose", "model", "provider", "turn", "place", "server"] as const;

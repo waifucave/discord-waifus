@@ -414,8 +414,10 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   failedCalls}], skippedLines, groupsCapped?}`. At most 1000 groups: further keys are added up in
   one `(other)` group and `groupsCapped: true` says so. `groupBy=turn` covers at most 31 days
   (400 otherwise). The ledger is streamed line by line, so a long range costs time, not memory.
-- `GET /api/search/usage` — today's web searches and page fetches, the caps, whether an Exa key is
-  saved, and the newest queries.
+- `GET /api/search/usage[?includePrivate=1]` — today's web searches and page fetches, the caps,
+  whether an Exa key is saved, and the newest queries (`recent`, newest first). A query made in a DM
+  turn (`dm: true`, D14) reads `[private chat redacted]` unless the request is local and says
+  `includePrivate=1` (403 `PrivateContentLocalOnly` over Remote Access and for the assistant).
 - `GET /api/detector/config` → `{target, default}`; `PUT /api/detector/config` `{target}` sets the
   app-wide addressee detector (`""` = none; a server overrides it with `PUT /api/servers/:guildId`
   `{detector}`). `GET /api/detector/history?guildId` — the detector's recent decisions there,

@@ -198,7 +198,8 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   host's time zone (or `tz`), last 7 days by default; `groupBy` is one or two of `day`, `waifu`,
   `purpose`, `model`, `provider`, `turn`, `place`, `server` → `{from, to, timeZone, groupBy,
   totals, groups: [{key, calls, tokens…, costUsd, unpricedCalls, failedCalls}], skippedLines}`.
-  `GET /api/search/usage` is today's web searches and page fetches with the caps.
+  `GET /api/search/usage` is today's web searches and page fetches with the caps (a query from
+  a turn that touched a private chat is hidden).
 - `GET/PUT /api/detector/config` `{target}`: the app-wide addressee detector (`""` = none);
   `GET /api/detector/history?guildId` its recent decisions in one server.
 - `GET /api/owner-notices`: what needs the owner's attention (the notices, unfinished forget jobs,

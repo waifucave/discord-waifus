@@ -6,6 +6,9 @@ import { removeTempRoot } from "./testUtils.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
+import { SEARCH_USAGE_PATH } from "../src/life/search.js";
+import { SearchUsageSchema } from "../src/shared/schemas/life.js";
+import { createRevisionedBase } from "../src/shared/schemas/common.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -160,5 +163,45 @@ describe("life loop", () => {
     // The room turn after it is shown in full.
     expect(text).toContain("cake time");
     expect(text).toContain("aria cake?");
+  });
+
+  it("records a DM turn's web searches as private, also one made before the turn touched a DM (review: DM turns)", async () => {
+    const backend = {
+      search: async () => ({ ok: true as const, tier: "anonymous" as const, tool: "web_search_exa", rawText: "", truncated: false, results: [] }),
+      fetchPage: async () => {
+        throw new Error("no page fetches in this test");
+      },
+      close: async () => undefined
+    };
+    const world = await lifeWorld(roots, {
+      options: { webBackend: backend as never },
+      scripts: script(
+        // Turn 1 (a DM wake): a search.
+        toolTurn([{ name: "web_search", input: { query: "how to comfort a friend after a failed exam" } }]),
+        textTurn("ok"),
+        // Turn 2 (a room mention): a search, then a DM read: the turn becomes a DM turn.
+        toolTurn([{ name: "web_search", input: { query: "lemon cake" } }]),
+        toolTurn([{ name: "read_messages", input: { place: "dm/kevin" } }]),
+        textTurn("ok"),
+        // Turn 3 (a room mention): a search only.
+        toolTurn([{ name: "web_search", input: { query: "sprinkles" } }]),
+        textTurn("ok")
+      )
+    });
+    const dm = world.discord.post(dmOf("aria"), "my exam went badly");
+    await world.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    world.cast.intake.flushDms();
+    await world.cast.settle();
+    await world.cast.life("aria").runNow();
+    await mention(world, "aria cake?");
+    await world.cast.life("aria").runNow();
+    await mention(world, "aria sprinkles?");
+    await world.cast.life("aria").runNow();
+    const usage = await world.storage.readJson(SEARCH_USAGE_PATH, SearchUsageSchema, SearchUsageSchema.parse({ ...createRevisionedBase() }));
+    expect(usage.recent.map((entry) => [entry.query, entry.dm === true])).toEqual([
+      ["how to comfort a friend after a failed exam", true],
+      ["lemon cake", true],
+      ["sprinkles", false]
+    ]);
   });
 });

@@ -109,8 +109,11 @@ export class WebTools {
     return localDayKey(this.o.now(), this.o.timeZone);
   }
 
-  /** Host-wide daily counter (+ the recent list). Returns false when the cap is reached. */
-  private async countHost(kind: "search" | "fetch", waifuId: string, query: string, cap: number | undefined): Promise<boolean> {
+  /**
+   * Host-wide daily counter (+ the recent list). Returns false when the cap is reached. An entry of
+   * a DM turn is recorded `dm: true` (D14): the dashboard shows its text only on a local reveal.
+   */
+  private async countHost(kind: "search" | "fetch", waifuId: string, query: string, cap: number | undefined, turn?: TurnScratch): Promise<boolean> {
     const day = this.day();
     let allowed = true;
     await this.o.storage.updateRevisionedJson({
@@ -125,11 +128,24 @@ export class WebTools {
           allowed = false;
           return base;
         }
-        const recent = [...base.recent, { at: this.o.now().toISOString(), waifuId, kind, query: query.slice(0, 300), ok: true }].slice(-MAX_RECENT);
+        const entry = { at: this.o.now().toISOString(), waifuId, kind, query: query.slice(0, 300), ok: true, ...(turn ? { turnId: turn.id } : {}), ...(turn?.dm ? { dm: true } : {}) };
+        const recent = [...base.recent, entry].slice(-MAX_RECENT);
         return kind === "search" ? { ...base, searches: base.searches + 1, recent } : { ...base, fetches: base.fetches + 1, recent };
       }
     });
+    if (allowed && turn) turn.webEntries = (turn.webEntries ?? 0) + 1;
     return allowed;
+  }
+
+  /** A turn became a DM turn after it searched or fetched: its entries on the list become private (D14). */
+  async markTurnPrivate(turnId: string): Promise<void> {
+    await this.o.storage.updateRevisionedJson({
+      resourceKey: "search-usage",
+      relativePath: SEARCH_USAGE_PATH,
+      schema: SearchUsageSchema,
+      fallback: SearchUsageSchema.parse({ ...createRevisionedBase() }),
+      transform: (current: SearchUsage) => ({ ...current, recent: current.recent.map((entry) => (entry.turnId === turnId ? { ...entry, dm: true } : entry)) })
+    });
   }
 
   /** Per-waifu daily counter. Returns false when the cap is reached. */
@@ -163,11 +179,11 @@ export class WebTools {
     }
   }
 
-  async search(waifuId: string, args: { query: string; numResults: number }, signal?: AbortSignal): Promise<ToolOutput> {
+  async search(waifuId: string, args: { query: string; numResults: number }, signal?: AbortSignal, turn?: TurnScratch): Promise<ToolOutput> {
     const config = this.o.config().search;
     if (!this.searchOffered()) return toolError("web search is off");
     if (!(await this.countWaifu(waifuId, "searches", config.maxPerWaifuPerDay))) return toolError("no more searches today");
-    if (!(await this.countHost("search", waifuId, args.query, config.maxPerDay))) return toolError("no more searches today");
+    if (!(await this.countHost("search", waifuId, args.query, config.maxPerDay, turn))) return toolError("no more searches today");
     await this.pace(signal);
     const outcome = await this.o.backend.search({ query: args.query, numResults: args.numResults }, signal ? { signal } : {});
     if (!outcome.ok) {
@@ -204,7 +220,7 @@ export class WebTools {
     if (o.turn.fetches >= config.maxPerTurn) return toolError("you've fetched enough pages this turn");
     if (!(await this.countWaifu(o.waifuId, "fetches", config.maxPerWaifuPerDay))) return toolError("no more page fetches today");
     o.turn.fetches += 1;
-    await this.countHost("fetch", o.waifuId, args.url, undefined);
+    await this.countHost("fetch", o.waifuId, args.url, undefined, o.turn);
     const page = await this.o.backend.fetchPage(args.url, {
       ...this.o.fetchOptions,
       privateAddressPolicy: "deny",

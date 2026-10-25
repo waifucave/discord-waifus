@@ -8,6 +8,7 @@ import { z } from "zod";
 import { castHealth, forgetJobViews } from "../backend/castHealth.js";
 import { loadAppConfig } from "../config/appConfig.js";
 import { localDayKey } from "../life/clock.js";
+import { DM_REDACTED } from "../life/lifeView.js";
 import { SEARCH_USAGE_PATH } from "../life/search.js";
 import { createProviderCredentialsLookup } from "../models/credentials.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
@@ -21,6 +22,7 @@ import { USAGE_PURPOSES, LEGACY_USAGE_PURPOSES } from "../shared/schemas/usage.j
 import type { StorageService } from "../storage/storageService.js";
 import { badRequest } from "./errors.js";
 import { assertSafeId, assertSnowflakeId } from "./ids.js";
+import { includePrivateOf } from "./lifeRoutes.js";
 
 export type CastRouteOptions = {
   storage: StorageService;
@@ -74,7 +76,10 @@ export function registerCastRoutes(app: FastifyInstance, o: CastRouteOptions): v
   });
 
   // Web search usage (§6.8, §14.1): today's host-wide counts, the caps and the newest queries.
-  app.get("/api/search/usage", async () => {
+  app.get("/api/search/usage", async (request) => {
+    // Queries from a DM turn (D14) keep their place on the list and lose their text unless the
+    // request is local and says includePrivate=1.
+    const includePrivate = includePrivateOf(request);
     const [usage, config] = await Promise.all([
       o.storage.readJson(SEARCH_USAGE_PATH, SearchUsageSchema, SearchUsageSchema.parse({ ...createRevisionedBase() })).catch(() => SearchUsageSchema.parse({ ...createRevisionedBase() })),
       loadAppConfig(o.dataRoot)
@@ -93,7 +98,8 @@ export function registerCastRoutes(app: FastifyInstance, o: CastRouteOptions): v
         fetchMaxPerTurn: config.life.webFetch.maxPerTurn
       },
       exaKeyConfigured: Boolean(createProviderCredentialsLookup(o.dataRoot)("exa")),
-      recent: [...usage.recent].reverse()
+      includePrivate,
+      recent: [...usage.recent].reverse().map(({ turnId: _turnId, ...entry }) => (entry.dm && !includePrivate ? { ...entry, query: DM_REDACTED } : entry))
     };
   });
 

@@ -15,7 +15,7 @@ async function webSearch(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   const parsed = parseInput(SearchInput, input);
   if (!parsed.ok) return parsed.output;
   if (!ctx.deps.web) return toolError("web search is off");
-  return ctx.deps.web.search(ctx.waifu.id, { query: parsed.value.query, numResults: parsed.value.num_results }, ctx.signal);
+  return ctx.deps.web.search(ctx.waifu.id, { query: parsed.value.query, numResults: parsed.value.num_results }, ctx.signal, ctx.turn);
 }
 
 const FetchInput = z.object({

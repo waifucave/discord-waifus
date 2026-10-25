@@ -298,7 +298,19 @@ export const SearchUsageSchema = RevisionedRecordSchema.extend({
   fetches: z.number().int().nonnegative().default(0),
   /** The newest queries and fetched URLs (for the dashboard), newest last, at most 100. */
   recent: z
-    .array(z.object({ at: IsoDateStringSchema, waifuId: z.string(), kind: z.enum(["search", "fetch"]), query: z.string(), ok: z.boolean() }))
+    .array(
+      z.object({
+        at: IsoDateStringSchema,
+        waifuId: z.string(),
+        kind: z.enum(["search", "fetch"]),
+        query: z.string(),
+        ok: z.boolean(),
+        /** The turn that searched (marks its entries private if it becomes a DM turn). */
+        turnId: z.string().optional(),
+        /** Recorded in a DM turn (D14): its text is shown only on a local reveal. */
+        dm: z.boolean().optional()
+      })
+    )
     .default([])
 });
 export type SearchUsage = z.infer<typeof SearchUsageSchema>;
