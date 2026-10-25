@@ -13,6 +13,7 @@ import { migrateLivingCastMemoriesToNotes, notesForWaifu } from "../src/backend/
 import { migrateLivingCastServerFields } from "../src/backend/migrationSteps/livingCastServerFields.js";
 import { migrateLivingCastAppConfig } from "../src/backend/migrationSteps/livingCastAppConfig.js";
 import { migrateLivingCastDmState } from "../src/backend/migrationSteps/livingCastDmState.js";
+import { migrateLivingCastTypingHolds } from "../src/backend/migrationSteps/livingCastDebounce.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { ServerConfigSchema } from "../src/shared/schemas/domain.js";
@@ -303,7 +304,8 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     // config.toml (§11.2) loads, with the moved values.
     const config = AppConfigSchema.parse(parseToml(migrated.get("config.toml")!));
     expect(config.life).toMatchObject({ maintenanceHourLocal: 4, maxInlineImagesPerEpoch: 20, maxConcurrentTurns: 6 });
-    expect(config.discord.debounce).toMatchObject({ dmMs: 15_000, dmMaxWaitMs: 180_000 });
+    // The DM timers at the old defaults move to the typing-hold ones; the room timers too (living-cast-typing-holds-v1).
+    expect(config.discord.debounce).toEqual({ serverMs: 1_500, serverMaxWaitMs: 10_000, dmMs: 2_500, dmMaxWaitMs: 60_000, typingHoldMs: 6_000 });
     const rawConfig = parseToml(migrated.get("config.toml")!) as Record<string, Record<string, unknown>>;
     expect(rawConfig).not.toHaveProperty("memory");
     expect(rawConfig.discord).not.toHaveProperty("deletedMessages");
@@ -448,5 +450,22 @@ describe("memories → notes limits (§7.4)", () => {
     expect(others.lines.length).toBe(230 - 197);
     expect(others.lines[0]!.text).toMatch(/^Person \d+: fact p\d+$/u);
     expect(files.some((file) => file.path === "people/person-0.md")).toBe(true);
+  });
+});
+
+describe("living-cast-typing-holds-v1 (§4.2)", () => {
+  it("moves debounce values still at an earlier default, keeps the owner's own, and is idempotent", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    const file = path.join(root, "config.toml");
+    await writeFile(file, "[discord.debounce]\nserverMs = 1200\nserverMaxWaitMs = 5000\ndmMs = 15000\ndmMaxWaitMs = 180000\n");
+    expect(await migrateLivingCastTypingHolds(root)).toBe("living-cast-typing-holds-v1");
+    const once = await readFile(file, "utf8");
+    expect((parseToml(once) as { discord: { debounce: Record<string, number> } }).discord.debounce).toEqual({ serverMs: 1500, serverMaxWaitMs: 5000, dmMs: 2500, dmMaxWaitMs: 60000 });
+    expect(await migrateLivingCastTypingHolds(root)).toBeUndefined();
+    expect(await readFile(file, "utf8")).toBe(once);
+    // No config: nothing to do.
+    await rm(file);
+    expect(await migrateLivingCastTypingHolds(root)).toBeUndefined();
   });
 });

@@ -16,7 +16,8 @@ Common failures, what they look like, and where to look.
 Each waifu decides for herself whether to answer: she is woken by mentions, replies, her name,
 DMs, reminders, watches, or the addressee detector, reads the conversation and may choose to stay
 quiet. She also does not wake while asleep (her sleep window), over her daily budget, or while the
-server is paused, and a DM waits for 15 seconds of quiet first.
+server is paused, and a message first waits a moment of quiet (1.5 seconds in a room, 2.5 in a
+DM; longer while the person is still typing, at most 10 seconds in a room and a minute in a DM).
 
 If nothing ever replies, check in order: `GET /api/status` — is `discord.connected` true and
 `waifuBotCount` > 0? Does the channel list at least one waifu (Rooms), and is the server not
@@ -27,7 +28,8 @@ and what she did in her last turns (she may have read the room and chosen to sta
 
 ## She doesn't answer DMs
 
-A DM wakes her after 15 seconds without a new message (at most 3 minutes), and she may still
+A DM wakes her 2.5 seconds after the last message, longer while the person is still typing (at
+most a minute), and she may still
 choose not to answer. If she never answers DMs: `dm.allowDms` must be on for her, and `GET /api/runtime` → `discord.dm`
 must list her in `eligibleWaifus` with `intentActive: true`. Its warnings name what is wrong:
 `dm_bot_shared:<botId>` (two enabled waifus on one bot — DMs off for that bot),

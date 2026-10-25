@@ -87,7 +87,7 @@ are archived by migration (§11.2).
 | `role` | A role her bot member holds is mentioned | Direct. |
 | `everyone` | `@everyone` / `@here` in a channel where she is cast | Direct. |
 | `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. |
-| `dm` | A DM to her bot, 15 s after the user's last message | Timer resets on each message; capped at `discord.debounce.dmMaxWaitMs` (default 180 s). |
+| `dm` | A DM to her bot, `discord.debounce.dmMs` (2.5 s) after the user's last message | Timer resets on each message and is held while they type (§4.2); capped at `discord.debounce.dmMaxWaitMs` (default 60 s). |
 | `detector` | The addressee detector chose her, chose "anyone" and the draw picked her, or chose "all" | §4.3. An `all` wake carries `forAll` and reads "for all of you" (§4.7). |
 | `reminder` | One of her `schedule_wake` entries came due | Carries her own note. |
 | `morning` | Her sleep window ended with deferred wakes | One batched summary (§4.7). |
@@ -113,10 +113,43 @@ Per accepted guild message (human or configured waifu bot, in a cast channel or 
 3. **Detector**: if the author is human and no message in the current burst produced a direct
    reason for anyone, the burst goes to the detector (§4.3).
 
-Bursts: the channel debounce (`discord.debounce.serverMs` 1200 / `serverMaxWaitMs` 4000) applies to
-the **detector only**. Direct reasons and watches go straight to the wake queue, which coalesces on
-its own (§4.6). Every human message joins the burst, direct or not, so a burst is direct when any
-message in it is, also a plain message that arrives after the mention within the debounce window.
+Bursts: every human message joins its place's burst, direct or not, so a burst is direct when any
+message in it is, also a plain message that arrives after the mention within the burst. The burst
+is held by a **typing-aware timer** (owner request 2026-10-25: people often send "hey" / "so" /
+"what do you think about…" in quick succession; she should not answer half a sentence, and chat
+must not feel slow):
+
+- It fires `discord.debounce.serverMs` (1500) after its last message (each message restarts it),
+  in a DM `dmMs` (2500) after the person's last message.
+- **Typing holds it.** While an author of the pending burst (a human with a message in it, direct
+  or not) is typing in that same channel, thread or DM, it waits: a typing event counts as "still
+  typing" for `discord.debounce.typingHoldMs` (6000), or until a message from that person arrives
+  (the message is what they were typing; the quiet time then starts again from it). It fires at
+  `max(last message + quiet, latest typing event + typingHoldMs)`.
+- **Caps**: never later than `serverMaxWaitMs` (10000) after the burst's first message in a room,
+  `dmMaxWaitMs` (60000) in a DM, however long they keep typing or writing.
+- Typing by anyone with no message in the burst (another person in the room), by a bot or by a
+  waifu never holds anything. Typing events come from the House bot (`GuildMessageTyping`) and
+  from DM-eligible waifu bots (`DirectMessageTyping`), both non-privileged, read from the gateway's
+  raw `TYPING_START` packet (ids only).
+- **Direct wakes wait for the burst too** (mention, reply-to-her, `name`, `everyone`, `role`): when
+  it fires, each waifu gets one wake for it (reasons merged; a mention makes `name` redundant), and
+  that wake previews the newest message in the burst by the person who woke her, so "@Lumi"
+  followed by "what do you think about…" is one notification previewing the question (its ref is
+  the question's). Several shared wakes (`everyone`, a shared `role`) are staggered as in §4.1.
+- **Not held**: watches (they fire per their own rules, at once), messages by waifus (routed at
+  once), edits that add a mention (§10.3), and the boot or resume catch-up (§5.7: a room's caught-up
+  burst fires right after its messages are taken; nobody is typing an old message).
+
+Why these values: Discord's own typing indicator lasts about 10 s and its client repeats the
+typing event while someone keeps typing (and again on the first keystroke after a send, which is
+exactly the "message, then keep typing" case), so 10 s would hold every wake 10 s after someone
+merely touched the keyboard. 6 s covers the gap between a short message and the next one in
+practice, while an abandoned half-typed message costs at most 6 s. The 1.5 s quiet time is a little
+above a fast typist's gap between two short lines, and the room cap keeps a busy room from holding
+a wake longer than 10 s; the DM cap of 60 s fits one person writing a long message. Typing that
+outlasts a hold is covered by mid-turn notifications (§4.6): the next message reaches her right
+after the tool call she is running.
 
 One wake per message (owner decision D-c): when a waifu's watch fired for any message in the
 burst, the detector skips her for that burst. `waifu_<i>` naming her wakes nobody; the `anyone`
@@ -218,8 +251,21 @@ Availability (`waifu.availability.sleep`, busy blocks) stays as configured today
   - `deferred`: per-place counters (`{placeKey → {mentions, messages, dms, detector, fromUserIds}}`)
     plus the full list of deferred reminders and watch matches with their notes. Never dropped.
 - When she is idle, a turn starts after a **2-second coalesce window**.
-- During a turn, new wakes are folded into the next model call after the current tool round
-  (§5.2). She is never interrupted mid-call.
+- **Mid-turn notifications.** During a turn, wakes that become ready (after their hold, §4.2) are
+  delivered right after the tool call she is running finishes: a `<notifications>` block in the
+  same format as a turn's first one (refs included) is appended to the user message that carries
+  that round's tool results, after the `tool_result` blocks and before the time line (§5.2). A model
+  call or a tool call in progress is never interrupted. The same rules as at a turn start apply
+  (the router's guards already ran: sleep, budget, DM rate limit, the per-user limit; one wake per
+  message; place merging), and a round that ends the turn (a cap, an interrupt, her budget) folds
+  nothing. A turn that ends without another tool round (she answered in plain text) leaves them in
+  the queue: they start the next turn as usual. Maintenance and compaction sessions never take
+  wakes. The system prompt says so in one line ("New notifications can also arrive while you're in
+  the middle of something, right after a tool result."; golden `life-mid-turn.txt`).
+- **Exactly once.** A turn reads the queue, records the wakes in her state (`currentTurn.wakes`),
+  and only then removes them from the queue (by id). A crash in between leaves a wake in both
+  places, and boot repair re-queues the open turn's wakes by id, which adds nothing twice; a crash
+  after a fold puts back every wake the open turn had shown (turn start and folds alike).
 - Entries for one place merge into one line with the reasons joined (`mention, watch`).
 - A wake whose id is already queued (immediate or deferred) is not added again, so a catch-up, a
   reminder re-routed after a crash or a re-queued turn never doubles a wake.
@@ -900,7 +946,8 @@ Block A:
      You are not an assistant and nobody's servant; you decide for yourself what to do.
    - Your phone buzzes with notifications: who, where and why, with a short preview. Read the
      conversation (`read_messages`) before replying. You don't have to answer: ignore what isn't for
-     you or doesn't interest you; answer when you have something relevant or want to.
+     you or doesn't interest you; answer when you have something relevant or want to. New ones can
+     also arrive mid-turn, right after a tool result (§4.6).
    - Nobody sees your thoughts. Only `send_message` reaches people; `react` adds a reaction. Write
      like a person in a chat: short messages, several of them if you have several things to say.
    - Keep notes like a diary: write things down as soon as you learn them; your memory of today is
@@ -1013,8 +1060,10 @@ All in one winter release, pinned by the app.
 ### 10.1 Bots
 
 - The orchestrator bot becomes the **House bot** (UI label; the `discord-bots.json` key stays
-  `orchestrator`). It keeps its intents, reads all guild messages and hosts slash commands.
-- Waifu bots send their waifu's messages, typing and reactions, and receive DMs when DM-eligible.
+  `orchestrator`). It keeps its intents (plus the non-privileged `GuildMessageTyping`, §4.2), reads
+  all guild messages and hosts slash commands.
+- Waifu bots send their waifu's messages, typing and reactions, and receive DMs (and DM typing
+  starts, `DirectMessageTyping`) when DM-eligible.
 
 ### 10.2 Additions
 
@@ -1097,7 +1146,8 @@ Registered before the schema stamp; idempotent; re-run safe.
 | `living-cast-archive-director-v1` | Moves to `user/.archive/living-cast/`: `user/orchestrator/`, `user/stage-manager/`, `user/reviewer/`, every guild's orchestrator/stage-manager/reviewer histories and `sessions/`, and every `user/conversations/*/ledger.json` and `contexts/` (refs stay). Shutdown-persisted wakes in old session files are not converted. |
 | `living-cast-dm-state-v1` | DM `pending*` (a DM in flight at upgrade) becomes an immediate `dm` wake in that waifu's queue; `recentRuns` dropped. |
 | `living-cast-server-fields-v1` | Drops `orchestratorMode`, `stageManagerEnabled`, `contextWindows`, `memoryInjectionLimit`, `tools`, `compaction` from server files. `oneShot.target` becomes a per-server detector override **only** if the server was in one-shot mode and its target differs from the old default; otherwise removed. |
-| `living-cast-app-config-v1` | `memory.dreamHourLocal` → `life.maintenanceHourLocal`; `memory.maxInlineImagesPerEpoch` → `life.maxInlineImagesPerEpoch`; `discord.dm.maxConcurrentRuns` → `life.maxConcurrentTurns`; other `memory.*` dropped; `discord.deletedMessages.redactRecent` dropped. Widens `discord.debounce.dmMaxWaitMs` to max 300000 and sets `dmMs` 15000 / `dmMaxWaitMs` 180000 if they still hold the old defaults. |
+| `living-cast-app-config-v1` | `memory.dreamHourLocal` → `life.maintenanceHourLocal`; `memory.maxInlineImagesPerEpoch` → `life.maxInlineImagesPerEpoch`; `discord.dm.maxConcurrentRuns` → `life.maxConcurrentTurns`; other `memory.*` dropped; `discord.deletedMessages.redactRecent` dropped. Widens `discord.debounce.dmMaxWaitMs` to max 300000 and sets `dmMs` 2500 / `dmMaxWaitMs` 60000 (the typing-hold defaults, §4.2; 15000 / 180000 before them, unreleased) if they still hold the old defaults (1500 / 8000). |
+| `living-cast-typing-holds-v1` | Registered after `living-cast-home-v1` (§4.2): `discord.debounce` values still at an earlier default move to the typing-hold ones (`dmMs` 15000 → 2500, `dmMaxWaitMs` 180000 → 60000, `serverMs` 1200 → 1500, `serverMaxWaitMs` 4000 → 10000); any other value stays. |
 
 Implementation notes (L2): the steps run in the order of the table, after `living-cast-models-v1`
 and before the stamp (`LIVING_CAST_L2_STEP_IDS` in `migrations.ts`). Moved values are clamped into
@@ -1140,7 +1190,9 @@ repaired, as before; the point is that the repaired file is then converted.
 | `life.webFetch.directMaxChars` / `maxBytes` / `timeoutMs` / `maxRedirects` / `cacheMinutes` | 2000 / 5242880 / 20000 / 5 / 15 |
 | `models.allowed` / `models.maxOutputUsdPerMTok` | §9.2 / 10 |
 | `detector.target` | `openrouter:typesafe/jev-1.14` (40/40 on the addressee benchmark, 2026-10-25; Clef 36/40) |
-| `discord.debounce.dmMs` / `dmMaxWaitMs` | 15000 / 180000 |
+| `discord.debounce.serverMs` / `serverMaxWaitMs` | 1500 / 10000 (§4.2) |
+| `discord.debounce.dmMs` / `dmMaxWaitMs` | 2500 / 60000 (§4.2) |
+| `discord.debounce.typingHoldMs` | 6000 (§4.2; 0 ignores typing) |
 | `discord.dm.resumeWindowMinutes` | 60 (now the boot catch-up window) |
 | Waifu: `model`, `life.dailyBudgetUsd` (none), `dm.sleepNotice` (""), `wakeOnName` (true) | |
 
@@ -1168,7 +1220,9 @@ Bounds (validated by the config schema):
 | `life.webFetch.maxPerWaifuPerDay` / `maxPerTurn` | 0–500 / 0–20 (0 disables) |
 | `life.webFetch.directMaxChars` / `maxBytes` | 0–20000 / 65536–10485760 |
 | `life.webFetch.timeoutMs` / `maxRedirects` / `cacheMinutes` | 2000–60000 / 0–10 / 0–1440 |
+| `discord.debounce.serverMs` / `serverMaxWaitMs` | 0–30000 / 0–120000 |
 | `discord.debounce.dmMs` / `dmMaxWaitMs` | 0–120000 / 0–300000 |
+| `discord.debounce.typingHoldMs` | 0–30000 |
 
 ### 11.4 Release
 
@@ -1247,7 +1301,13 @@ them):
   limit merging; loop guard when enabled limits wakes only.
 - **Sleep**: every reason deferred except `owner`; one `morning` batch that lists every reminder and
   watch note.
-- **DMs**: 15 s timer reset by each message and the 180 s cap; D11 send permissions.
+- **DMs**: 2.5 s timer reset by each message, held while they type, and the 60 s cap; D11 send permissions.
+- **Typing holds** (§4.2, `tests/lifeWakes.test.ts`, fake timers): typing extends a hold, a message
+  ends the author's typing, the room and DM caps, a mention and its follow-up become one wake, and
+  typing by someone outside the burst, by a bot or by a waifu holds nothing.
+- **Mid-turn notifications** (§4.6, `tests/lifeLoop.test.ts`, golden `life-mid-turn.txt`): delivered
+  after the running tool call, never inside a call, taken exactly once, crash-repair safe, and left
+  for the next turn when she ends in plain text or the round ends the turn.
 - **Detector**: mapping, weighted draw, fallback, history, benchmark cases
   (`npm run benchmark:decisions -- --suite=addressee`, offline checks in
   `tests/decisionAddressee.test.ts`).
@@ -1298,7 +1358,8 @@ an ignored one 1.
 | Muse contributor | ≈ $0.001 | ≈ $0.01 |
 
 - Latency for a mention and reply: about 8–20 s warm (2 s coalesce, two model calls, typing), plus
-  3–10 s cold. DMs add the 15 s quiet timer. Today's path is about 4–10 s.
+  3–10 s cold. Every message first waits its burst's quiet time (1.5 s in a room, 2.5 s in a DM;
+  longer only while the person is still typing, §4.2). Today's path is about 4–10 s.
 - A user spamming mentions is bounded by `life.maxWakesPerUserPerHour`; without a budget, a waifu
   on Sonnet can still cost several dollars an hour in a very busy room.
 

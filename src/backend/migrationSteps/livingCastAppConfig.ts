@@ -6,8 +6,9 @@
 //   `discord.dm.maxConcurrentRuns` → `life.maxConcurrentTurns` (at most 16 now). A `life` value
 //   already there wins. Every other `memory.*` key is dropped with the table.
 // - `discord.deletedMessages.redactRecent` is dropped (and the table when it is left empty).
-// - `discord.debounce.dmMs` / `dmMaxWaitMs` still at the old defaults (1500 / 8000) become 15000 /
-//   180000; any other value is the owner's choice and stays.
+// - `discord.debounce.dmMs` / `dmMaxWaitMs` still at the old defaults (1500 / 8000) become 2500 /
+//   60000 (the typing-hold defaults, spec §4.2; 15000 / 180000 before them); any other value is the
+//   owner's choice and stays.
 //
 // The original file is copied to `user/.archive/living-cast/config.toml` before it is rewritten
 // (the first copy wins). A missing config is a no-op; an unparsable one is left for `loadAppConfig`
@@ -23,7 +24,7 @@ import type { MigrationStepOutcome } from "../migrations.js";
 import { archivePath } from "./livingCastArchive.js";
 
 export const LEGACY_DM_DEBOUNCE = { dmMs: 1_500, dmMaxWaitMs: 8_000 };
-export const LIVING_CAST_DM_DEBOUNCE = { dmMs: 15_000, dmMaxWaitMs: 180_000 };
+export const LIVING_CAST_DM_DEBOUNCE = { dmMs: 2_500, dmMaxWaitMs: 60_000 };
 
 type Table = Record<string, unknown>;
 

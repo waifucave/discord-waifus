@@ -181,6 +181,9 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     const message = w.discord.post(ROOM, "the exam went fine");
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
     await w.cast.settle();
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
     expect((await herEntries(w, "watches.json")).map((watch) => watch["id"])).toEqual(["w3"]);
     w.clock.ms = Date.parse("2026-10-24T14:31:00.000Z");
     await w.cast.scheduler.tick();

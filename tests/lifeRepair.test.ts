@@ -25,6 +25,9 @@ async function mention(w: LifeWorld, text: string) {
   const message = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" } });
   await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
   await w.cast.settle();
+  // Her wake waits for the burst's quiet time (§4.2): fire it now.
+  w.cast.intake.flushDetector();
+  await w.cast.settle();
   return message;
 }
 
@@ -212,6 +215,9 @@ describe("catch-up never takes a routed message twice (review I3)", () => {
     await w.cast.catchUpAndResume();
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
     await w.cast.settle();
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.messageId)).toEqual([message.id]);
   });
 
@@ -228,6 +234,9 @@ describe("catch-up never takes a routed message twice (review I3)", () => {
     w.clock.advance(5 * 60_000);
     const ping = w.discord.post(ROOM, `<@${ARIA_BOT}> ping`, { mentions: { [ARIA_BOT]: "Aria" } });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: ping });
+    await w.cast.settle();
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    w.cast.intake.flushDetector();
     await w.cast.settle();
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toEqual([]);
     w.clock.advance(2 * 3_600_000);

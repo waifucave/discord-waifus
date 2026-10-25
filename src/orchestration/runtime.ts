@@ -133,6 +133,8 @@ export class CastRuntime {
           this.handleDirectMessage(event)
         );
       }),
+      // Typing holds a pending burst of the typist's (§4.2); cheap and synchronous.
+      discord.onTyping?.((event) => this.cast.onTyping(event)),
       discord.onDmForgetCommand?.((event) => this.handleDmForgetCommand(event)),
       // The owner's slash commands on the House bot (§10.4).
       discord.onWakeCommand?.((event) => this.handleWakeCommand(event)),

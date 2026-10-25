@@ -4,7 +4,7 @@
 // and feeds it guild messages, DMs and cache events.
 
 import type { Logger } from "../backend/logger.js";
-import type { DiscordDirectMessageEvent, DiscordGatewayFacade } from "../discord/client.js";
+import type { DiscordDirectMessageEvent, DiscordGatewayFacade, DiscordTypingEvent } from "../discord/client.js";
 import type { ConversationCacheEvent, ConversationMessageCache } from "../discord/conversationCache.js";
 import type { GuildDirectory } from "../discord/guildDirectory.js";
 import { curatedCatalog, findCuratedModel, type CuratedCatalog } from "../models/catalog.js";
@@ -449,6 +449,8 @@ export class LivingCast {
             if (message.authorIsBot && !ownWaifu) continue;
             await this.intake.onGuildMessage({ guildId: room.guildId, channelId: room.channelId, messageId: message.id, castWaifuIds, authorIsWaifu: ownWaifu, raw: message });
           }
+          // Old messages wait for nobody's typing: the room's burst fires now (§4.2, §5.7).
+          this.intake.flushBurst(placeKey);
         } catch (error) {
           deps.logger.warn("Life catch-up failed for a room", { placeKey, message: error instanceof Error ? error.message : String(error) });
         }
@@ -492,6 +494,12 @@ export class LivingCast {
   onDirectMessage(event: DiscordDirectMessageEvent): Promise<void> {
     if (this.stopped) return Promise.resolve();
     return this.track(this.intake.onDirectMessage(event));
+  }
+
+  /** Someone is typing: their pending burst there waits (§4.2). */
+  onTyping(event: DiscordTypingEvent): void {
+    if (this.stopped) return;
+    this.intake.onTyping(event);
   }
 
   onCacheEvent(event: ConversationCacheEvent, castOf: (guildId: string, channelId: string) => Promise<string[]>): void {

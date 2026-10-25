@@ -7,18 +7,22 @@
 //      `wakeOnName: false`);
 //   2. watches: every waifu with a matching `WatchFor` binding;
 //   3. detector: when the author is human and no message in the current burst produced a direct
-//      reason for anyone, the burst (channel debounce `serverMs`/`serverMaxWaitMs`) goes to the
-//      addressee detector.
-// Messages by other waifus only wake through mention, role, reply-to-her and watch; her own never
-// wake her. DMs wake her 15 s after the user's last message (`dmMs`, capped at `dmMaxWaitMs`).
+//      reason for anyone, the burst goes to the addressee detector.
+// Every human message joins its place's burst, which is held by a typing-aware timer (`intakeHold.ts`):
+// it fires `serverMs` after the last message, later while an author of the burst is typing there
+// (`typingHoldMs` per typing event), at most `serverMaxWaitMs` after its first message. A human
+// message's direct wakes wait for the burst too, merged per waifu, so "@Aria" followed by "what do
+// you think about…" is one wake previewing the question. Watches and waifu-authored messages are
+// routed at once. Messages by other waifus only wake through mention, role, reply-to-her and watch;
+// her own never wake her. DMs wake her `dmMs` after the user's last message, held the same way while
+// they type (capped at `dmMaxWaitMs`).
 // Edits wake nobody except a newly added mention of her in a human message under 2 minutes old
 // (once); a deleted message she had read becomes a pending notice (§10.3).
 
-import type { DiscordDirectMessageEvent } from "../discord/client.js";
+import type { DiscordDirectMessageEvent, DiscordTypingEvent } from "../discord/client.js";
 import type { ConversationCacheEvent } from "../discord/conversationCache.js";
 import { assignConversationRefs, readConversationRefs } from "../discord/refStore.js";
 import { compareIds } from "../discord/rawMessage.js";
-import { KeyedDebouncer } from "../orchestration/debounce.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
 import { EMPTY_GUILD_DIRECTORY, renderDiscordMessage } from "../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../orchestration/context/types.js";
@@ -44,6 +48,7 @@ import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
 import { fireWatches } from "./watches.js";
 import { homeStoreFor } from "./home/index.js";
+import { TypingHolds, type HoldTiming } from "./intakeHold.js";
 import { newWakeId } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import path from "node:path";
@@ -51,6 +56,12 @@ import { readFile } from "node:fs/promises";
 
 export const EDIT_MENTION_WINDOW_MS = 2 * 60_000;
 const DIRECT_ORDER: WakeReason[] = ["mention", "role", "everyone", "name"];
+
+/** A wake only an @everyone or a shared role produced (several such are staggered, §4.1). */
+function isShared(wake: Wake): boolean {
+  const reasons = wake.reasons ?? [wake.reason];
+  return !reasons.includes("mention") && !reasons.includes("name") && (reasons.includes("everyone") || reasons.includes("role"));
+}
 
 export type IntakeOptions = {
   deps: LifeDeps;
@@ -75,8 +86,15 @@ export type GuildMessageInput = {
   raw?: RawDiscordMessage;
 };
 
+/** A direct wake a human message produced, held until its burst fires. */
+type HeldWake = { waifuId: string; wake: Wake };
+
 type Burst = {
   messageIds: string[];
+  /** Each message's author and preview: a held wake previews its author's newest message. */
+  messages: Array<{ id: string; authorId: string; fromName: string; preview: string }>;
+  /** Direct wakes waiting for the burst to fire (§4.2). */
+  held: HeldWake[];
   direct: boolean;
   /** Waifus a watch woke for a message in this burst: the detector skips them (D-c). */
   watched: string[];
@@ -92,8 +110,10 @@ type DmBurst = { messageIds: string[]; userName?: string };
 type HoldKind = "routing" | "burst";
 
 export class Intake {
-  private readonly detectorDebounce: KeyedDebouncer<string>;
-  private readonly dmDebounce: KeyedDebouncer<string>;
+  /** Room bursts per place key (direct wakes and the detector alike). */
+  private readonly burstHolds: TypingHolds<string>;
+  /** DM bursts per `waifuId\0userId`. */
+  private readonly dmHolds: TypingHolds<string>;
   private readonly bursts = new Map<string, Burst>();
   private readonly dmBursts = new Map<string, DmBurst>();
   private readonly editMentions = new Set<string>();
@@ -162,14 +182,31 @@ export class Intake {
   }
 
   constructor(private readonly o: IntakeOptions) {
-    this.detectorDebounce = new KeyedDebouncer(o.now);
-    this.dmDebounce = new KeyedDebouncer(o.now);
+    this.burstHolds = new TypingHolds(o.now);
+    this.dmHolds = new TypingHolds(o.now);
   }
 
   close(): void {
     this.closed = true;
-    this.detectorDebounce.cancelAll();
-    this.dmDebounce.cancelAll();
+    this.burstHolds.cancelAll();
+    this.dmHolds.cancelAll();
+  }
+
+  private timing(kind: "server" | "dm"): HoldTiming {
+    const debounce = this.deps.config().discord.debounce;
+    return kind === "server"
+      ? { quietMs: debounce.serverMs, maxWaitMs: debounce.serverMaxWaitMs, typingHoldMs: debounce.typingHoldMs }
+      : { quietMs: debounce.dmMs, maxWaitMs: debounce.dmMaxWaitMs, typingHoldMs: debounce.typingHoldMs };
+  }
+
+  /**
+   * Someone is typing (§4.2): a pending burst of theirs in that place waits for them. Bots and people
+   * with no message pending there hold nothing.
+   */
+  onTyping(event: DiscordTypingEvent): void {
+    if (this.closed || event.bot) return;
+    if (event.kind === "guild") this.burstHolds.typing(conversationKey({ kind: "guild", guildId: event.guildId, channelId: event.channelId }), event.userId);
+    else this.dmHolds.typing(`${event.waifuId}\u0000${event.userId}`, event.userId);
   }
 
   /** Waits for detector calls and DM fires already started (tests, shutdown). */
@@ -248,10 +285,10 @@ export class Intake {
       this.release(placeKey, [raw.id], "routing");
       throw error;
     }
-    // Its routing hold goes once every wake for it is routed (a staggered one waits on its timer):
-    // a waifu's message or a direct one is then marked (a direct burst never reaches the detector).
+    // Its routing hold goes once every wake for it is routed (a staggered one waits on its timer): a
+    // waifu's message is then marked; a human one waits for its burst (which routes its direct wakes).
     const routedAll = () => {
-      if (!human || outcome.direct) this.mark(placeKey, [raw.id]);
+      if (!human) this.mark(placeKey, [raw.id]);
       this.release(placeKey, [raw.id], "routing");
     };
     if (outcome.staggered.length > 0) void this.track(Promise.allSettled(outcome.staggered).then(routedAll));
@@ -278,7 +315,7 @@ export class Intake {
     const referenced = raw.referenceMessageId ? await this.findMessage(conversation, raw.referenceMessageId) : undefined;
     const mentionedUsers = new Set(Object.keys(raw.mentions.users));
     const mentionedRoles = new Set(Object.keys(raw.mentions.roles));
-    const directWakes: Array<{ waifu: WaifuConfig; wake: Wake; shared: boolean }> = [];
+    const directWakes: Array<{ waifu: WaifuConfig; wake: Wake }> = [];
     const watched = new Set<string>();
     for (const waifu of waifus) {
       const selfIds = await selfAuthorIds(deps.storage, waifu);
@@ -304,8 +341,7 @@ export class Intake {
         if (human && !removed && !reasons.includes("mention") && waifu.wakeOnName && this.namesOf(waifu, input.guildId, selfIds).some((name) => wordBoundaryIncludes(text, name))) reasons.push("name");
         if (reasons.length > 0) {
           const ordered = DIRECT_ORDER.filter((reason) => reasons.includes(reason));
-          const shared = !ordered.includes("mention") && !ordered.includes("name") && (ordered.includes("everyone") || ordered.includes("role"));
-          directWakes.push({ waifu, wake: { id: newWakeId(), reason: ordered[0]!, ...(ordered.length > 1 ? { reasons: ordered } : {}), ...base }, shared });
+          directWakes.push({ waifu, wake: { id: newWakeId(), reason: ordered[0]!, ...(ordered.length > 1 ? { reasons: ordered } : {}), ...base } });
         }
       }
       const fired = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own, createdAt: raw.createdAt }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay });
@@ -314,26 +350,20 @@ export class Intake {
       }
       if (fired.length > 0) watched.add(waifu.id);
     }
-    // Several waifus woken by one @everyone / shared role ping are staggered by 0–20 s (§4.1).
-    const sharedCount = directWakes.filter((entry) => entry.shared).length;
-    const staggered: Promise<unknown>[] = [];
-    for (const entry of directWakes) {
-      const stagger = entry.shared && sharedCount > 1;
-      const routed = this.o.router.route(entry.waifu.id, entry.wake, { guildId: input.guildId, stagger });
-      // A staggered wake waits on its own timer; it never holds up intake or the other waifus.
-      if (stagger) staggered.push(this.track(routed));
-      else await routed;
-    }
-    const outcome = { staggered, direct: directWakes.length > 0 };
-    if (!human) return outcome;
-    // Every human message joins the place's burst. A burst with any direct message in it (before or
-    // after the others, M9) never reaches the detector; a waifu whose watch fired for a message in it
-    // is skipped by the detector for the burst (D-c: one wake per message), others can still be picked.
-    const next: Burst = this.bursts.get(placeKey) ?? { messageIds: [], direct: false, watched: [], guildId: input.guildId, channelId: input.channelId, castWaifuIds: input.castWaifuIds };
+    // A waifu's message is routed at once (typing never holds a waifu); several waifus woken by one
+    // @everyone / shared role ping are staggered by 0–20 s (§4.1).
+    if (!human) return { staggered: await this.routeDirect(input.guildId, directWakes.map((entry) => ({ waifuId: entry.waifu.id, wake: entry.wake }))), direct: directWakes.length > 0 };
+    // Every human message joins the place's burst, and its direct wakes wait for it (§4.2). A burst
+    // with any direct message in it (before or after the others, M9) never reaches the detector; a
+    // waifu whose watch fired for a message in it is skipped by the detector for the burst (D-c: one
+    // wake per message), others can still be picked.
+    const next: Burst = this.bursts.get(placeKey) ?? { messageIds: [], messages: [], held: [], direct: false, watched: [], guildId: input.guildId, channelId: input.channelId, castWaifuIds: input.castWaifuIds };
     next.messageIds.push(raw.id);
-    // A message no wake was routed for waits on its burst (fired, and its detector call answered).
-    if (directWakes.length === 0) this.hold(placeKey, raw.id, "burst");
+    next.messages.push({ id: raw.id, authorId: raw.authorId, fromName, preview });
+    // Every human message waits on its burst (fired, its held wakes routed, its detector call answered).
+    this.hold(placeKey, raw.id, "burst");
     if (directWakes.length > 0) {
+      next.held.push(...directWakes.map((entry) => ({ waifuId: entry.waifu.id, wake: entry.wake })));
       next.direct = true;
       this.lastHumanAt.set(placeKey, raw.createdAt);
     } else {
@@ -343,27 +373,89 @@ export class Intake {
     for (const waifuId of watched) if (!next.watched.includes(waifuId)) next.watched.push(waifuId);
     next.castWaifuIds = input.castWaifuIds;
     this.bursts.set(placeKey, next);
-    const debounce = deps.config().discord.debounce;
-    this.detectorDebounce.schedule(placeKey, { quietMs: debounce.serverMs, maxWaitMs: debounce.serverMaxWaitMs }, () => {
+    this.burstHolds.message(placeKey, { authorId: raw.authorId, timing: this.timing("server") }, () => {
       const done = this.bursts.get(placeKey);
       this.bursts.delete(placeKey);
       if (done) this.fireBurst(placeKey, done);
     });
-    return outcome;
+    return { staggered: [], direct: directWakes.length > 0 };
   }
 
-  /** A burst is done: the detector runs for it (unless direct); its messages are marked once routed. */
+  /**
+   * Routes direct wakes; with several shared ones (@everyone, a shared role) each is staggered by
+   * 0–20 s (§4.1). Returns the staggered routings (they never hold up intake or the other waifus).
+   */
+  private async routeDirect(guildId: string, wakes: readonly HeldWake[]): Promise<Promise<unknown>[]> {
+    const sharedCount = wakes.filter((entry) => isShared(entry.wake)).length;
+    const staggered: Promise<unknown>[] = [];
+    for (const entry of wakes) {
+      const stagger = isShared(entry.wake) && sharedCount > 1;
+      const routed = this.o.router.route(entry.waifuId, entry.wake, { guildId, stagger });
+      if (stagger) staggered.push(this.track(routed));
+      else await routed;
+    }
+    return staggered;
+  }
+
+  /**
+   * A burst's held direct wakes, one per waifu: reasons merged (a mention makes her name redundant),
+   * previewing the newest message of the person who woke her (the question after the "@Aria").
+   */
+  private mergeHeld(burst: Burst): HeldWake[] {
+    const byWaifu = new Map<string, Wake>();
+    for (const { waifuId, wake } of burst.held) {
+      const existing = byWaifu.get(waifuId);
+      if (!existing) {
+        byWaifu.set(waifuId, wake);
+        continue;
+      }
+      const all = [...(existing.reasons ?? [existing.reason]), ...(wake.reasons ?? [wake.reason])];
+      const ordered = DIRECT_ORDER.filter((reason) => all.includes(reason));
+      const reasons = ordered.includes("mention") ? ordered.filter((reason) => reason !== "name") : ordered;
+      const rest: Wake = { ...existing };
+      delete rest.reasons;
+      byWaifu.set(waifuId, {
+        ...rest,
+        reason: reasons[0]!,
+        ...(reasons.length > 1 ? { reasons } : {}),
+        ...(wake.messageId ? { messageId: wake.messageId } : {}),
+        ...(wake.preview !== undefined ? { preview: wake.preview } : {}),
+        ...(wake.fromUserId ? { fromUserId: wake.fromUserId } : {}),
+        ...(wake.fromName ? { fromName: wake.fromName } : {})
+      });
+    }
+    return [...byWaifu].map(([waifuId, wake]) => {
+      const newest = [...burst.messages].reverse().find((message) => message.authorId === wake.fromUserId);
+      if (!newest || !wake.messageId || compareIds(newest.id, wake.messageId) <= 0) return { waifuId, wake };
+      return { waifuId, wake: { ...wake, messageId: newest.id, preview: newest.preview, fromName: newest.fromName } };
+    });
+  }
+
+  /**
+   * A burst is done: its held direct wakes are routed, the detector runs for it (unless direct), and
+   * its messages are marked once routed (a held wake that could not be routed leaves them unmarked,
+   * so the next catch-up takes them again).
+   */
   private fireBurst(placeKey: string, burst: Burst): void {
     if (this.closed) return;
-    const done = () => {
-      this.mark(placeKey, burst.messageIds);
-      this.release(placeKey, burst.messageIds, "burst");
+    const work = async () => {
+      let routed = true;
+      try {
+        if (burst.held.length > 0) {
+          try {
+            await Promise.allSettled(await this.routeDirect(burst.guildId, this.mergeHeld(burst)));
+          } catch (error) {
+            routed = false;
+            throw error;
+          }
+        }
+        if (!burst.direct) await this.runDetector(placeKey, burst);
+      } finally {
+        if (routed) this.mark(placeKey, burst.messageIds);
+        this.release(placeKey, burst.messageIds, "burst");
+      }
     };
-    if (burst.direct) {
-      done();
-      return;
-    }
-    void this.track(this.runDetector(placeKey, burst).finally(done));
+    void this.track(work());
   }
 
   private async serverOf(guildId: string): Promise<ServerConfig | undefined> {
@@ -532,7 +624,7 @@ export class Intake {
 
   // ---- DMs ------------------------------------------------------------------------------------------
 
-  /** A human's DM: DM state updated now; the `dm` wake 15 s after their last message (cap 180 s). */
+  /** A human's DM: DM state updated now; the `dm` wake `dmMs` after their last message, held while they type. */
   async onDirectMessage(event: DiscordDirectMessageEvent): Promise<void> {
     if (this.closed || this.seen.has(event.messageId)) return;
     const deps = this.deps;
@@ -555,8 +647,7 @@ export class Intake {
     this.hold(conversationKey({ kind: "dm", waifuId: event.waifuId, userId: event.userId }), event.messageId, "routing");
     if (event.userDisplayName) burst.userName = event.userDisplayName;
     this.dmBursts.set(key, burst);
-    const debounce = deps.config().discord.debounce;
-    this.dmDebounce.schedule(key, { quietMs: debounce.dmMs, maxWaitMs: debounce.dmMaxWaitMs }, () => {
+    this.dmHolds.message(key, { authorId: event.userId, timing: this.timing("dm") }, () => {
       const done = this.dmBursts.get(key);
       this.dmBursts.delete(key);
       if (done && !this.closed) void this.track(this.fireDm(event.waifuId, event.userId, done));
@@ -592,23 +683,26 @@ export class Intake {
 
   /** Fires every pending DM wake now (tests; the boot catch-up after a long pause). */
   flushDms(): void {
-    for (const key of this.dmDebounce.keys()) {
+    for (const key of this.dmHolds.keys()) {
       const burst = this.dmBursts.get(key);
-      this.dmDebounce.cancel(key);
+      this.dmHolds.cancel(key);
       this.dmBursts.delete(key);
       const [waifuId, userId] = key.split("\u0000");
       if (burst && waifuId && userId) void this.track(this.fireDm(waifuId, userId, burst));
     }
   }
 
-  /** Runs every pending detector burst now (tests). */
+  /** Fires every pending room burst now: its held wakes and its detector call (tests). */
   flushDetector(): void {
-    for (const key of this.detectorDebounce.keys()) {
-      this.detectorDebounce.cancel(key);
-      const burst = this.bursts.get(key);
-      this.bursts.delete(key);
-      if (burst) this.fireBurst(key, burst);
-    }
+    for (const key of this.burstHolds.keys()) this.flushBurst(key);
+  }
+
+  /** Fires one place's pending burst now (the catch-up: nobody is typing an old message). */
+  flushBurst(placeKey: string): void {
+    if (!this.burstHolds.cancel(placeKey)) return;
+    const burst = this.bursts.get(placeKey);
+    this.bursts.delete(placeKey);
+    if (burst) this.fireBurst(placeKey, burst);
   }
 
   // ---- edits and deletes (§4.2, §10.3) --------------------------------------------------------------

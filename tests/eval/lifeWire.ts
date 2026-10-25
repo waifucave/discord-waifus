@@ -59,6 +59,9 @@ export async function roomWake(w: LifeWorld, text: string, chatter = 3): Promise
   const message = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" } });
   await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
   await w.cast.settle();
+  // Her wake waits for the burst's quiet time (§4.2): fire it now.
+  w.cast.intake.flushDetector();
+  await w.cast.settle();
   await w.cast.life("aria").runNow();
 }
 

@@ -5,11 +5,11 @@
 //
 // What each bot kind really does in 3.0 (src/discord/client.ts, `discordClientOptions`):
 // - The House bot is the one that READS: it logs in with Guilds, Guild Messages, Guild Message
-//   Reactions, Guild Expressions and the privileged Message Content intent (plus the privileged
+//   Reactions, Guild Message Typing, Guild Expressions and the privileged Message Content intent (plus the privileged
 //   Server Members intent only when `discord.guildMembersIntent` is on). It fetches message
 //   history over REST, runs the owner slash commands and joins threads. It never posts.
 // - A waifu bot only WRITES: it posts (including in threads), attaches files, reacts and shows
-//   typing. It logs in with Guilds alone (plus the two non-privileged Direct Message intents when
+//   typing. It logs in with Guilds alone (plus the three non-privileged Direct Message intents when
 //   she takes DMs). It needs no privileged intent.
 
 const PERMISSIONS = {
@@ -92,13 +92,14 @@ export function intentListFor(kind: BotKind): IntentInfo[] {
       { name: "GUILDS", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
       { name: "GUILD_MESSAGES", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
       { name: "GUILD_MESSAGE_REACTIONS", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
+      { name: "GUILD_MESSAGE_TYPING", portalToggle: false, privileged: false, required: true, note: "Requested automatically (a waifu waits while the person she is about to answer is still typing)." },
       { name: "GUILD_EXPRESSIONS", portalToggle: false, privileged: false, required: true, note: "Requested automatically (server emoji and stickers)." }
     ];
   }
   return [
     { name: "GUILDS", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
     {
-      name: "DIRECT_MESSAGES + DIRECT_MESSAGE_REACTIONS",
+      name: "DIRECT_MESSAGES + DIRECT_MESSAGE_REACTIONS + DIRECT_MESSAGE_TYPING",
       portalToggle: false,
       privileged: false,
       required: false,

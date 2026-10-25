@@ -39,10 +39,11 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `discord.images.diskCacheTtlHours` | integer 1–720 [hours] | `168` | How long downloaded images are kept on disk (a forget cannot remove a cached guild image, or a DM image no image index recorded, before this). |
 | `discord.guildMembersIntent` | boolean | `false` | Use Discord's privileged Server Members intent for full member lists. Enable it in the Developer Portal first; changing it re-logs the House bot. |
 | `discord.memberListRefreshHours` | integer 0–168 [hours] | `24` | How often full member lists are refreshed (0 = never). |
-| `discord.debounce.serverMs` | integer 0–30000 [ms] | `1200` | Quiet time before a burst of server messages goes to the addressee detector. |
-| `discord.debounce.serverMaxWaitMs` | integer 0–120000 [ms] | `4000` | A burst goes to the detector after at most this long. |
-| `discord.debounce.dmMs` | integer 0–120000 [ms] | `15000` | A DM wakes her this long after the person's last message (each message restarts the timer). |
-| `discord.debounce.dmMaxWaitMs` | integer 0–300000 [ms] | `180000` | A DM wakes her after at most this long, however often the person keeps writing. |
+| `discord.debounce.serverMs` | integer 0–30000 [ms] | `1500` | A burst of server messages (mentions, replies, her name, and what goes to the addressee detector) wakes her this long after its last message; each message restarts the timer. |
+| `discord.debounce.serverMaxWaitMs` | integer 0–120000 [ms] | `10000` | A server burst wakes her after at most this long from its first message, however long people keep writing or typing. |
+| `discord.debounce.dmMs` | integer 0–120000 [ms] | `2500` | A DM wakes her this long after the person's last message (each message restarts the timer). |
+| `discord.debounce.dmMaxWaitMs` | integer 0–300000 [ms] | `60000` | A DM wakes her after at most this long from its first message, however long the person keeps writing or typing. |
+| `discord.debounce.typingHoldMs` | integer 0–30000 [ms] | `6000` | While someone whose messages are waiting is typing in that place, the wake waits: a typing event counts this long unless their next message comes first (0 = ignore typing). |
 | `discord.dm.resumeWindowMinutes` | integer 0–1440 [minutes] | `60` | At start, messages that arrived while the host was down wake her only when they are at most this old (older ones stay readable). |
 | `models.allowed` | list of strings | `["meta/muse-spark-1.3-contributor","openrouter/meta/muse-spark-1.3-contributor","anthropic/claude-haiku-5-5","openrouter/anthropic/claude-haiku-5.5","anthropic/claude-sonnet-5-5","openrouter/anthropic/claude-sonnet-5.5","deepseek/deepseek-flash","openrouter/deepseek/deepseek-v4.1-flash","openai/gpt-6-luna","openrouter/openai/gpt-6-luna","openai/gpt-6.1-sol","openrouter/openai/gpt-6.1-sol"]` | The curated model routes waifus and the assistant may use (winter route keys such as anthropic/claude-sonnet-5-5). Routes the installed catalog lacks are hidden. |
 | `models.maxOutputUsdPerMTok` | number >0–10 [USD] | `10` | Routes above this output price per million tokens are hidden (at most 10). |

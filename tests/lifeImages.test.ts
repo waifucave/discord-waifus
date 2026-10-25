@@ -143,6 +143,9 @@ describe("Read of an image (§16.3.3)", () => {
       const posted = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" } });
       await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: posted });
       await w.cast.settle();
+      // Her wake waits for the burst's quiet time (§4.2): fire it now.
+      w.cast.intake.flushDetector();
+      await w.cast.settle();
       await w.cast.life("aria").runNow();
     };
     await wake("look at your picture");
@@ -174,6 +177,9 @@ describe("pinned images (§5.3)", () => {
     const posted = w.discord.post(ROOM, `<@${ARIA_BOT}> look at my cake`, { attachments: [image("9301")], mentions: { [ARIA_BOT]: "Aria" } });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: posted });
     await w.cast.settle();
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
     await w.cast.life("aria").runNow();
     const before = await readLifeState(w.storage, "aria");
     expect(before.inlineImageCount).toBe(1);
@@ -183,6 +189,9 @@ describe("pinned images (§5.3)", () => {
     fetcher.local.delete(key);
     const again = w.discord.post(ROOM, `<@${ARIA_BOT}> did you see it?`, { mentions: { [ARIA_BOT]: "Aria" } });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: again.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: again });
+    await w.cast.settle();
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    w.cast.intake.flushDetector();
     await w.cast.settle();
     await w.cast.life("aria").runNow();
     const after = await readLifeState(w.storage, "aria");
