@@ -334,7 +334,7 @@ export async function compactRetiredTools(
 }
 
 export const COMPACTION_INSTRUCTION =
-  "[system] Time to summarise. Write notes for your future self about your life since the last summary: what happened in each place, who you talked to and how it went, plans and promises, open threads, things you meant to do. Carry over anything from your previous summary that still matters. Anything that should last longer belongs in your notes; this summary is replaced next time. Reply with text only; do not call any tool.";
+  "[system] Time to summarise. Write notes for your future self about your life since the last summary: what happened in each place, who you talked to and how it went, plans and promises, open threads, things you meant to do. Carry over anything from your previous summary that still matters. Write what happened and how you feel about it now, not rules for yourself: one bad moment is not a verdict on someone, and a send that failed once is not a reason to avoid a place. Anything that should last longer belongs in your notes; this summary is replaced next time. Reply with text only; do not call any tool.";
 
 export type CompactionOmissions = { deleted: string[]; people: string[] };
 

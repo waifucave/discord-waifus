@@ -388,6 +388,12 @@ function isUndeliverable(error: unknown): boolean {
   return code === 50007 || code === "50007";
 }
 
+/** Discord's 50001 (missing access) and 50013 (missing permissions): her bot can't post in that channel. */
+function isNoAccess(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 50001 || code === "50001" || code === 50013 || code === "50013";
+}
+
 /** Discord's 40005 (request entity too large): the files are over the server's upload limit. */
 function isTooLarge(error: unknown): boolean {
   const { code, status } = (error as { code?: unknown; status?: unknown } | null) ?? {};
@@ -472,6 +478,7 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
     }
     if (attached.files.length > 0 && isTooLarge(error)) return toolError("the message could not be sent: the files are too large for Discord here; send fewer or smaller ones");
     deps.logger.warn("Life send failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
+    if (isNoAccess(error)) return toolError("the message could not be sent: Discord says you can't post in this room right now; that can change, so try again later");
     return toolError("the message could not be sent");
   }
   const now = deps.now();

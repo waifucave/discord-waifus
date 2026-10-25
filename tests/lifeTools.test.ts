@@ -65,6 +65,9 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(await run("SendMessage", { place: "elsewhere/#random", text: "hi" }, ctx)).toEqual({ content: "error: unknown place; see ~/places.md", isError: true });
     expect(await run("SendMessage", { place: "bake-club/#general", text: "" }, ctx)).toEqual({ content: "error: there is nothing to send", isError: true });
     expect((await run("SendMessage", { place: "bake-club/#general", text: "x".repeat(2001) }, ctx)).isError).toBe(true);
+    // Missing access says why and that it can change, so she doesn't write the room off.
+    w.discord.sendErrors.push(Object.assign(new Error("Missing Access"), { code: 50001 }));
+    expect(text(await run("SendMessage", { place: "bake-club/#general", text: "hi" }, ctx))).toMatch(/can't post in this room right now; that can change/u);
   });
 
   it("never cold-DMs; a DM opens once the user wrote, until undeliverable, forgotten or rate-limited", async () => {
