@@ -366,6 +366,10 @@ over the helper's authenticated direct path; waiting for direct status before th
 would deadlock startup. Its readiness monitor refreshes live helper status, re-registers the same
 unexpired gateway launch after helper restart, and is cancelled before switching hosts or closing.
 The browser still cannot open the selected dashboard until the helper confirms a direct path.
+Until then a page navigation gets the styled waiting page (`browserRecovery.ts` `waitingDashboard`,
+light/dark, its status line fed by the recovery script), which reloads once the path is direct. A
+new gateway (after an upgrade or any restart) serves only the build the host's live manifest names,
+never an older cached one: the disk cache only saves re-downloading a build the host still names.
 On Windows, Node-created installation/trust metadata gets a verified private current-user plus
 LocalSystem DACL through built-in Windows PowerShell before any content is written. Unix mode
 bits alone do not provide this guarantee. Existing metadata is not silently re-permissioned.

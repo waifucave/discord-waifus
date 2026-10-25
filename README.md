@@ -150,6 +150,9 @@ waifus remote
 
 For later connections, run `waifus remote`: it connects to the last selected host (or the only
 remembered host) and opens its dashboard without showing a connection screen or connection banner.
+Until the host answers over the direct connection (for example right after either side was
+updated or restarted), the window shows a short "Waiting for your host" page and opens the
+dashboard by itself as soon as it can.
 Running it again reopens a browser window without stopping the gateway.
 Use `waifus remote --setup` for activation, pairing, or choosing another host.
 No new invitation or separate Tailscale installation is needed. The host must stay running and awake. Use the host's

@@ -305,6 +305,53 @@ describe("verified selected-host dashboard serving", () => {
     expect((await rawRequest(newGateway, "/", newCookie)).body.toString("utf8")).toContain("new");
   });
 
+  it("shows a styled waiting page, never an older cached build, until the host answers", async () => {
+    // A new gateway (after an upgrade, or any restart) serves only the build the host's live
+    // manifest names; before the direct path answers it shows this page, which reloads itself.
+    const old = await dashboardFixture("old");
+    const fresh = await dashboardFixture("fresh");
+    const requests: HelperRemoteRequest[] = [];
+    let current = old;
+    const working = fixtureClient(() => current, requests);
+    const first = await selectedGateway({ dataRoot: old.root, client: working });
+    expect((await rawRequest(first, "/", await bootstrap(first))).body.toString("utf8")).toContain("<main>old</main>");
+
+    current = fresh;
+    let reachable = false;
+    const offline: DashboardRemoteClient = {
+      ...working,
+      request: vi.fn(async (input: HelperRemoteRequest) => {
+        if (!reachable) throw new Error("direct path unavailable");
+        return working.request(input);
+      })
+    };
+    const second = await selectedGateway({ dataRoot: old.root, client: offline });
+    const cookie = await bootstrap(second);
+    const waiting = await rawRequest(second, "/", cookie, "GET", { accept: "text/html,application/xhtml+xml" });
+    const html = waiting.body.toString("utf8");
+    expect(waiting.statusCode).toBe(200);
+    expect(waiting.headers["content-type"]).toContain("text/html");
+    expect(waiting.headers["cache-control"]).toBe("no-store");
+    expect(waiting.headers["content-security-policy"]).toContain("sandbox allow-scripts");
+    expect(html).not.toContain("<main>old</main>");
+    expect(html).toContain("Waiting for your host");
+    expect(html).toContain("<style>");
+    expect(html).toContain("prefers-color-scheme:dark");
+    expect(html).toContain('id="waifus-waiting-status"');
+    expect(html).toContain('data-waiting="true"');
+    // The only script is the same-origin recovery script; the CSP allows no inline script.
+    expect(html.match(/<script[^>]*>/gu)).toEqual([
+      expect.stringContaining('src="/_waifus_remote/resume.js"')
+    ]);
+    const script = await rawRequest(second, "/_waifus_remote/resume.js", cookie);
+    expect(script.body.toString("utf8")).toContain("waifus-waiting-status");
+    expect((await rawRequest(second, "/assets/app.js", cookie)).statusCode).toBe(503);
+
+    reachable = true;
+    const opened = await rawRequest(second, "/", cookie, "GET", { accept: "text/html" });
+    expect(opened.body.toString("utf8")).toContain("<main>fresh</main>");
+  });
+
   it("proxies API requests without downloading or exposing the dashboard manifest first", async () => {
     const fixture = await dashboardFixture("api");
     const requests: HelperRemoteRequest[] = [];
