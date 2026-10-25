@@ -28,8 +28,6 @@ export type AssistantTarget =
   | { ok: true; route: ModelChoice }
   | { ok: false; reason: string };
 
-/** Hard cap on executed tool calls per turn. */
-export const ASSISTANT_MAX_TOOL_CALLS = 12;
 /** Tool results longer than this are cut before they reach the model. */
 export const ASSISTANT_TOOL_RESULT_MAX_CHARS = 6000;
 const TEXT_DELTA_FLUSH_MS = 80;
@@ -211,9 +209,9 @@ function textDeltaPublisher(publish: (content: string) => void) {
 }
 
 /**
- * The assistant's tool loop over ModelClient.stream: up to ASSISTANT_MAX_TOOL_CALLS executed calls,
- * each round's assistant message appended exactly as assembled, tool results returned in one user
- * message of `tool_result` blocks.
+ * The assistant's tool loop over ModelClient.stream: it runs until the model answers without a tool
+ * call, each round's assistant message appended exactly as assembled, tool results returned in one
+ * user message of `tool_result` blocks.
  */
 async function runToolLoop(input: {
   client: AssistantModelClient;
@@ -224,18 +222,12 @@ async function runToolLoop(input: {
   onEvent: (event: AssistantEvent) => void;
 }): Promise<string> {
   const { client, request, transcript, sink, executeTool, onEvent } = input;
-  let executedCalls = 0;
-  for (let round = 0; round <= ASSISTANT_MAX_TOOL_CALLS; round++) {
+  for (;;) {
     const result: ModelCallResult = await client.stream({ ...request, messages: [...transcript] }, sink);
     transcript.push(result.message);
     if (result.toolCalls.length === 0) return result.text;
     const results: ContentBlockLike[] = [];
     for (const call of result.toolCalls) {
-      if (executedCalls >= ASSISTANT_MAX_TOOL_CALLS) {
-        results.push({ type: "tool_result", tool_use_id: call.id, content: "Tool call limit reached for this turn." });
-        continue;
-      }
-      executedCalls += 1;
       const argsJson = toolArgumentsJson(call.input);
       onEvent({ type: "tool_call", name: call.name, arguments: argsJson });
       let output: string;
@@ -250,11 +242,7 @@ async function runToolLoop(input: {
       results.push({ type: "tool_result", tool_use_id: call.id, content: output });
     }
     transcript.push({ role: "user", content: results });
-    if (executedCalls >= ASSISTANT_MAX_TOOL_CALLS) break;
   }
-  const summary = "I hit the tool call limit for this turn — here's where I got to.";
-  transcript.push({ role: "assistant", content: [{ type: "text", text: summary }] });
-  return summary;
 }
 
 export async function runAssistantTurn(deps: AssistantServiceDeps, conversationId: string, userContent: string): Promise<string> {

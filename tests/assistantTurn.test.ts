@@ -4,7 +4,7 @@ import type { ProviderEvent, TurnRequest } from "@yanlinglabs/winter-provider-ru
 import { afterEach, describe, expect, it } from "vitest";
 import { AssistantActionStore } from "../src/api/assistant/actions.js";
 import { conversationOwner, ConversationStore, type AssistantEvent } from "../src/api/assistant/conversations.js";
-import { ASSISTANT_MAX_TOOL_CALLS, AssistantTurnError, runAssistantTurn } from "../src/api/assistant/service.js";
+import { AssistantTurnError, runAssistantTurn } from "../src/api/assistant/service.js";
 import { LOCAL_REQUEST_PRINCIPAL } from "../src/api/requestPrincipal.js";
 import { createApiServer } from "../src/api/server.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -136,13 +136,13 @@ describe("assistant turn on ModelClient", () => {
     expect(second!.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
   });
 
-  it("stops after the per-turn tool call limit with a best-effort reply", async () => {
-    const h = await setup([() => toolCallTurn("get_runtime_status")]);
-    const reply = await h.turn("loop forever");
-    expect(reply.toLowerCase()).toContain("tool call limit");
-    expect(h.adapter.calls).toHaveLength(ASSISTANT_MAX_TOOL_CALLS);
+  it("has no tool call limit: it keeps calling tools until it answers", async () => {
+    const h = await setup([...Array.from({ length: 20 }, () => () => toolCallTurn("get_runtime_status")), () => textTurn("done")]);
+    const reply = await h.turn("check it a lot");
+    expect(reply).toBe("done");
+    expect(h.adapter.calls).toHaveLength(21);
     await settle();
-    expect(h.events.filter((event) => event.type === "tool_call")).toHaveLength(ASSISTANT_MAX_TOOL_CALLS);
+    expect(h.events.filter((event) => event.type === "tool_call")).toHaveLength(20);
   });
 
   it("cuts long tool results at 6000 characters before the model sees them", async () => {
