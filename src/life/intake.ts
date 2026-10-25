@@ -399,8 +399,12 @@ export class Intake {
     const waifuAuthors = new Map<string, string>();
     for (const waifu of allWaifus) for (const id of await selfAuthorIds(deps.storage, waifu)) waifuAuthors.set(id, waifu.id);
     const messages: DetectorMessage[] = [];
+    const byId = new Map(page.messages.map((message) => [message.id, message]));
     for (const message of page.messages) {
       const removed = isRemovedMessage(message, forgotten);
+      // A Discord reply names the author it answers (a forgotten one stays "someone").
+      const answered = message.referenceMessageId ? (byId.get(message.referenceMessageId) ?? (await this.findMessage(conversation, message.referenceMessageId))) : undefined;
+      const replyTo = answered ? (isRemovedMessage(answered, forgotten) ? "someone" : answered.authorName) : undefined;
       const rendered = renderDiscordMessage(message, dir, deps.timeZone);
       if (!rendered) continue;
       const imageText: string[] = [];
@@ -411,6 +415,7 @@ export class Intake {
         name: removed ? "someone" : message.authorName,
         at: message.createdAt,
         text: removed ? "(removed)" : rendered.body,
+        ...(replyTo ? { replyTo } : {}),
         ...(imageText.some(Boolean) ? { imageText: imageText.filter(Boolean) } : {})
       });
     }
@@ -451,25 +456,38 @@ export class Intake {
     }
     const newestMessage = page.messages.find((message) => message.id === newestId);
     if (newestMessage) this.lastHumanAt.set(placeKey, newestMessage.createdAt);
-    let chosen: string | undefined;
-    if (choice.startsWith("waifu_")) chosen = question.candidates[Number(choice.slice(6))]?.waifuId;
-    else if (choice === "anyone" || choice === "fallback:anyone") chosen = await this.drawFor(waifus.filter((waifu) => !watched.has(waifu.id)), conversation, now);
-    if (chosen && watched.has(chosen)) chosen = undefined;
+    // `waifu_<i>` and `anyone` wake one waifu; `all` wakes every cast waifu here (not only the
+    // question's candidates), staggered like an @everyone. A waifu a watch woke is skipped (D-c);
+    // the router defers the asleep and the over-budget ones as for any wake.
+    let chosen: string[] = [];
+    if (choice.startsWith("waifu_")) chosen = [question.candidates[Number(choice.slice(6))]?.waifuId].filter((id): id is string => Boolean(id));
+    else if (choice === "anyone" || choice === "fallback:anyone") {
+      const drawn = await this.drawFor(waifus.filter((waifu) => !watched.has(waifu.id)), conversation, now);
+      if (drawn) chosen = [drawn];
+    } else if (choice === "all") chosen = waifus.map((waifu) => waifu.id);
+    chosen = chosen.filter((id) => !watched.has(id));
     const woke: string[] = [];
-    if (chosen) {
+    if (chosen.length > 0) {
       const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
-      const wake: Wake = {
-        id: newWakeId(),
-        reason: "detector",
-        placeKey,
-        ...(burst.authorId ? { fromUserId: burst.authorId } : {}),
-        ...(burst.authorName ? { fromName: burst.authorName } : {}),
-        messageId: newestId,
-        ...(newestMessage ? { preview: messagePreview(newestMessage, dir, deps.timeZone, { removed }) } : {}),
-        at: now.toISOString()
-      };
-      const outcome = await this.o.router.route(chosen, wake, { guildId: burst.guildId });
-      if (outcome !== "dropped") woke.push(chosen);
+      const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
+      const stagger = chosen.length > 1;
+      const outcomes = await Promise.all(
+        chosen.map(async (waifuId) => {
+          const wake: Wake = {
+            id: newWakeId(),
+            reason: "detector",
+            placeKey,
+            ...(burst.authorId ? { fromUserId: burst.authorId } : {}),
+            ...(burst.authorName ? { fromName: burst.authorName } : {}),
+            messageId: newestId,
+            ...(preview !== undefined ? { preview } : {}),
+            ...(choice === "all" ? { forAll: true } : {}),
+            at: now.toISOString()
+          };
+          return [waifuId, await this.o.router.route(waifuId, wake, { guildId: burst.guildId, stagger })] as const;
+        })
+      );
+      for (const [waifuId, outcome] of outcomes) if (outcome !== "dropped") woke.push(waifuId);
     }
     await this.recordHistory(burst.guildId, {
       at: now.toISOString(),

@@ -4,7 +4,7 @@ cacheTtl: 1h
 === 0 user ===
 --- text ---
 <notifications>
-- mention · bake-club/#general · from Kevin · "<@Aria> are you coming saturday? we need someone on dessert"
+- mention · bake-club/#general · from Kevin · #a1 "<@Aria> are you coming saturday? we need someone on dessert"
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00 · awake]

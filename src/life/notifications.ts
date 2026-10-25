@@ -27,6 +27,9 @@ export const REASON_LABELS: Record<WakeReason, string> = {
   followup: "follow-up"
 };
 
+/** A `detector` wake for the whole cast (`all`, §4.3) reads differently from a single pick. */
+export const DETECTOR_ALL_LABEL = "for all of you";
+
 /** `"aria are you coming saturday? we need someo…"` (no quotes): the body, then attachments as `[image]`. */
 export function previewText(body: string, imageCount = 0, max = PREVIEW_CHARS): string {
   const parts = [body.replace(/\s+/g, " ").trim(), ...Array.from({ length: imageCount }, () => "[image]")].filter(Boolean);
@@ -47,6 +50,8 @@ export type NotificationView = {
   handle(placeKey: string): string;
   /** Unread messages in a place (newer than her read cursor and the forget floor), when known. */
   unread(placeKey: string): number | undefined;
+  /** A message's ref in a place (`a1`), assigned when the notification is rendered (§4.7). */
+  ref?(placeKey: string, messageId: string): string | undefined;
   timeZone: string;
 };
 
@@ -64,15 +69,20 @@ function placeLine(group: Wake[], view: NotificationView): string {
   const reasons: WakeReason[] = [];
   for (const wake of group) for (const reason of wake.reasons ?? [wake.reason]) if (!reasons.includes(reason)) reasons.push(reason);
   const latest = group[group.length - 1]!;
-  const parts = [reasons.map((reason) => REASON_LABELS[reason]).join(", "), view.handle(first.placeKey!)];
+  const forAll = group.some((wake) => wake.forAll === true);
+  const label = (reason: WakeReason) => (reason === "detector" && forAll ? DETECTOR_ALL_LABEL : REASON_LABELS[reason]);
+  const parts = [reasons.map(label).join(", "), view.handle(first.placeKey!)];
   const watch = group.find((wake) => wake.reason === "watch" || wake.reasons?.includes("watch"));
   if (watch?.matched) parts.push(quote(watch.matched));
   const from = [...group].reverse().find((wake) => wake.fromName)?.fromName;
   if (from) parts.push(`from ${plainName(from)}`);
   const unread = view.unread(first.placeKey!);
   if (unread !== undefined && unread > 0) parts.push(`${unread} unread`);
-  const preview = [...group].reverse().find((wake) => wake.preview !== undefined)?.preview ?? latest.preview;
-  if (preview) parts.push(quote(preview));
+  // The previewed message's ref goes in front of its quote, as in a chat line, so she can reply to it.
+  const previewed = [...group].reverse().find((wake) => wake.preview !== undefined) ?? latest;
+  const ref = previewed.messageId ? view.ref?.(first.placeKey!, previewed.messageId) : undefined;
+  if (previewed.preview) parts.push(ref ? `#${ref} ${quote(previewed.preview)}` : quote(previewed.preview));
+  else if (ref) parts.push(`#${ref}`);
   const notes = [...new Set(group.filter((wake) => wake.note && wake.reason !== "owner").map((wake) => wake.note!))];
   for (const note of notes) parts.push(`your note: ${quote(note)}`);
   return `- ${parts.join(" · ")}`;

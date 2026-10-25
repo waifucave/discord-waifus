@@ -9,17 +9,24 @@ const member = (index: number): DetectorCastMember => ({ waifuId: `w${index}`, n
 const message = (index: number, text = `message ${index}`): DetectorMessage => ({ id: String(1000 + index), authorKind: index % 2 ? "waifu" : "user", name: `Author${index}`, at: new Date(NOW.getTime() - (30 - index) * 60_000).toISOString(), text });
 
 describe("detector question (§4.3)", () => {
-  it("offers waifu_<i> per cast member (at most 7 for Laya, 17 otherwise) plus human, anyone and none", () => {
+  it("offers waifu_<i> per cast member (at most 6 for Laya, 16 otherwise) plus human, anyone, all and none: at most 10 / 20 options", () => {
     const cast = Array.from({ length: 20 }, (_, index) => member(index));
     const laya = detectorQuestion({ target: "laya:english", now: NOW, timeZone: "UTC", cast, messages: [message(1)] });
     const api = detectorQuestion({ target: "openai:gpt-6-luna", now: NOW, timeZone: "UTC", cast, messages: [message(1)] });
-    expect(Object.keys(laya.questions["addressee"]!.criteria)).toEqual([...Array.from({ length: 7 }, (_, index) => `waifu_${index}`), "human", "anyone", "none"]);
+    expect(Object.keys(laya.questions["addressee"]!.criteria)).toEqual([...Array.from({ length: 6 }, (_, index) => `waifu_${index}`), "human", "anyone", "all", "none"]);
     expect(Object.keys(api.questions["addressee"]!.criteria)).toHaveLength(20);
-    expect(laya.candidates.map((candidate) => candidate.waifuId)).toEqual(["w0", "w1", "w2", "w3", "w4", "w5", "w6"]);
+    expect(laya.candidates.map((candidate) => candidate.waifuId)).toEqual(["w0", "w1", "w2", "w3", "w4", "w5"]);
     const state = JSON.parse(laya.state) as { date: string; now: string; cast: Array<{ option: string; id: string; persona: string }> };
     expect(state).toMatchObject({ date: "2026-10-24", now: "14:00" });
     expect(state.cast[0]).toMatchObject({ option: "waifu_0", id: "w0" });
     expect(state.cast[0]!.persona).toHaveLength(300);
+  });
+
+  it("marks a Discord reply with the name of the author it answers, and nothing else", () => {
+    const messages: DetectorMessage[] = [message(1), { ...message(2), replyTo: "Mira" }];
+    const chat = JSON.parse(detectorQuestion({ target: "openai:gpt-6-luna", now: NOW, timeZone: "UTC", cast: [member(0)], messages }).state).chronologicalChat as Array<Record<string, unknown>>;
+    expect(chat[0]).not.toHaveProperty("replyTo");
+    expect(chat[1]).toMatchObject({ replyTo: "Mira" });
   });
 
   it("keeps the last 12 messages within 8,000 characters, newest kept, in chronological order", () => {

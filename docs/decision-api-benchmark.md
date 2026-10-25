@@ -9,14 +9,16 @@ wording describes code that no longer exists.
 
 ## Addressee detector suite (Living cast)
 
-`scripts/decision-benchmark/addressee.ts` holds 30 hand-labelled synthetic cases over a
+`scripts/decision-benchmark/addressee.ts` holds 40 hand-labelled synthetic cases over a
 three-member cast, in the spec's groups: addressed by name (including a nickname and a name
 shouted on its own line), reply to a waifu (a human answering her last line without naming her),
-human to human (including an instruction-injection line), open question, link dump (links,
-a bot command, emoji only), multilingual (Portuguese, Japanese, Spanish, French, German) and
+human to human (including an instruction-injection line), open question (`anyone`), whole cast
+(`all`: "what can you 3 do", "you three"), follow-up (an unnamed reply or question to the waifu
+who just spoke with that person, including one marked as a Discord reply), link dump (links,
+a bot command, emoji only, a bare laugh after a joke), multilingual (Portuguese, Japanese, Spanish, French, German) and
 ambiguous (several answers accepted). Each request is built by the production
 `detectorQuestion` and answered by the production `AddresseeDetector`, so the state, the
-`waifu_<i>`/`human`/`anyone`/`none` choices, the transport, the answer validation and the Laya
+`waifu_<i>`/`human`/`anyone`/`all`/`none` choices, the transport, the answer validation and the Laya
 worker are exactly what a life's intake uses. Expected answers, case ids and groups never enter a
 request (`tests/decisionAddressee.test.ts`).
 

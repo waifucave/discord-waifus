@@ -46,6 +46,7 @@ import { deferImmediate, DIRECT_REASONS, pendingWakeCount, requeueWakes, takeImm
 import type { DailyCost } from "./budget.js";
 import { readDmFloor } from "../orchestration/dm/dmStore.js";
 import { compareIds } from "../discord/rawMessage.js";
+import { assignConversationRefs } from "../discord/refStore.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 
 export const COALESCE_MS = 2_000;
@@ -284,6 +285,7 @@ export class Life {
     const keys = new Set([...wakes.flatMap((wake) => (wake.placeKey ? [wake.placeKey] : [])), ...quietKeys]);
     const handles = new Map<string, string>();
     const unread = new Map<string, number>();
+    const refs = new Map<string, Map<string, string>>();
     const cursors = await readLifeFile(deps.storage, this.waifuId, "reads");
     const selfIds = new Set(selfIdList);
     for (const key of keys) {
@@ -295,12 +297,25 @@ export class Life {
         const dmFloor = await readDmFloor(deps.storage, ref.userId, ref.waifuId).catch(() => undefined);
         if (dmFloor && (!floor || compareIds(dmFloor, floor) > 0)) floor = dmFloor;
       }
-      const count = deps.conversations
-        .bufferedMessages(ref)
-        .filter((message) => !selfIds.has(message.authorId) && (!floor || compareIds(message.id, floor) > 0)).length;
+      const buffered = deps.conversations.bufferedMessages(ref);
+      const count = buffered.filter((message) => !selfIds.has(message.authorId) && (!floor || compareIds(message.id, floor) > 0)).length;
       if (count > 0) unread.set(key, count);
+      // The notified messages get their refs now (§4.7), so she can reply to one without reading
+      // first; the messages before them get theirs too, so refs stay in message order (a ref handed
+      // to her own later send never jumps ahead of an older message). Only messages that exist get
+      // one: the buffer and the latest page (served from the buffer when the conversation is trusted).
+      const wanted = wakes.flatMap((wake) => (wake.placeKey === key && wake.messageId ? [wake.messageId] : []));
+      if (wanted.length === 0) continue;
+      const dmFloor = ref.kind === "dm" ? await readDmFloor(deps.storage, ref.userId, ref.waifuId).catch(() => undefined) : undefined;
+      const page = await deps.conversations.readPage({ conversation: ref, limit: 50 }).catch(() => ({ messages: [] as typeof buffered }));
+      const known = [...new Set([...buffered, ...page.messages].map((message) => message.id))].filter((id) => !dmFloor || compareIds(id, dmFloor) > 0);
+      const notified = wanted.filter((id) => known.includes(id));
+      if (notified.length === 0) continue;
+      const newest = notified.reduce((a, b) => (compareIds(a, b) >= 0 ? a : b));
+      const ids = known.filter((id) => compareIds(id, newest) <= 0);
+      refs.set(key, await assignConversationRefs(deps.storage, key as never, ids, deps.now()).catch(() => new Map<string, string>()));
     }
-    return { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: (key) => unread.get(key) };
+    return { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: (key) => unread.get(key), ref: (key, messageId) => refs.get(key)?.get(messageId) };
   }
 
   private timeLineText(waifu: WaifuConfig, estimate: number, model: CuratedModel): string {
