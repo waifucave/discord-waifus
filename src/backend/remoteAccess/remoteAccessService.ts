@@ -89,6 +89,9 @@ import {
 const MAX_PENDING_ACTIVATIONS = 16;
 const MAX_RETAINED_ACTIVATIONS = 128;
 const TERMINAL_ACTIVATION_RETENTION_SECONDS = 600n;
+// The helper answers runtime status only to a command and never pushes a change, so the host asks
+// again: soon while the direct path is not up, now and then once it is (a later drop shows too).
+export const RUNTIME_STATUS_REFRESH_MS = Object.freeze({ connecting: 5_000, direct: 60_000 });
 
 export type HelperSupervisorController = {
   snapshot: () => HelperSupervisorSnapshot;
@@ -390,6 +393,7 @@ export class RemoteAccessService {
   #state: RemoteAccessPersistedState | undefined;
   #summary: RemoteAccessRuntimeSummary | undefined;
   #unsubscribeSupervisor: (() => void) | undefined;
+  #statusRefresh: { readonly timer: ReturnType<typeof setTimeout>; readonly delayMs: number } | undefined;
   #requestBridge: RemoteRequestBridge | undefined;
   #started = false;
   #closed = false;
@@ -1061,6 +1065,7 @@ export class RemoteAccessService {
     this.#requestBridge?.close(new Error("Remote access service is stopping."));
     this.#unsubscribeSupervisor?.();
     this.#unsubscribeSupervisor = undefined;
+    this.#cancelStatusRefresh();
     await this.#options.supervisor.close();
     this.#events.clear();
     this.#invalidations.clear();
@@ -1214,6 +1219,36 @@ export class RemoteAccessService {
     this.#options.runtime.remoteAccess = structuredClone(parsed);
     this.#options.runtime.updatedAt = new Date().toISOString();
     this.#events.emit(structuredClone(parsed));
+    this.#scheduleStatusRefresh();
+  }
+
+  /**
+   * After `runtime_start` answers "connecting", nothing else would ask the helper again until
+   * someone opened the status, so the summary, `runtime.json` (what `waifus doctor` reads) and
+   * the diagnostics log kept a stale "connecting" while direct traffic already worked. While the
+   * service follows an enabled helper, ask again on `RUNTIME_STATUS_REFRESH_MS`.
+   */
+  #scheduleStatusRefresh(): void {
+    if (this.#closed || !this.#unsubscribeSupervisor || !this.#state?.config.enabled) {
+      this.#cancelStatusRefresh();
+      return;
+    }
+    const direct = this.#summary?.controlState === "connected" && this.#summary.directState === "direct";
+    const delayMs = direct ? RUNTIME_STATUS_REFRESH_MS.direct : RUNTIME_STATUS_REFRESH_MS.connecting;
+    if (this.#statusRefresh && this.#statusRefresh.delayMs <= delayMs) return;
+    this.#cancelStatusRefresh();
+    const timer = setTimeout(() => {
+      if (this.#statusRefresh?.timer !== timer) return;
+      this.#statusRefresh = undefined;
+      void this.#refreshRuntimeStatus().finally(() => this.#scheduleStatusRefresh());
+    }, delayMs);
+    timer.unref?.();
+    this.#statusRefresh = { timer, delayMs };
+  }
+
+  #cancelStatusRefresh(): void {
+    if (this.#statusRefresh) clearTimeout(this.#statusRefresh.timer);
+    this.#statusRefresh = undefined;
   }
 
   #subscribeSupervisor(): void {

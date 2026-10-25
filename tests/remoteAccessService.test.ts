@@ -1,12 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import {
   RemoteAccessActorUnauthorizedError,
   RemoteAccessDeviceRevisionConflictError,
   RemoteAccessService,
   RemoteAccessTrustedDeviceNotFoundError,
+  RUNTIME_STATUS_REFRESH_MS,
   type HelperSupervisorController
 } from "../src/backend/remoteAccess/remoteAccessService.js";
 import { RemoteAccessStateStore } from "../src/backend/remoteAccess/stateStore.js";
@@ -442,6 +443,72 @@ describe("host remote-access lifecycle service", () => {
       lastErrorCode: "coordination_unavailable"
     });
     expect(events).toContain("unavailable:direct:coordination_unavailable");
+  });
+
+  it("asks the helper again until the direct path is up, so a stale connecting status never stays", async () => {
+    // The helper reports runtime status only in answer to a command. The host used to ask once at
+    // runtime_start ("connecting", coordination_unavailable) and then never again, so runtime.json,
+    // waifus doctor and host.jsonl said "connecting" while the dashboard worked over the direct path.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const root = await makeRoot();
+      await enableRemoteAccess(root);
+      const connecting = runtimeStatus({
+        controlState: "connecting",
+        directState: "reconnecting",
+        lastErrorCode: "coordination_unavailable"
+      });
+      const supervisor = new FakeSupervisor(supervisorSnapshot({
+        runtimeStatus: connecting,
+        lastErrorCode: "coordination_unavailable"
+      }));
+      const answers = [
+        connecting,
+        runtimeStatus({ directState: "direct", lastDirectAt: "200" as never }),
+        runtimeStatus({ directState: "direct", lastDirectAt: "260" as never }),
+        runtimeStatus({ controlState: "connecting", directState: "reconnecting", lastErrorCode: "coordination_unavailable" })
+      ];
+      let queries = 0;
+      supervisor.runtimeStatus = async () => {
+        const next = answers[Math.min(queries, answers.length - 1)]!;
+        queries += 1;
+        supervisor.emit(supervisorSnapshot({ runtimeStatus: next, lastErrorCode: next.lastErrorCode }));
+        return next;
+      };
+      const remote = service(root, supervisor);
+      await remote.start();
+      expect(remote.getRuntimeSummary()).toMatchObject({ controlState: "connecting", directState: "reconnecting" });
+      expect(queries).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(RUNTIME_STATUS_REFRESH_MS.connecting);
+      expect(queries).toBe(1);
+      await vi.advanceTimersByTimeAsync(RUNTIME_STATUS_REFRESH_MS.connecting);
+      expect(queries).toBe(2);
+      expect(remote.getRuntimeSummary()).toMatchObject({
+        controlState: "connected",
+        directState: "direct",
+        lastDirectAt: "200",
+        lastErrorCode: null
+      });
+
+      // Once direct, only now and then; a later drop shows at the next check.
+      await vi.advanceTimersByTimeAsync(RUNTIME_STATUS_REFRESH_MS.direct - 1);
+      expect(queries).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(queries).toBe(3);
+      expect(remote.getRuntimeSummary().lastDirectAt).toBe("260");
+      await vi.advanceTimersByTimeAsync(RUNTIME_STATUS_REFRESH_MS.direct);
+      expect(remote.getRuntimeSummary()).toMatchObject({ controlState: "connecting", directState: "reconnecting" });
+
+      // Disabling stops the checks, and so does closing.
+      await remote.updateConfig({ revision: "1", enabled: false });
+      const afterDisable = queries;
+      await vi.advanceTimersByTimeAsync(RUNTIME_STATUS_REFRESH_MS.direct * 3);
+      expect(queries).toBe(afterDisable);
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("delegates strict pairing and trusted-device management to the authenticated helper", async () => {

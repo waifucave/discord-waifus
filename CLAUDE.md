@@ -312,6 +312,10 @@ processes can coexist. `src/api/remoteAccess.ts` exposes lifecycle/status under
 `/api/remote-access`, including `POST /api/remote-access/reconnect` and
 `GET /api/remote-access/diagnostics`; assistant tools dispatch through the same API and policy.
 Identity reset is local-only. Remote management cannot stop/restart the host OS process.
+The helper reports runtime status only in answer to a command (helper 0.1.14 pushes no status
+events), so while it follows an enabled helper the host's `RemoteAccessService` asks again every
+5 s until the path is connected and direct, then every minute (`RUNTIME_STATUS_REFRESH_MS`); the
+summary, `runtime.json` (read by `waifus doctor`) and `host.jsonl` follow those answers.
 Coordinator or direct-path failures require diagnosis/retry, not automatic trust deletion or
 re-pairing. After ten helper failures in five minutes the supervisor stops fast restarts but keeps
 one slow recovery attempt pending (10 minutes, then every 15, ±10% jitter) until a launch
