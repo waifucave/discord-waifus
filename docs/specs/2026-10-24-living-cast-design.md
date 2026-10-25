@@ -566,6 +566,19 @@ send_message({ place: string, text: string (1–2000 chars), reply_to?: string /
   never DM-eligible either.
 - Shows typing in that place for `typingDelayMs(text)` (30 ms per character, 0.6–4.5 s) before
   sending; the tool call takes that long.
+- **Typing while she works** (`src/life/typing.ts`, `TypingKeeper`, one per life): during a turn
+  her bot shows typing in the place of the turn's first wake that has one (reminders and `morning`
+  have none), refreshed every 8 s (Discord clears it after about 10 s). A direct wake (`mention`,
+  reply-to-her, `name`, `dm`, an owner wake with a place) starts it at turn start. An uncertain
+  one (`detector`, `watch`, `everyone`, a shared `role`) starts it only once she commits: a call
+  other than `ReadMessages` after her first `ReadMessages` in the turn, from the moment that call
+  starts streaming (a `SendMessage`'s text streams inside it), or when it runs on a route that
+  streams no call start. Plain streamed text is her own thoughts and starts nothing; reading alone
+  never shows typing. It stops for good in a place once she sent there, and at turn end, abort,
+  `stop()` and before a mid-turn compaction; maintenance and compaction sessions never type. A
+  send to another place types there as above. Typing comes only from her own bot (a guild place
+  needs her `botId`; a DM place must be hers); a waifu without one shows nothing. Failures are
+  warnings at most once a minute per place and never affect the turn.
 - Mentions: `<@Name>` resolves through `denormalizeModelContentForDiscord` and pings only people
   present in that place. `@everyone`, `@here` and role pings are neutralised.
 - Deterministic outbound filter (kept from `outputValidator.ts`): strips a leading copied

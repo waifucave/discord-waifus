@@ -41,6 +41,7 @@ import { collectPlaces, handleOf, refreshPlaces, withPlaceCache } from "./places
 import { buildLifeRequest, estimateRequest, lifeBudget, PinnedImageMissingError } from "./request.js";
 import type { KeyedMutex, Semaphore } from "./sync.js";
 import { lifeTool } from "./tools/index.js";
+import { TypingKeeper, typingPlan } from "./typing.js";
 import { toolError, type ToolOutput, type TurnScratch } from "./tools/types.js";
 import { deferImmediate, DIRECT_REASONS, pendingWakeCount, requeueWakes, takeImmediate } from "./wakeQueue.js";
 import type { DailyCost } from "./budget.js";
@@ -112,6 +113,8 @@ type TurnRun = {
   budgetLeftUsd?: number;
   /** What this turn's calls cost so far. */
   spentUsd: number;
+  /** "Typing…" in the place of the wake that started the turn (§6.3): pending until she commits. */
+  typing?: { keeper: TypingKeeper; placeKey?: string; readSeen: boolean };
 };
 
 type TurnOutcome = "idle" | "again";
@@ -126,6 +129,8 @@ export class Life {
   private stopped = false;
   private warnedNoModel = false;
   private compactionsThisCycle = 0;
+  /** The running turn's typing keeper (stopped with the turn, or by stop()). */
+  private typing: TypingKeeper | undefined;
 
   constructor(
     readonly waifuId: string,
@@ -198,6 +203,7 @@ export class Life {
     this.coalesceTimer = undefined;
     this.followUpTimer = undefined;
     this.retryTimer = undefined;
+    this.typing?.stop();
     this.abort("shutdown");
   }
 
@@ -504,7 +510,23 @@ export class Life {
     if (dmWakes) run.scratch.dm = true;
     await this.append(run, "notifications", { role: "user", content }, { dmWakes });
     deps.logger.info("Life turn started", { category: "life", waifuId: this.waifuId, turnId, wakes: wakes.length, reasons: [...new Set(wakes.map((wake) => wake.reason))] });
-    return this.rounds(run);
+    const plan = typingPlan(wakes);
+    const keeper = new TypingKeeper(deps, waifu);
+    this.typing = keeper;
+    run.typing = { keeper, ...(plan ? { placeKey: plan.placeKey } : {}), readSeen: false };
+    if (plan?.immediate) keeper.start(plan.placeKey);
+    try {
+      return await this.rounds(run);
+    } finally {
+      keeper.stop();
+      if (this.typing === keeper) this.typing = undefined;
+    }
+  }
+
+  /** An uncertain wake's typing starts once she commits (after her first ReadMessages, §6.3). */
+  private commitTyping(run: TurnRun): void {
+    const typing = run.typing;
+    if (typing?.placeKey && typing.readSeen && !run.signal.aborted) typing.keeper.start(typing.placeKey);
   }
 
   private async rounds(run: TurnRun): Promise<TurnOutcome> {
@@ -536,7 +558,7 @@ export class Life {
       let result;
       const firstCall = run.state.epochStrippedThinkingBlocks !== undefined;
       try {
-        result = await deps.models.call({
+        result = await deps.models.stream({
           route: { providerId: run.model.providerId, modelId: run.model.modelId },
           system: request.system,
           messages: request.messages,
@@ -547,6 +569,12 @@ export class Life {
           timeoutMs: config().life.maxTurnMs,
           ...(firstCall ? { thinkingBlocksStripped: run.state.epochStrippedThinkingBlocks } : {}),
           attribution: { purpose: "life", waifuId: this.waifuId, turnId: run.turnId }
+        }, {
+          // Her reply text streams inside a call (SendMessage's text): a call other than reading,
+          // started after her first read, commits her. Plain text is her own thoughts: no typing.
+          onToolCallStart: (_id, name) => {
+            if (name !== "ReadMessages") this.commitTyping(run);
+          }
         });
       } catch (error) {
         if (run.signal.aborted || (error instanceof ModelCallError && error.kind === "aborted")) return this.closeInterrupted(run);
@@ -653,6 +681,10 @@ export class Life {
         continue;
       }
       const tool = offered.has(call.name) ? lifeTool(call.name) : undefined;
+      // Anything but reading after her first read commits her (SendMessage types on its own; a
+      // route that streams no call start lands here).
+      if (tool && call.name !== "ReadMessages" && call.name !== "SendMessage") this.commitTyping(run);
+      let places: ReadonlySet<string> = new Set();
       let output: ToolOutput;
       if (!tool) {
         output = toolError(`there is no tool called ${call.name}`);
@@ -672,6 +704,7 @@ export class Life {
             ...(tool.sideEffect ? { intent: { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest } } : {})
           }));
           output = recorded.value;
+          places = recorded.places;
           // D14 (spec §14.4): the owner's views hide a call that resolved to (or named) a DM place.
           if ([...recorded.places].some(isDmPlaceKey)) dmCalls.push(call.id);
         } catch (error) {
@@ -694,6 +727,10 @@ export class Life {
             ...(output.resultRef ? { resultRef: output.resultRef } : {})
           });
         }
+      }
+      if (run.typing && tool && !output.isError) {
+        if (call.name === "ReadMessages") run.typing.readSeen = true;
+        if (call.name === "SendMessage") for (const place of places) run.typing.keeper.sent(place);
       }
       if (output.messageIds?.length) messageIds[call.id] = output.messageIds;
       results.push({
@@ -835,6 +872,9 @@ export class Life {
    */
   private async midTurnCompaction(run: TurnRun, reason: string, o: { truncate?: boolean } = {}): Promise<TurnOutcome> {
     const deps = this.deps;
+    // Nobody sees a compaction: no typing while it runs.
+    run.typing?.keeper.stop();
+    if (run.typing) run.typing.placeKey = undefined;
     this.compactionsThisCycle += 1;
     await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: MEMORY_SUMMARISED_NOTE }, { type: "text", text: this.timeLineText(run.waifu, run.lastEstimate, run.model) }] });
     await this.finishIdle(run, 0, `compaction:${reason}`);

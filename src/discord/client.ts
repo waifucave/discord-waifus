@@ -375,6 +375,16 @@ const GUILD_MEMBERS_INTENT_REJECTED_MESSAGE =
 
 export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clients = new Map<string, Client>();
+  /** Typing failures warn at most once a minute per place (a life refreshes typing every 8 s). */
+  private readonly typingWarnedAt = new Map<string, number>();
+
+  private typingWarnDue(key: string): boolean {
+    const now = Date.now();
+    if (now - (this.typingWarnedAt.get(key) ?? -Infinity) < 60_000) return false;
+    this.typingWarnedAt.set(key, now);
+    if (this.typingWarnedAt.size > 500) this.typingWarnedAt.delete(this.typingWarnedAt.keys().next().value!);
+    return true;
+  }
   private readonly pendingClients = new Set<Client>();
   private readonly botStatuses = new Map<string, DiscordBotConnectionStatus>();
   private readonly botRetryTimers = new Map<string, NodeJS.Timeout>();
@@ -894,7 +904,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       const channel = await this.dmChannel(client, botId, input.userId);
       await channel.sendTyping();
     } catch (error) {
-      this.options.logger?.warn("Failed to send DM typing indicator", { waifuId: input.waifuId, message: errorMessage(error) });
+      if (this.typingWarnDue(`dm:${input.waifuId}:${input.userId}`)) this.options.logger?.warn("Failed to send DM typing indicator", { waifuId: input.waifuId, message: errorMessage(error) });
     }
   }
 
@@ -1351,6 +1361,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         await channel.sendTyping();
       }
     } catch (error) {
+      if (!this.typingWarnDue(`${input.senderBotId ?? "house"}:${input.channelId}`)) return;
       this.options.logger?.warn("Failed to send typing indicator", {
         guildId: input.guildId,
         channelId: input.channelId,
