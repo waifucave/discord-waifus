@@ -29,8 +29,11 @@ export function newWakeId(): string {
 function mergeInto(existing: Wake, wake: Wake): Wake {
   const reasons = [...(existing.reasons ?? [existing.reason])];
   if (!reasons.includes(wake.reason)) reasons.push(wake.reason);
+  // Still a chime-in only while no plain detector pick joined it.
+  const { chimeIn, ...rest } = existing;
   return {
-    ...existing,
+    ...rest,
+    ...(chimeIn === true && (wake.reason !== "detector" || wake.chimeIn === true) ? { chimeIn: true } : {}),
     reasons,
     count: (existing.count ?? 1) + (wake.count ?? 1),
     ...(wake.messageId ? { messageId: wake.messageId } : {}),

@@ -57,7 +57,11 @@ stop or restart the host OS process. Intel macOS and Linux ARMv7 are not support
 Messages reach the House bot. A mention, a reply to her, her name (when `wakeOnName` is on), a DM
 to her own bot, or one of her reminders or watches wakes the waifu it concerns; a message nobody
 addressed goes to the addressee detector (`detector.target`), which picks who it is for, if
-anyone (one waifu, any one of them, or the whole cast when it is for all of them). Wakes queue per waifu and she handles them one turn at a time: she reads the conversation,
+anyone (one waifu, any one of them, or the whole cast when it is for all of them). A message
+aimed at someone who left the chat 30+ minutes ago counts as open to the room. When it is for
+another person, one awake waifu whose interests fit may be nudged to chime in (at most once per
+channel every 10 minutes; she can still stay quiet). A waifu's own message that nobody was named
+in also goes to the detector, so another waifu can answer her (never herself). Wakes queue per waifu and she handles them one turn at a time: she reads the conversation,
 may stay quiet, and only what she sends reaches people. While she sleeps (her schedule) or after
 her daily budget, wakes wait; the owner's own wakes always go through. Each turn is limited by the
 `life.*` settings (sends, places, tool rounds, time).

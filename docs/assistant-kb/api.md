@@ -239,7 +239,9 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   `GET /api/search/usage` is today's web searches and page fetches with the caps (a query from
   a turn that touched a private chat is hidden).
 - `GET/PUT /api/detector/config` `{target}`: the app-wide addressee detector (`""` = none);
-  `GET /api/detector/history?guildId` its recent decisions in one server.
+  `GET /api/detector/history?guildId` its recent decisions in one server (`choice`,
+  `probabilities`, `woke`, and when present `authorWaifuId` for a waifu's message and `chimeIn`
+  `{choice, probabilities, woke?}`).
 - `GET /api/owner-notices`: what needs the owner's attention (the notices, unfinished forget jobs,
   migrations that left unreadable data alone, kept copies of unreadable forget records, queued
   forget scrubs, intake pause and marks); `waifus doctor` and `waifus status` show the same.

@@ -88,7 +88,7 @@ are archived by migration (§11.2).
 | `everyone` | `@everyone` / `@here` in a channel where she is cast | Direct. |
 | `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. In a DM it rides on the `dm` wake (§16.5). |
 | `dm` | A DM to her bot, `discord.debounce.dmMs` (2.5 s) after the user's last message | Timer resets on each message and is held while they type (§4.2); capped at `discord.debounce.dmMaxWaitMs` (default 60 s). A watch matching the DM joins this wake (`dm, watch`). |
-| `detector` | The addressee detector chose her, chose "anyone" and the draw picked her, or chose "all" | §4.3. An `all` wake carries `forAll` and reads "for all of you" (§4.7). |
+| `detector` | The addressee detector chose her, chose "anyone" and the draw picked her, chose "all", or picked her to chime in | §4.3. An `all` wake carries `forAll` and reads "for all of you"; a chime-in carries `chimeIn` and reads "for someone else, you could chime in" (§4.7). |
 | `reminder` | One of her `schedule_wake` entries came due | Carries her own note. |
 | `morning` | Her sleep window ended with deferred wakes | One batched summary (§4.7). |
 | `owner` | `/wake`, the dashboard or the CLI | Carries the owner's note. Bypasses sleep and budget (§4.5). |
@@ -97,9 +97,12 @@ are archived by migration (§11.2).
 burst wakes several through the detector's `all`, each is woken after a random 0–20 s delay so
 later ones can see earlier replies (they may not; that is accepted).
 
-**Waifu authors.** Messages written by other waifus only wake her through `mention`, `role`,
-reply-to-her and `watch`. They never reach the detector, and the `name` rule never applies to
-them. Her own messages never wake her.
+**Waifu authors.** Messages written by other waifus wake her directly only through `mention`,
+`role`, reply-to-her and `watch`; the `name` rule never applies to them. When none of a waifu's
+messages (her burst, §4.2) is direct for anyone, the detector decides who speaks next (§4.3, owner
+request 2026-10-25), with the author left out. There is no cap on consecutive waifu-only rounds
+(owner decision 2026-10-25): the room loop guard stays off by default and per-waifu daily budgets
+are the brake. Her own messages never wake her.
 
 **Scope.** Messages in channels where she is not cast never wake her, and she cannot read or send
 there. A paused server produces no wakes; a paused app produces none at all.
@@ -110,8 +113,10 @@ Per accepted guild message (human or configured waifu bot, in a cast channel or 
 
 1. **Direct reasons** for each cast waifu: `mention`, reply-to-her, `role`, `everyone`, `name`.
 2. **Watches**: every waifu with an active binding on that place (§6.5).
-3. **Detector**: if the author is human and no message in the current burst produced a direct
-   reason for anyone, the burst goes to the detector (§4.3).
+3. **Detector**: if no message in the current burst produced a direct reason for anyone, the burst
+   goes to the detector (§4.3). A waifu's messages form their own burst per place and author
+   (`serverMs` quiet time after her last line, never held by typing; her direct wakes are still
+   routed at once).
 
 Bursts: every human message joins its place's burst, direct or not, so a burst is direct when any
 message in it is, also a plain message that arrives after the mention within the burst. The burst
@@ -137,10 +142,10 @@ must not feel slow):
   that wake previews the newest message in the burst by the person who woke her, so "@Lumi"
   followed by "what do you think about…" is one notification previewing the question (its ref is
   the question's). Several shared wakes (`everyone`, a shared `role`) are staggered as in §4.1.
-- **Not held**: room watches (they fire per their own rules, at once), messages by waifus (routed at
-  once), edits that add a mention (§10.3), and the boot or resume catch-up (§5.7: a room's caught-up
-  burst fires right after its messages are taken; nobody is typing an old message). A watch
-  matching a DM message waits for the DM's hold and rides on its `dm` wake (§16.5).
+- **Not held**: room watches (they fire per their own rules, at once), waifus' direct wakes (routed
+  at once), edits that add a mention (§10.3), and the boot or resume catch-up (§5.7: a room's
+  caught-up bursts fire right after its messages are taken; nobody is typing an old message). A
+  watch matching a DM message waits for the DM's hold and rides on its `dm` wake (§16.5).
 
 Why these values: Discord's own typing indicator lasts about 10 s and its client repeats the
 typing event while someone keeps typing (and again on the first keystroke after a send, which is
@@ -162,44 +167,67 @@ Edits: an edit that adds a mention of her to a human message less than 2 minutes
 
 ### 4.3 Addressee detector
 
-One question about the newest human burst in a channel: who is it for?
+Questions about the newest burst in a channel, a person's or (owner request 2026-10-25) a cast
+member's: who is it for, and would a cast member chime in? Both go in one native-choice call.
 
-- **Choices**: `waifu_<i>` for each cast waifu in that channel (at most 6 for Laya, 16 otherwise,
-  so a question has at most 10 options for Laya, whose calibration warns from 11, and 20 elsewhere,
-  the most a decision backend was seen to accept), `human` (addressed to another person), `anyone`
-  (open to the room: one cast member answering is enough, "anyone know a good movie?"), `all` (the
-  whole cast here, or several of them together: "what can you all do", "you three"), `none` (not
-  conversational: a bot command, a link dump, a bare emoji or reaction-only line).
+- **`addressee` choices**: `waifu_<i>` for each cast waifu in that channel (at most 6 for Laya, 16
+  otherwise, so a question has at most 10 options for Laya, whose calibration warns from 11, and 20
+  elsewhere, the most a decision backend was seen to accept), `human` (addressed to another person
+  who is still around), `anyone` (open to the room: one cast member answering is enough, "anyone
+  know a good movie?", or aimed at a person whose own last message in the chat is 30 or more
+  minutes old), `all` (the whole cast here, or several of them together: "what can you all do", "you
+  three"), `none` (not conversational: a bot command, a link dump, a bare emoji or reaction-only
+  line). For a waifu's burst she is left out of the cast entirely (never an option).
 - **Instructions** (owner-reviewed in the `detector-state` golden) also say: when a cast member has
   just been talking with that person, an unnamed follow-up (a short reply, thanks, "nice to meet
   you too", "can you do X?") is for her, not `anyone`; a Discord reply is for the author it
   answers; a bare emoji, laugh or reaction with no question is `none` unless clearly aimed at
-  someone.
+  someone. **Stale addresses** (owner request 2026-10-25): using `minutesAgo`, a message aimed at a
+  person whose own last message in the chat is 30 or more minutes old is `anyone` (they are
+  probably away), even when it asks something only they could answer; a live back-and-forth stays
+  `human`; a person with no message in the chat at all stays `human`. **A cast member's message**:
+  her reply or remark to a person is left to that person (`human`), a question or remark to another
+  cast member is for that one, a goodbye or a line that needs no answer is `none`.
+- **`chime_in`** (owner request 2026-10-25): `waifu_<i>` for each *awake* cast member, or `nobody`.
+  Its instructions favour `nobody` unless one clearly has something relevant or fun to add (her
+  persona fits); private matters, plans, errands and logistics are `nobody`. It is asked only when
+  some cast member is awake and the room's chime-in interval allows one; a malformed `chime_in`
+  answer is ignored (the addressee answer stands).
 - **State** (JSON, the one-shot state shape trimmed): `date`, `now`, the cast (`option`, `id`,
-  `names`, persona ≤300 chars) and `chronologicalChat` with the last 12 messages (OCR text
-  included; `replyTo` with the author's name when a message is a Discord reply, "someone" for a
-  forgotten author; at most 8,000 characters, newest kept).
+  `names`, persona ≤300 chars, `availability`: `awake`, `busy` or `asleep`, where over her daily
+  budget counts as `asleep`) and `chronologicalChat` with the last 12 messages (`time`, `minutesAgo`
+  before `now`, OCR text included; `replyTo` with the author's name when a message is a Discord
+  reply, "someone" for a forgotten author; at most 8,000 characters, newest kept).
 - **Mapping**:
   - `waifu_<i>` → wake her (`detector`).
   - `anyone` → draw one cast waifu, weighted by availability (awake and free ×3, busy ×1, asleep
     or over budget ×0) and by time since she last spoke in that place (longer is likelier). An
     empty draw ends there.
   - `all` → wake every cast waifu in that channel (not only the question's candidates) except the
-    ones a watch already woke for the burst, with `forAll`; several are staggered (§4.1). The
-    router's guards apply to each as usual (an asleep or over-budget one is deferred).
-  - `human` / `none` → nothing.
+    ones a watch already woke for the burst and the burst's author, with `forAll`; several are
+    staggered (§4.1). The router's guards apply to each as usual (an asleep or over-budget one is
+    deferred).
+  - `human` / `none` → nothing, except a chime-in: with `human` and a `chime_in` pick of an awake
+    cast member (not watched for the burst, not its author), she gets a soft `detector` wake with
+    `chimeIn` (she can still stay quiet). At most one chime-in per room (channel or thread) every
+    10 minutes (owner decision), counted from when one was queued (`CHIME_IN_INTERVAL_MS`; after a
+    restart the history file is consulted).
+  - A waifu's burst: its wakes carry `waifuAuthored`, so the room loop guard (§4.4 guard 6) counts
+    them when an owner turns it on.
 - **Targets**: the existing native-choice catalog and protocol (OpenAI decisions, OpenRouter
   decision models, local Laya). One global target `detector.target`, plus a per-server override.
   Each call writes one usage line with purpose `detector`.
-- **Without a target, or on failure**: treat the burst as `anyone` only when it is the first human
-  message in that place for 10 minutes or ends with a question mark; otherwise do nothing. Log the
-  failure; never retry in a loop.
+- **Without a target, or on failure**: a person's burst is treated as `anyone` only when it is the
+  first human message in that place for 10 minutes or ends with a question mark; otherwise nothing.
+  A waifu's burst wakes nobody. Log the failure; never retry in a loop.
 - **History**: the last 300 results per guild in `user/servers/<guildId>/detector-history.json`
-  (`{at, channelId, burstMessageIds, choice, probabilities, woke?}`).
+  (`{at, channelId, burstMessageIds, choice, probabilities, woke?, authorWaifuId?, chimeIn?:
+  {choice, probabilities, woke?}}`).
 - **Benchmark**: `scripts/decision-benchmark/` is repurposed with new case groups
   (addressed-by-name, reply-to-waifu, human-to-human, open question, whole cast, follow-up, link
-  dump, multilingual, ambiguous), measuring exact-choice accuracy, calibration (Brier, ECE) and
-  latency per target.
+  dump, multilingual, ambiguous, stale human, active human, chime-in, waifu author), measuring
+  exact-choice accuracy, calibration (Brier, ECE) and latency per target, plus the chime-in answer
+  where a case labels it and any chime-in pick of a cast member who is not awake.
 
 ### 4.4 Guards
 
@@ -294,8 +322,9 @@ One text block in a user turn, followed by the time line (§5.4):
   buffer when the conversation is trusted; a message found in neither gets no ref), so refs stay
   in message order; a send likewise gives the messages before it their refs before its own.
 - Labels: each reason has one label (`mention`, `your name`, `maybe for you` for `detector`, …);
-  a `detector` wake with `forAll` reads `for all of you`. A DM wake that carries a watch match
-  reads `dm, watch · dm/<handle> · "<matched>" · from … · your note: "…"`.
+  a `detector` wake with `forAll` reads `for all of you`, one with `chimeIn` reads `for someone
+  else, you could chime in`. A DM wake that carries a watch match reads `dm, watch · dm/<handle> ·
+  "<matched>" · from … · your note: "…"`.
 - `morning`:
 
 ```

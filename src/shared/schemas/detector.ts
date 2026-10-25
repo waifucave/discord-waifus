@@ -36,6 +36,10 @@ export const DetectorHistoryEntrySchema = z.object({
   probabilities: z.record(z.string(), z.number()).default({}),
   /** The waifu ids woken by this result. */
   woke: z.array(z.string()).optional(),
+  /** The cast member who wrote the burst (a waifu-authored message, §4.3); absent for a person's. */
+  authorWaifuId: z.string().optional(),
+  /** The `chime_in` answer when it was asked, and who was woken to chime in (at most one per room per 10 minutes). */
+  chimeIn: z.object({ choice: z.string().min(1), probabilities: z.record(z.string(), z.number()).default({}), woke: z.string().optional() }).optional(),
   target: z.string().optional(),
   error: z.string().optional()
 });

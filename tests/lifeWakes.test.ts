@@ -40,16 +40,21 @@ const TWO = [
   { id: "mina", name: "Mina", botId: "mina-bot" }
 ];
 
-type FakeDetector = { calls: Array<{ target: string; candidates: string[] }>; states: string[]; answer: { choice: string; probabilities: Record<string, number> } | Error };
+type FakeAnswer = { choice: string; probabilities: Record<string, number>; chimeIn?: { choice: string; probabilities: Record<string, number> } };
+type FakeQuestion = { state: string; candidates: Array<{ waifuId: string }>; questions: Record<string, { criteria: Record<string, string> }> };
+type FakeDetector = { calls: Array<{ target: string; candidates: string[] }>; states: string[]; questions: Array<Record<string, string[]>>; answer: FakeAnswer | Error };
 
-function fakeDetector(): FakeDetector & { decide: (input: { target: string; question: { state: string; candidates: Array<{ waifuId: string }> } }) => Promise<{ choice: string; probabilities: Record<string, number> }>; close(): void } {
+function fakeDetector(): FakeDetector & { decide: (input: { target: string; question: FakeQuestion }) => Promise<FakeAnswer>; close(): void } {
   const detector = {
     calls: [] as FakeDetector["calls"],
     states: [] as string[],
+    /** Each call's questions and their choices. */
+    questions: [] as FakeDetector["questions"],
     answer: { choice: "none", probabilities: { none: 1 } } as FakeDetector["answer"],
-    async decide(input: { target: string; question: { state: string; candidates: Array<{ waifuId: string }> } }) {
+    async decide(input: { target: string; question: FakeQuestion }) {
       detector.calls.push({ target: input.target, candidates: input.question.candidates.map((candidate) => candidate.waifuId) });
       detector.states.push(input.question.state);
+      detector.questions.push(Object.fromEntries(Object.entries(input.question.questions).map(([name, question]) => [name, Object.keys(question.criteria)])));
       if (detector.answer instanceof Error) throw detector.answer;
       return detector.answer;
     },
@@ -129,21 +134,27 @@ describe("wake reasons (§4.1, §4.2)", () => {
     expect(timers.mock.calls.map((call) => call[1])).toContain(10_000);
   });
 
-  it("waifu authors wake only through mention, role, reply and watch; her own messages never wake her", async () => {
+  it("waifu authors wake directly only through mention, role, reply and watch; her own messages never wake her", async () => {
     const w = await world();
     w.discord.botRoles["ella-bot"] = ["500000000000000001"];
     await say(w, "Ella, you should try this", asMina);
     await say(w, "@everyone look", { ...asMina, everyone: true });
     expect(await reasons(w, "ella")).toEqual([]);
-    expect(w.detector.calls).toEqual([]);
+    // Not direct for anyone: the detector decides who speaks next, without the author (§4.3).
+    expect(w.detector.calls).toEqual([
+      { target: "openrouter:typesafe/jev-1.14", candidates: ["ella"] },
+      { target: "openrouter:typesafe/jev-1.14", candidates: ["ella"] }
+    ]);
     await say(w, "<@ella> taste this", { ...asMina, mentions: { [ELLA_BOT]: "Ella" } });
     await say(w, "role call", { ...asMina, roles: { "500000000000000001": "Bakers" } });
     const wakes = (await queued(w, "ella")).immediate;
     expect(wakes.map((wake) => wake.reason)).toEqual(["mention", "role"]);
     expect(wakes.every((wake) => wake.waifuAuthored === true)).toBe(true);
-    // Her own message mentioning herself.
+    expect(w.detector.calls).toHaveLength(2);
+    // Her own message mentioning herself: never her wake, and the detector never offers her.
     await say(w, "<@ella> note to self", { authorId: ELLA_BOT, authorName: "Ella", bot: true, mentions: { [ELLA_BOT]: "Ella" } });
     expect(await reasons(w, "ella")).toEqual(["mention", "role"]);
+    expect(w.detector.calls[2]!.candidates).toEqual(["mina"]);
   });
 
   it("watches fire with her note, never on her own messages", async () => {
@@ -238,7 +249,8 @@ describe("typing-aware holds (§4.2)", () => {
   /** Posts a guild message and runs it through intake without firing its burst. */
   async function post(w: LifeWorld, text: string, o: Parameters<LifeWorld["discord"]["post"]>[2] = {}): Promise<RawDiscordMessage> {
     const message = w.discord.post(ROOM, text, o);
-    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella", "mina"], authorIsWaifu: false, raw: message });
+    const authorIsWaifu = message.authorId === ELLA_BOT || message.authorId === MINA_BOT;
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella", "mina"], authorIsWaifu, raw: message });
     return message;
   }
   const typing = (w: LifeWorld, userId: string, bot = false) => w.cast.onTyping({ kind: "guild", guildId: GUILD, channelId: CHANNEL, userId, bot });
@@ -252,6 +264,22 @@ describe("typing-aware holds (§4.2)", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     return w;
   }
+
+  it("a waifu's lines in one turn are one burst; a direct line in it keeps the detector out", async () => {
+    const w = await fakeTimers();
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    await post(w, "ok the tarts are out", asMina);
+    await advance(w, 500);
+    await post(w, "they look amazing", asMina);
+    await advance(w, 1_600);
+    expect(w.detector.calls).toHaveLength(1);
+    expect(await reasons(w, "ella")).toEqual(["detector"]);
+    await post(w, "brb", asMina);
+    await post(w, `<@${ELLA_BOT}> save me one`, { ...asMina, mentions: { [ELLA_BOT]: "Ella" } });
+    await advance(w, 1_600);
+    expect(w.detector.calls).toHaveLength(1);
+    expect(await reasons(w, "ella")).toEqual(["detector", "mention"]);
+  });
 
   it("a mention waits the quiet time, then wakes her; with nobody typing it is not held longer", async () => {
     const w = await fakeTimers();
@@ -369,6 +397,96 @@ describe("typing-aware holds (§4.2)", () => {
 });
 
 describe("addressee detector (§4.3)", () => {
+  it("decides who speaks after a waifu: never her, the others as for a person; no fallback", async () => {
+    const w = await world();
+    // Mina's line is for Ella (the only candidate, waifu_0).
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    await say(w, "what do you think, should we add cardamom?", asMina);
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    const [wake] = (await queued(w, "ella")).immediate;
+    expect(wake).toMatchObject({ reason: "detector", waifuAuthored: true, fromUserId: MINA_BOT, fromName: "Mina" });
+    // `all` and `anyone` never wake the author.
+    w.detector.answer = { choice: "all", probabilities: { all: 1 } };
+    await say(w, "you all should taste this", asMina);
+    w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
+    await say(w, "anyone want some?", asMina);
+    expect(await reasons(w, "mina")).toEqual([]);
+    expect(await reasons(w, "ella")).toEqual(["detector", "detector", "detector"]);
+    // A failed call wakes nobody for a waifu's burst (a person's would get the fallback).
+    w.detector.answer = new Error("detector_http_500");
+    await say(w, "anyone around?", asMina);
+    expect(await reasons(w, "ella")).toHaveLength(3);
+    const history = DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8")));
+    expect(history.entries.map((entry) => [entry.choice, entry.authorWaifuId])).toEqual([
+      ["waifu_0", "mina"],
+      ["all", "mina"],
+      ["anyone", "mina"],
+      ["fallback:none", "mina"]
+    ]);
+  });
+
+  it("detector wakes from a waifu's message respect the room loop guard when it is set", async () => {
+    const w = await world({ config: (config) => ({ ...config, life: { ...config.life, maxWaifuTriggeredTurns: 1 } }) });
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    await say(w, "tarts or cake?", asMina);
+    await say(w, "seriously, tarts or cake?", asMina);
+    expect(await reasons(w, "ella")).toEqual(["detector"]);
+    w.detector.answer = { choice: "none", probabilities: { none: 1 } };
+    await say(w, "lol");
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    await say(w, "well?", asMina);
+    expect(await reasons(w, "ella")).toEqual(["detector", "detector"]);
+  });
+
+  it("chime-in: with `human`, one awake waifu gets a soft wake, at most once per room every 10 minutes", async () => {
+    const sleeping = { sleep: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+    const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, availability: sleeping }] });
+    w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 0.8, nobody: 0.2 } } };
+    await say(w, "Sam what should I bake for my mom? she loves lemon");
+    // Only the awake one is offered; the state says who is asleep.
+    expect(w.detector.questions[0]).toEqual({ addressee: ["waifu_0", "waifu_1", "human", "anyone", "all", "none"], chime_in: ["waifu_0", "nobody"] });
+    expect(JSON.parse(w.detector.states[0]!).cast.map((member: { availability: string }) => member.availability)).toEqual(["awake", "asleep"]);
+    const [wake] = (await queued(w, "ella")).immediate;
+    expect(wake).toMatchObject({ reason: "detector", chimeIn: true, fromName: "Kevin" });
+    const view = { handle: () => "bake-club/#general", unread: () => undefined, timeZone: "UTC" };
+    expect(renderNotifications({ wakes: [wake!] }, view)).toContain("- for someone else, you could chime in · bake-club/#general · from Kevin");
+    // Within 10 minutes the question is not even asked.
+    w.clock.advance(9 * 60_000);
+    await say(w, "Sam also, lemon bars or lemon tarts?");
+    expect(Object.keys(w.detector.questions[1]!)).toEqual(["addressee"]);
+    expect(await reasons(w, "ella")).toEqual(["detector"]);
+    // Past 10 minutes since the routed chime-in, again (the history remembers it after a restart).
+    w.clock.advance(2 * 60_000);
+    w.cast.intake["chimedAt"].clear();
+    await say(w, "Sam ok last question, lemon curd from scratch?");
+    expect(Object.keys(w.detector.questions[2]!)).toEqual(["addressee", "chime_in"]);
+    expect(await reasons(w, "ella")).toEqual(["detector", "detector"]);
+    // Another addressee than `human` never chimes in.
+    w.clock.advance(11 * 60_000);
+    w.detector.answer = { choice: "none", probabilities: { none: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 1 } } };
+    await say(w, "lol");
+    expect(await reasons(w, "ella")).toHaveLength(2);
+    const history = DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8")));
+    expect(history.entries.map((entry) => entry.chimeIn?.woke ?? null)).toEqual(["ella", null, "ella", null]);
+    expect(history.entries[0]).toMatchObject({ choice: "human", chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 0.8 } } });
+    expect(history.entries[0]!.woke).toBeUndefined();
+  });
+
+  it("chime-in never picks an asleep, watched or authoring waifu", async () => {
+    const w = await world();
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "lemons", when: [{ place: "bake-club/#general", words: ["lemon"] }] }]));
+    w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 1 } } };
+    await say(w, "Sam where do you buy a lemon?");
+    expect(await reasons(w, "ella")).toEqual(["watch"]);
+    // A waifu's reply to a person: the other one may chime in, never the author.
+    w.clock.advance(11 * 60_000);
+    w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 1 } } };
+    await say(w, "Kevin, the trick is cold butter", asMina);
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    expect(await reasons(w, "ella")).toEqual(["watch", "detector"]);
+    expect(await reasons(w, "mina")).toEqual([]);
+  });
+
   it("maps waifu_<i> to her, anyone to a weighted draw, human/none to nothing, and keeps a history", async () => {
     const w = await world();
     w.detector.answer = { choice: "waifu_1", probabilities: { waifu_1: 0.9, none: 0.1 } };

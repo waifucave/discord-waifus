@@ -61,6 +61,8 @@ export const WakeSchema = z.object({
   batch: z.array(z.string()).optional(),
   /** detector: the detector said the burst is for the whole cast (`all`), not just maybe for her. */
   forAll: z.boolean().optional(),
+  /** detector: the burst was for another person; she might chime in (§4.3 `chime_in`). */
+  chimeIn: z.boolean().optional(),
   /** The wake came from a message written by another waifu (room loop guard, §4.4). */
   waifuAuthored: z.boolean().optional(),
   at: IsoDateStringSchema

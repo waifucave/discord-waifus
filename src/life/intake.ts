@@ -6,17 +6,20 @@
 //      display name or server nickname, ≥ 3 characters, as a whole word; humans only; off with
 //      `wakeOnName: false`);
 //   2. watches: every waifu with a matching `WatchFor` binding;
-//   3. detector: when the author is human and no message in the current burst produced a direct
-//      reason for anyone, the burst goes to the addressee detector.
+//   3. detector: when no message in the current burst produced a direct reason for anyone, the burst
+//      goes to the addressee detector (a person's burst, or a cast member's: then she is left out).
 // Every human message joins its place's burst, which is held by a typing-aware timer (`intakeHold.ts`):
 // it fires `serverMs` after the last message, later while an author of the burst is typing there
 // (`typingHoldMs` per typing event), at most `serverMaxWaitMs` after its first message. A human
 // message's direct wakes wait for the burst too, merged per waifu, so "@Aria" followed by "what do
-// you think about…" is one wake previewing the question. Watches and waifu-authored messages are
-// routed at once. Messages by other waifus only wake through mention, role, reply-to-her and watch;
-// her own never wake her. DMs wake her `dmMs` after the user's last message, held the same way while
-// they type (capped at `dmMaxWaitMs`); a watch matching a DM message rides on that DM wake (one wake
-// per message).
+// you think about…" is one wake previewing the question. Watches and waifu-authored messages' direct
+// wakes are routed at once; a waifu's messages also join her own burst per place (`serverMs` quiet,
+// never held by typing) so that, when none of them was direct, the detector decides who speaks next.
+// Messages by other waifus wake directly only through mention, role, reply-to-her and watch; her own
+// never wake her. With the detector's addressee `human`, its `chime_in` answer may wake one awake
+// cast member softly, at most once per room every `CHIME_IN_INTERVAL_MS`. DMs wake her `dmMs` after
+// the user's last message, held the same way while they type (capped at `dmMaxWaitMs`); a watch
+// matching a DM message rides on that DM wake (one wake per message).
 // Edits wake nobody except a newly added mention of her in a human message under 2 minutes old
 // (once); a deleted message she had read becomes a pending notice (§10.3).
 
@@ -38,7 +41,17 @@ import type { DailyCost } from "./budget.js";
 import type { BotRoles } from "./botRoles.js";
 import { availabilityAt } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
-import { AddresseeDetector, detectorQuestion, drawAnyone, fallbackIsAnyone, type DetectorCastMember, type DetectorMessage } from "./detector/decider.js";
+import {
+  AddresseeDetector,
+  CHIME_IN_INTERVAL_MS,
+  detectorQuestion,
+  drawAnyone,
+  fallbackIsAnyone,
+  type DetectorAnswer,
+  type DetectorAvailability,
+  type DetectorCastMember,
+  type DetectorMessage
+} from "./detector/decider.js";
 import { readLifeState, updateLifeState } from "./lifeStore.js";
 import { messagePreview } from "./notifications.js";
 import type { IntakeMarks } from "./intakeMarks.js";
@@ -104,6 +117,8 @@ type Burst = {
   guildId: string;
   channelId: string;
   castWaifuIds: string[];
+  /** A cast member's own messages (§4.3): she is never a candidate, and there is no fallback. */
+  waifuAuthored?: boolean;
 };
 
 type DmBurst = { messageIds: string[]; userName?: string };
@@ -115,7 +130,12 @@ export class Intake {
   private readonly burstHolds: TypingHolds<string>;
   /** DM bursts per `waifuId\0userId`. */
   private readonly dmHolds: TypingHolds<string>;
+  /** A waifu's messages per `placeKey\0authorId` (her turn's lines are one burst for the detector). */
+  private readonly waifuHolds: TypingHolds<string>;
   private readonly bursts = new Map<string, Burst>();
+  private readonly waifuBursts = new Map<string, Burst>();
+  /** When a chime-in was last routed per room (§4.3; the history file covers a restart). */
+  private readonly chimedAt = new Map<string, number>();
   private readonly dmBursts = new Map<string, DmBurst>();
   private readonly editMentions = new Set<string>();
   private readonly lastHumanAt = new Map<string, string>();
@@ -185,12 +205,14 @@ export class Intake {
   constructor(private readonly o: IntakeOptions) {
     this.burstHolds = new TypingHolds(o.now);
     this.dmHolds = new TypingHolds(o.now);
+    this.waifuHolds = new TypingHolds(o.now);
   }
 
   close(): void {
     this.closed = true;
     this.burstHolds.cancelAll();
     this.dmHolds.cancelAll();
+    this.waifuHolds.cancelAll();
   }
 
   private timing(kind: "server" | "dm"): HoldTiming {
@@ -352,9 +374,14 @@ export class Intake {
       }
       if (fired.length > 0) watched.add(waifu.id);
     }
-    // A waifu's message is routed at once (typing never holds a waifu); several waifus woken by one
-    // @everyone / shared role ping are staggered by 0–20 s (§4.1).
-    if (!human) return { staggered: await this.routeDirect(input.guildId, directWakes.map((entry) => ({ waifuId: entry.waifu.id, wake: entry.wake }))), direct: directWakes.length > 0 };
+    // A waifu's direct wakes are routed at once (typing never holds a waifu); several waifus woken by
+    // one @everyone / shared role ping are staggered by 0–20 s (§4.1). Her message also joins her burst
+    // in this place: when none of its messages was direct, the detector decides who speaks next (§4.3).
+    if (!human) {
+      const staggered = await this.routeDirect(input.guildId, directWakes.map((entry) => ({ waifuId: entry.waifu.id, wake: entry.wake })));
+      if (input.authorIsWaifu) this.joinWaifuBurst(input, { raw, placeKey, fromName, preview, direct: directWakes.length > 0, watched });
+      return { staggered, direct: directWakes.length > 0 };
+    }
     // Every human message joins the place's burst, and its direct wakes wait for it (§4.2). A burst
     // with any direct message in it (before or after the others, M9) never reaches the detector; a
     // waifu whose watch fired for a message in it is skipped by the detector for the burst (D-c: one
@@ -381,6 +408,40 @@ export class Intake {
       if (done) this.fireBurst(placeKey, done);
     });
     return { staggered: [], direct: directWakes.length > 0 };
+  }
+
+  /**
+   * A waifu-authored message joins her burst in this place (quiet `serverMs`, never held by typing):
+   * when it fires, the detector runs for it unless one of its messages was direct. Only a message
+   * still waiting for that detector call holds the mark; a direct one's wakes are already routed.
+   */
+  private joinWaifuBurst(input: GuildMessageInput, o: { raw: RawDiscordMessage; placeKey: string; fromName: string; preview: string; direct: boolean; watched: ReadonlySet<string> }): void {
+    const key = `${o.placeKey}\u0000${o.raw.authorId}`;
+    const next: Burst = this.waifuBursts.get(key) ?? {
+      messageIds: [],
+      messages: [],
+      held: [],
+      direct: false,
+      watched: [],
+      authorId: o.raw.authorId,
+      authorName: o.fromName,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      castWaifuIds: input.castWaifuIds,
+      waifuAuthored: true
+    };
+    next.messageIds.push(o.raw.id);
+    next.messages.push({ id: o.raw.id, authorId: o.raw.authorId, fromName: o.fromName, preview: o.preview });
+    if (o.direct) next.direct = true;
+    for (const waifuId of o.watched) if (!next.watched.includes(waifuId)) next.watched.push(waifuId);
+    next.castWaifuIds = input.castWaifuIds;
+    this.waifuBursts.set(key, next);
+    if (!next.direct) this.hold(o.placeKey, o.raw.id, "burst");
+    this.waifuHolds.message(key, { authorId: o.raw.authorId, timing: this.timing("server") }, () => {
+      const done = this.waifuBursts.get(key);
+      this.waifuBursts.delete(key);
+      if (done) this.fireBurst(o.placeKey, done);
+    });
   }
 
   /**
@@ -469,7 +530,7 @@ export class Intake {
     }
   }
 
-  /** §4.3: one question about the burst, the mapping, the fallback and the history line. */
+  /** §4.3: one question about the burst, the mapping, the chime-in, the fallback and the history line. */
   async runDetector(placeKey: string, burst: Burst): Promise<string[]> {
     const deps = this.deps;
     const now = deps.now();
@@ -477,7 +538,13 @@ export class Intake {
     const server = await this.serverOf(burst.guildId);
     if (deps.isPaused() || server?.paused) return [];
     const target = server?.detector?.target ?? deps.config().detector.target;
-    const waifus = (await this.castWaifus(burst.castWaifuIds)).filter((waifu) => waifu.model);
+    const allWaifus = await listWaifus(deps.storage).catch(() => []);
+    const waifuAuthors = new Map<string, string>();
+    for (const waifu of allWaifus) for (const id of await selfAuthorIds(deps.storage, waifu)) waifuAuthors.set(id, waifu.id);
+    // A cast member's own burst never wakes her: she is not a candidate at all.
+    const authorWaifuId = burst.waifuAuthored && burst.authorId ? waifuAuthors.get(burst.authorId) : undefined;
+    if (burst.waifuAuthored && !authorWaifuId) return [];
+    const waifus = (await this.castWaifus(burst.castWaifuIds)).filter((waifu) => waifu.model && waifu.id !== authorWaifuId);
     if (waifus.length === 0) return [];
     // D-c: a waifu her watch already woke for this burst gets no second wake from the detector.
     const watched = new Set(burst.watched);
@@ -489,9 +556,6 @@ export class Intake {
     // Unreadable forget records: the transcript could hold a forgotten person's words; no detector.
     if (records.unreadable) return [];
     const forgotten = records.forgotten;
-    const allWaifus = await listWaifus(deps.storage).catch(() => []);
-    const waifuAuthors = new Map<string, string>();
-    for (const waifu of allWaifus) for (const id of await selfAuthorIds(deps.storage, waifu)) waifuAuthors.set(id, waifu.id);
     const messages: DetectorMessage[] = [];
     const byId = new Map(page.messages.map((message) => [message.id, message]));
     for (const message of page.messages) {
@@ -516,12 +580,15 @@ export class Intake {
     const cast: DetectorCastMember[] = [];
     for (const waifu of waifus) {
       const names = this.namesOf(waifu, burst.guildId, await selfAuthorIds(deps.storage, waifu));
-      cast.push({ waifuId: waifu.id, names: names.length > 0 ? names : [waifu.name], persona: waifu.persona });
+      cast.push({ waifuId: waifu.id, names: names.length > 0 ? names : [waifu.name], persona: waifu.persona, availability: await this.availabilityOf(waifu, now) });
     }
     let choice: string | undefined;
     let probabilities: Record<string, number> = {};
+    let chimeAnswer: DetectorAnswer["chimeIn"];
     let error: string | undefined;
-    const question = detectorQuestion({ target: target || "openai:gpt-6-luna", now, timeZone: deps.timeZone, cast, messages });
+    // The chime-in question is only asked while the room's interval allows one (§4.3).
+    const chimeAllowed = await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now);
+    const question = detectorQuestion({ target: target || "openai:gpt-6-luna", now, timeZone: deps.timeZone, cast, messages, chimeIn: chimeAllowed });
     if (target && this.o.detector) {
       try {
         const answer = await this.o.detector.decide({
@@ -532,12 +599,16 @@ export class Intake {
         });
         choice = answer.choice;
         probabilities = answer.probabilities;
+        chimeAnswer = answer.chimeIn;
       } catch (failure) {
         error = failure instanceof Error ? failure.message : "detector_failed";
         deps.logger.warn("Addressee detector failed; using the fallback", { guildId: burst.guildId, channelId: burst.channelId, error });
       }
     }
-    if (choice === undefined) {
+    if (choice === undefined && burst.waifuAuthored) {
+      // No guessing who a cast member was talking to: without an answer her message wakes nobody.
+      choice = "fallback:none";
+    } else if (choice === undefined) {
       const newest = page.messages.find((message) => message.id === newestId);
       const burstText = newest ? (renderDiscordMessage(newest, dir, deps.timeZone)?.body ?? "") : "";
       // The human message before this burst (in the page, else the last one this process saw).
@@ -549,39 +620,53 @@ export class Intake {
       choice = fallbackIsAnyone({ burstText, ...(previous ? { previousHumanAt: previous } : {}), now }) ? "fallback:anyone" : "fallback:none";
     }
     const newestMessage = page.messages.find((message) => message.id === newestId);
-    if (newestMessage) this.lastHumanAt.set(placeKey, newestMessage.createdAt);
+    if (newestMessage && !burst.waifuAuthored) this.lastHumanAt.set(placeKey, newestMessage.createdAt);
     // `waifu_<i>` and `anyone` wake one waifu; `all` wakes every cast waifu here (not only the
-    // question's candidates), staggered like an @everyone. A waifu a watch woke is skipped (D-c);
-    // the router defers the asleep and the over-budget ones as for any wake.
+    // question's candidates), staggered like an @everyone. A waifu a watch woke is skipped (D-c),
+    // and so is the author of a waifu's burst; the router defers the asleep and the over-budget ones
+    // as for any wake (and applies the room loop guard to a waifu's burst).
     let chosen: string[] = [];
     if (choice.startsWith("waifu_")) chosen = [question.candidates[Number(choice.slice(6))]?.waifuId].filter((id): id is string => Boolean(id));
     else if (choice === "anyone" || choice === "fallback:anyone") {
       const drawn = await this.drawFor(waifus.filter((waifu) => !watched.has(waifu.id)), conversation, now);
       if (drawn) chosen = [drawn];
     } else if (choice === "all") chosen = waifus.map((waifu) => waifu.id);
-    chosen = chosen.filter((id) => !watched.has(id));
+    chosen = chosen.filter((id) => !watched.has(id) && id !== authorWaifuId);
+    const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
+    const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
+    const wakeFor = (extra: Partial<Wake>): Wake => ({
+      id: newWakeId(),
+      reason: "detector",
+      placeKey,
+      ...(burst.authorId ? { fromUserId: burst.authorId } : {}),
+      ...(burst.authorName ? { fromName: burst.authorName } : {}),
+      messageId: newestId,
+      ...(preview !== undefined ? { preview } : {}),
+      ...(burst.waifuAuthored ? { waifuAuthored: true } : {}),
+      ...extra,
+      at: now.toISOString()
+    });
     const woke: string[] = [];
     if (chosen.length > 0) {
-      const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
-      const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
       const stagger = chosen.length > 1;
       const outcomes = await Promise.all(
-        chosen.map(async (waifuId) => {
-          const wake: Wake = {
-            id: newWakeId(),
-            reason: "detector",
-            placeKey,
-            ...(burst.authorId ? { fromUserId: burst.authorId } : {}),
-            ...(burst.authorName ? { fromName: burst.authorName } : {}),
-            messageId: newestId,
-            ...(preview !== undefined ? { preview } : {}),
-            ...(choice === "all" ? { forAll: true } : {}),
-            at: now.toISOString()
-          };
-          return [waifuId, await this.o.router.route(waifuId, wake, { guildId: burst.guildId, stagger })] as const;
-        })
+        chosen.map(async (waifuId) => [waifuId, await this.o.router.route(waifuId, wakeFor(choice === "all" ? { forAll: true } : {}), { guildId: burst.guildId, stagger })] as const)
       );
       for (const [waifuId, outcome] of outcomes) if (outcome !== "dropped") woke.push(waifuId);
+    }
+    // Chime-in (§4.3): for another person, one awake cast member who would naturally join in gets a
+    // soft wake (she can still stay quiet), at most once per room every CHIME_IN_INTERVAL_MS.
+    let chimedIn: string | undefined;
+    if (choice === "human" && chimeAnswer?.choice.startsWith("waifu_")) {
+      const candidate = question.candidates[Number(chimeAnswer.choice.slice(6))];
+      const fits = candidate && candidate.availability === "awake" && !watched.has(candidate.waifuId) && candidate.waifuId !== authorWaifuId;
+      // Re-checked here: another burst in this room may have chimed in while this call ran.
+      if (fits && (await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now))) {
+        this.chimedAt.set(placeKey, now.getTime());
+        const outcome = await this.o.router.route(candidate.waifuId, wakeFor({ chimeIn: true }), { guildId: burst.guildId });
+        if (outcome === "queued") chimedIn = candidate.waifuId;
+        else this.chimedAt.delete(placeKey);
+      }
     }
     await this.recordHistory(burst.guildId, {
       at: now.toISOString(),
@@ -590,10 +675,37 @@ export class Intake {
       choice,
       probabilities,
       ...(woke.length > 0 ? { woke } : {}),
+      ...(authorWaifuId ? { authorWaifuId } : {}),
+      ...(chimeAnswer ? { chimeIn: { choice: chimeAnswer.choice, probabilities: chimeAnswer.probabilities, ...(chimedIn ? { woke: chimedIn } : {}) } } : {}),
       ...(target ? { target } : {}),
       ...(error ? { error } : {})
     });
-    return woke;
+    return chimedIn ? [...woke, chimedIn] : woke;
+  }
+
+  /** Her availability for the detector's state (§4.5): over her daily budget she counts as asleep. */
+  private async availabilityOf(waifu: WaifuConfig, now: Date): Promise<DetectorAvailability> {
+    const state = availabilityAt(waifu.availability, now, this.deps.timeZone).state;
+    if (state === "asleep") return "asleep";
+    const budget = waifu.life.dailyBudgetUsd;
+    if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) return "asleep";
+    return state;
+  }
+
+  /** No chime-in was routed in this room for CHIME_IN_INTERVAL_MS (this process, else the history file). */
+  private async chimeInAllowed(guildId: string, channelId: string, placeKey: string, now: Date): Promise<boolean> {
+    const since = now.getTime() - CHIME_IN_INTERVAL_MS;
+    const last = this.chimedAt.get(placeKey);
+    if (last !== undefined) return last <= since;
+    try {
+      const raw = await readFile(this.deps.storage.dataPath(path.join("user", "servers", guildId, "detector-history.json")), "utf8");
+      const file = DetectorHistoryFileSchema.parse(JSON.parse(raw));
+      const latest = file.entries.filter((entry) => entry.channelId === channelId && entry.chimeIn?.woke).map((entry) => Date.parse(entry.at)).reduce((a, b) => Math.max(a, b), Number.NEGATIVE_INFINITY);
+      if (Number.isFinite(latest)) this.chimedAt.set(placeKey, latest);
+      return !(latest > since);
+    } catch {
+      return true;
+    }
   }
 
   private async drawFor(waifus: WaifuConfig[], conversation: ConversationRef, now: Date): Promise<string | undefined> {
@@ -742,13 +854,20 @@ export class Intake {
     }
   }
 
-  /** Fires every pending room burst now: its held wakes and its detector call (tests). */
+  /** Fires every pending room burst now (people's and waifus'): held wakes and detector calls (tests). */
   flushDetector(): void {
     for (const key of this.burstHolds.keys()) this.flushBurst(key);
+    for (const key of this.waifuHolds.keys()) this.flushBurst(key.slice(0, key.indexOf("\u0000")));
   }
 
-  /** Fires one place's pending burst now (the catch-up: nobody is typing an old message). */
+  /** Fires one place's pending bursts now (the catch-up: nobody is typing an old message). */
   flushBurst(placeKey: string): void {
+    for (const key of this.waifuHolds.keys()) {
+      if (!key.startsWith(`${placeKey}\u0000`) || !this.waifuHolds.cancel(key)) continue;
+      const burst = this.waifuBursts.get(key);
+      this.waifuBursts.delete(key);
+      if (burst) this.fireBurst(placeKey, burst);
+    }
     if (!this.burstHolds.cancel(placeKey)) return;
     const burst = this.bursts.get(placeKey);
     this.bursts.delete(placeKey);

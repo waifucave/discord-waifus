@@ -29,6 +29,8 @@ export const REASON_LABELS: Record<WakeReason, string> = {
 
 /** A `detector` wake for the whole cast (`all`, §4.3) reads differently from a single pick. */
 export const DETECTOR_ALL_LABEL = "for all of you";
+/** A `detector` chime-in wake (§4.3 `chime_in`): the burst was for someone else. */
+export const DETECTOR_CHIME_IN_LABEL = "for someone else, you could chime in";
 
 /** `"aria are you coming saturday? we need someo…"` (no quotes): the body, then attachments as `[image]`. */
 export function previewText(body: string, imageCount = 0, max = PREVIEW_CHARS): string {
@@ -70,7 +72,9 @@ function placeLine(group: Wake[], view: NotificationView): string {
   for (const wake of group) for (const reason of wake.reasons ?? [wake.reason]) if (!reasons.includes(reason)) reasons.push(reason);
   const latest = group[group.length - 1]!;
   const forAll = group.some((wake) => wake.forAll === true);
-  const label = (reason: WakeReason) => (reason === "detector" && forAll ? DETECTOR_ALL_LABEL : REASON_LABELS[reason]);
+  // Only when every detector wake in the line is a chime-in (a pick of her is the stronger reading).
+  const chimeIn = group.some((wake) => wake.chimeIn === true) && group.every((wake) => wake.reason !== "detector" || wake.chimeIn === true);
+  const label = (reason: WakeReason) => (reason === "detector" && forAll ? DETECTOR_ALL_LABEL : reason === "detector" && chimeIn ? DETECTOR_CHIME_IN_LABEL : REASON_LABELS[reason]);
   const parts = [reasons.map(label).join(", "), view.handle(first.placeKey!)];
   const watch = group.find((wake) => wake.reason === "watch" || wake.reasons?.includes("watch"));
   if (watch?.matched) parts.push(quote(watch.matched));

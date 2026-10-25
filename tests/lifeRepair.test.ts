@@ -271,9 +271,12 @@ describe("catch-up never takes a routed message twice (review I3)", () => {
     let paused = false;
     const w = await lifeWorld(roots, { paused: () => paused });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    // A waifu's message is routed and marked at once.
+    // A waifu's message is marked once routed: at once when direct, else once its burst's detector
+    // call is done (§4.3; fired here).
     const message = w.discord.post(ROOM, "good morning", { authorId: "400000000000000005", authorName: "Mina", bot: true });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: true, raw: message });
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
     await w.cast.stop();
     const saved = JSON.parse(await readFile(`${w.root}/app/intake-marks.json`, "utf8")) as { marks: Record<string, string> };
     expect(saved.marks[ROOM_KEY]).toBe(message.id);
