@@ -39,8 +39,8 @@
 You set up a cast of **waifus** — each one with her own persona, AI model and (optionally) her own
 Discord bot. Since **3.0.0, the Living cast**, every waifu is an autonomous agent with **one
 continuous life**: a mention, a reply, her name, a DM, one of her own reminders or watches wakes
-her; she reads the room, decides whether to answer (or to stay quiet), keeps notes as her memory and
-tidies them every night. There is no director picking speakers: each waifu decides for herself.
+her; she reads the room, decides whether to answer (or to stay quiet), keeps notes as her memory in
+her own folder and tidies them every night. There is no director picking speakers: each waifu decides for herself.
 
 It runs **entirely on your own machine**, configured through a **web dashboard** or the `waifus`
 command. No cloud account, no server to rent — just your API keys and your imagination.
@@ -49,7 +49,8 @@ command. No cloud account, no server to rent — just your API keys and your ima
 
 ## ✨ Features
 
-- 🎭 **A cast that lives** — every waifu has her own persona, model, life log and notes, and acts on her own.
+- 🎭 **A cast that lives** — every waifu has her own persona, model, life log and folder (notes, reminders,
+  watches, files people sent her), and acts on her own.
 - 🔔 **Woken by what concerns her** — mentions, replies, her name, DMs, her reminders and watches, and an
   addressee detector for messages nobody addressed.
 - 😴 **Sleep, schedules and budgets** — a nightly sleep window with a morning summary, busy blocks, and an
@@ -62,7 +63,7 @@ command. No cloud account, no server to rent — just your API keys and your ima
 - 🖥️ **Web dashboard** — a live Life timeline per waifu, usage and cost, and every setting.
 - ⌨️ **CLI and help** — every setting is readable and writable with `waifus get|set`, and documented by
   `waifus help`.
-- 🧽 **Forget a person** — remove someone from DMs and every waifu's life and notes (best effort, see below).
+- 🧽 **Forget a person** — remove someone from DMs and every waifu's life and files (best effort, see below).
 - 🌐 **Direct remote dashboard** — pair another device and manage the same host UI without
   installing Tailscale or exposing the local API to the Internet.
 - 🔒 **Local-first & private** — runs on your machine; all your data stays in `~/.dc-waifus`.
@@ -323,7 +324,7 @@ and page reads are capped per day (`search.*`, `life.webFetch.*`).
 
 **Life → Forget a person**, `waifus forget <userId>`, or `POST /api/people/:userId/forget` removes a
 Discord user from every DM, the member lists and the archive, and scrubs every waifu's life log,
-summary, queue and notes. A DM user can also use `/forget` in their DM with a waifu. Forget is a
+summary, queue and files. A DM user can also use `/forget` in their DM with a waifu. Forget is a
 **best-effort scrub**:
 
 - Discord history itself is not deleted, and whatever a waifu already said in rooms stays there.
@@ -343,7 +344,8 @@ summary, queue and notes. A DM user can also use `/forget` in their DM with a wa
 - **Cast** — persona, style, model and effort, her bot, wake-on-name, schedule, daily budget, DMs.
 - **Life** — each waifu's live timeline (tool calls with their arguments; private chats hidden unless
   you reveal them on the host itself), Wake / Compact / Reset, review lines, today's web searches,
-  and the forget form.
+  her reminders and watches (with delete buttons), a browser and text editor for her files (her home
+  and `/tmp`; files from private chats stay unnamed unless revealed on the host), and the forget form.
 - **Rooms** — servers and channels, who may speak where, threads, and the detector override.
 - **Activity** — logs, model calls (a life's calls show metadata only) and usage by day, waifu,
   purpose or model.
@@ -369,6 +371,8 @@ it all, offline):
 | `waifus unset TARGET KEY` | Clear a key or restore its default. |
 | `waifus wake WAIFU [note]` | Wake a waifu now, with a note she sees. |
 | `waifus life WAIFU [--log]` | Her status, queue and today's cost; `--log` adds her recent life (`--private` on the host shows DMs). |
+| `waifus files WAIFU [PATH] [--root tmp]` | List a folder of her home (or `/tmp`), or print one of her text files (`--private` on the host shows files from DMs). |
+| `waifus schedule WAIFU` / `waifus watches WAIFU` | Her reminders and her watches. |
 | `waifus forget USER_ID` | Forget a person (asks for confirmation; `--yes` for scripts). |
 | `waifus usage [--by waifu]` | Model calls and cost by local day, waifu, purpose or model. |
 | `waifus remote` / `remote status` / `remote stop` | The remote-management gateway on another device. |
@@ -393,7 +397,7 @@ Exit codes: 0 ok, 1 failure, 2 usage, 3 host not running, 4 rejected, 5 conflict
 
 3.0.0 is a major release: idle updates never install it. Install it by hand
 (`npm install -g @waifucave/discord-waifus@3.0.0`, then `waifus restart`). The first start migrates
-each waifu's memories to her notes, maps old model settings to the curated list (anything without an
+each waifu's memories to notes in her home folder, maps old model settings to the curated list (anything without an
 equivalent shows as a notice to pick again) and archives the director's data under
 `~/.dc-waifus/user/.archive/living-cast/`. Downgrading is not supported. `waifus doctor` reports any
 step that left unreadable data alone.
@@ -467,7 +471,8 @@ npm run dev:frontend
 ~/.dc-waifus/user/providers.json
 ~/.dc-waifus/user/discord-bots.json
 ~/.dc-waifus/user/waifus/<id>/life/    # her life: state, log, wakes, plans
-~/.dc-waifus/user/waifus/<id>/notes/   # her notes (MEMORY.md is the index)
+~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), schedule.json, watches.json
+~/.dc-waifus/user/waifus/<id>/tmp/     # her /tmp: files people sent, deleted after 7 days
 ~/.dc-waifus/user/servers/
 ~/.dc-waifus/user/dms/
 ~/.dc-waifus/user/usage/               # the usage ledger, one file per UTC day

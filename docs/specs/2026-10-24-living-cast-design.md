@@ -667,6 +667,11 @@ list_places() → rooms (handle, server › channel, people seen there in the la
 
 ## 7. Memory
 
+> **§7.1–§7.3 are superseded by §16** (her home folder and file tools, §16.2–§16.3, §16.8): her
+> notes live in `user/waifus/<id>/home/` and are read and written with `Read`, `Write`, `Edit` and
+> `Bash`; the limits below are §16.2's. §7.4 writes into `home/` (§16.13) and §7.5 has §16.9's
+> additions. What follows is kept for the reasoning and the `MEMORY.md` format.
+
 ### 7.1 Notes on disk
 
 `user/waifus/<id>/notes/` holds real Markdown files the owner can read and edit. `MEMORY.md` is an
@@ -841,6 +846,8 @@ record's time) and is deleted after 7 days (at boot and at every forget): its sa
 when it was made.
 
 ## 8. Life harness (system prompt outline)
+
+> The tool sentences of block A are §16.7's (as built: `tests/golden/__snapshots__/life-system-prompt.txt`).
 
 The final text is reviewed by the owner as goldens.
 
@@ -1254,6 +1261,10 @@ an ignored one 1.
 
 ## 14. Dashboard, API, CLI (replaces overhaul Phases 6–7)
 
+> The notes, watches and schedule rows below are replaced by §16.11 (her files, reminders and
+> watches routes, CLI, Life screen and assistant tools; as built in §16.14). The D14 rule of §14.4
+> (`includePrivate`, local only) applies to her files from a DM as well.
+
 ### 14.1 API
 
 | Route | Notes |
@@ -1577,6 +1588,24 @@ unchanged; an unknown handle returns `error: unknown place; see ~/places.md`. `W
   pure JavaScript) with `info`, `crop`, `resize`, `rotate`, `flip` and `convert` for png/jpeg/webp/gif,
   so "crop this picture" works without Python packages. The implementer checks which is true and
   documents it here.
+  **As built (checked by experiment and by `tests/bashIsolation.test.ts`):** just-bash 3.6.0 ships
+  CPython 3.13.2 for Emscripten with the **standard library only**: no PIL/Pillow, no numpy, no
+  `ctypes` (`_ctypes` is not built), no `sqlite3` module (`_sqlite3` is not built; the `sqlite3`
+  shell command is there), no `js`/`pyodide` modules; `zlib`, `struct`, `json`, `csv`, `re`,
+  `datetime`, `hashlib` and the like work. Python runs in just-bash's own nested worker and sees
+  just-bash's filesystem (`os.listdir('/')` is `['home', 'tmp']`; inside Python the bridge is
+  mounted at an internal `/host`, which can appear in its error messages and is not a host path).
+  `subprocess` and `os.fork` raise `OSError`, `os.system` returns -1, sockets fail ("Host is
+  unreachable"), `os.link` does not exist; `os.symlink` succeeds only inside CPython's own
+  in-memory WebAssembly filesystem: the link never reaches her folders, following it finds nothing,
+  and it is gone when the command ends. Its environment is Emscripten's defaults (`PATH=/`,
+  `PYTHONHOME=/`, `LOGNAME=web_user`, …) plus `HOME`, `USER`, `PWD`, `TZ`. `'x' * 10**9` raises
+  `MemoryError`. So the built-in **`image` command was added** (`src/life/bash/imageCommand.ts`,
+  pure JavaScript inside the worker: its own PNG codec over `node:zlib`, and the pinned pure-JS
+  `jpeg-js` 0.4.4, `omggif` 1.0.10 and `@stacksjs/ts-webp` 0.1.6): `info`, `crop IN OUT WxH[+X+Y]`,
+  `resize IN OUT SIZE` (`WxH`, `W`, `xH`, `N%`), `rotate IN OUT 90|180|270|-90`, `flip IN OUT h|v`,
+  `convert IN OUT`, `--quality N` for JPEG/WebP; at most 40 megapixels; an animated GIF/WebP keeps
+  its first frame; EXIF orientation is not applied; WebP is at most 16,383 px a side.
 - **Environment**: `HOME=/home/<slug>`, `USER=<slug>`, `PWD` her home, `TZ` the host time zone
   (her clock already shows local time), nothing else from the host environment.
 - **Output**: stdout and stderr interleaved, cut at `life.bash.maxOutputChars` (16,000) with
@@ -1743,3 +1772,129 @@ step converts a development host's L2-era layout if present (`notes/` → `home/
 `life/schedule.json` and `life/watches.json` → the new files in her home with local times and
 `from` names, `watch-ids.json` from their stored ids) and starts a new epoch, since the tool list
 changed (§5.2).
+
+### 16.14 As built (L4, 2026-10-25)
+
+Every choice §16 left open, and every place where the build differs from the text above. The code
+is the authority for exact strings; the goldens show the prompt and tool texts for owner review.
+
+**Bash isolation.**
+- Engine: just-bash **3.6.0** (published 2026-10-01; exact pin), one `worker_thread` per call with
+  `resourceLimits` old generation 256 MiB, young generation 32 MiB, stack 4 MiB, `env: {}` (the
+  worker's `process.env` starts empty) and its stdout/stderr captured, never piped to the host.
+- Her filesystem in the worker is a guarded `IFileSystem` (`src/life/bash/bashWorker.ts`): only `/`,
+  `/home`, `/home/<slug>`, `/tmp`, `/dev` and `/dev/null` exist (no `/bin`, `/proc`, `/etc`);
+  contents come lazily over the worker's message port, and the host serves only files that were
+  in her folders when the command started, by her path (never a host path, never a link); writes
+  outside her two folders and to `places.md` fail, and so does every `symlink`/`link`.
+- Commands: just-bash's built-ins except `curl`, `html-to-markdown`, `js-exec` and `tar` (its xz
+  and zstd modes would load just-bash's optional native addons), plus `image`, plus `python3` when
+  `life.bash.python` is on.
+- Time: the host's wall clock (`timeout_ms`, default 10 s, at most `life.bash.maxTimeoutMs`) is the
+  one time limit; just-bash's own deadlines are set 30 s past it, so a long command always ends
+  with the worker terminated (just-bash's Python and SQLite workers go with it), `error: the
+  command took longer than N s and was stopped; nothing was saved`. An abort (pause, stop) is the
+  same with `interrupted; nothing was saved`.
+- Other limits are just-bash's: 100,000 commands (an endless shell loop), call depth 100 (a fork
+  bomb), the format-width and string limits, 1 MiB of output (she sees `life.bash.maxOutputChars`
+  of it, then `… (output cut)`), and an in-memory filesystem of `life.home.maxBytes +
+  life.tmp.maxBytes + 64 MiB`. A command stopped by one of these ends like a failed script (a
+  non-zero exit); what it changed before still goes through the checks below.
+- Output is stdout, then stderr (just-bash returns them separately; not interleaved), then `exit N`
+  and one change line (`changed: …; new folders: …; deleted: …`).
+- just-bash quirk: a redirection to a path she may not write (`> /etc/passwd`, `> ~/places.md`)
+  ends the whole script with `bash: <path>: …` and exit 1 instead of only failing that command.
+- The escape suite (`tests/bashIsolation.test.ts`) covers every item of §16.12: `cat /etc/passwd`,
+  `ls /` (`home tmp`), `cd ..` past `/home` (stays at `/`), host paths for read/list/write/`cp`,
+  `ln -s`/`ln` (refused, nothing on disk), a Python link (above), `open()` of host paths
+  (`FileNotFoundError`), `os.listdir`, `os.system`, `subprocess`, `os.fork`, sockets, `urllib`,
+  `ctypes`, `import js`/`pyodide`, the environment (no host value), an endless loop, a fork bomb, a
+  1 GB string, output floods (`yes`, a 100 MB print), a Python busy loop killed at its timeout with
+  nothing saved while the host's event-loop delay stays under 50 ms (99th percentile), an abort,
+  and no host path in any result (except a path her own command typed, echoed in its error).
+
+**Change sets (§16.3.5, §16.9).** Writes (whole contents), deletes and new folders; a rename is a
+delete plus a write. The host checks every path, `places.md`, her two special files (once, on the
+result), the limits and case collisions on the result, and that nothing changed under her since the
+command started (size and mtime against the starting manifest: `error: ~/x changed while the
+command ran; run it again`). Writes identical to the disk are skipped. A non-empty set writes the
+intent (the life loop does not, `Bash` is not `sideEffect` there) and
+`life/pending-changes/<toolCallId>.json` (contents base64), applies it, removes it; boot repair
+finishes a journal before anything else and the repaired call reads `[interrupted by a restart] the
+command ran and its changes were saved`.
+
+**Her files (§16.2).**
+- Slug: her name lower-cased, ASCII-folded, other characters `-`; `me` when nothing is left.
+- Downloads: `/tmp/<handle segments without #>/<ref>-<file name>` (`-2`, `-3` for the same name twice
+  in one message); DM handles give `/tmp/dm/<name>/`. Downloaded kinds: png/jpeg/gif/webp, PDF, and
+  text by MIME type or a fixed extension list; ≤10 per `ReadMessages` call; dedupe by attachment id
+  and path while the file still has the downloaded hash; the OCR hint is cut at 40 characters.
+- Side files (outside her folders): `life/watch-ids.json` (id counter, the hash of the file they
+  belong to, each watch's resolved bindings and recent fire times, the timeouts already routed,
+  newest 100), `life/schedule-ids.json` (id counter, occurrences already routed, newest 100),
+  `life/files-index.json` (provenance, also each download's path and size; newest 10,000).
+- `/tmp` expiry uses each file's mtime; empty folders go too; first scheduler tick, then hourly.
+  When a download would overfill `/tmp`, the oldest `/tmp` files go first.
+- Limits as built: paths ≤ 8 folders, names 1–100 characters; `Write`/`Edit`/API `PUT` ≤ 256 KiB;
+  `Read` reads files ≤ 10 MiB; text: first 2,000 lines, lines cut at 2,000 characters, `cat -n`
+  numbering (6 wide, tab); PDF: pages 1–20 by default, at most 50 per call, text extraction
+  (`unpdf` 1.8.1, PDF.js) in its own worker (256 MiB, 20 s); images inline only when the route has
+  image input, the image is ≤ 3.75 MiB and new this epoch, within the epoch caps; a later look is
+  its OCR text. The bytes go into the image cache as `file:<sha256>` and are pinned for the epoch;
+  a picture from a DM is also recorded in that DM's image index, so a forget purges it.
+- `SendMessage`: at most 10 paths in, `life.send.maxFiles` attached (4), each ≤ 10 MiB; private
+  files are `~/MEMORY.md`, every file it links to (Markdown links, relative to her home),
+  `schedule.json`, `watches.json`, `places.md`.
+- `places.md` is rewritten when it would change: at most once a minute by the scheduler, at every
+  turn start, and when a folded wake brings a new place mid-turn (N2).
+
+**Reminders and watches (§16.4, §16.5).**
+- Times are whole local minutes. `ScheduleWake`'s window is 5 minutes to 30 days (`in_minutes` is
+  checked as given; `at` gets one minute of slack for rounding); `WatchFor`'s timeout is now +
+  `timeout_minutes`, rounded up to the next whole minute. A write keeps an unchanged past `at` or
+  timeout; a changed one must be in the window (`timeout` ≤ 7 days, one minute of slack).
+- New entries without an id get the next `r<n>`/`w<n>` and only then is the file rewritten (in the
+  canonical one-entry-per-line form); `Write` then says `; new entries got ids`.
+- `from` resolves against everyone she can see; an unchanged binding keeps its last resolution.
+  Over the API with Discord offline, `from` can only be `<@id>` or someone she has a private chat
+  with. A watch file changed on disk outside the app is re-checked with the places refresh; if it
+  fails, the last good resolutions stay.
+- Firing: due entries are routed first (fixed wake ids), recorded as routed, then removed or moved
+  by rewriting her file under the **home lock** (not her life lock: her own turn may hold that while
+  the scheduler runs). A file that no longer parses is never rewritten; the routed lists keep it
+  from firing twice. Reminder wakes no longer carry `setAt` (the file has no creation time); the
+  notification shows the due time: `reminder (Sat 14:20): "<note>"`.
+
+**DM redaction (§14.4).** `ReadMessages`/`SendMessage`/`React` on a DM place record it as before. A
+file is from a DM when it is under `/tmp/dm/` or its hash was downloaded from a DM place; `Read`,
+`SendMessage` attaching it, and `Bash` reading or writing it record a DM call (the DM's place key,
+or `dm_file`); a `Bash` command that names `/tmp/dm` does too.
+
+**Forget (§16.9).** Step 1 runs when the forget is prepared (also when the rest waits for the DM
+rate limit) and again inside the scrub: the person's provenance entries (their DM, and for an
+owner forget or `/forget everything` their attachments anywhere), every file in her folders with
+one of those hashes, and `/tmp/dm/<handle>/` of their DM. Results report `removedFiles`. The forget
+limits text adds the cropped-copy sentence.
+
+**Migration (§16.13).** `living-cast-memories-to-notes-v1` writes `home/` (and skips a waifu with
+`home/` or an L2 `notes/`). `living-cast-home-v1` (`src/backend/migrationSteps/livingCastHome.ts`)
+moves `notes/` to `home/` (both present: `notes/` to the archive), converts the L2 files
+(expired watches dropped; a watch whose place has no handle any more dropped), archives the
+originals, and marks a life whose epoch snapshot lists an L2 tool with a pending epoch start of
+reason `reset` (her summary carries over; old logs keep their 7 days).
+
+**Prompt and tools.** Tool descriptions are stored in the epoch snapshot and are part of the
+harness hash (the `Bash` text depends on `life.bash.python`). Maintenance flattens image results
+to text and lists her files in its first message.
+
+**API, CLI, dashboard, assistant (§16.11).** A file's URL is her path without the leading slash
+(`/api/waifus/:id/files/home/aria/people/kevin.md`, `…/files/tmp/x.png`, `…/files/~/x.md`). `GET`
+answers JSON (text inline up to 1 MiB, with its content hash); `?raw=1` serves bytes typed by their
+first bytes, images inline, everything else as an attachment, always with `nosniff` and a
+`default-src 'none'; sandbox` CSP. A DM file is listed with its name replaced by `[private chat
+redacted]` and no path; reading, writing or deleting it, or listing a DM's folder, needs
+`includePrivate=1` (local only; otherwise 403 `PrivateContentLocalOnly`). `PUT {text,
+expectedHash?}` goes through the same store as `Write` (`expectedHash: null`: must not exist yet);
+`DELETE` takes `expectedHash` too. The assistant's `write_file` (and any file `PUT`/`DELETE` from
+the assistant) needs its confirmation card; its text is capped at 16 KB. The CLI's reveal flag is
+`--private`, as for `waifus life`.
