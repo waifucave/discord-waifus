@@ -62,7 +62,7 @@ staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → 
 (`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
 `life.maxConcurrentTurns` slot; notifications (with the previewed message's ref; wakes ready mid-turn
 are folded into the next tool-results message after its results, recorded in `currentTurn` before
-they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing while she works (`typing.ts`, spec §6.3); an
+they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing only once a SendMessage's place has streamed in (`typing.ts`, spec §6.3); an
 interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
 each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` lease and counts in
 `queues.active`) → `ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks

@@ -613,20 +613,18 @@ send_message({ place: string, text: string (1–2000 chars), reply_to?: string /
   never DM-eligible either.
 - Shows typing in that place for `typingDelayMs(text)` (30 ms per character, 0.6–4.5 s) before
   sending; the tool call takes that long.
-- **Typing while she works** (`src/life/typing.ts`, `TypingKeeper`, one per life): during a turn
-  her bot shows typing in the place of the turn's first wake that has one (reminders and `morning`
-  have none), one place at a time, refreshed every 8 s (Discord clears it after about 10 s). A wake
-  meant for her (`mention`, reply-to-her, `name`, `dm`, the detector's pick, an owner wake with a
-  place) starts it at turn start (owner request 2026-10-25: typing from when she starts until the
-  answer comes). A looser one (`watch`, `everyone`, a shared `role`) starts it once she commits:
-  any call other than `ReadMessages`, from the moment that call starts streaming (a
-  `SendMessage`'s text streams inside it), or when it runs on a route that streams no call start.
-  Plain streamed text is her own thoughts and starts nothing; reading alone never shows typing. A
-  send stops it; her next `SendMessage` starting to stream brings it back where she last wrote,
-  while other calls after a send (notes, watches) show nothing. It stops at turn end, abort,
-  `stop()` and before a mid-turn compaction; maintenance and compaction sessions never type. Typing comes only from her own bot (a guild place
-  needs her `botId`; a DM place must be hers); a waifu without one shows nothing. Failures are
-  warnings at most once a minute per place and never affect the turn.
+- **Typing while she writes** (`src/life/typing.ts`, `TypingKeeper`, one per life; owner request
+  2026-10-25): her bot shows typing only where a message is on its way. Reading, notes, Bash,
+  searches and her own thoughts show nothing. While a `SendMessage` call streams, its `place` is
+  picked out of the arguments as soon as that string is complete (`streamedPlace`), resolved like
+  the tool resolves it, and typing starts there, before the text has finished; the call waits for
+  that lookup (milliseconds) before it runs, so typing never starts after the send. The send itself
+  clears it on Discord and the keeper stops refreshing; her next `SendMessage` types again where it
+  goes. One place at a time, refreshed every 8 s (Discord clears it after about 10 s). It stops at
+  turn end, abort, `stop()` and before a mid-turn compaction; maintenance and compaction sessions
+  never type. Typing comes only from her own bot (a guild place needs her `botId`; a DM place must
+  be hers); a waifu without one shows nothing. Failures are warnings at most once a minute per
+  place and never affect the turn.
 - Mentions: `<@Name>` resolves through `denormalizeModelContentForDiscord` and pings only people
   present in that place. `@everyone`, `@here` and role pings are neutralised.
 - Deterministic outbound filter (kept from `outputValidator.ts`): strips a leading copied

@@ -38,11 +38,11 @@ import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog,
 import { renderNotifications, type NotificationView } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
-import { collectPlaces, handleOf, refreshPlaces, withPlaceCache } from "./places.js";
+import { collectPlaces, handleOf, refreshPlaces, resolvePlace, withPlaceCache } from "./places.js";
 import { buildLifeRequest, estimateRequest, lifeBudget, PinnedImageMissingError } from "./request.js";
 import type { KeyedMutex, Semaphore } from "./sync.js";
 import { lifeTool } from "./tools/index.js";
-import { TypingKeeper, typingPlan } from "./typing.js";
+import { streamedPlace, TypingKeeper } from "./typing.js";
 import { toolError, type ToolOutput, type TurnScratch } from "./tools/types.js";
 import { deferImmediate, DIRECT_REASONS, peekImmediate, pendingWakeCount, requeueWakes, takeWakes } from "./wakeQueue.js";
 import type { DailyCost } from "./budget.js";
@@ -118,7 +118,12 @@ type TurnRun = {
   spentUsd: number;
   /** "Typing…" in the place of the wake that started the turn (§6.3): pending until she commits. */
   /** `sentTo`: where she last wrote this turn; only her next SendMessage types again, there. */
-  typing?: { keeper: TypingKeeper; placeKey?: string; sentTo?: string };
+  /**
+   * `sends`: the arguments streamed so far of each SendMessage call whose place is not known yet;
+   * `lookups`: a place being resolved, which the call waits for before it runs; `ran`: calls already
+   * executed, so a late lookup never brings typing back after the send.
+   */
+  typing?: { keeper: TypingKeeper; sends: Map<string, string>; lookups: Map<string, Promise<void>>; ran: Set<string> };
 };
 
 type TurnOutcome = "idle" | "again";
@@ -517,11 +522,9 @@ export class Life {
     if (dmWakes) run.scratch.dm = true;
     await this.append(run, "notifications", { role: "user", content }, { dmWakes });
     deps.logger.info("Life turn started", { category: "life", waifuId: this.waifuId, turnId, wakes: wakes.length, reasons: [...new Set(wakes.map((wake) => wake.reason))] });
-    const plan = typingPlan(wakes);
     const keeper = new TypingKeeper(deps, waifu);
     this.typing = keeper;
-    run.typing = { keeper, ...(plan ? { placeKey: plan.placeKey } : {}) };
-    if (plan?.immediate) keeper.start(plan.placeKey);
+    run.typing = { keeper, sends: new Map(), lookups: new Map(), ran: new Set() };
     try {
       return await this.rounds(run);
     } finally {
@@ -530,12 +533,24 @@ export class Life {
     }
   }
 
-  /** A call other than ReadMessages commits her (§6.3); after a send only her next SendMessage types. */
-  private commitTyping(run: TurnRun, name: string): void {
+  /** A streaming SendMessage's arguments so far: once its `place` is complete, typing starts there (§6.3). */
+  private typeWhereSending(run: TurnRun, id: string, delta: string): void {
     const typing = run.typing;
-    if (!typing || name === "ReadMessages" || run.signal.aborted) return;
-    const place = name === "SendMessage" ? (typing.sentTo ?? typing.placeKey) : typing.sentTo ? undefined : typing.placeKey;
-    if (place) typing.keeper.start(place);
+    const sofar = typing?.sends.get(id);
+    if (!typing || sofar === undefined || run.signal.aborted) return;
+    const argumentsJson = sofar + delta;
+    const handle = streamedPlace(argumentsJson);
+    if (handle === undefined) {
+      typing.sends.set(id, argumentsJson);
+      return;
+    }
+    typing.sends.delete(id);
+    const lookup = resolvePlace(this.deps.storage, this.waifuId, handle)
+      .then((place) => {
+        if (place && run.typing === typing && !typing.ran.has(id) && !run.signal.aborted) typing.keeper.start(place.placeKey);
+      })
+      .catch(() => undefined);
+    typing.lookups.set(id, lookup);
   }
 
   private async rounds(run: TurnRun): Promise<TurnOutcome> {
@@ -582,11 +597,14 @@ export class Life {
           ...(firstCall ? { thinkingBlocksStripped: run.state.epochStrippedThinkingBlocks } : {}),
           attribution: { purpose: "life", waifuId: this.waifuId, turnId: run.turnId }
         }, {
-          // Her reply text streams inside a call (SendMessage's text): a call other than reading
-          // commits her. Plain text is her own thoughts: no typing.
-          onToolCallStart: (_id, name) => {
-            this.commitTyping(run, name);
-          }
+          // Only a message on its way shows typing: a SendMessage's place streams first, her text
+          // after it. Plain text is her own thoughts and every other tool is work: no typing.
+          onToolCallStart: (id, name) => {
+            if (name !== "SendMessage" || !run.typing) return;
+            run.typing.ran.delete(id); // a provider may reuse ids across rounds
+            run.typing.sends.set(id, "");
+          },
+          onToolCallDelta: (id, delta) => this.typeWhereSending(run, id, delta)
         });
       } catch (error) {
         if (run.signal.aborted || (error instanceof ModelCallError && error.kind === "aborted")) return this.closeInterrupted(run);
@@ -697,9 +715,11 @@ export class Life {
         continue;
       }
       const tool = offered.has(call.name) ? lifeTool(call.name) : undefined;
-      // Anything but reading commits her (SendMessage types on its own; a route that streams no
-      // call start lands here).
-      if (tool && call.name !== "SendMessage") this.commitTyping(run, call.name);
+      // Its place lookup (milliseconds) settles first, so typing never starts after the send.
+      await run.typing?.lookups.get(call.id);
+      run.typing?.lookups.delete(call.id);
+      run.typing?.ran.add(call.id);
+      run.typing?.sends.delete(call.id);
       let places: ReadonlySet<string> = new Set();
       let output: ToolOutput;
       if (!tool) {
@@ -745,10 +765,7 @@ export class Life {
         }
       }
       if (run.typing && tool && !output.isError && call.name === "SendMessage") {
-        for (const place of places) {
-          run.typing.keeper.sent(place);
-          run.typing.sentTo = place;
-        }
+        for (const place of places) run.typing.keeper.sent(place);
       }
       if (output.messageIds?.length) messageIds[call.id] = output.messageIds;
       results.push({
@@ -898,7 +915,7 @@ export class Life {
     const deps = this.deps;
     // Nobody sees a compaction: no typing while it runs.
     run.typing?.keeper.stop();
-    if (run.typing) run.typing.placeKey = undefined;
+    run.typing?.sends.clear();
     this.compactionsThisCycle += 1;
     await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: MEMORY_SUMMARISED_NOTE }, { type: "text", text: this.timeLineText(run.waifu, run.lastEstimate, run.model) }] });
     await this.finishIdle(run, 0, `compaction:${reason}`);

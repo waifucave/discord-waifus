@@ -1,28 +1,32 @@
-// "Typing…" while she works (Living cast spec §6.3): one keeper per life shows her bot typing in one
-// place at a time, refreshed every 8 s (Discord clears it after about 10 s). It starts in the place of
-// the wake that started the turn: at turn start for a wake meant for her (mention, name, DM, owner, the
-// detector's pick), and for a looser one (watch, @everyone, a shared role) once she commits, that is
-// any call but ReadMessages, from the moment it starts streaming. A send stops it; her next
-// SendMessage starting to stream brings it back where she last wrote, other calls after a send don't.
-// Plain text is her own thoughts and commits nothing. Never in maintenance or compaction (they never
-// use a keeper; a mid-turn compaction stops it). A waifu without her own bot shows nothing; a failure
-// is a warning at most once a minute and never touches the turn.
+// "Typing…" while she writes (Living cast spec §6.3): her bot shows typing only where a message is
+// on its way. Reading, notes, Bash and searches show nothing. As a SendMessage call streams, its
+// `place` is picked out of the arguments as soon as it is complete and typing starts there, before
+// the text has finished streaming; the send itself clears it on Discord and the keeper stops
+// refreshing. One place at a time, refreshed every 8 s (Discord clears it after about 10 s). Never
+// in maintenance or compaction (they never use a keeper; a mid-turn compaction stops it). A waifu
+// without her own bot shows nothing; a failure is a warning at most once a minute and never touches
+// the turn.
 
 import { parseConversationKey } from "../orchestration/context/keys.js";
-import type { Wake, WakeReason } from "../shared/schemas/life.js";
 import type { LifeDeps } from "./deps.js";
 
 export const TYPING_REFRESH_MS = 8_000;
 const WARN_EVERY_MS = 60_000;
 
-/** Wakes that show typing from the turn's start: someone spoke to her, the detector picked her, or the owner woke her. */
-const TYPING_DIRECT: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "detector"]);
-
-/** The place typing would show in for a turn's wakes, and whether it starts at once. */
-export function typingPlan(wakes: readonly Wake[]): { placeKey: string; immediate: boolean } | undefined {
-  const first = wakes.find((wake) => wake.placeKey !== undefined && wake.reason !== "reminder" && wake.reason !== "morning");
-  if (!first?.placeKey) return undefined;
-  return { placeKey: first.placeKey, immediate: (first.reasons ?? [first.reason]).some((reason) => TYPING_DIRECT.has(reason)) };
+/**
+ * The `place` of a streaming SendMessage, once its string is complete in the arguments JSON so far
+ * (undefined until then). Only a top-level-looking `"place": "…"` pair is read; the text that may
+ * follow is never needed.
+ */
+export function streamedPlace(argumentsJson: string): string | undefined {
+  const match = /"place"\s*:\s*"((?:[^"\\]|\\.)*)"/u.exec(argumentsJson);
+  if (!match) return undefined;
+  try {
+    const place = JSON.parse(`"${match[1]}"`) as string;
+    return place.trim() ? place : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export class TypingKeeper {

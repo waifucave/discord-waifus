@@ -35,6 +35,8 @@ type RetryEvent = Omit<Extract<ProviderEvent, { type: "retry" }>, "type">;
 export type AssemblySink = {
   onTextDelta?(text: string): void;
   onToolCallStart?(id: string, name: string): void;
+  /** A piece of a tool call's arguments JSON as it streams. */
+  onToolCallDelta?(id: string, argumentsJsonDelta: string): void;
   onToolCallEnd?(id: string): void;
   /** Readable reasoning (a provider summary or exposed reasoning) as it streams. */
   onReasoningDelta?(text: string): void;
@@ -104,6 +106,9 @@ async function* observe(stream: AsyncIterable<ProviderEvent>, observation: Strea
         break;
       case "reasoning_progress":
         if (event.text !== undefined && event.text.length > 0) observation.contentArrived = true;
+        break;
+      case "tool_call_delta":
+        if (sink?.onToolCallDelta) safely(() => sink.onToolCallDelta!(event.id, event.argumentsJsonDelta));
         break;
       case "tool_call_end":
         if (sink?.onToolCallEnd) safely(() => sink.onToolCallEnd!(event.id));
