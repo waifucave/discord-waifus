@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const FRONTEND = path.join(process.cwd(), "src", "frontend");
 /** Shared modules with no zod and no Node imports: safe at runtime in the browser. */
-const RUNTIME_ALLOWED = [/\/shared\/constants\/[a-z]+$/u];
+const RUNTIME_ALLOWED = [/\/shared\/constants\/[a-zA-Z]+$/u];
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
