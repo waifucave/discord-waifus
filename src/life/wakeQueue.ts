@@ -159,7 +159,37 @@ export async function takeDeferred(
   return released;
 }
 
-/** Takes every immediate wake and quiet line (the start of a turn, or a fold mid-turn). */
+/**
+ * The immediate wakes and quiet lines, left in the queue. A turn (its start, or a mid-turn fold)
+ * records the wakes in her life state first and only then removes them with `takeWakes`, so a crash
+ * between the two leaves them in both places (boot repair re-queues the turn's wakes by id, which
+ * adds nothing twice) and never in neither.
+ */
+export async function peekImmediate(storage: StorageService, waifuId: string): Promise<{ wakes: Wake[]; quiet: WakeQueue["quiet"] }> {
+  const queue = await readLifeFile(storage, waifuId, "wakes");
+  return { wakes: queue.immediate, quiet: queue.quiet };
+}
+
+/**
+ * Removes wakes a turn recorded (by id) and the quiet lines it showed (a line that grew since keeps
+ * the difference).
+ */
+export async function takeWakes(storage: StorageService, waifuId: string, wakes: readonly Wake[], quiet: WakeQueue["quiet"]): Promise<void> {
+  if (wakes.length === 0 && quiet.length === 0) return;
+  const ids = new Set(wakes.map((wake) => wake.id));
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    const shown = [...quiet];
+    const left = queue.quiet.flatMap((line) => {
+      const index = shown.findIndex((seen) => seen.userId === line.userId && seen.placeKey === line.placeKey);
+      if (index < 0) return [line];
+      const [seen] = shown.splice(index, 1);
+      return line.count > seen!.count ? [{ ...line, count: line.count - seen!.count }] : [];
+    });
+    return { ...queue, immediate: queue.immediate.filter((wake) => !ids.has(wake.id)), quiet: left };
+  });
+}
+
+/** Takes every immediate wake and quiet line at once. */
 export async function takeImmediate(storage: StorageService, waifuId: string): Promise<{ wakes: Wake[]; quiet: WakeQueue["quiet"] }> {
   let wakes: Wake[] = [];
   let quiet: WakeQueue["quiet"] = [];

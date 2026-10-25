@@ -43,7 +43,7 @@ import type { KeyedMutex, Semaphore } from "./sync.js";
 import { lifeTool } from "./tools/index.js";
 import { TypingKeeper, typingPlan } from "./typing.js";
 import { toolError, type ToolOutput, type TurnScratch } from "./tools/types.js";
-import { deferImmediate, DIRECT_REASONS, pendingWakeCount, requeueWakes, takeImmediate } from "./wakeQueue.js";
+import { deferImmediate, DIRECT_REASONS, peekImmediate, pendingWakeCount, requeueWakes, takeWakes } from "./wakeQueue.js";
 import type { DailyCost } from "./budget.js";
 import { readDmFloor } from "../orchestration/dm/dmStore.js";
 import { compareIds } from "../discord/rawMessage.js";
@@ -466,11 +466,9 @@ export class Life {
     state = await this.prepareEpoch(waifu, model, state, signal);
     // An interrupted compaction (pause, shutdown, a reload) changed nothing; no wakes are taken.
     if (signal.aborted) return "idle";
-    const { wakes, quiet } = await takeImmediate(deps.storage, this.waifuId);
-    if (wakes.length === 0 && !followUpDue) {
-      if (quiet.length > 0) await updateLifeFile(deps.storage, this.waifuId, "wakes", (queue) => ({ ...queue, quiet: [...quiet, ...queue.quiet] }));
-      return "idle";
-    }
+    // Read now, removed once her state records them (a crash in between loses none, §4.6).
+    const { wakes, quiet } = await peekImmediate(deps.storage, this.waifuId);
+    if (wakes.length === 0 && !followUpDue) return "idle";
     // Her places file is current at every turn start (§16.6; unchanged content is not rewritten).
     await refreshPlacesFile(deps, waifu).catch((error: unknown) => {
       deps.logger.warn("Could not refresh places.md", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
@@ -506,6 +504,7 @@ export class Life {
       pendingNotices: current.pendingNotices.slice(notices.length),
       ...(followUpDue && current.failedTurn ? { failedTurn: { ...current.failedTurn, followUpDone: true } } : {})
     }));
+    await takeWakes(deps.storage, this.waifuId, wakes, quiet);
     const dmWakes = wakes.some((wake) => isDmPlaceKey(wake.placeKey)) || quiet.some((line) => isDmPlaceKey(line.placeKey));
     if (dmWakes) run.scratch.dm = true;
     await this.append(run, "notifications", { role: "user", content }, { dmWakes });
@@ -743,10 +742,15 @@ export class Life {
     return { results, messageIds, dmCalls, interrupted };
   }
 
-  /** New wakes during a turn are folded into the next tool-results message (§4.6). */
+  /**
+   * Wakes that became ready during a turn (§4.6, §5.2) are folded into the tool-results message of
+   * the round that just ran, after its results: the same `<notifications>` block (with refs) as a
+   * turn's first message. Only between rounds, never inside a model call or a tool call; each wake is
+   * recorded in the open turn before it leaves the queue, so it is shown once and survives a crash.
+   */
   private async foldWakes(run: TurnRun): Promise<ContentBlockLike[]> {
     const deps = this.deps;
-    const { wakes, quiet } = await takeImmediate(deps.storage, this.waifuId);
+    const { wakes, quiet } = await peekImmediate(deps.storage, this.waifuId);
     const state = await readLifeState(deps.storage, this.waifuId);
     const notices = state.pendingNotices;
     if (wakes.length === 0 && quiet.length === 0 && notices.length === 0) return [];
@@ -767,6 +771,7 @@ export class Life {
         ? { ...current.currentTurn, wakeIds: [...current.currentTurn.wakeIds, ...wakes.map((wake) => wake.id)], wakes: [...current.currentTurn.wakes, ...wakes] }
         : current.currentTurn
     }));
+    await takeWakes(deps.storage, this.waifuId, wakes, quiet);
     return block ? [{ type: "text", text: block }] : [];
   }
 
