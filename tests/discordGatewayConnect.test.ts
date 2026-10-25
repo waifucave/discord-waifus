@@ -516,7 +516,7 @@ describe("DiscordJsGateway slash commands", () => {
     const events: unknown[] = [];
     gateway.onWakeCommand((event) => void events.push(event));
     gateway.onPrintCommand((event) => void events.push(event));
-    const admin = fakeInteraction({ commandName, userId: "admin-1", admin: true, strings: { waifu: "aria", type: "notes" } });
+    const admin = fakeInteraction({ commandName, userId: "admin-1", admin: true, strings: { waifu: "ella", type: "notes" } });
 
     await slashHandler(gateway, handler)(admin.interaction);
 
@@ -524,7 +524,7 @@ describe("DiscordJsGateway slash commands", () => {
     expect(admin.calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
     expect(admin.calls.editReply).toEqual([expect.stringContaining("Only the owner of this bot's Discord application")]);
     // The owner gets through even without Administrator in this server.
-    const owner = fakeInteraction({ commandName, userId: "owner-1", admin: false, strings: { waifu: "aria", type: "notes" } });
+    const owner = fakeInteraction({ commandName, userId: "owner-1", admin: false, strings: { waifu: "ella", type: "notes" } });
     await slashHandler(gateway, handler)(owner.interaction);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(events).toHaveLength(1);
@@ -536,16 +536,16 @@ describe("DiscordJsGateway slash commands", () => {
     const wakes: Array<{ waifuId?: string; note?: string }> = [];
     gateway.onWakeCommand(async (event) => {
       wakes.push({ waifuId: event.waifuId, note: event.note });
-      await event.respond("Woke Aria.");
+      await event.respond("Woke Ella.");
     });
-    const { interaction, calls } = fakeInteraction({ commandName: "wake", strings: { waifu: "aria", note: "  say hi to the new member  " } });
+    const { interaction, calls } = fakeInteraction({ commandName: "wake", strings: { waifu: "ella", note: "  say hi to the new member  " } });
 
     await slashHandler(gateway, "handleWakeInteraction")(interaction);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(wakes).toEqual([{ waifuId: "aria", note: "say hi to the new member" }]);
+    expect(wakes).toEqual([{ waifuId: "ella", note: "say hi to the new member" }]);
     expect(calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
-    expect(calls.editReply).toEqual(["Woke Aria."]);
+    expect(calls.editReply).toEqual(["Woke Ella."]);
   });
 
   it("answers /print only ephemerally: a short print inline, a long one as an attached file", async () => {
@@ -554,7 +554,7 @@ describe("DiscordJsGateway slash commands", () => {
     gateway.onPrintCommand(async (event) => {
       await event.respond("x".repeat(size));
     });
-    const short = fakeInteraction({ commandName: "print", strings: { type: "notes", waifu: "aria" } });
+    const short = fakeInteraction({ commandName: "print", strings: { type: "notes", waifu: "ella" } });
     await slashHandler(gateway, "handlePrintInteraction")(short.interaction);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(short.calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
@@ -562,7 +562,7 @@ describe("DiscordJsGateway slash commands", () => {
     expect(short.calls.editReply).toEqual(["x".repeat(100)]);
 
     size = 5_000;
-    const { interaction, calls } = fakeInteraction({ commandName: "print", strings: { type: "system_prompt", waifu: "aria" } });
+    const { interaction, calls } = fakeInteraction({ commandName: "print", strings: { type: "system_prompt", waifu: "ella" } });
 
     await slashHandler(gateway, "handlePrintInteraction")(interaction);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -583,7 +583,7 @@ describe("DiscordJsGateway /print private option", () => {
       await event.respond("ok");
     });
     for (const booleans of [{ private: true }, {}]) {
-      const { interaction } = fakeInteraction({ commandName: "print", strings: { type: "life", waifu: "aria" }, booleans });
+      const { interaction } = fakeInteraction({ commandName: "print", strings: { type: "life", waifu: "ella" }, booleans });
       await slashHandler(gateway, "handlePrintInteraction")(interaction);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }

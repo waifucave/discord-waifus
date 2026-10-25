@@ -128,7 +128,7 @@ describe("settings registry", () => {
     });
     expect(coerceValue(findKey("waifu.life.dailyBudgetUsd")!, "null")).toEqual({ ok: true, value: null });
     expect(coerceValue(findKey("app.life.maxSendsPerTurn")!, "null")).toMatchObject({ ok: false });
-    expect(coerceValue(findKey("channel.enabledWaifuIds")!, "aria, mina")).toEqual({ ok: true, value: ["aria", "mina"] });
+    expect(coerceValue(findKey("channel.enabledWaifuIds")!, "ella, mina")).toEqual({ ok: true, value: ["ella", "mina"] });
     expect(coerceValue(findKey("app.models.allowed")!, '["a/b"]')).toEqual({ ok: true, value: ["a/b"] });
   });
 });

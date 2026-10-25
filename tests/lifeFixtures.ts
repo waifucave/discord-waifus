@@ -38,7 +38,7 @@ export const CHANNEL = "200000000000000002";
 export const CHANNEL_2 = "200000000000000003";
 export const KEVIN = "300000000000000003";
 export const MINA_USER = "300000000000000004";
-export const ARIA_BOT = "400000000000000004";
+export const ELLA_BOT = "400000000000000004";
 export const MINA_BOT = "400000000000000005";
 export const HOUSE_BOT = "400000000000000009";
 export const TZ = "UTC";
@@ -125,7 +125,7 @@ export class FakeDiscord implements DiscordGatewayFacade {
     return [];
   }
   ownAuthorIds() {
-    return [ARIA_BOT, MINA_BOT, HOUSE_BOT];
+    return [ELLA_BOT, MINA_BOT, HOUSE_BOT];
   }
 
   async fetchContextSince(i: { guildId: string; channelId: string; afterMessageId: string | null; maxMessages: number }) {
@@ -145,7 +145,7 @@ export class FakeDiscord implements DiscordGatewayFacade {
 
   private botAuthor(botId: string | undefined): { authorId: string; authorName: string } {
     if (botId === "mina-bot") return { authorId: MINA_BOT, authorName: "Mina" };
-    return { authorId: ARIA_BOT, authorName: "Aria" };
+    return { authorId: ELLA_BOT, authorName: "Ella" };
   }
 
   /** What Discord's side does to outgoing content (the real facade resolves `<@Name>`, `:emoji:`). */
@@ -179,7 +179,7 @@ export class FakeDiscord implements DiscordGatewayFacade {
     await input.onFinalContent?.(content);
     const conversation: ConversationRef = { kind: "dm", waifuId: input.waifuId, userId: input.userId };
     const files = this.sentAttachments(input.files);
-    const message = this.post(conversation, content, { ...this.botAuthor(input.waifuId === "mina" ? "mina-bot" : "aria-bot"), bot: true, ...(files.attachments.length ? { attachments: files.attachments } : {}) });
+    const message = this.post(conversation, content, { ...this.botAuthor(input.waifuId === "mina" ? "mina-bot" : "ella-bot"), bot: true, ...(files.attachments.length ? { attachments: files.attachments } : {}) });
     this.sent.push({ placeKey: conversationKey(conversation), content, messageId: message.id, ...(files.summary.length ? { files: files.summary } : {}) });
     return { messageId: message.id };
   }
@@ -224,9 +224,9 @@ export async function writeWaifuConfig(storage: StorageService, seed: WaifuSeed)
   );
 }
 
-/** A data root with Bake Club (#general cast: Aria, and Mina when given), bots and waifus. */
+/** A data root with Bake Club (#general cast: Ella, and Mina when given), bots and waifus. */
 export async function seedWorld(storage: StorageService, o: { waifus?: WaifuSeed[]; cast?: string[] } = {}): Promise<void> {
-  const waifus = o.waifus ?? [{ id: "aria", name: "Aria", botId: "aria-bot" }];
+  const waifus = o.waifus ?? [{ id: "ella", name: "Ella", botId: "ella-bot" }];
   await storage.writeJson(
     "discord-bots",
     "user/discord-bots.json",
@@ -235,7 +235,7 @@ export async function seedWorld(storage: StorageService, o: { waifus?: WaifuSeed
       createEmptyRevisionedFile({
         orchestrator: { id: HOUSE_BOT, displayName: "House", enabled: true, token: "t" },
         waifus: [
-          { id: "aria-bot", displayName: "Aria", enabled: true, token: "t", applicationId: ARIA_BOT },
+          { id: "ella-bot", displayName: "Ella", enabled: true, token: "t", applicationId: ELLA_BOT },
           { id: "mina-bot", displayName: "Mina", enabled: true, token: "t", applicationId: MINA_BOT }
         ]
       })
@@ -445,7 +445,7 @@ export async function herFile(w: Pick<LifeWorld, "root">, waifuId: string, relat
 }
 
 /** Her home folder for a test: plain files written and read on disk (no checks), like the owner would. */
-export function homeOf(w: Pick<LifeWorld, "root">, waifuId = "aria") {
+export function homeOf(w: Pick<LifeWorld, "root">, waifuId = "ella") {
   const host = (relative: string) => path.join(w.root, "user", "waifus", waifuId, "home", ...relative.split("/"));
   return {
     async write(relative: string, content: string): Promise<void> {
@@ -457,7 +457,7 @@ export function homeOf(w: Pick<LifeWorld, "root">, waifuId = "aria") {
 }
 
 /** Writes one of her files through her store with every check (her reminders and watches resolve too). */
-export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relative: string, content: string, waifuId = "aria"): Promise<void> {
+export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relative: string, content: string, waifuId = "ella"): Promise<void> {
   const waifu = await readWaifu(w.storage, waifuId);
   const store = homeStoreFor(w.cast.deps, waifu);
   const target = store.resolve(`~/${relative}`);
@@ -466,7 +466,7 @@ export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relat
 }
 
 /** Her reminder or watch file, parsed. */
-export async function herEntries(w: Pick<LifeWorld, "root">, name: "schedule.json" | "watches.json", waifuId = "aria"): Promise<Array<Record<string, unknown>>> {
+export async function herEntries(w: Pick<LifeWorld, "root">, name: "schedule.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
   const text = await homeOf(w, waifuId).read(name);
   return text?.trim() ? (JSON.parse(text) as Array<Record<string, unknown>>) : [];
 }

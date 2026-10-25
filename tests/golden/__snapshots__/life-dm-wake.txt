@@ -11,7 +11,7 @@
 === 2 user ===
 --- tool result call_1_ReadMessages ---
 dm/kevin (DM with Kevin)
-[14:00 #a0] Kevin: hey aria
+[14:00 #a0] Kevin: hey ella
 [14:00 #a1] Kevin: my exam got moved to friday, i'm so nervous
 --- text ---
 [Sat 24 Oct 14:00 · awake]

@@ -166,7 +166,7 @@ describe("assistant turn on ModelClient", () => {
     await h.app.inject({
       method: "POST",
       url: "/api/waifus",
-      payload: { id: "aria", name: "Aria", displayName: "Aria", model: { providerId: "deepseek", modelId: "deepseek-flash", effort: "low" } }
+      payload: { id: "ella", name: "Ella", displayName: "Ella", model: { providerId: "deepseek", modelId: "deepseek-flash", effort: "low" } }
     });
     expect(await h.turn("hi")).toBe("borrowed");
     expect(h.adapter.calls[0]!.request.effort).toBe("low");

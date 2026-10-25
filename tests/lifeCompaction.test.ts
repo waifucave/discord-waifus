@@ -32,13 +32,13 @@ function turn(id: string, result: string): LifeLogLine[] {
 
 /** A world after one real turn (so she has a system snapshot), and what compactLife needs. */
 async function compactable(w: LifeWorld) {
-  vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-  await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "reminder", note: "first", at: w.clock.now().toISOString() });
-  await w.cast.life("aria").runNow();
+  vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+  await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "reminder", note: "first", at: w.clock.now().toISOString() });
+  await w.cast.life("ella").runNow();
   const deps = w.cast.deps;
-  const waifu = await readWaifu(w.storage, "aria");
+  const waifu = await readWaifu(w.storage, "ella");
   const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
-  return { deps, waifu, route, state: await readLifeState(w.storage, "aria"), nextHarness: await currentHarness(deps, waifu, route) };
+  return { deps, waifu, route, state: await readLifeState(w.storage, "ella"), nextHarness: await currentHarness(deps, waifu, route) };
 }
 
 describe("compaction sizes", () => {
@@ -80,7 +80,7 @@ describe("compaction sizes", () => {
     });
     const { deps, waifu, route, state, nextHarness } = await compactable(w);
     const compact = async (result: string) => {
-      const current = await readLifeState(w.storage, "aria");
+      const current = await readLifeState(w.storage, "ella");
       const outcome = await compactLife(deps, {
         waifu,
         state: { ...state, epoch: current.epoch },
@@ -90,7 +90,7 @@ describe("compaction sizes", () => {
         reason: "budget",
         omit: { deleted: [], people: [] }
       });
-      const log = await readLifeLog(w.storage, "aria", outcome.state.epoch);
+      const log = await readLifeLog(w.storage, "ella", outcome.state.epoch);
       return log[0]!.boundary!.keptTurns;
     };
     // Small turns: all three are kept.
@@ -133,22 +133,22 @@ describe("a tool-surface change (§16.13, review B4)", () => {
     const request = JSON.stringify(w.anthropic.calls[calls]!.request.messages);
     expect(request).toContain("[used read_note people/kevin.md]");
     expect(request).not.toContain('"name":"read_note"');
-    const after = await readLifeState(w.storage, "aria");
+    const after = await readLifeState(w.storage, "ella");
     expect(after).toMatchObject({ summary: "Earlier: Kevin likes lemon tart.", pendingEpochStart: false });
-    const log = await readLifeLog(w.storage, "aria", after.epoch);
+    const log = await readLifeLog(w.storage, "ella", after.epoch);
     expect(log[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
   });
 
   it("the migration's pending `tools` epoch is summarised before her next turn", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("ok"), textTurn("Summary after the move."), textTurn("hello again")) });
     const { state } = await compactable(w);
-    await updateLifeState(w.storage, "aria", (current) => ({ ...current, pendingEpochStart: true, pendingEpochReason: "tools" as const }));
-    await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "reminder", note: "second", at: w.clock.now().toISOString() });
-    await w.cast.life("aria").runNow();
-    const after = await readLifeState(w.storage, "aria");
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, pendingEpochStart: true, pendingEpochReason: "tools" as const }));
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "reminder", note: "second", at: w.clock.now().toISOString() });
+    await w.cast.life("ella").runNow();
+    const after = await readLifeState(w.storage, "ella");
     expect(after.epoch).toBe(state.epoch + 1);
     expect(after.summary).toBe("Summary after the move.");
-    expect((await readLifeLog(w.storage, "aria", after.epoch))[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
+    expect((await readLifeLog(w.storage, "ella", after.epoch))[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
   });
 
   it("a failed summary falls back to the reset: her old summary carries over and the epoch starts", async () => {
@@ -163,7 +163,7 @@ describe("a tool-surface change (§16.13, review B4)", () => {
     const { deps, waifu, route, state, nextHarness } = await compactable(w);
     const outcome = await compactRetiredTools(deps, { waifu, state: { ...state, summary: "old summary" }, lines: retiredTurn("t1"), summaryRoute: route, nextHarness, omit: { deleted: [], people: [] } });
     expect(outcome.summarized).toBe(false);
-    const after = await readLifeState(w.storage, "aria");
+    const after = await readLifeState(w.storage, "ella");
     expect(after.epoch).toBe(state.epoch + 1);
     expect(after.summary).toBe("old summary");
     expect(after.pendingEpochStart).toBe(false);

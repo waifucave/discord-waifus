@@ -30,7 +30,7 @@ async function setup() {
   await storage.writeJson(`server:${GUILD}`, `user/servers/${GUILD}/server.json`, ServerConfigSchema, ServerConfigSchema.parse({
     ...createRevisionedBase(),
     guildId: GUILD,
-    channels: { [CHANNEL]: { channelId: CHANNEL, enabledWaifuIds: ["aria"] } }
+    channels: { [CHANNEL]: { channelId: CHANNEL, enabledWaifuIds: ["ella"] } }
   }));
   const sent: unknown[] = [];
   const discord = {
@@ -54,7 +54,7 @@ describe("runtime facade", () => {
     const { runtime, sent } = await setup();
     const intake = vi.spyOn(runtime.cast, "onGuildMessage").mockResolvedValue(undefined);
     await runtime.handleDiscordMessage({ guildId: GUILD, channelId: CHANNEL, messageId: "m1", authorId: "kevin", authorDisplayName: "Kevin", authorBot: false });
-    expect(intake.mock.calls).toEqual([[{ guildId: GUILD, channelId: CHANNEL, messageId: "m1", castWaifuIds: ["aria"], authorIsWaifu: false }]]);
+    expect(intake.mock.calls).toEqual([[{ guildId: GUILD, channelId: CHANNEL, messageId: "m1", castWaifuIds: ["ella"], authorIsWaifu: false }]]);
     await runtime.handleDiscordMessage({ guildId: GUILD, channelId: "200000000000000099", messageId: "m2", authorId: "kevin", authorBot: false });
     expect(intake).toHaveBeenCalledTimes(1);
     // A bot that is not one of our waifus is never a wake.
@@ -70,10 +70,10 @@ describe("runtime facade", () => {
     const runtime = new CastRuntime({ storage, discord, logger, isPaused: () => paused });
     const dms = vi.spyOn(runtime.cast, "onDirectMessage").mockResolvedValue(undefined);
     const guild = vi.spyOn(runtime.cast, "onGuildMessage").mockResolvedValue(undefined);
-    await runtime.handleDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: "500000000000000005", channelId: "7", messageId: "d1", createdAt: new Date().toISOString() });
+    await runtime.handleDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: "500000000000000005", channelId: "7", messageId: "d1", createdAt: new Date().toISOString() });
     expect(dms).toHaveBeenCalledTimes(1);
     paused = true;
-    await runtime.handleDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: "500000000000000005", channelId: "7", messageId: "d2", createdAt: new Date().toISOString() });
+    await runtime.handleDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: "500000000000000005", channelId: "7", messageId: "d2", createdAt: new Date().toISOString() });
     expect(dms).toHaveBeenCalledTimes(2);
     await runtime.handleDiscordMessage({ guildId: GUILD, channelId: CHANNEL, messageId: "m1", authorId: "kevin", authorBot: false });
     expect(guild).not.toHaveBeenCalled();
@@ -98,28 +98,28 @@ describe("runtime facade", () => {
 
   it("answers the owner's /wake, /print and the waifu autocomplete (§10.4)", async () => {
     const { storage, runtime } = await setup();
-    for (const [id, displayName, enabled] of [["aria", "Aria", true], ["mina", "Mina", true], ["old", "Old", false]] as const) {
+    for (const [id, displayName, enabled] of [["ella", "Ella", true], ["mina", "Mina", true], ["old", "Old", false]] as const) {
       await storage.writeJson(`waifu:${id}`, `user/waifus/${id}/waifu.json`, WaifuConfigSchema, WaifuConfigSchema.parse({ ...createRevisionedBase(), id, name: displayName, displayName, enabled }));
     }
     const wake = vi.spyOn(runtime.cast, "ownerWake").mockResolvedValue("queued");
     const replies: string[] = [];
     const respond = async (content: string) => void replies.push(content);
-    await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "ARIA", note: "say hi", respond });
+    await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "ELLA", note: "say hi", respond });
     await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "nobody", respond });
     // /wake reaches only this server's cast (Mina is cast nowhere here).
     await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "mina", respond });
-    expect(wake.mock.calls).toEqual([["aria", "say hi"]]);
+    expect(wake.mock.calls).toEqual([["ella", "say hi"]]);
     // /print may target any waifu.
     vi.spyOn(runtime.cast, "printNotes").mockResolvedValue("# Memory");
     await runtime.handlePrintCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "Mina", type: "notes", respond });
-    expect(replies).toEqual(["Woke Aria.", "I don't know that waifu.", "Mina isn't cast in this server.", "# Memory"]);
+    expect(replies).toEqual(["Woke Ella.", "I don't know that waifu.", "Mina isn't cast in this server.", "# Memory"]);
     const choices: unknown[] = [];
     const collect = async (list: unknown) => void choices.push(list);
     await runtime.handleWaifuAutocomplete({ commandName: "wake", guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: collect });
     await runtime.handleWaifuAutocomplete({ commandName: "print", guildId: GUILD, channelId: CHANNEL, focusedValue: "MI", respond: collect });
     await runtime.handleWaifuAutocomplete({ commandName: "print", guildId: GUILD, channelId: CHANNEL, focusedValue: "old", respond: collect });
-    // /wake: this server's cast only. /print: every waifu, a disabled one too (the layout seeds Lumi).
-    expect(choices).toEqual([[{ name: "Aria", value: "aria" }], [{ name: "Lumi", value: "lumi" }, { name: "Mina", value: "mina" }], [{ name: "Old", value: "old" }]]);
+    // /wake: this server's cast only. /print: every waifu, a disabled one too (the layout seeds Lumi, Mio and Mizuhara).
+    expect(choices).toEqual([[{ name: "Ella", value: "ella" }], [{ name: "Lumi", value: "lumi" }, { name: "Mina", value: "mina" }, { name: "Mio", value: "mio" }, { name: "Mizuhara", value: "mizuhara" }], [{ name: "Old", value: "old" }]]);
     await runtime.stop();
   });
 });

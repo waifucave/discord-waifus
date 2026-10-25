@@ -1,5 +1,5 @@
 // Shared fixtures for the DM tests (spec 9.1): a fake DM transport and a data root with one
-// DM-capable waifu ("aria" on bot "aria-bot").
+// DM-capable waifu ("ella" on bot "ella-bot").
 
 import type { DiscordDirectMessageEvent, DiscordGatewayFacade } from "../src/discord/client.js";
 import { dmFloorAt } from "../src/orchestration/dm/dmStore.js";
@@ -56,7 +56,7 @@ export class DmDiscord implements DiscordGatewayFacade {
       id: this.counter.toString(),
       channelId: DM_CHANNEL,
       authorId: o.bot ? BOT_USER : userId,
-      authorName: o.bot ? "Aria" : "Kevin",
+      authorName: o.bot ? "Ella" : "Kevin",
       authorIsBot: o.bot ?? false,
       createdAt: new Date(this.clock).toISOString(),
       type: 0,
@@ -77,8 +77,8 @@ export class DmDiscord implements DiscordGatewayFacade {
   dm(content: string, userId = USER): DiscordDirectMessageEvent {
     const message = this.post(userId, content);
     return {
-      waifuId: "aria",
-      botId: "aria-bot",
+      waifuId: "ella",
+      botId: "ella-bot",
       userId,
       userDisplayName: "Kevin",
       channelId: DM_CHANNEL,
@@ -132,10 +132,10 @@ export async function seedDmWorld(
   await storage.writeJson("discord-bots", "user/discord-bots.json", DiscordBotsFileSchema, DiscordBotsFileSchema.parse(
     createEmptyRevisionedFile({
       orchestrator: { id: "orchestrator", displayName: "Director", enabled: true, token: "t" },
-      waifus: [{ id: "aria-bot", displayName: "Aria", enabled: true, token: "t", applicationId: BOT_USER }]
+      waifus: [{ id: "ella-bot", displayName: "Ella", enabled: true, token: "t", applicationId: BOT_USER }]
     })
   ));
-  await writeWaifu(storage, "aria", { dm: { allowDms: true, ...o.dm }, modelId: o.modelId });
+  await writeWaifu(storage, "ella", { dm: { allowDms: true, ...o.dm }, modelId: o.modelId });
   if (o.sharedBot) await writeWaifu(storage, "mina", { dm: { allowDms: false } });
 }
 
@@ -147,11 +147,11 @@ export async function writeWaifu(
   await storage.writeJson(`waifu:${id}`, `user/waifus/${id}/waifu.json`, WaifuConfigSchema, WaifuConfigSchema.parse({
     ...createRevisionedBase(),
     id,
-    name: id === "aria" ? "Aria" : "Mina",
-    displayName: id === "aria" ? "Aria" : "Mina",
+    name: id === "ella" ? "Ella" : "Mina",
+    displayName: id === "ella" ? "Ella" : "Mina",
     enabled: true,
     ...(o.modelId === null ? {} : { model: { providerId: "openai", modelId: o.modelId ?? "gpt-6-luna" } }),
-    botId: "aria-bot",
+    botId: "ella-bot",
     persona: "sunny baker",
     availability: { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [] },
     dm: { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", ...o.dm }

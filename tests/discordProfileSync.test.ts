@@ -119,12 +119,12 @@ function service(storage: StorageService, bots: Record<string, BotProfileHandle>
 describe("profile schema", () => {
   it("validates her Discord username, bio and nicknames with clear errors", () => {
     const parse = (patch: Record<string, unknown>) => UpdateWaifuBodySchema.safeParse({ revision: 1, ...patch });
-    expect(parse({ username: "  Aria  " }).data?.username).toBe("Aria");
+    expect(parse({ username: "  Ella  " }).data?.username).toBe("Ella");
     for (const [username, message] of [
       ["A", "2 to 32"],
       ["x".repeat(33), "2 to 32"],
-      ["aria@home", '"@"'],
-      ["aria#1", '"#"'],
+      ["ella@home", '"@"'],
+      ["ella#1", '"#"'],
       ["a:b", '":"'],
       ["a```b", '"```"'],
       ["MyDiscordBot", '"discord"'],
@@ -148,8 +148,8 @@ describe("profile schema", () => {
   });
 
   it("syncs her username only when one is set; unset leaves the bot's name alone", () => {
-    expect(desiredUsername({ username: "Ari", displayName: "Aria", name: "aria" })).toMatchObject({ value: "Ari", source: "username" });
-    const unset = desiredUsername({ displayName: "Aria", name: "aria" });
+    expect(desiredUsername({ username: "Ari", displayName: "Ella", name: "ella" })).toMatchObject({ value: "Ari", source: "username" });
+    const unset = desiredUsername({ displayName: "Ella", name: "ella" });
     expect(unset).toEqual({ value: null, source: null });
   });
 
@@ -170,12 +170,12 @@ describe("profile schema", () => {
 });
 
 describe("planProfileSync", () => {
-  const empty: BotProfileRecord = { waifuId: "aria", nicknames: {}, pendingFields: [], retryAfter: {}, warnings: [] };
-  const user: BotProfileUser = { id: "1", username: "Aria", avatar: "a1", banner: null };
+  const empty: BotProfileRecord = { waifuId: "ella", nicknames: {}, pendingFields: [], retryAfter: {}, warnings: [] };
+  const user: BotProfileUser = { id: "1", username: "Ella", avatar: "a1", banner: null };
 
   it("sends only the fields that differ", () => {
     const plan = planProfileSync({
-      desired: { username: "Aria", nicknames: {}, avatarHash: "h1" },
+      desired: { username: "Ella", nicknames: {}, avatarHash: "h1" },
       user,
       guilds: [],
       record: { ...empty, avatar: { contentHash: "h1", discordHash: "a1" } },
@@ -228,58 +228,58 @@ describe("classifyProfileError", () => {
 describe("DiscordProfileSync", () => {
   it("syncs username, avatar, banner and bio once, and nothing again after a reconnect", async () => {
     const { root: dir, storage } = await root();
-    await writeBots(storage, ["aria"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria", username: "Aria", bio: "Sunny baker." });
-    await writeImage(dir, "aria", "pfp.png", PNG);
-    await writeImage(dir, "aria", "banner.gif", GIF);
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella", username: "Ella", bio: "Sunny baker." });
+    await writeImage(dir, "ella", "pfp.png", PNG);
+    await writeImage(dir, "ella", "banner.gif", GIF);
     const bot = fakeBot();
-    await service(storage, { aria: bot }).syncAll();
+    await service(storage, { ella: bot }).syncAll();
     expect(bot.editUser).toHaveBeenCalledTimes(1);
     const patch = bot.editUser.mock.calls[0]![0] as Record<string, string>;
-    expect(patch.username).toBe("Aria");
+    expect(patch.username).toBe("Ella");
     expect(patch.avatar).toBe(`data:image/png;base64,${PNG.toString("base64")}`);
     expect(patch.banner).toMatch(/^data:image\/gif;base64,/u);
     expect(bot.editApplicationDescription).toHaveBeenCalledExactlyOnceWith("Sunny baker.");
 
     // A reconnect (a new service, as after a restart): the same bytes are not uploaded again.
-    const again = service(storage, { aria: bot });
-    await again.syncBot("aria");
+    const again = service(storage, { ella: bot });
+    await again.syncBot("ella");
     expect(bot.editUser).toHaveBeenCalledTimes(1);
     expect(bot.editApplicationDescription).toHaveBeenCalledTimes(1);
-    expect((await again.status("aria"))?.state).toBe("synced");
+    expect((await again.status("ella"))?.state).toBe("synced");
 
     // A new avatar goes up alone.
-    await writeImage(dir, "aria", "pfp.png", PNG2);
-    await again.syncWaifu("aria");
+    await writeImage(dir, "ella", "pfp.png", PNG2);
+    await again.syncWaifu("ella");
     expect(bot.editUser).toHaveBeenCalledTimes(2);
     expect(Object.keys(bot.editUser.mock.calls[1]![0] as object)).toEqual(["avatar"]);
-    const status = await again.status("aria");
+    const status = await again.status("ella");
     expect(status).toMatchObject({ state: "synced", images: { avatar: { contentType: "image/png", synced: true }, banner: { synced: true } } });
   });
 
   it("records a rate limit with its retry time, waits, then retries", async () => {
     const { storage } = await root();
-    await writeBots(storage, ["aria"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria", username: "Ari" });
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella", username: "Ari" });
     const bot = fakeBot();
     bot.editUser.mockRejectedValueOnce(Object.assign(new Error("rate limited"), { name: "RateLimitError", retryAfter: 30 * 60_000 }));
     const clock = { now: Date.parse("2026-10-25T12:00:00Z") };
-    const sync = service(storage, { aria: bot }, clock);
-    await sync.syncBot("aria");
-    let status = (await sync.status("aria"))!;
+    const sync = service(storage, { ella: bot }, clock);
+    await sync.syncBot("ella");
+    let status = (await sync.status("ella"))!;
     expect(status.state).toBe("rate_limited");
     expect(status.pendingFields).toEqual(["username"]);
     expect(Date.parse(status.retryAfter!)).toBeGreaterThan(clock.now + 29 * 60_000);
 
     // Reconnects before the retry time do not hammer Discord.
-    await sync.syncBot("aria");
-    await service(storage, { aria: bot }, clock).syncBot("aria");
+    await sync.syncBot("ella");
+    await service(storage, { ella: bot }, clock).syncBot("ella");
     expect(bot.editUser).toHaveBeenCalledTimes(1);
 
     clock.now += 31 * 60_000;
-    await sync.syncBot("aria");
+    await sync.syncBot("ella");
     expect(bot.editUser).toHaveBeenCalledTimes(2);
-    status = (await sync.status("aria"))!;
+    status = (await sync.status("ella"))!;
     expect(status.state).toBe("synced");
     expect(bot.state.user.username).toBe("Ari");
     await sync.stop();
@@ -287,9 +287,9 @@ describe("DiscordProfileSync", () => {
 
   it("sends the images on their own when Discord's username limit refuses the whole request", async () => {
     const { root: dir, storage } = await root();
-    await writeBots(storage, ["aria"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria", username: "Ari" });
-    await writeImage(dir, "aria", "pfp.png", PNG);
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella", username: "Ari" });
+    await writeImage(dir, "ella", "pfp.png", PNG);
     const bot = fakeBot();
     bot.editUser.mockRejectedValueOnce({
       status: 400,
@@ -297,11 +297,11 @@ describe("DiscordProfileSync", () => {
       message: "Invalid Form Body",
       rawError: { errors: { username: { _errors: [{ code: "USERNAME_RATE_LIMIT", message: "too fast" }] } } }
     });
-    const sync = service(storage, { aria: bot });
-    await sync.syncBot("aria");
+    const sync = service(storage, { ella: bot });
+    await sync.syncBot("ella");
     expect(bot.editUser).toHaveBeenCalledTimes(2);
     expect(Object.keys(bot.editUser.mock.calls[1]![0] as object)).toEqual(["avatar"]);
-    const status = (await sync.status("aria"))!;
+    const status = (await sync.status("ella"))!;
     expect(status.state).toBe("rate_limited");
     expect(Object.keys(status.retryAfterByField)).toEqual(["username"]);
     expect(status.images.avatar?.synced).toBe(true);
@@ -310,50 +310,50 @@ describe("DiscordProfileSync", () => {
 
   it("sets per-server nicknames and warns where the Change Nickname permission is missing", async () => {
     const { storage } = await root();
-    await writeBots(storage, ["aria"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria", nicknames: { [GUILD_A]: "Ari", [GUILD_B]: "Bee" } });
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella", nicknames: { [GUILD_A]: "Ari", [GUILD_B]: "Bee" } });
     const bot = fakeBot({
-      user: { id: "900000000000000001", username: "Aria", avatar: null, banner: null },
+      user: { id: "900000000000000001", username: "Ella", avatar: null, banner: null },
       guilds: [
         { guildId: GUILD_A, nickname: null, canChangeNickname: true },
         { guildId: GUILD_B, nickname: null, canChangeNickname: false }
       ]
     });
-    const sync = service(storage, { aria: bot });
-    await sync.syncBot("aria");
+    const sync = service(storage, { ella: bot });
+    await sync.syncBot("ella");
     expect(bot.setNickname).toHaveBeenCalledExactlyOnceWith(GUILD_A, "Ari");
     expect(bot.editUser).not.toHaveBeenCalled();
-    const status = (await sync.status("aria"))!;
+    const status = (await sync.status("ella"))!;
     expect(status.state).toBe("synced");
     expect(status.warnings).toEqual([expect.objectContaining({ code: "missing_permission", guildId: GUILD_B })]);
 
     // Removing the override clears only the nickname the app set.
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria" });
-    await sync.syncBot("aria");
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella" });
+    await sync.syncBot("ella");
     expect(bot.setNickname).toHaveBeenLastCalledWith(GUILD_A, null);
     expect(bot.setNickname).toHaveBeenCalledTimes(2);
   });
 
   it("turns Discord's 50013 on a nickname into a warning, not an error", async () => {
     const { storage } = await root();
-    await writeBots(storage, ["aria"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria", nicknames: { [GUILD_A]: "Ari" } });
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella", nicknames: { [GUILD_A]: "Ari" } });
     const bot = fakeBot({
-      user: { id: "900000000000000001", username: "Aria", avatar: null, banner: null },
+      user: { id: "900000000000000001", username: "Ella", avatar: null, banner: null },
       guilds: [{ guildId: GUILD_A, nickname: null, canChangeNickname: true }]
     });
     bot.setNickname.mockRejectedValueOnce({ status: 403, code: 50013, message: "Missing Permissions" });
-    const sync = service(storage, { aria: bot });
-    await sync.syncBot("aria");
+    const sync = service(storage, { ella: bot });
+    await sync.syncBot("ella");
     const file = JSON.parse(await readFile(path.join(storage.dataRoot, "app", "discord-profile-sync.json"), "utf8"));
-    expect(file.bots.aria.lastError).toBeUndefined();
-    expect(file.bots.aria.warnings).toEqual([expect.objectContaining({ code: "missing_permission", guildId: GUILD_A })]);
+    expect(file.bots.ella.lastError).toBeUndefined();
+    expect(file.bots.ella.warnings).toEqual([expect.objectContaining({ code: "missing_permission", guildId: GUILD_A })]);
   });
 
   it("never touches a shared bot, an unlinked waifu or the House bot", async () => {
     const { storage } = await root();
     await writeBots(storage, ["shared", "house"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "shared", username: "Ari" });
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "shared", username: "Ari" });
     await writeWaifu(storage, { id: "mina", name: "Mina", botId: "shared", username: "Mina" });
     await writeWaifu(storage, { id: "kai", name: "Kai" });
     await writeWaifu(storage, { id: "noa", name: "Noa", botId: "house", username: "Noa" });
@@ -366,17 +366,17 @@ describe("DiscordProfileSync", () => {
     expect(shared.editUser).not.toHaveBeenCalled();
     expect(house.editUser).not.toHaveBeenCalled();
     expect(house.editApplicationDescription).not.toHaveBeenCalled();
-    expect((await sync.status("aria"))?.state).toBe("shared_bot");
+    expect((await sync.status("ella"))?.state).toBe("shared_bot");
     expect((await sync.status("kai"))?.state).toBe("no_bot");
     expect((await sync.status("noa"))?.state).toBe("bot_missing");
   });
 
   it("reports offline (with what is waiting) when no runtime is connected", async () => {
     const { storage } = await root();
-    await writeBots(storage, ["aria"]);
-    await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria" });
-    const status = await discordProfileStatus({ storage, waifuId: "aria" });
-    expect(status).toMatchObject({ state: "offline", botId: "aria", username: { value: null, source: null }, bio: null });
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella" });
+    const status = await discordProfileStatus({ storage, waifuId: "ella" });
+    expect(status).toMatchObject({ state: "offline", botId: "ella", username: { value: null, source: null }, bio: null });
     expect(await discordProfileStatus({ storage, waifuId: "nobody" })).toBeUndefined();
   });
 });
@@ -405,22 +405,22 @@ describe("DiscordJsGateway profile access", () => {
     const ready: string[] = [];
     const gateway = new DiscordJsGateway({
       house: bot("house"),
-      waifus: [bot("aria"), bot("copy")],
+      waifus: [bot("ella"), bot("copy")],
       createClient: factory,
       applicationOwners: { isOwner: async () => true }
     });
     gateway.onWaifuBotReady((event) => ready.push(event.botId));
     try {
       await gateway.connect();
-      expect(ready.sort()).toEqual(["aria", "copy"]);
-      expect(gateway.connectedWaifuBotIds().sort()).toEqual(["aria", "copy"]);
+      expect(ready.sort()).toEqual(["copy", "ella"]);
+      expect(gateway.connectedWaifuBotIds().sort()).toEqual(["copy", "ella"]);
       expect(gateway.waifuBotProfile("house")).toBeUndefined();
       // Same Discord account as the House bot behind a waifu entry: never edited.
       expect(gateway.waifuBotProfile("copy")).toBeUndefined();
-      expect(gateway.waifuBotProfile("aria")?.user()).toMatchObject({ id: "2000", username: "aria" });
+      expect(gateway.waifuBotProfile("ella")?.user()).toMatchObject({ id: "2000", username: "ella" });
       expect(gateway.waifuBotProfile("unknown")).toBeUndefined();
       // Waifu bots reject rate-limited profile edits (retried later); the House bot keeps the default.
-      expect((options.get("aria") as { rest?: { rejectOnRateLimit?: unknown } }).rest?.rejectOnRateLimit).toBe(profileEditRateLimitFilter);
+      expect((options.get("ella") as { rest?: { rejectOnRateLimit?: unknown } }).rest?.rejectOnRateLimit).toBe(profileEditRateLimitFilter);
       expect((options.get("house") as { rest?: unknown }).rest).toBeUndefined();
     } finally {
       await gateway.disconnect();
@@ -467,37 +467,37 @@ describe("profile API", () => {
   it("serves the status, syncs on writes and uploads, and checks image bytes", async () => {
     const { server, storage, syncWaifu, syncDiscordProfile } = await app();
     try {
-      await writeBots(storage, ["aria"]);
-      expect((await server.inject({ method: "POST", url: "/api/waifus", payload: { id: "aria", name: "Aria", displayName: "Aria", botId: "aria" } })).statusCode).toBe(201);
-      const bad = await server.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: 0, username: "discord-aria" } });
+      await writeBots(storage, ["ella"]);
+      expect((await server.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella", botId: "ella" } })).statusCode).toBe(201);
+      const bad = await server.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: 0, username: "discord-ella" } });
       expect(bad.statusCode).toBe(400);
-      const saved = await server.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: 0, username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } } });
+      const saved = await server.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: 0, username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } } });
       expect(saved.statusCode).toBe(200);
       expect(saved.json()).toMatchObject({ username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
-      expect(syncDiscordProfile).toHaveBeenCalledWith("aria");
+      expect(syncDiscordProfile).toHaveBeenCalledWith("ella");
       // Her ~/profile.json follows the dashboard edit (§17.1).
-      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "aria", "home", "profile.json"), "utf8"));
-      expect(file).toEqual({ name: "Aria", username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
-      const cleared = await server.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: saved.json().revision, bio: null } });
+      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "ella", "home", "profile.json"), "utf8"));
+      expect(file).toEqual({ name: "Ella", username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
+      const cleared = await server.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: saved.json().revision, bio: null } });
       expect(cleared.json().bio).toBeUndefined();
       expect(cleared.json().username).toBe("Ari");
 
-      const lying = await server.inject({ method: "POST", url: "/api/waifus/aria/assets/pfp", headers: { "content-type": "image/png" }, payload: GIF });
+      const lying = await server.inject({ method: "POST", url: "/api/waifus/ella/assets/pfp", headers: { "content-type": "image/png" }, payload: GIF });
       expect(lying.statusCode).toBe(400);
       expect(lying.json().message).toContain("image/gif");
       // Bigger than Fastify's default 1 MiB body limit.
       const big = Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]);
-      const upload = await server.inject({ method: "POST", url: "/api/waifus/aria/assets/pfp", headers: { "content-type": "image/png" }, payload: big });
+      const upload = await server.inject({ method: "POST", url: "/api/waifus/ella/assets/pfp", headers: { "content-type": "image/png" }, payload: big });
       expect(upload.statusCode).toBe(201);
       // Create, two PUTs and the upload.
       expect(syncDiscordProfile).toHaveBeenCalledTimes(4);
 
-      const status = await server.inject({ method: "GET", url: "/api/waifus/aria/discord-profile" });
+      const status = await server.inject({ method: "GET", url: "/api/waifus/ella/discord-profile" });
       expect(status.statusCode).toBe(200);
       expect(status.json()).toMatchObject({ state: "offline", username: { value: "Ari", source: "username" }, images: { avatar: { contentType: "image/png" }, banner: null } });
-      const synced = await server.inject({ method: "POST", url: "/api/waifus/aria/discord-profile/sync" });
+      const synced = await server.inject({ method: "POST", url: "/api/waifus/ella/discord-profile/sync" });
       expect(synced.statusCode).toBe(200);
-      expect(syncWaifu).toHaveBeenCalledWith("aria");
+      expect(syncWaifu).toHaveBeenCalledWith("ella");
       expect((await server.inject({ method: "GET", url: "/api/waifus/nobody/discord-profile" })).statusCode).toBe(404);
     } finally {
       await server.close();
@@ -510,8 +510,8 @@ describe("dashboard profile section", () => {
     const { profileStatusLine, imageLabel } = await import("../src/frontend/utils/discordProfile.js");
     const now = Date.parse("2026-10-25T12:00:00Z");
     const base = {
-      waifuId: "aria",
-      botId: "aria",
+      waifuId: "ella",
+      botId: "ella",
       username: { value: "Ari", source: "username" as const },
       bio: null,
       nicknames: {},
@@ -531,7 +531,7 @@ describe("dashboard profile section", () => {
 
   it("sends null when a profile field is cleared, and checks it before saving", async () => {
     const { waifuPatch, waifuProblems } = await import("../src/frontend/screens/castEdit.js");
-    const remote = WaifuConfigSchema.parse({ ...createRevisionedBase(), id: "aria", name: "Aria", displayName: "Aria", username: "Ari", bio: "Hi." });
+    const remote = WaifuConfigSchema.parse({ ...createRevisionedBase(), id: "ella", name: "Ella", displayName: "Ella", username: "Ari", bio: "Hi." });
     const draft = { ...remote, username: undefined, bio: "Hello." };
     expect(waifuPatch(remote, draft)).toEqual({ revision: 0, username: null, bio: "Hello." });
     expect(waifuProblems({ username: "discord" })).toEqual(['A Discord username cannot contain "discord".']);

@@ -86,7 +86,7 @@ async function setup(o: { transport?: FakeTransport | null; hours?: number; now?
     ...(o.flushDelayMs !== undefined ? { flushDelayMs: o.flushDelayMs } : {}),
     ...(o.mentionWaitMs !== undefined ? { mentionWaitMs: o.mentionWaitMs } : {}),
     ...(o.bots
-      ? { bots: async () => ({ orchestrator: null, waifus: [{ id: "aria-bot", applicationId: "1300000000000000077", displayName: "Aria", enabled: true }] }) }
+      ? { bots: async () => ({ orchestrator: null, waifus: [{ id: "ella-bot", applicationId: "1300000000000000077", displayName: "Ella", enabled: true }] }) }
       : {})
   });
   const readMembers = () => storage.readJson(`user/servers/${GUILD}/members.json`, GuildMembersFileSchema);
@@ -183,7 +183,7 @@ describe("GuildDirectory loading and events", () => {
   it("merges configured bots so their names resolve, without persisting them", async () => {
     const { directory, readMembers } = await setup({ bots: true });
     const view = await directory.view(GUILD);
-    expect(view.memberName("1300000000000000077")).toBe("Aria"); // the application id; "aria-bot" is not a snowflake
+    expect(view.memberName("1300000000000000077")).toBe("Ella"); // the application id; "ella-bot" is not a snowflake
     directory.handle({ type: "memberUpsert", guildId: GUILD, member: member("u1", "Kevin") });
     await directory.flush();
     expect((await readMembers()).members.map((m) => m.userId)).toEqual(["u1"]);
@@ -200,15 +200,15 @@ describe("GuildDirectory learns from messages", () => {
 
     directory.observeMessages(GUILD, [
       raw({ authorId: "kevin", authorName: "Kevin", channelId: "c1", mentions: { users: { riko: "Riko" }, roles: {}, channels: {} } }),
-      raw({ authorId: "aria", authorName: "Aria", authorIsBot: true })
+      raw({ authorId: "ella", authorName: "Ella", authorIsBot: true })
     ]);
     expect(directory.memberName(GUILD, "riko")).toBe("Riko");
-    expect(directory.memberName(GUILD, "aria")).toBe("Aria");
+    expect(directory.memberName(GUILD, "ella")).toBe("Ella");
     await directory.flush();
     const saved = await readMembers();
-    expect(saved.revision).toBeGreaterThan(revision); // riko and aria are new
+    expect(saved.revision).toBeGreaterThan(revision); // riko and ella are new
     expect(saved.members.find((m) => m.userId === "kevin")).toMatchObject({ username: "kev", globalDisplayName: "Kevin G" });
-    expect(saved.members.find((m) => m.userId === "aria")).toMatchObject({ bot: true });
+    expect(saved.members.find((m) => m.userId === "ella")).toMatchObject({ bot: true });
 
     // Nothing but recency changed: no write.
     const again = saved.revision;

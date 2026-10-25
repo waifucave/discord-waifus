@@ -1,7 +1,7 @@
 === 0 user ===
 --- text ---
 <notifications>
-- mention · bake-club/#general · from Kevin · #a1 "<@Aria> look what i made [image]"
+- mention · bake-club/#general · from Kevin · #a1 "<@Ella> look what i made [image]"
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00 · awake]
@@ -12,7 +12,7 @@
 --- tool result call_1_ReadMessages ---
 bake-club/#general (Bake Club › #general)
 [14:00 #a0] Mina: the oven is preheating
-[14:00 #a1] Kevin: <@Aria> look what i made
+[14:00 #a1] Kevin: <@Ella> look what i made
 [image: /tmp/bake-club/general/a1-tart.png · "LEMON TART 4€"]
 --- text ---
 [Sat 24 Oct 14:00 · awake]

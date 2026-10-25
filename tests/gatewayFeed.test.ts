@@ -170,7 +170,7 @@ describe("DiscordJsGateway publishes events to its listeners", () => {
       throw new Error("listener bug");
     });
     gateway.onConversationEvent((event) => events.push(event));
-    (gateway as unknown as { clients: Map<string, unknown> }).clients.set("aria-bot", {
+    (gateway as unknown as { clients: Map<string, unknown> }).clients.set("ella-bot", {
       channels: {
         async fetch() {
           return {
@@ -178,7 +178,7 @@ describe("DiscordJsGateway publishes events to its listeners", () => {
               return {
                 id: "1300000000000000099",
                 channelId: "200",
-                author: { id: "aria-user", username: "aria", bot: true },
+                author: { id: "ella-user", username: "ella", bot: true },
                 createdTimestamp: Date.parse("2026-10-24T14:00:00.000Z"),
                 type: 0,
                 content: "hi!"
@@ -189,14 +189,14 @@ describe("DiscordJsGateway publishes events to its listeners", () => {
       }
     });
 
-    const result = await gateway.sendWaifuMessage({ guildId: "100", channelId: "200", content: "hi!", senderBotId: "aria-bot", allowedUserMentionIds: [] });
+    const result = await gateway.sendWaifuMessage({ guildId: "100", channelId: "200", content: "hi!", senderBotId: "ella-bot", allowedUserMentionIds: [] });
     expect(result.messageId).toBe("1300000000000000099");
     expect(events).toEqual([
       expect.objectContaining({
         type: "create",
         own: true,
         conversation: { kind: "guild", guildId: "100", channelId: "200" },
-        message: expect.objectContaining({ id: "1300000000000000099", authorId: "aria-user", content: "hi!" })
+        message: expect.objectContaining({ id: "1300000000000000099", authorId: "ella-user", content: "hi!" })
       })
     ]);
   });
@@ -205,11 +205,11 @@ describe("DiscordJsGateway publishes events to its listeners", () => {
     const gateway = new DiscordJsGateway({ house: { id: "house", displayName: "House", token: "t", enabled: true }, logger: quietLogger() });
     const events: DiscordConversationEvent[] = [];
     gateway.onConversationEvent((event) => events.push(event));
-    (gateway as unknown as { clients: Map<string, unknown> }).clients.set("aria-bot", {
+    (gateway as unknown as { clients: Map<string, unknown> }).clients.set("ella-bot", {
       channels: { fetch: async () => ({ send: async () => ({ id: "sent-1" }) }) }
     });
     await expect(
-      gateway.sendWaifuMessage({ guildId: "100", channelId: "200", content: "x", senderBotId: "aria-bot", allowedUserMentionIds: [] })
+      gateway.sendWaifuMessage({ guildId: "100", channelId: "200", content: "x", senderBotId: "ella-bot", allowedUserMentionIds: [] })
     ).resolves.toEqual({ messageId: "sent-1" });
     expect(events).toEqual([]);
   });

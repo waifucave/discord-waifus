@@ -82,7 +82,7 @@ describe("the cache model", () => {
 describe("cache-hit targets (§12)", { timeout: 120_000 }, () => {
   it("busy room (wakes under 5 minutes apart) ≥ 0.85", async () => {
     const { ratio, calls, w } = await scenario({ place: "room", wakes: 12, gapMinutes: (index) => 2 + (index % 3), chatter: 6 });
-    expect((await readLifeState(w.storage, "aria")).epoch).toBe(1);
+    expect((await readLifeState(w.storage, "ella")).epoch).toBe(1);
     expect(calls).toBeGreaterThanOrEqual(30);
     expect(ratio).toBeGreaterThanOrEqual(0.85);
   });

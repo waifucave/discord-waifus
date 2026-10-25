@@ -130,7 +130,7 @@ export function HomeScreen({
         >
           <span className="t-micro">Ask · change · fix</span>
           <span className="t-big">Assistant</span>
-          <span className="meta">"give Alma a model", "why is Juno quiet?", "pause everything"</span>
+          <span className="meta">"give Aria a model", "why is Mio quiet?", "pause everything"</span>
         </button>
 
         <button

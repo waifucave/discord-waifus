@@ -16,7 +16,7 @@ import { SearchUsageSchema } from "../src/shared/schemas/life.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -47,13 +47,13 @@ async function seedMembers(w: LifeWorld): Promise<void> {
 
 /** One real turn so she has an epoch and a log about Kevin. */
 async function liveATurn(w: LifeWorld): Promise<void> {
-  const message = w.discord.post(ROOM, `<@${ARIA_BOT}> I passed my chemistry exam!`, { mentions: { [ARIA_BOT]: "Aria" } });
-  await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
+  const message = w.discord.post(ROOM, `<@${ELLA_BOT}> I passed my chemistry exam!`, { mentions: { [ELLA_BOT]: "Ella" } });
+  await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
   await w.cast.settle();
   // Her wake waits for the burst's quiet time (§4.2): fire it now.
   w.cast.intake.flushDetector();
   await w.cast.settle();
-  await w.cast.life("aria").runNow();
+  await w.cast.life("ella").runNow();
 }
 
 describe("nightly maintenance (§7.3, §16.8)", () => {
@@ -65,7 +65,7 @@ describe("nightly maintenance (§7.3, §16.8)", () => {
         textTurn("merged two Kevin lines")
       )
     });
-    const notes = homeOf(w, "aria");
+    const notes = homeOf(w, "ella");
     await notes.write("MEMORY.md", "# Memory\n- Kevin studies chemistry\n- Kevin is a chemistry student\n");
     // No sleep window: maintenance is due at 05:00 local; the clock says 14:00.
     await w.cast.scheduler.tick();
@@ -78,10 +78,10 @@ describe("nightly maintenance (§7.3, §16.8)", () => {
     expect(JSON.stringify(calls[0]!.request.messages[0])).toContain(MAINTENANCE_INSTRUCTION.slice(0, 40));
     expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["maintenance", "maintenance", "maintenance"]);
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Kevin](people/kevin.md) — chemistry student\n");
-    const reports = await readMaintenanceReports(w.storage, "aria");
+    const reports = await readMaintenanceReports(w.storage, "ella");
     expect(reports).toMatchObject([{ kind: "maintenance", ok: true, rounds: 3, changed: ["MEMORY.md"], summary: "merged two Kevin lines" }]);
     // Her life log is untouched by maintenance; the next tick the same day does nothing.
-    expect(await readLifeLog(w.storage, "aria", 1).catch(() => [])).toEqual([]);
+    expect(await readLifeLog(w.storage, "ella", 1).catch(() => [])).toEqual([]);
     await w.cast.scheduler.tick();
     expect(w.anthropic.calls).toHaveLength(3);
   });
@@ -102,11 +102,11 @@ describe("forget (§7.5)", () => {
         textTurn("removed his note")
       )
     });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await seedMembers(w);
     await liveATurn(w);
     expect(w.discord.sent.map((sent) => sent.content)).toEqual(["congrats Kevin!!"]);
-    const notes = homeOf(w, "aria");
+    const notes = homeOf(w, "ella");
     await notes.write("people/kevin.md", "# Kevin\n- studies chemistry\n");
     await notes.write("MEMORY.md", "# Memory\n- [Kevin](people/kevin.md) — studies chemistry\n- [Me](me.md) — about me\n");
     await notes.write("me.md", `# Me\n- I love lemon tarts. Kevin taught me piping.\n- Sam is funny.\n- <@${KEVIN}> owes me a cake\n`);
@@ -120,13 +120,13 @@ describe("forget (§7.5)", () => {
         { at: "2026-10-24 16:00", note: "buy lemons" }
       ])
     );
-    await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", preview: "hey", at: now });
-    await updateLifeState(w.storage, "aria", (state) => ({ ...state, pendingNotices: ["(Kevin deleted a message you read in bake-club/#general)"] }));
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", preview: "hey", at: now });
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, pendingNotices: ["(Kevin deleted a message you read in bake-club/#general)"] }));
 
     const result = await w.cast.forgetPerson(KEVIN);
     // A bullet naming him goes whole (the piping line), so do id lines and the summary's sentence.
     expect(result.scrubbed).toEqual([
-      { waifuId: "aria", removedLines: 4, removedSentences: 0, removedNotes: 0, removedFiles: 0, needsReview: [{ where: "~/me.md", line: "- Sam is funny." }] }
+      { waifuId: "ella", removedLines: 4, removedSentences: 0, removedNotes: 0, removedFiles: 0, needsReview: [{ where: "~/me.md", line: "- Sam is funny." }] }
     ]);
     // Step 2: one summary call told to leave him out, with no kept turns, by every name (the shared one too).
     const summaryCall = w.anthropic.calls[3]!.request;
@@ -137,18 +137,18 @@ describe("forget (§7.5)", () => {
     // Step 4: the scrub session had only her file tools.
     expect(w.anthropic.calls[4]!.request.tools?.map((tool) => tool.name).sort()).toEqual([...FILE_TOOLS].sort());
     // Step 5: a new epoch with every old log deleted, a summary and notes without him.
-    const state = await readLifeState(w.storage, "aria");
+    const state = await readLifeState(w.storage, "ella");
     expect(state.epoch).toBe(2);
     expect(state.pendingEpochStart).toBeFalsy();
     expect(state.summary).toBe("We celebrated in Bake Club.");
     expect(state.systemSnapshot?.memoryIndex).not.toContain("Kevin");
-    await expect(readFile(path.join(w.root, "user/waifus/aria/life/log/1.jsonl"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(w.root, "user/waifus/ella/life/log/1.jsonl"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await notes.read("people/kevin.md")).toBeUndefined();
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Me](me.md) — about me\n");
     expect(await notes.read("me.md")).toBe("# Me\n- Sam is funny.\n");
     // Step 3: his wakes, notices and watches are gone; her reminder about him stays and loses the
     // text (review F3: her own entry is not his); others stay.
-    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toEqual([]);
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toEqual([]);
     expect(state.pendingNotices).toEqual([]);
     expect(await herEntries(w, "watches.json")).toEqual([]);
     expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([
@@ -156,16 +156,16 @@ describe("forget (§7.5)", () => {
       ["r2", "buy lemons"]
     ]);
     // The report keeps counts only.
-    const report = (await readMaintenanceReports(w.storage, "aria")).find((line) => line.kind === "forget")!;
+    const report = (await readMaintenanceReports(w.storage, "ella")).find((line) => line.kind === "forget")!;
     expect(report).toMatchObject({ source: "owner", removedLines: 4, removedSentences: 0, needsReview: 1 });
     // The review line is kept for the owner (no id in it).
-    const review = JSON.parse(await readFile(path.join(w.root, "user/waifus/aria/life/needs-review.json"), "utf8")) as { items: unknown[] };
+    const review = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/needs-review.json"), "utf8")) as { items: unknown[] };
     expect(review.items).toEqual([{ at: w.clock.now().toISOString(), source: "owner", where: "~/me.md", line: "- Sam is funny." }]);
-    const raw = await readFile(path.join(w.root, "user/waifus/aria/life/maintenance.jsonl"), "utf8");
+    const raw = await readFile(path.join(w.root, "user/waifus/ella/life/maintenance.jsonl"), "utf8");
     expect(raw).not.toContain("Kevin");
     expect(raw).not.toContain(KEVIN);
     // It was queued as an owner scrub first and cleared once it ran.
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
   });
 
   it("an owner forget with no cast runtime is queued and runs when her life next starts, before any turn", async () => {
@@ -180,28 +180,28 @@ describe("forget (§7.5)", () => {
         textTurn("all tidy")
       )
     });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await liveATurn(w);
     await w.cast.stop();
     // The route's offline path: the DM part ran elsewhere; the life scrub is only queued.
     const queued = await queueOwnerScrubs(w.storage, KEVIN, w.clock.now());
-    expect(queued.map((entry) => entry.waifu.id)).toEqual(["aria"]);
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([{ userId: KEVIN, at: w.clock.now().toISOString(), source: "owner_forget" }]);
+    expect(queued.map((entry) => entry.waifu.id)).toEqual(["ella"]);
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([{ userId: KEVIN, at: w.clock.now().toISOString(), source: "owner_forget" }]);
     // A later DM /forget never downgrades it to the nightly source.
-    await queuePendingScrub(w.storage, "aria", KEVIN, new Date(w.clock.ms + 1_000));
-    expect((await readPendingScrubs(w.storage, "aria"))[0]!.source).toBe("owner_forget");
+    await queuePendingScrub(w.storage, "ella", KEVIN, new Date(w.clock.ms + 1_000));
+    expect((await readPendingScrubs(w.storage, "ella"))[0]!.source).toBe("owner_forget");
     await queueOwnerScrubs(w.storage, KEVIN, w.clock.now());
 
     const restarted = w.restart();
     await restarted.start();
     await restarted.settle();
-    const state = await readLifeState(w.storage, "aria");
+    const state = await readLifeState(w.storage, "ella");
     expect(state.epoch).toBe(2);
     expect(state.summary).toBe("We celebrated in Bake Club.");
     // An owner forget is not a DM forget: no rate-limit trace of him (review F6).
     expect(state.scrubbedAt[KEVIN]).toBeUndefined();
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
-    expect((await readMaintenanceReports(w.storage, "aria")).map((report) => [report.kind, report.source ?? report.summary])).toEqual([
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect((await readMaintenanceReports(w.storage, "ella")).map((report) => [report.kind, report.source ?? report.summary])).toEqual([
       ["forget", "owner"],
       ["maintenance", "all tidy"]
     ]);
@@ -219,24 +219,24 @@ describe("forget (§7.5)", () => {
         textTurn("nothing to remove")
       )
     });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const dm = w.discord.post(dmOf("aria"), "hello aria");
-    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const dm = w.discord.post(dmOf("ella"), "hello ella");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
     w.cast.intake.flushDms();
     await w.cast.settle();
-    await w.cast.life("aria").runNow();
-    const first = await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "everything" });
+    await w.cast.life("ella").runNow();
+    const first = await w.cast.forgetInLife({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "everything" });
     expect(first.queued).toBeUndefined();
     w.clock.advance(60 * 60_000);
-    const second = await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "everything" });
+    const second = await w.cast.forgetInLife({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "everything" });
     expect(second).toMatchObject({ queued: true });
-    expect((await readPendingScrubs(w.storage, "aria")).map((scrub) => scrub.userId)).toEqual([KEVIN]);
+    expect((await readPendingScrubs(w.storage, "ella")).map((scrub) => scrub.userId)).toEqual([KEVIN]);
     // Maintenance (05:00 local; next day) runs the pending scrub, then clears the queue.
     w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
     await w.cast.scheduler.tick();
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
-    expect(JSON.parse(await readFile(pendingScrubsPath(w.root, "aria"), "utf8"))).toEqual({ scrubs: [] });
-    const reports = await readMaintenanceReports(w.storage, "aria");
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(JSON.parse(await readFile(pendingScrubsPath(w.root, "ella"), "utf8"))).toEqual({ scrubs: [] });
+    const reports = await readMaintenanceReports(w.storage, "ella");
     expect(reports.map((report) => [report.kind, report.source])).toEqual([
       ["forget", "dm"],
       ["forget", "pending"],
@@ -247,70 +247,70 @@ describe("forget (§7.5)", () => {
   it("/forget conversation runs steps 0–2 only: the summary leaves the chat out; notes stay", async () => {
     // A direct (dm) wake that ends in text gets one unsent-reply check, then the summary.
     const w = await lifeWorld(roots, { scripts: script(textTurn("hello!"), textTurn("no need to reply"), textTurn("A quiet day.")) });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const dm = w.discord.post(dmOf("aria"), "hi");
-    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const dm = w.discord.post(dmOf("ella"), "hi");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
     w.cast.intake.flushDms();
     await w.cast.settle();
-    await w.cast.life("aria").runNow();
-    const notes = homeOf(w, "aria");
+    await w.cast.life("ella").runNow();
+    const notes = homeOf(w, "ella");
     await notes.write("people/kevin.md", "# Kevin\n- says hi\n");
-    await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" });
-    const state = await readLifeState(w.storage, "aria");
+    await w.cast.forgetInLife({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "conversation" });
+    const state = await readLifeState(w.storage, "ella");
     expect(state.summary).toBe("A quiet day.");
     // The epoch starts at once: the old log with the chat is gone now, not at her next turn.
     expect(state.pendingEpochStart).toBeFalsy();
     expect(state.epoch).toBe(2);
-    await expect(readFile(path.join(w.root, "user/waifus/aria/life/log/1.jsonl"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(w.root, "user/waifus/ella/life/log/1.jsonl"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await notes.read("people/kevin.md")).toBe("# Kevin\n- says hi\n");
     expect(w.anthropic.calls).toHaveLength(3);
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
   });
 
   it("the DM rate limit holds for both scopes and comes before any abort: inside 6 hours nothing of her life is touched", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hello!"), textTurn("no need to reply"), textTurn("A quiet day.")) });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const dm = w.discord.post(dmOf("aria"), "hi");
-    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const dm = w.discord.post(dmOf("ella"), "hi");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
     w.cast.intake.flushDms();
     await w.cast.settle();
-    await w.cast.life("aria").runNow();
-    await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" });
-    const abort = vi.spyOn(w.cast.life("aria"), "abort");
+    await w.cast.life("ella").runNow();
+    await w.cast.forgetInLife({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "conversation" });
+    const abort = vi.spyOn(w.cast.life("ella"), "abort");
     const callsBefore = w.anthropic.calls.length;
     w.clock.advance(30 * 60_000);
     for (const scope of ["conversation", "everything", "conversation"] as const) {
-      expect(await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope })).toMatchObject({ queued: true });
+      expect(await w.cast.forgetInLife({ waifuId: "ella", userId: KEVIN, source: "dm", scope })).toMatchObject({ queued: true });
     }
     expect(abort).not.toHaveBeenCalled();
     expect(w.anthropic.calls).toHaveLength(callsBefore);
     // One queued entry, never weakened back to the conversation scope, with his names kept.
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([{ userId: KEVIN, at: w.clock.now().toISOString(), source: "dm_forget_everything", names: ["Kevin"] }]);
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([{ userId: KEVIN, at: w.clock.now().toISOString(), source: "dm_forget_everything", names: ["Kevin"] }]);
     // Past the window it runs again.
     w.clock.advance(6 * 3_600_000);
-    expect((await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" })).queued).toBeUndefined();
+    expect((await w.cast.forgetInLife({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "conversation" })).queued).toBeUndefined();
     expect(abort).toHaveBeenCalledWith("forget");
   });
 
   it("identity: names are read before the DM data goes; a user-<tail> handle is no name; José and jose match both ways", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("Summary."), textTurn("done")) });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const dmKey = `dm_${KEVIN}_aria`;
-    await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/user-4321": dmKey }, primary: { [dmKey]: "dm/user-4321" } }));
-    expect(await w.cast.forgetIdentity("aria", KEVIN)).toEqual({ userId: KEVIN, names: [], sharedNames: [] });
-    const notes = homeOf(w, "aria");
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const dmKey = `dm_${KEVIN}_ella`;
+    await updateLifeFile(w.storage, "ella", "handles", (file) => ({ ...file, handles: { "dm/user-4321": dmKey }, primary: { [dmKey]: "dm/user-4321" } }));
+    expect(await w.cast.forgetIdentity("ella", KEVIN)).toEqual({ userId: KEVIN, names: [], sharedNames: [] });
+    const notes = homeOf(w, "ella");
     await notes.write("people/mina.md", "# Mina\n- Mina is a user of the bake club app.\n- Loves lemon tarts.\n");
     await notes.write("me.md", "# Me\n- jose taught me flan.\n- I love flan.\n");
-    await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/jose": dmKey }, primary: { [dmKey]: "dm/jose" } }));
-    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "José", channelId: "dm", messageId: "900000000000000123", createdAt: w.clock.now().toISOString() });
-    const prepared = (await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "owner", scope: "everything" }))!;
+    await updateLifeFile(w.storage, "ella", "handles", (file) => ({ ...file, handles: { "dm/jose": dmKey }, primary: { [dmKey]: "dm/jose" } }));
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "José", channelId: "dm", messageId: "900000000000000123", createdAt: w.clock.now().toISOString() });
+    const prepared = (await w.cast.prepareForget({ waifuId: "ella", userId: KEVIN, source: "owner", scope: "everything" }))!;
     // DM state "José" and the handle's "jose" are one name (diacritics folded); the first spelling stays.
     expect(prepared.identity.names).toEqual(["José"]);
     // The names travel with the queued scrub, so a later run (after the DM state is gone) still has them.
-    expect((await readPendingScrubs(w.storage, "aria"))[0]).toMatchObject({ source: "owner_forget", names: ["José"] });
-    await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "all" });
+    expect((await readPendingScrubs(w.storage, "ella"))[0]).toMatchObject({ source: "owner_forget", names: ["José"] });
+    await dmForget(w.storage, { userId: KEVIN, waifuId: "ella", scope: "all" });
     // Collected now, only the handle's slug is left: the display name went with the DM state.
-    expect((await w.cast.forgetIdentity("aria", KEVIN))!.names).toEqual(["jose"]);
+    expect((await w.cast.forgetIdentity("ella", KEVIN))!.names).toEqual(["jose"]);
     await w.cast.runForget(prepared);
     expect(await notes.read("me.md")).toBe("# Me\n- I love flan.\n");
     expect(await notes.read("people/mina.md")).toBe("# Mina\n- Mina is a user of the bake club app.\n- Loves lemon tarts.\n");
@@ -320,9 +320,9 @@ describe("forget (§7.5)", () => {
 describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
   it("leaves nothing keyed by him: word watches naming him, his DM cursor, recent web queries; scrubbedAt only within 6 hours", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("done")) });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await seedMembers(w);
-    await homeOf(w, "aria").write("MEMORY.md", "# Memory\n");
+    await homeOf(w, "ella").write("MEMORY.md", "# Memory\n");
     const now = w.clock.now().toISOString();
     await writeHerFile(
       w,
@@ -332,26 +332,26 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
         { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["brownies"] }] }
       ])
     );
-    await updateLifeFile(w.storage, "aria", "reads", (file) => ({ ...file, cursors: { [`dm_${KEVIN}_aria`]: { lastReadMessageId: "900000000000000001", at: now }, [ROOM_KEY]: { lastReadMessageId: "900000000000000002", at: now } } }));
-    await updateLifeState(w.storage, "aria", (state) => ({ ...state, scrubbedAt: { "300000000000000111": new Date(w.clock.ms - 7 * 3_600_000).toISOString() } }));
+    await updateLifeFile(w.storage, "ella", "reads", (file) => ({ ...file, cursors: { [`dm_${KEVIN}_ella`]: { lastReadMessageId: "900000000000000001", at: now }, [ROOM_KEY]: { lastReadMessageId: "900000000000000002", at: now } } }));
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, scrubbedAt: { "300000000000000111": new Date(w.clock.ms - 7 * 3_600_000).toISOString() } }));
     await w.storage.writeJson("search-usage", "user/search/usage.json", SearchUsageSchema, SearchUsageSchema.parse({
       ...createRevisionedBase(),
       recent: [
-        { at: now, waifuId: "aria", kind: "search", query: "kevbaker chemistry results", ok: true },
-        { at: now, waifuId: "aria", kind: "search", query: "lemon tart recipe", ok: true }
+        { at: now, waifuId: "ella", kind: "search", query: "kevbaker chemistry results", ok: true },
+        { at: now, waifuId: "ella", kind: "search", query: "lemon tart recipe", ok: true }
       ]
     }));
     await w.cast.forgetPerson(KEVIN);
     expect((await herEntries(w, "watches.json")).map((watch) => watch["id"])).toEqual(["w2"]);
-    expect(Object.keys((await readLifeFile(w.storage, "aria", "reads")).cursors)).toEqual([ROOM_KEY]);
+    expect(Object.keys((await readLifeFile(w.storage, "ella", "reads")).cursors)).toEqual([ROOM_KEY]);
     const usage = JSON.parse(await readFile(path.join(w.root, "user/search/usage.json"), "utf8")) as { recent: Array<{ query: string }> };
     expect(usage.recent.map((entry) => entry.query)).toEqual(["lemon tart recipe"]);
     // The 7-hour-old entry is pruned, and an owner forget leaves no rate-limit trace (review F6).
-    expect((await readLifeState(w.storage, "aria")).scrubbedAt).toEqual({});
+    expect((await readLifeState(w.storage, "ella")).scrubbedAt).toEqual({});
   });
 
   it("a waifu with only queued wakes (no state yet) is scrubbed too: her life folder counts", async () => {
-    const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria", botId: "aria-bot" }, { id: "mina", name: "Mina", botId: "mina-bot" }] });
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }, { id: "mina", name: "Mina", botId: "mina-bot" }] });
     await enqueueWake(w.storage, "mina", { id: newWakeId(), reason: "dm", placeKey: `dm_${KEVIN}_mina`, fromUserId: KEVIN, fromName: "Kevin", at: w.clock.now().toISOString() });
     expect((await waifusWithLife(w.storage)).map((waifu) => waifu.id)).toEqual(["mina"]);
     const queued = await queueOwnerScrubs(w.storage, KEVIN, w.clock.now());
@@ -360,9 +360,9 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
 
   it("a note marked as his is deleted whole with its index links; a people/ note headed by his unique name too; a shared heading is reviewed", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("Summary."), textTurn("nothing else")) });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await seedMembers(w);
-    const notes = homeOf(w, "aria");
+    const notes = homeOf(w, "ella");
     await notes.write("people/kevin-0003.md", `# Kev\n<!-- user:${KEVIN} -->\n\n- Allergic to peanuts.\n- Studies chemistry.\n`);
     await notes.write("people/kevin.md", "# Kevin\n\n- Is going through a divorce.\n");
     await notes.write("people/sam.md", "# Sam\n\n- Likes jazz.\n");
@@ -387,16 +387,16 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
 
   it("a failed notes scrub keeps the scrub queued; it runs again (and clears) at maintenance", async () => {
     const w = await lifeWorld(roots, { scripts: script(errorTurn({ code: "server", message: "overloaded", status: 500, retryable: false })) });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    await homeOf(w, "aria").write("me.md", "# Me\n- likes tea\n");
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await homeOf(w, "ella").write("me.md", "# Me\n- likes tea\n");
     const result = await w.cast.forgetPerson(KEVIN);
     expect(result.scrubbed[0]).toMatchObject({ queued: true });
-    expect((await readPendingScrubs(w.storage, "aria")).map((scrub) => scrub.source)).toEqual(["owner_forget"]);
-    expect((await readMaintenanceReports(w.storage, "aria")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "pending" });
+    expect((await readPendingScrubs(w.storage, "ella")).map((scrub) => scrub.source)).toEqual(["owner_forget"]);
+    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "pending" });
     // Her nightly maintenance runs it again; this time the notes scrub works and the queue clears.
     w.anthropic.scripts.splice(0, w.anthropic.scripts.length, ...script(textTurn("nothing about him"), textTurn("all tidy")));
     w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
     await w.cast.scheduler.tick();
-    expect(await readPendingScrubs(w.storage, "aria")).toEqual([]);
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
   });
 });

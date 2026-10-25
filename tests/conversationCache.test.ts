@@ -21,7 +21,7 @@ class FakeGateway {
   onRest: (() => void) | undefined;
   /** Replay `ready` to a new subscriber, as DiscordJsGateway does once the House bot is connected. */
   announceReady = true;
-  ownIds = ["aria-bot"];
+  ownIds = ["ella-bot"];
   private listeners = new Set<DiscordConversationEventListener>();
   private counter = 0n;
 
@@ -128,7 +128,7 @@ describe("ConversationMessageCache trust", () => {
     await read();
 
     const human = gateway.live("200", { authorName: "Riko", authorId: "riko" });
-    const own = gateway.post("200", { authorId: "aria-bot", authorName: "Aria", authorIsBot: true });
+    const own = gateway.post("200", { authorId: "ella-bot", authorName: "Ella", authorIsBot: true });
     gateway.emit({ type: "create", own: true, conversation: GUILD, message: own });
     // The House bot's own gateway delivers the same message a moment later: no duplicate.
     gateway.emit({ type: "create", conversation: GUILD, message: own });
@@ -193,7 +193,7 @@ describe("ConversationMessageCache trust", () => {
     expect(gateway.restCalls).toHaveLength(3);
 
     // A DM scope has no feed until wave 2: never trusted.
-    const dm: ConversationRef = { kind: "dm", waifuId: "aria", userId: "kevin" };
+    const dm: ConversationRef = { kind: "dm", waifuId: "ella", userId: "kevin" };
     expect(cache.isTrusted(dm)).toBe(false);
   });
 
@@ -430,7 +430,7 @@ describe("ConversationMessageCache events for edits and deletes (task C hook)", 
 describe("ConversationMessageCache reactions (event-fed, never users.fetch)", () => {
   async function reacted() {
     const ctx = setup();
-    const own = ctx.gateway.post("200", { authorId: "aria-bot", authorName: "Aria", authorIsBot: true });
+    const own = ctx.gateway.post("200", { authorId: "ella-bot", authorName: "Ella", authorIsBot: true });
     const target = ctx.gateway.post("200", { content: "I made brownies" });
     await ctx.read();
     return { ...ctx, own, target };
@@ -541,10 +541,10 @@ describe("ConversationMessageCache directory hooks and DMs", () => {
       }
     } as unknown as DiscordGatewayFacade;
     const cache = new ConversationMessageCache({ discord: () => facade, logger: quietLogger() });
-    const dm: ConversationRef = { kind: "dm", waifuId: "aria", userId: "5" };
+    const dm: ConversationRef = { kind: "dm", waifuId: "ella", userId: "5" };
     const out = await cache.fetchSince({ conversation: dm, afterMessageId: null, maxMessages: 10 });
     expect(out.messages).toEqual([message]);
-    expect(dmCalls).toEqual([{ waifuId: "aria", userId: "5", afterMessageId: null, maxMessages: 10 }]);
+    expect(dmCalls).toEqual([{ waifuId: "ella", userId: "5", afterMessageId: null, maxMessages: 10 }]);
 
     const bare = new ConversationMessageCache({ discord: () => gateway.facade(), logger: quietLogger() });
     expect(await bare.fetchSince({ conversation: dm, afterMessageId: null, maxMessages: 10 })).toEqual({ messages: [], reachedCursor: true });
@@ -567,7 +567,7 @@ describe("ConversationMessageCache late messages (C1)", () => {
     const m1 = gateway.live("200", { content: "hello" });
     await read();
     const human = gateway.post("200", { content: "human, gateway lagging" });
-    const own = gateway.post("200", { authorId: "aria-bot", authorName: "Aria", authorIsBot: true, content: "own send" });
+    const own = gateway.post("200", { authorId: "ella-bot", authorName: "Ella", authorIsBot: true, content: "own send" });
     gateway.emit({ type: "create", own: true, conversation: GUILD, message: own });
 
     const pass1 = await read(m1.id);
@@ -588,7 +588,7 @@ describe("ConversationMessageCache late messages (C1)", () => {
     const m1 = gateway.live("200");
     await read();
     const human = gateway.post("200", { content: "missed by the feed" });
-    const own = gateway.post("200", { authorId: "aria-bot", authorIsBot: true, content: "own" });
+    const own = gateway.post("200", { authorId: "ella-bot", authorIsBot: true, content: "own" });
     gateway.emit({ type: "create", own: true, conversation: GUILD, message: own });
     expect((await read(m1.id)).messages.map((m) => m.content)).toEqual(["own"]);
     now = 11 * 60_000; // tail check due: the REST page shows the missed human message
@@ -632,7 +632,7 @@ describe("ConversationMessageCache own sends and reactions", () => {
   it("flags a gateway-delivered message from one of our bots as own, even when it arrives first (M4)", async () => {
     const { gateway, events, read } = setup();
     await read();
-    const sent = gateway.post("200", { authorId: "aria-bot", authorIsBot: true });
+    const sent = gateway.post("200", { authorId: "ella-bot", authorIsBot: true });
     gateway.emit({ type: "create", conversation: GUILD, message: sent }); // the gateway echo wins the race
     gateway.emit({ type: "create", own: true, conversation: GUILD, message: sent });
     const human = gateway.live("200");

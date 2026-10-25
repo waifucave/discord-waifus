@@ -87,34 +87,34 @@ describe("threads store (spec 9.5, O2)", () => {
   });
 
   it("inherit (default): a live thread under a parent with a cast gets a virtual channel entry with the parent's cast", () => {
-    const server = serverWith({ [PARENT]: { name: "recipes", enabledWaifuIds: ["aria", "mina"] } });
+    const server = serverWith({ [PARENT]: { name: "recipes", enabledWaifuIds: ["ella", "mina"] } });
     const threads = { ...createRevisionedBase(), guildId: GUILD, threads: { [THREAD]: { threadId: THREAD, parentId: PARENT, name: "Best brownies", kind: "public_thread" as const, archived: false, locked: false, lastActivityAt: "2026-10-24T10:00:00.000Z" } } };
     const view = overlayThreadChannels(server, threads as never);
     expect(view.channels[THREAD]).toMatchObject({
       channelId: THREAD,
-      enabledWaifuIds: ["aria", "mina"],
+      enabledWaifuIds: ["ella", "mina"],
       thread: { parentId: PARENT }
     });
     expect(channelPlaceName(view, THREAD)).toBe('recipes › "Best brownies"');
     expect(channelPlaceName(view, PARENT)).toBe("recipes");
     // The overlay does not alias the parent's cast.
     view.channels[THREAD]!.enabledWaifuIds.push("zed");
-    expect(server.channels[PARENT]!.enabledWaifuIds).toEqual(["aria", "mina"]);
+    expect(server.channels[PARENT]!.enabledWaifuIds).toEqual(["ella", "mina"]);
   });
 
   it("off: a parent with threads off, or without a cast, gives its threads no entry", () => {
     const threads = { ...createRevisionedBase(), guildId: GUILD, threads: { [THREAD]: { threadId: THREAD, parentId: PARENT, name: "t", kind: "public_thread" as const, archived: false, locked: false, lastActivityAt: "2026-10-24T10:00:00.000Z" } } };
-    const off = overlayThreadChannels(serverWith({ [PARENT]: { enabledWaifuIds: ["aria"], threads: "off" } }), threads as never);
+    const off = overlayThreadChannels(serverWith({ [PARENT]: { enabledWaifuIds: ["ella"], threads: "off" } }), threads as never);
     expect(off.channels[THREAD]).toBeUndefined();
     const none = overlayThreadChannels(serverWith({ [PARENT]: { enabledWaifuIds: [] } }), threads as never);
     expect(none.channels[THREAD]).toBeUndefined();
-    expect(parentSharesCast(serverWith({ [PARENT]: { enabledWaifuIds: ["aria"], threads: "off" } }).channels[PARENT])).toBe(false);
-    expect(parentSharesCast(serverWith({ [PARENT]: { enabledWaifuIds: ["aria"] } }).channels[PARENT])).toBe(true);
+    expect(parentSharesCast(serverWith({ [PARENT]: { enabledWaifuIds: ["ella"], threads: "off" } }).channels[PARENT])).toBe(false);
+    expect(parentSharesCast(serverWith({ [PARENT]: { enabledWaifuIds: ["ella"] } }).channels[PARENT])).toBe(true);
   });
 
   it("explicit: a thread with its own cast keeps it (even when the parent has threads off)", () => {
     const server = serverWith({
-      [PARENT]: { enabledWaifuIds: ["aria"], threads: "off" },
+      [PARENT]: { enabledWaifuIds: ["ella"], threads: "off" },
       [THREAD]: { name: "mine", enabledWaifuIds: ["mina"] }
     });
     const threads = { ...createRevisionedBase(), guildId: GUILD, threads: { [THREAD]: { threadId: THREAD, parentId: PARENT, name: "t", kind: "public_thread" as const, archived: false, locked: false, lastActivityAt: "2026-10-24T10:00:00.000Z" } } };
@@ -123,12 +123,12 @@ describe("threads store (spec 9.5, O2)", () => {
     expect(view.channels[THREAD]!.thread).toMatchObject({ parentId: PARENT, explicit: true });
     expect(resolveChannelConfig(server, THREAD, PARENT)!.enabledWaifuIds).toEqual(["mina"]);
     // Without its own cast the same thread would inherit only if the parent allowed it.
-    expect(resolveChannelConfig(serverWith({ [PARENT]: { enabledWaifuIds: ["aria"], threads: "off" } }), THREAD, PARENT)).toBeUndefined();
-    expect(resolveChannelConfig(serverWith({ [PARENT]: { enabledWaifuIds: ["aria"] } }), THREAD, PARENT)).toMatchObject({ enabledWaifuIds: ["aria"], thread: { parentId: PARENT } });
+    expect(resolveChannelConfig(serverWith({ [PARENT]: { enabledWaifuIds: ["ella"], threads: "off" } }), THREAD, PARENT)).toBeUndefined();
+    expect(resolveChannelConfig(serverWith({ [PARENT]: { enabledWaifuIds: ["ella"] } }), THREAD, PARENT)).toMatchObject({ enabledWaifuIds: ["ella"], thread: { parentId: PARENT } });
   });
 
   it("archived and locked threads are silent; unarchiving resumes them", () => {
-    const server = serverWith({ [PARENT]: { enabledWaifuIds: ["aria"] } });
+    const server = serverWith({ [PARENT]: { enabledWaifuIds: ["ella"] } });
     const record = (o: { archived: boolean; locked: boolean }) => ({
       ...createRevisionedBase(),
       guildId: GUILD,
@@ -143,10 +143,10 @@ describe("threads store (spec 9.5, O2)", () => {
 
   it("restart resume ignores threads idle for more than 24 hours", () => {
     const now = new Date("2026-10-24T12:00:00.000Z");
-    const channel = (lastActivityAt?: string) => ({ channelId: THREAD, enabled: true, enabledWaifuIds: ["aria"], thread: { parentId: PARENT, ...(lastActivityAt ? { lastActivityAt } : {}) } });
+    const channel = (lastActivityAt?: string) => ({ channelId: THREAD, enabled: true, enabledWaifuIds: ["ella"], thread: { parentId: PARENT, ...(lastActivityAt ? { lastActivityAt } : {}) } });
     expect(isStaleThreadForResume(channel(new Date(now.getTime() - THREAD_RESUME_WINDOW_MS - 1000).toISOString()), now)).toBe(true);
     expect(isStaleThreadForResume(channel(new Date(now.getTime() - 3600_000).toISOString()), now)).toBe(false);
-    expect(isStaleThreadForResume({ channelId: PARENT, enabled: true, enabledWaifuIds: ["aria"] }, now)).toBe(false);
+    expect(isStaleThreadForResume({ channelId: PARENT, enabled: true, enabledWaifuIds: ["ella"] }, now)).toBe(false);
   });
 
   it("ensureServer overlays tracked threads on the stored server", async () => {
@@ -156,11 +156,11 @@ describe("threads store (spec 9.5, O2)", () => {
       relativePath: `user/servers/${GUILD}/server.json`,
       schema: ServerConfigSchema,
       fallback: serverWith({}),
-      transform: () => serverWith({ [PARENT]: { name: "recipes", enabledWaifuIds: ["aria"] } })
+      transform: () => serverWith({ [PARENT]: { name: "recipes", enabledWaifuIds: ["ella"] } })
     });
     await observeThread(storage, GUILD, { threadId: THREAD, parentId: PARENT, name: "Best brownies" });
     const server = await ensureServer(storage, GUILD);
-    expect(server.channels[THREAD]).toMatchObject({ enabledWaifuIds: ["aria"], thread: { parentId: PARENT } });
+    expect(server.channels[THREAD]).toMatchObject({ enabledWaifuIds: ["ella"], thread: { parentId: PARENT } });
     // The stored file stays clean: the overlay is runtime-only.
     const stored = await storage.readJson(`user/servers/${GUILD}/server.json`, ServerConfigSchema);
     expect(stored.channels[THREAD]).toBeUndefined();
@@ -179,8 +179,8 @@ describe("send errors (spec 9.5)", () => {
 
   it("permission warnings for threads mention Send Messages in Threads; channel text is unchanged", () => {
     const tracker = new PermissionWarningTracker();
-    tracker.record(GUILD, THREAD, "Aria", Object.assign(new Error("Missing Permissions"), { code: 50013 }), { thread: true });
-    tracker.record(GUILD, PARENT, "Aria", Object.assign(new Error("Missing Access"), { code: 50001 }));
+    tracker.record(GUILD, THREAD, "Ella", Object.assign(new Error("Missing Permissions"), { code: 50013 }), { thread: true });
+    tracker.record(GUILD, PARENT, "Ella", Object.assign(new Error("Missing Access"), { code: 50001 }));
     const [threadWarning, channelWarning] = tracker.list();
     expect(threadWarning).toContain("Send Messages in Threads");
     expect(threadWarning).toContain(`thread ${THREAD}`);
@@ -240,13 +240,13 @@ describe("GET /api/servers/:guildId/threads", () => {
         url: `/api/servers/${GUILD}`,
         payload: {
           channels: {
-            [PARENT]: { channelId: PARENT, enabledWaifuIds: ["aria"], thread: { parentId: "1", silenced: true } }
+            [PARENT]: { channelId: PARENT, enabledWaifuIds: ["ella"], thread: { parentId: "1", silenced: true } }
           }
         }
       });
       expect(res.statusCode).toBe(200);
       const stored = await storage.readJson(`user/servers/${GUILD}/server.json`, ServerConfigSchema);
-      expect(stored.channels[PARENT]).toMatchObject({ enabledWaifuIds: ["aria"] });
+      expect(stored.channels[PARENT]).toMatchObject({ enabledWaifuIds: ["ella"] });
       expect(stored.channels[PARENT]!.thread).toBeUndefined();
     } finally {
       await app.close();

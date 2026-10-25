@@ -59,7 +59,7 @@ afterEach(async () => {
 function makeGateway(fakes: Fakes, pairs: () => Array<{ botId: string; waifuId: string }>) {
   const gateway = new DiscordJsGateway({
     house: bot("house"),
-    waifus: [bot("aria-bot"), bot("mina-bot")],
+    waifus: [bot("ella-bot"), bot("mina-bot")],
     createClient: fakes.factory,
     dmBots: async () => pairs(),
     logger: quietLogger()
@@ -73,7 +73,7 @@ describe("DM intents", () => {
     const fakes = fakeClients();
     const gateway = makeGateway(fakes, () => []);
     await gateway.connect();
-    for (const id of ["aria-bot", "mina-bot"]) {
+    for (const id of ["ella-bot", "mina-bot"]) {
       expect(intentsOf(fakes.options.get(id))).toEqual(["Guilds"]);
       expect(fakes.options.get(id)?.partials).toBeUndefined();
     }
@@ -82,13 +82,13 @@ describe("DM intents", () => {
 
   it("a DM-eligible bot adds the DM intents and partials; the others keep [Guilds]", async () => {
     const fakes = fakeClients();
-    const gateway = makeGateway(fakes, () => [{ botId: "aria-bot", waifuId: "aria" }]);
+    const gateway = makeGateway(fakes, () => [{ botId: "ella-bot", waifuId: "ella" }]);
     await gateway.connect();
-    expect(intentsOf(fakes.options.get("aria-bot"))).toEqual(["DirectMessageReactions", "DirectMessageTyping", "DirectMessages", "Guilds"]);
-    expect(fakes.options.get("aria-bot")?.partials).toEqual([Partials.Channel, Partials.Message, Partials.Reaction]);
+    expect(intentsOf(fakes.options.get("ella-bot"))).toEqual(["DirectMessageReactions", "DirectMessageTyping", "DirectMessages", "Guilds"]);
+    expect(fakes.options.get("ella-bot")?.partials).toEqual([Partials.Channel, Partials.Message, Partials.Reaction]);
     expect(intentsOf(fakes.options.get("mina-bot"))).toEqual(["Guilds"]);
     expect(gateway.dmIntentStatus()).toEqual([
-      { botId: "aria-bot", waifuId: "aria", intentActive: true, connected: true },
+      { botId: "ella-bot", waifuId: "ella", intentActive: true, connected: true },
       { botId: "mina-bot", intentActive: false, connected: true }
     ]);
   });
@@ -104,7 +104,7 @@ describe("DM intents", () => {
     expect(await gateway.reconcileDmIntents()).toEqual({ relogged: ["mina-bot"] });
     expect(fakes.destroyed).toEqual(["mina-bot"]);
     expect(fakes.logins.get("mina-bot")).toBe(2);
-    expect(fakes.logins.get("aria-bot")).toBe(1);
+    expect(fakes.logins.get("ella-bot")).toBe(1);
     expect(fakes.logins.get("house")).toBe(1);
     expect(intentsOf(fakes.options.get("mina-bot"))).toContain("DirectMessages");
     expect(gateway.dmIntentStatus().find((s) => s.botId === "mina-bot")).toMatchObject({ intentActive: true, connected: true });
@@ -112,14 +112,14 @@ describe("DM intents", () => {
     pairs = [];
     expect(await gateway.reconcileDmIntents()).toEqual({ relogged: ["mina-bot"] });
     expect(intentsOf(fakes.options.get("mina-bot"))).toEqual(["Guilds"]);
-    expect(fakes.logins.get("aria-bot")).toBe(1);
+    expect(fakes.logins.get("ella-bot")).toBe(1);
   });
 });
 
 describe("typing starts (Living cast §4.2)", () => {
   it("the House bot reports room typing, a DM bot reports DM typing; ids only, from the raw packet", async () => {
     const fakes = fakeClients();
-    const gateway = makeGateway(fakes, () => [{ botId: "aria-bot", waifuId: "aria" }]);
+    const gateway = makeGateway(fakes, () => [{ botId: "ella-bot", waifuId: "ella" }]);
     await gateway.connect();
     expect(intentsOf(fakes.options.get("house"))).toContain("GuildMessageTyping");
     const events: DiscordTypingEvent[] = [];
@@ -127,14 +127,14 @@ describe("typing starts (Living cast §4.2)", () => {
     const raw = (id: string, d: Record<string, unknown>) => fakes.clients.get(id)!.emit(Events.Raw, { t: "TYPING_START", op: 0, s: 1, d });
     raw("house", { guild_id: "100000000000000001", channel_id: "200000000000000002", user_id: "300000000000000003", timestamp: 1, member: { user: { id: "300000000000000003", bot: false } } });
     raw("house", { guild_id: "100000000000000001", channel_id: "200000000000000002", user_id: "400000000000000005", timestamp: 1, member: { user: { id: "400000000000000005", bot: true } } });
-    raw("aria-bot", { channel_id: "700000000000000007", user_id: "300000000000000003", timestamp: 1 });
+    raw("ella-bot", { channel_id: "700000000000000007", user_id: "300000000000000003", timestamp: 1 });
     // Not a typing packet, and a DM packet the House bot (which has no DM intent) would never get.
     fakes.clients.get("house")!.emit(Events.Raw, { t: "MESSAGE_CREATE", op: 0, s: 2, d: {} });
     raw("house", { channel_id: "700000000000000007", user_id: "300000000000000003", timestamp: 1 });
     expect(events).toEqual([
       { kind: "guild", guildId: "100000000000000001", channelId: "200000000000000002", userId: "300000000000000003", bot: false },
       { kind: "guild", guildId: "100000000000000001", channelId: "200000000000000002", userId: "400000000000000005", bot: true },
-      { kind: "dm", waifuId: "aria", botId: "aria-bot", userId: "300000000000000003", bot: false }
+      { kind: "dm", waifuId: "ella", botId: "ella-bot", userId: "300000000000000003", bot: false }
     ]);
   });
 });
@@ -155,15 +155,15 @@ describe("DM intake", () => {
 
   it("delivers a human DM to the listener and the conversation feed; drops bots, self, guild and group messages", async () => {
     const fakes = fakeClients();
-    const gateway = makeGateway(fakes, () => [{ botId: "aria-bot", waifuId: "aria" }]);
+    const gateway = makeGateway(fakes, () => [{ botId: "ella-bot", waifuId: "ella" }]);
     await gateway.connect();
     const events: DiscordDirectMessageEvent[] = [];
     const feed: DiscordConversationEvent[] = [];
     gateway.onDirectMessage((event) => void events.push(event));
     gateway.onConversationEvent((event) => void feed.push(event));
     // A late subscriber is told the DM scope is live.
-    expect(feed).toContainEqual({ type: "connection", scope: "dm:aria", state: "ready" });
-    const client = fakes.clients.get("aria-bot")!;
+    expect(feed).toContainEqual({ type: "connection", scope: "dm:ella", state: "ready" });
+    const client = fakes.clients.get("ella-bot")!;
     const self = { id: "600000000000000006" };
     Object.defineProperty(client, "user", { value: self, configurable: true });
 
@@ -176,8 +176,8 @@ describe("DM intake", () => {
 
     expect(events).toEqual([
       {
-        waifuId: "aria",
-        botId: "aria-bot",
+        waifuId: "ella",
+        botId: "ella-bot",
         userId: "500000000000000005",
         userDisplayName: "Kevin",
         channelId: "700000000000000007",
@@ -192,7 +192,7 @@ describe("DM intake", () => {
       "800000000000000002",
       "800000000000000003"
     ]);
-    expect(creates[0]).toMatchObject({ conversation: { kind: "dm", waifuId: "aria", userId: "500000000000000005" } });
+    expect(creates[0]).toMatchObject({ conversation: { kind: "dm", waifuId: "ella", userId: "500000000000000005" } });
   });
 });
 

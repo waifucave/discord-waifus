@@ -30,10 +30,10 @@ describe("PermissionWarningTracker", () => {
   it("keeps one warning per channel (latest wins) and separates channels", () => {
     const tracker = new PermissionWarningTracker();
     tracker.record("g1", "c1", "riko", new Error("Missing Access"));
-    tracker.record("g1", "c1", "aria", new Error("Missing Permissions"));
+    tracker.record("g1", "c1", "ella", new Error("Missing Permissions"));
     tracker.record("g1", "c2", "lumi", new Error("Missing Access"));
     expect(tracker.list()).toHaveLength(2);
-    expect(tracker.list().find((w) => w.includes("c1"))).toContain("aria");
+    expect(tracker.list().find((w) => w.includes("c1"))).toContain("ella");
   });
 
   it("ignores non-permission errors", () => {

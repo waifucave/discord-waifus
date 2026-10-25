@@ -23,11 +23,11 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const DM_KEY = conversationKey(dmOf("aria"));
+const DM_KEY = conversationKey(dmOf("ella"));
 
 async function dm(w: LifeWorld, cast: LifeWorld["cast"], text: string): Promise<void> {
-  const message = w.discord.post(dmOf("aria"), text);
-  await cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+  const message = w.discord.post(dmOf("ella"), text);
+  await cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
 }
 
 /** She reads the DM whenever a notification arrives; compactions and checks get plain text. */
@@ -48,16 +48,16 @@ const SEQUENCES = [
 ] as const;
 
 async function forgetBy(w: LifeWorld, how: (typeof SEQUENCES)[number]): Promise<void> {
-  if (how.startsWith("DM")) await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "all" }, { now: w.clock.now });
+  if (how.startsWith("DM")) await dmForget(w.storage, { userId: KEVIN, waifuId: "ella", scope: "all" }, { now: w.clock.now });
   if (how === "DM /forget everything") return;
   if (how.startsWith("DM")) w.clock.advance(60_000);
   await forgetUser(w.storage, { discordUserId: KEVIN }, { now: w.clock.now });
   if (how !== "owner forget-user twice") return;
   w.clock.advance(60_000);
-  const floor = await readDmFloor(w.storage, KEVIN, "aria");
+  const floor = await readDmFloor(w.storage, KEVIN, "ella");
   await forgetUser(w.storage, { discordUserId: KEVIN }, { now: w.clock.now });
   // Raised, never lost.
-  expect(compareSnowflakes((await readDmFloor(w.storage, KEVIN, "aria"))!, floor!)).toBeGreaterThan(0);
+  expect(compareSnowflakes((await readDmFloor(w.storage, KEVIN, "ella"))!, floor!)).toBeGreaterThan(0);
 }
 
 // Disk-bound (atomic JSON writes per step): about 1–3 s alone, up to 4× slower when the whole suite
@@ -66,29 +66,29 @@ describe("a forgotten DM after a restart", { timeout: 30_000 }, () => {
   for (const how of SEQUENCES) {
     it(`${how}: the old messages are not readable when the person writes again`, async () => {
       const w = await lifeWorld(roots, { scripts: [reader] });
-      vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+      vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
       await dm(w, w.cast, "my secret recipe uses cardamom");
       await dm(w, w.cast, "don't tell anyone");
       w.cast.intake.flushDms();
       await w.cast.settle();
-      await w.cast.life("aria").runNow();
+      await w.cast.life("ella").runNow();
       expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain("cardamom");
 
       w.clock.advance(60_000);
       await forgetBy(w, how);
       expect(await listDmStates(w.storage)).toEqual([]);
-      expect(await readDmFloor(w.storage, KEVIN, "aria")).toBeDefined();
+      expect(await readDmFloor(w.storage, KEVIN, "ella")).toBeDefined();
 
       // A restart: a fresh cast and cache over the same data root and Discord history.
       await w.cast.stop();
       w.clock.advance(60_000);
       const again = w.restart();
-      vi.spyOn(again.life("aria"), "poke").mockImplementation(() => undefined);
+      vi.spyOn(again.life("ella"), "poke").mockImplementation(() => undefined);
       await again.start();
       await dm(w, again, "hi again, it's me");
       again.intake.flushDms();
       await again.settle();
-      await again.life("aria").runNow();
+      await again.life("ella").runNow();
       // The newest ReadMessages result in her last request is the one after the restart.
       const results = w.anthropic.calls.at(-1)!.request.messages.flatMap((message) =>
         Array.isArray(message.content) ? (message.content as Array<{ type: string }>).filter((block) => block.type === "tool_result") : []
@@ -112,15 +112,15 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
     const { root, storage } = await dmRoot(roots);
     // Counters from before the forgets below (their times are fixed in October 2026).
     const before = "2026-10-19T00:00:00.000Z";
-    await updateDmState(storage, { userId: PERSON, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, userDisplayName: "Quillon" }));
-    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, replyTimestamps: [before], limitNoticeSentAt: before, autoMessageIds: ["1300000000000000009"] }));
-    await mkdir(path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON })), { recursive: true });
+    await updateDmState(storage, { userId: PERSON, waifuId: "ella", botId: "ella-bot" }, (current) => ({ ...current, userDisplayName: "Quillon" }));
+    await updateDmLimit(storage, PERSON, "ella", (current) => ({ ...current, replyTimestamps: [before], limitNoticeSentAt: before, autoMessageIds: ["1300000000000000009"] }));
+    await mkdir(path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "ella", userId: PERSON })), { recursive: true });
     return { root, storage };
   }
 
   it("a failing part is reported pending and recorded; the rest runs, the traffic goes, and the next boot runs only that part", async () => {
     const { root, storage } = await seeded();
-    const conversation = path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON }));
+    const conversation = path.join(root, "user", "conversations", conversationKey({ kind: "dm", waifuId: "ella", userId: PERSON }));
     recordProviderQuery("assistant", { messages: [{ role: "user", content: `about <@${PERSON}>: hi` }] });
     recordProviderQuery("assistant", { messages: [{ role: "user", content: `about <@${OTHER}>: hello` }] });
     const at = new Date("2026-10-20T10:00:00.000Z");
@@ -133,7 +133,7 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
     // Recorded by its code only: no message, no path.
     expect(result.pending).toEqual([{ part: "dms", error: "Error", failures: 1, retried: true }]);
     // The floor and the record were written before the failure; the DM conversation is still there.
-    expect(await readDmFloor(storage, PERSON, "aria")).toBe(dmFloorAt(at));
+    expect(await readDmFloor(storage, PERSON, "ella")).toBe(dmFloorAt(at));
     expect((await readForgottenPeople(storage)).map((entry) => entry.userId)).toEqual([PERSON]);
     expect(await readdir(conversation)).toEqual([]);
     expect(await pendingForgetJobs(storage)).toEqual([
@@ -152,9 +152,9 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
 
     // The next boot runs the unfinished part.
     expect(await resumeForgetJobs(storage)).toBe(1);
-    expect(await readDmState(storage, PERSON, "aria")).toBeUndefined();
+    expect(await readDmState(storage, PERSON, "ella")).toBeUndefined();
     await expect(readdir(conversation)).rejects.toMatchObject({ code: "ENOENT" });
-    const limits = await readDmLimit(storage, PERSON, "aria");
+    const limits = await readDmLimit(storage, PERSON, "ella");
     expect(limits).toMatchObject({ replyTimestamps: [], autoMessageIds: [], floorMessageId: dmFloorAt(at) });
     expect(limits.limitNoticeSentAt).toBeUndefined();
     expect(await pendingForgetJobs(storage)).toEqual([]);
@@ -167,8 +167,8 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
     await mkdir(path.join(root, "user", "people"), { recursive: true });
     await writeFile(path.join(root, "user", "people", "forget-jobs.json"), JSON.stringify({ jobs: [{ userId: PERSON, at }] }));
     expect(await resumeForgetJobs(storage)).toBe(1);
-    expect(await readDmState(storage, PERSON, "aria")).toBeUndefined();
-    expect(await readDmFloor(storage, PERSON, "aria")).toBe(dmFloorAt(new Date(at)));
+    expect(await readDmState(storage, PERSON, "ella")).toBeUndefined();
+    expect(await readDmFloor(storage, PERSON, "ella")).toBe(dmFloorAt(new Date(at)));
     expect(await readForgottenPeople(storage)).toEqual([{ userId: PERSON, at }]);
     expect(await readdir(path.join(root, "user", "dms", PERSON))).toEqual(["limits"]);
     expect(await pendingForgetJobs(storage)).toEqual([]);
@@ -180,21 +180,21 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
     // A crash after the record and the floors; days later the person writes again.
     await mkdir(path.join(root, "user", "people"), { recursive: true });
     await writeFile(path.join(root, "user", "people", "forget-jobs.json"), JSON.stringify({ jobs: [{ userId: PERSON, at: at.toISOString(), done: ["record", "floors"] }] }));
-    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, floorMessageId: dmFloorAt(at) }));
+    await updateDmLimit(storage, PERSON, "ella", (current) => ({ ...current, floorMessageId: dmFloorAt(at) }));
     const newer = (BigInt(dmFloorAt(new Date("2026-10-23T09:00:00.000Z"))) + 1n).toString();
-    const key = conversationKey({ kind: "dm", waifuId: "aria", userId: PERSON });
-    await updateDmState(storage, { userId: PERSON, waifuId: "aria", botId: "aria-bot" }, (current) => ({ ...current, lastInboundMessageId: newer }));
+    const key = conversationKey({ kind: "dm", waifuId: "ella", userId: PERSON });
+    await updateDmState(storage, { userId: PERSON, waifuId: "ella", botId: "ella-bot" }, (current) => ({ ...current, lastInboundMessageId: newer }));
     await writeFile(
       path.join(root, "user", "conversations", key, "refs.json"),
       JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: "2026-10-23T09:00:00.000Z", conversationKey: key, counter: 361, refs: { [newer]: "a0" } })
     );
     const stamp = "2026-10-23T09:00:01.000Z";
-    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, replyTimestamps: [...current.replyTimestamps, stamp] }));
+    await updateDmLimit(storage, PERSON, "ella", (current) => ({ ...current, replyTimestamps: [...current.replyTimestamps, stamp] }));
     expect(await resumeForgetJobs(storage)).toBe(1);
     // The new chat stays whole; only what was at or before the forget went.
-    expect((await readDmState(storage, PERSON, "aria"))?.lastInboundMessageId).toBe(newer);
+    expect((await readDmState(storage, PERSON, "ella"))?.lastInboundMessageId).toBe(newer);
     expect(await readdir(path.join(root, "user", "conversations", key))).toEqual(["refs.json"]);
-    const limits = await readDmLimit(storage, PERSON, "aria");
+    const limits = await readDmLimit(storage, PERSON, "ella");
     expect(limits.replyTimestamps).toEqual([stamp]);
     expect(limits.limitNoticeSentAt).toBeUndefined();
     expect(limits.floorMessageId).toBe(dmFloorAt(at));
@@ -204,10 +204,10 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
   it("a resumed older job never lowers a later floor", async () => {
     const { root, storage } = await seeded();
     const later = dmFloorAt(new Date("2026-10-22T00:00:00.000Z"));
-    await updateDmLimit(storage, PERSON, "aria", (current) => ({ ...current, floorMessageId: later }));
+    await updateDmLimit(storage, PERSON, "ella", (current) => ({ ...current, floorMessageId: later }));
     await mkdir(path.join(root, "user", "people"), { recursive: true });
     await writeFile(path.join(root, "user", "people", "forget-jobs.json"), JSON.stringify({ jobs: [{ userId: PERSON, at: "2026-10-21T08:30:00.000Z" }] }));
     await resumeForgetJobs(storage);
-    expect(await readDmFloor(storage, PERSON, "aria")).toBe(later);
+    expect(await readDmFloor(storage, PERSON, "ella")).toBe(later);
   });
 });

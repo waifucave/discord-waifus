@@ -591,7 +591,7 @@ describe("backend Discord per-bot status", () => {
 
     const bots: DiscordBotConnectionStatus[] = [{
       botId: "waifu-a",
-      displayName: "Aria",
+      displayName: "Ella",
       kind: "waifu",
       state: "connected",
       updatedAt: new Date().toISOString()

@@ -79,7 +79,7 @@ describe("intent and permission lists match what the gateway uses", () => {
       return client;
     };
     const stored = (id: string): StoredBot => ({ id, displayName: id, token: `${id}-token`, enabled: true });
-    const gateway = new DiscordJsGateway({ house: stored("house"), waifus: [stored("aria-bot")], createClient, ...extra });
+    const gateway = new DiscordJsGateway({ house: stored("house"), waifus: [stored("ella-bot")], createClient, ...extra });
     try {
       await gateway.connect();
     } finally {
@@ -115,7 +115,7 @@ describe("intent and permission lists match what the gateway uses", () => {
   it("a waifu bot requests no privileged intent, so the guide asks for no portal toggle", async () => {
     const plain = await requestedIntents("waifu");
     expect(plain).toEqual(["Guilds"]);
-    const withDms = await requestedIntents("waifu", { dmBots: async () => [{ botId: "aria-bot", waifuId: "aria" }] });
+    const withDms = await requestedIntents("waifu", { dmBots: async () => [{ botId: "ella-bot", waifuId: "ella" }] });
     expect(withDms.filter((name) => PRIVILEGED.has(name))).toEqual([]);
     expect(withDms).toEqual(["DirectMessageReactions", "DirectMessageTyping", "DirectMessages", "Guilds"]);
     expect(intentListFor("waifu").filter((intent) => intent.portalToggle || intent.privileged)).toEqual([]);
@@ -168,17 +168,17 @@ describe("picker entries", () => {
   const bots = botsFile({
     orchestrator: bot("house", { applicationId: APP_ID, tokenConfigured: true, tokenHint: "…abcd" }),
     waifus: [
-      bot("aria", { applicationId: OTHER_APP_ID, tokenConfigured: true }),
+      bot("ella", { applicationId: OTHER_APP_ID, tokenConfigured: true }),
       bot("mina") // an entry exists under her own id but she is not linked yet
     ]
   });
-  const cast = [waifu("aria", { botId: "aria" }), waifu("mina"), waifu("lumi", { displayName: "Lumi" }), waifu("zed", { botId: "gone" })];
+  const cast = [waifu("ella", { botId: "ella" }), waifu("mina"), waifu("lumi", { displayName: "Lumi" }), waifu("zed", { botId: "gone" })];
 
   it("lists the House bot first, then each waifu with her suggested name", () => {
     const entries = buildPickerEntries(bots, cast);
     expect(entries.map((entry) => [entry.key, entry.kind, entry.suggestedName])).toEqual([
       ["house", "house", "House"],
-      ["aria", "waifu", "Aria"],
+      ["ella", "waifu", "Ella"],
       ["mina", "waifu", "Mina"],
       ["lumi", "waifu", "Lumi"],
       ["zed", "waifu", "Zed"]
@@ -186,10 +186,10 @@ describe("picker entries", () => {
   });
 
   it("matches the stored entry through botId, and shows an unlinked waifu's half-finished entry", () => {
-    const [house, aria, mina, lumi, zed] = buildPickerEntries(bots, cast);
+    const [house, ella, mina, lumi, zed] = buildPickerEntries(bots, cast);
     expect(house!.bot?.applicationId).toBe(APP_ID);
-    expect(aria).toMatchObject({ linked: true, botId: "aria" });
-    expect(aria!.bot?.applicationId).toBe(OTHER_APP_ID);
+    expect(ella).toMatchObject({ linked: true, botId: "ella" });
+    expect(ella!.bot?.applicationId).toBe(OTHER_APP_ID);
     expect(mina).toMatchObject({ linked: false, botId: "mina" });
     expect(mina!.bot?.id).toBe("mina");
     expect(lumi).toMatchObject({ linked: false, bot: null });
@@ -197,10 +197,10 @@ describe("picker entries", () => {
   });
 
   it("says what each bot lacks", () => {
-    const [house, aria, mina, lumi, zed] = buildPickerEntries(bots, cast);
+    const [house, ella, mina, lumi, zed] = buildPickerEntries(bots, cast);
     expect(setupBadge(house!)).toEqual({ tone: "ok", text: "bot ready" });
     expect(summarizeTarget(house!).text).toBe(`app ${APP_ID} · token set (…abcd)`);
-    expect(setupBadge(aria!)).toEqual({ tone: "ok", text: "bot ready" });
+    expect(setupBadge(ella!)).toEqual({ tone: "ok", text: "bot ready" });
     expect(setupBadge(mina!).tone).toBe("warn");
     expect(summarizeTarget(mina!).missing).toEqual(["not linked to her", "no app id", "no token"]);
     expect(setupBadge(lumi!)).toEqual({ tone: "neutral", text: "no bot yet" });
@@ -261,7 +261,7 @@ describe("validation", () => {
   });
 
   it("summarizes the changes for the save bar", () => {
-    const [, , lumi] = buildPickerEntries(botsFile(), [waifu("aria"), waifu("lumi")]);
+    const [, , lumi] = buildPickerEntries(botsFile(), [waifu("ella"), waifu("lumi")]);
     expect(changeSummary(lumi!, { applicationId: APP_ID, token: TOKEN })).toEqual(["link her bot", "Application ID", "bot token"]);
     expect(changeSummary(lumi!, EMPTY_DRAFT)).toEqual([]);
     expect(draftChanges(lumi!, { token: `  ${TOKEN}\n` })).toEqual({ token: TOKEN });
@@ -272,7 +272,7 @@ describe("save payloads", () => {
   it("House: writes the orchestrator entry only, keeps its stored fields, carries the new token", () => {
     const current = botsFile({
       orchestrator: bot("house", { displayName: "House", applicationId: APP_ID, tokenConfigured: true, tokenHint: "…zz", enabled: false }),
-      waifus: [bot("aria", { applicationId: OTHER_APP_ID, tokenConfigured: true })]
+      waifus: [bot("ella", { applicationId: OTHER_APP_ID, tokenConfigured: true })]
     });
     const [house] = buildPickerEntries(current, []);
     const body = buildBotsPatch(house!, { token: TOKEN }, current)!;
@@ -295,15 +295,15 @@ describe("save payloads", () => {
     const current = botsFile({
       waifus: [
         bot("mina", { applicationId: OTHER_APP_ID, tokenConfigured: true, tokenHint: "…mm" }),
-        bot("aria", { applicationId: OTHER_APP_ID })
+        bot("ella", { applicationId: OTHER_APP_ID })
       ]
     });
-    const cast = [waifu("aria", { botId: "aria" }), waifu("mina", { botId: "mina" })];
-    const aria = buildPickerEntries(current, cast).find((entry) => entry.key === "aria")!;
-    const body = buildBotsPatch(aria, { applicationId: APP_ID, token: TOKEN }, current)!;
+    const cast = [waifu("ella", { botId: "ella" }), waifu("mina", { botId: "mina" })];
+    const ella = buildPickerEntries(current, cast).find((entry) => entry.key === "ella")!;
+    const body = buildBotsPatch(ella, { applicationId: APP_ID, token: TOKEN }, current)!;
     expect(body.waifus).toEqual([
       { id: "mina", displayName: "mina", enabled: true, applicationId: OTHER_APP_ID },
-      { id: "aria", displayName: "aria", enabled: true, applicationId: APP_ID, token: TOKEN }
+      { id: "ella", displayName: "ella", enabled: true, applicationId: APP_ID, token: TOKEN }
     ]);
     expect(body.orchestrator).toBeUndefined();
     expect(JSON.stringify(body.waifus![0])).not.toContain("token");
@@ -386,10 +386,10 @@ describe("save payloads", () => {
   });
 
   it("saveBotDraft, existing waifu bot: no link call", async () => {
-    const start = botsFile({ waifus: [bot("aria", { applicationId: APP_ID })] });
+    const start = botsFile({ waifus: [bot("ella", { applicationId: APP_ID })] });
     const { deps, calls, links } = fakeDeps(start);
-    const aria = buildPickerEntries(start, [waifu("aria", { botId: "aria" })])[1]!;
-    await saveBotDraft(deps, aria, { token: TOKEN });
+    const ella = buildPickerEntries(start, [waifu("ella", { botId: "ella" })])[1]!;
+    await saveBotDraft(deps, ella, { token: TOKEN });
     expect(links).toEqual([]);
     expect(calls).toEqual(["get", "put", "reload"]);
   });
@@ -412,8 +412,8 @@ describe("connection status", () => {
   const runtime = (bots: ReturnType<typeof status>[]) => ({ discord: { connected: true, houseConnected: true, waifuBotCount: 1, warnings: [], bots } });
 
   it("finds the House bot by kind and a waifu bot by its entry id", () => {
-    const entries = buildPickerEntries(botsFile({ orchestrator: bot("house") }), [waifu("aria", { botId: "aria-bot" })]);
-    const state = runtime([status({ botId: "house", kind: "house" }), status({ botId: "aria-bot", state: "error", errorCode: "invalid_token" })]);
+    const entries = buildPickerEntries(botsFile({ orchestrator: bot("house") }), [waifu("ella", { botId: "ella-bot" })]);
+    const state = runtime([status({ botId: "house", kind: "house" }), status({ botId: "ella-bot", state: "error", errorCode: "invalid_token" })]);
     expect(connectionFor(entries[0]!, state)?.state).toBe("connected");
     expect(connectionFor(entries[1]!, state)?.errorCode).toBe("invalid_token");
     expect(connectionFor(entries[1]!, undefined)).toBeUndefined();

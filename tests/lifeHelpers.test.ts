@@ -14,9 +14,9 @@ describe("outbound checks (spec §6.3)", () => {
 
   it("strips copied transcript headers and her own name, not ordinary text", () => {
     expect(stripLeadingTranscriptHeader("[14:02 #k3] [14:03 #k4 ↩#a1] hello")).toBe("hello");
-    expect(stripCopiedHeader("[14:02 #k3] Aria: hello there", ["Aria"])).toBe("hello there");
-    expect(stripCopiedHeader("[14:05] hi", ["Aria"])).toBe("hi");
-    expect(stripCopiedHeader("at [14:02] we met", ["Aria"])).toBe("at [14:02] we met");
+    expect(stripCopiedHeader("[14:02 #k3] Ella: hello there", ["Ella"])).toBe("hello there");
+    expect(stripCopiedHeader("[14:05] hi", ["Ella"])).toBe("hi");
+    expect(stripCopiedHeader("at [14:02] we met", ["Ella"])).toBe("at [14:02] we met");
   });
 
   it("rejects text that is only tool-call syntax", () => {
@@ -44,16 +44,16 @@ describe("names", () => {
 
   it("matches names on word boundaries, case-insensitively", () => {
     expect(normalizeName("  Ária ")).toBe(normalizeName("ária"));
-    expect(wordBoundaryIncludes("hey aria, you there?", "aria")).toBe(true);
-    expect(wordBoundaryIncludes("mariachi band", "aria")).toBe(false);
+    expect(wordBoundaryIncludes("hey ella, you there?", "ella")).toBe(true);
+    expect(wordBoundaryIncludes("mariachi band", "ella")).toBe(false);
   });
 });
 
 describe("message lines (moved from the context engine's transcript renderer, spec §15)", () => {
   const at = new Date(Date.UTC(2026, 9, 24, 14, 2)).toISOString();
-  const SELF = ["aria-bot"];
+  const SELF = ["ella-bot"];
   const kevin: LineMessage = { id: "1", authorId: "kevin", authorName: "Kevin", at, body: "text" };
-  const own: LineMessage = { ...kevin, id: "0", authorId: "aria-bot", authorName: "Aria", body: "hi" };
+  const own: LineMessage = { ...kevin, id: "0", authorId: "ella-bot", authorName: "Ella", body: "hi" };
   const reply: LineMessage = { ...kevin, id: "2", replyToId: "1" };
   const replyToMe: LineMessage = { ...kevin, id: "3", replyToId: "0" };
   const refs = new Map([["1", "k3"], ["2", "k4"], ["3", "k5"], ["0", "a1"]]);

@@ -141,7 +141,7 @@ describe("convertModelFields", () => {
       personaDigest: { voice: "v", role: "r", personaHash: "h" },
       tools: { toolUse: false }
     };
-    expect(convertModelFields(data, "waifu:aria", { waifu: true })).toEqual({ changed: true });
+    expect(convertModelFields(data, "waifu:ella", { waifu: true })).toEqual({ changed: true });
     expect(data).toEqual({ model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" } });
   });
 
@@ -169,7 +169,7 @@ describe("convertModelFields", () => {
 
 describe("living-cast-models-v1 on a data root", () => {
   async function seed(dataRoot: string): Promise<void> {
-    await writeJson(dataRoot, "user/waifus/aria/waifu.json", waifu("aria", { providerId: "anthropic", modelId: "claude-sonnet-4-6", params: { "reasoning.effort": "high" }, contextWindow: 50, tools: { toolUse: true } }));
+    await writeJson(dataRoot, "user/waifus/ella/waifu.json", waifu("ella", { providerId: "anthropic", modelId: "claude-sonnet-4-6", params: { "reasoning.effort": "high" }, contextWindow: 50, tools: { toolUse: true } }));
     await writeJson(dataRoot, "user/waifus/mina/waifu.json", waifu("mina", { providerId: "openrouter", modelId: "deepseek/deepseek-v4-flash", params: { "reasoning.enabled": false } }));
     await writeJson(dataRoot, "user/waifus/opus/waifu.json", waifu("opus", { providerId: "anthropic", modelId: "claude-opus-4-7", params: { temperature: 1 } }));
     await writeJson(dataRoot, "user/waifus/muse/waifu.json", waifu("muse", { providerId: "meta", modelId: "muse-spark-1.3" }));
@@ -193,9 +193,9 @@ describe("living-cast-models-v1 on a data root", () => {
     await seed(dataRoot);
     expect(await migrateLivingCastModels(dataRoot)).toBe("living-cast-models-v1");
 
-    const aria = await readJson(dataRoot, "user/waifus/aria/waifu.json");
-    expect(aria.model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "high" });
-    for (const retired of ["providerId", "modelId", "params", "contextWindow", "tools"]) expect(aria, retired).not.toHaveProperty(retired);
+    const ella = await readJson(dataRoot, "user/waifus/ella/waifu.json");
+    expect(ella.model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "high" });
+    for (const retired of ["providerId", "modelId", "params", "contextWindow", "tools"]) expect(ella, retired).not.toHaveProperty(retired);
     expect((await readJson(dataRoot, "user/waifus/mina/waifu.json")).model).toEqual({ providerId: "openrouter", modelId: "deepseek/deepseek-v4.1-flash", effort: "none" });
     expect(await readJson(dataRoot, "user/waifus/opus/waifu.json")).not.toHaveProperty("model");
     expect(await readJson(dataRoot, "user/waifus/muse/waifu.json")).not.toHaveProperty("model");
@@ -206,7 +206,7 @@ describe("living-cast-models-v1 on a data root", () => {
     expect(assistant.model).toEqual({ providerId: "openai", modelId: "gpt-6-luna", effort: "medium" });
     expect(assistant).not.toHaveProperty("params");
 
-    for (const id of ["aria", "mina", "opus", "muse", "none"]) {
+    for (const id of ["ella", "mina", "opus", "muse", "none"]) {
       expect(() => WaifuConfigSchema.parse(readWaifuSync(dataRoot, id)), id).not.toThrow();
     }
     expect(AssistantConfigSchema.parse(assistant).model).toEqual({ providerId: "openai", modelId: "gpt-6-luna", effort: "medium" });
@@ -234,7 +234,7 @@ describe("living-cast-models-v1 on a data root", () => {
     expect(modelArchivePath(dataRoot, "waifu:opus")).toBe(path.join(dataRoot, "user", ".archive", "living-cast", "models", "waifu-opus.json"));
     expect(JSON.parse(await readFile(modelArchivePath(dataRoot, "waifu:opus"), "utf8"))).toEqual(originalOpus);
     expect(JSON.parse(await readFile(modelArchivePath(dataRoot, "assistant"), "utf8"))).toEqual(originalAssistant);
-    for (const id of ["aria", "mina", "muse", "none"]) {
+    for (const id of ["ella", "mina", "muse", "none"]) {
       expect(JSON.parse(await readFile(modelArchivePath(dataRoot, `waifu:${id}`), "utf8")), id).toHaveProperty("schemaVersion");
     }
 
@@ -264,7 +264,7 @@ describe("living-cast-models-v1 on a data root", () => {
     await seed(dataRoot);
     await migrateLivingCastModels(dataRoot);
     const files = [
-      "user/waifus/aria/waifu.json",
+      "user/waifus/ella/waifu.json",
       "user/waifus/opus/waifu.json",
       "user/assistant/config.json",
       "user/providers.json",
@@ -316,14 +316,14 @@ function readWaifuSync(dataRoot: string, id: string): unknown {
 describe("living-cast-model-effort-check (every boot)", () => {
   it("drops an effort the installed catalog does not list for the route, with a warning; listed and unknown routes stay", async () => {
     const dataRoot = await root();
-    await writeJson(dataRoot, "user/waifus/aria/waifu.json", waifu("aria", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "turbo" } }));
+    await writeJson(dataRoot, "user/waifus/ella/waifu.json", waifu("ella", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "turbo" } }));
     await writeJson(dataRoot, "user/waifus/mina/waifu.json", waifu("mina", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" } }));
     await writeJson(dataRoot, "user/waifus/haiku/waifu.json", waifu("haiku", { model: { providerId: "anthropic", modelId: "claude-haiku-5-5", effort: "turbo" } }));
     await writeJson(dataRoot, "user/waifus/retired/waifu.json", waifu("retired", { model: { providerId: "anthropic", modelId: "claude-opus-4-7", effort: "turbo" } }));
     await writeJson(dataRoot, "user/assistant/config.json", { schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: T, model: { providerId: "deepseek", modelId: "deepseek-flash", effort: "nope" } });
 
     expect(await checkStoredModelEfforts(dataRoot)).toBe("model-effort-check-3");
-    expect((await readJson(dataRoot, "user/waifus/aria/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5" });
+    expect((await readJson(dataRoot, "user/waifus/ella/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5" });
     expect((await readJson(dataRoot, "user/waifus/mina/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" });
     expect((await readJson(dataRoot, "user/waifus/haiku/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-haiku-5-5" });
     // Not in the installed catalog: left for the live "unavailable" warning instead.
@@ -331,7 +331,7 @@ describe("living-cast-model-effort-check (every boot)", () => {
     expect((await readJson(dataRoot, "user/assistant/config.json")).model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
     expect((await readModelWarnings(dataRoot)).map((warning) => [warning.scope, warning.code]).sort()).toEqual([
       ["assistant", "effort_dropped"],
-      ["waifu:aria", "effort_dropped"],
+      ["waifu:ella", "effort_dropped"],
       ["waifu:haiku", "effort_dropped"]
     ]);
     // Every boot: nothing left to drop.
@@ -358,11 +358,11 @@ describe("living-cast-model-effort-check (every boot)", () => {
 
   it("re-validates against the catalog it is given (a winter upgrade can remove an effort)", async () => {
     const dataRoot = await root();
-    await writeJson(dataRoot, "user/waifus/aria/waifu.json", waifu("aria", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" } }));
+    await writeJson(dataRoot, "user/waifus/ella/waifu.json", waifu("ella", { model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "low" } }));
     const catalog = structuredClone(installedCatalog());
     const row = catalog.models.find((model) => model.key === "anthropic/claude-sonnet-5-5")!;
     row.reasoning = { ...row.reasoning!, efforts: row.reasoning!.efforts.filter((effort) => effort !== "low") };
     expect(await checkStoredModelEfforts(dataRoot, catalog)).toBe("model-effort-check-1");
-    expect((await readJson(dataRoot, "user/waifus/aria/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5" });
+    expect((await readJson(dataRoot, "user/waifus/ella/waifu.json")).model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5" });
   });
 });

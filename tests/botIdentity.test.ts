@@ -3,22 +3,22 @@ import { resolveBotAuthorIds } from "../src/shared/botIdentity.js";
 
 const bots = {
   waifus: [
-    { id: "aria", displayName: "Aria", applicationId: "111222333444555666", enabled: true },
+    { id: "ella", displayName: "Ella", applicationId: "111222333444555666", enabled: true },
     { id: "yuki", displayName: "Yuki", enabled: true }
   ]
 };
 
 describe("resolveBotAuthorIds", () => {
   it("returns entry id and applicationId when the ref is an entry id", () => {
-    expect(resolveBotAuthorIds("aria", bots)).toEqual(["aria", "111222333444555666"]);
+    expect(resolveBotAuthorIds("ella", bots)).toEqual(["ella", "111222333444555666"]);
   });
 
   it("returns both ids when the ref is already the applicationId", () => {
-    expect(resolveBotAuthorIds("111222333444555666", bots)).toEqual(["111222333444555666", "aria"]);
+    expect(resolveBotAuthorIds("111222333444555666", bots)).toEqual(["111222333444555666", "ella"]);
   });
 
   it("falls back to the bare ref when no entry matches", () => {
-    expect(resolveBotAuthorIds("aria-bot", bots)).toEqual(["aria-bot"]);
+    expect(resolveBotAuthorIds("ella-bot", bots)).toEqual(["ella-bot"]);
   });
 
   it("dedupes when the matched entry has no applicationId", () => {
@@ -30,6 +30,6 @@ describe("resolveBotAuthorIds", () => {
   });
 
   it("tolerates a missing bots file", () => {
-    expect(resolveBotAuthorIds("aria", undefined)).toEqual(["aria"]);
+    expect(resolveBotAuthorIds("ella", undefined)).toEqual(["ella"]);
   });
 });

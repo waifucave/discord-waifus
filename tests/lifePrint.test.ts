@@ -22,8 +22,8 @@ const line = (seq: number, kind: LifeLogLine["kind"], message: Record<string, un
 describe("/print life", () => {
   it("redacts DM previews, DM reads and DM sends, and keeps room content", async () => {
     const w = await lifeWorld(roots, {});
-    await updateLifeState(w.storage, "aria", (state) => ({ ...state, epoch: 1 }));
-    await appendLifeLog(w.storage, "aria", 1, [
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, epoch: 1 }));
+    await appendLifeLog(w.storage, "ella", 1, [
       line(0, "notifications", {
         role: "user",
         content: [
@@ -50,12 +50,12 @@ describe("/print life", () => {
         ]
       })
     ]);
-    await appendLifeLog(w.storage, "aria", 1, [
+    await appendLifeLog(w.storage, "ella", 1, [
       { seq: 3, at: AT, kind: "notifications", turnId: "t2", message: { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mina · "lemon or chocolate?"\n</notifications>' }] } },
       { seq: 4, at: AT, kind: "assistant", turnId: "t2", message: { role: "assistant", content: [{ type: "tool_use", id: "c4", name: "SendMessage", input: { place: "bake-club/#general", text: "lemon, always" } }] } },
       { seq: 5, at: AT, kind: "tool_results", turnId: "t2", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "c4", content: "sent #a4" }] } }
     ]);
-    const printed = await w.cast.printLife("aria");
+    const printed = await w.cast.printLife("ella");
     expect(printed).not.toContain("divorce");
     expect(printed).not.toContain("lawyer");
     expect(printed).toContain("dm · dm/kevin · from Kevin · 2 unread");
@@ -72,8 +72,8 @@ describe("/print life", () => {
 
   it("redacts her own text in a turn that touched a DM, and shows everything with private", async () => {
     const w = await lifeWorld(roots, {});
-    await updateLifeState(w.storage, "aria", (state) => ({ ...state, epoch: 1 }));
-    await appendLifeLog(w.storage, "aria", 1, [
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, epoch: 1 }));
+    await appendLifeLog(w.storage, "ella", 1, [
       line(0, "notifications", { role: "user", content: [{ type: "text", text: '<notifications>\n- dm · dm/kevin · from Kevin · "my exam is tomorrow"\n</notifications>' }] }),
       line(1, "assistant", {
         role: "assistant",
@@ -86,13 +86,13 @@ describe("/print life", () => {
       { seq: 3, at: AT, kind: "notifications", turnId: "t2", message: { role: "user", content: [{ type: "text", text: '- mention · bake-club/#general · from Mina · "cake?"' }] } },
       { seq: 4, at: AT, kind: "assistant", turnId: "t2", message: { role: "assistant", content: [{ type: "text", text: "Mina wants cake" }] } }
     ]);
-    const printed = await w.cast.printLife("aria");
+    const printed = await w.cast.printLife("ella");
     expect(printed).not.toContain("nervous");
     expect(printed).not.toContain("good luck");
     expect(printed).not.toContain("exam");
     expect(printed).toContain("SomeFutureTool([private chat redacted])");
     expect(printed).toContain("Mina wants cake");
-    const open = await w.cast.printLife("aria", { private: true });
+    const open = await w.cast.printLife("ella", { private: true });
     expect(open).toContain("Kevin is nervous about the exam");
     expect(open).toContain("good luck tomorrow!");
     expect(open).toContain('"my exam is tomorrow"');
@@ -100,7 +100,7 @@ describe("/print life", () => {
 
   it("hides her summary in /print system_prompt unless private", async () => {
     const w = await lifeWorld(roots, {});
-    const state = await updateLifeState(w.storage, "aria", (current) => ({
+    const state = await updateLifeState(w.storage, "ella", (current) => ({
       ...current,
       summary: "Kevin told me in DMs about his divorce.",
       systemSnapshot: { harnessHash: "h", harness: "<life>block A</life>", memoryIndex: "# Memory", places: "- bake-club/#general", tools: [] }
@@ -109,13 +109,13 @@ describe("/print life", () => {
     expect(hidden).toContain("<life>block A</life>");
     expect(hidden).not.toContain("divorce");
     expect(hidden).toContain("[private chat redacted]");
-    expect(await w.cast.printSystemPrompt("aria")).toBe(hidden);
-    expect(await w.cast.printSystemPrompt("aria", { private: true })).toContain("divorce");
+    expect(await w.cast.printSystemPrompt("ella")).toBe(hidden);
+    expect(await w.cast.printSystemPrompt("ella", { private: true })).toContain("divorce");
   });
 
   it("the dashboard view marks DM turns and counts what it left out", () => {
     const lines: LifeLogLine[] = [
-      line(0, "assistant", { role: "assistant", content: [{ type: "thinking", thinking: "secret", signature: "sig" }, { type: "tool_use", id: "r1", name: "read", input: { place: "dm_300000000000000003_aria" } }] }),
+      line(0, "assistant", { role: "assistant", content: [{ type: "thinking", thinking: "secret", signature: "sig" }, { type: "tool_use", id: "r1", name: "read", input: { place: "dm_300000000000000003_ella" } }] }),
       line(1, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "r1", content: "Kevin: hi" }] })
     ];
     const scan = scanDmContent(lines);
@@ -159,9 +159,9 @@ describe("/print life", () => {
   });
 
   it("an unrecorded call is matched the way resolvePlace reads places: any case, spaces, <…> (review I-1)", () => {
-    for (const place of ["dm/kevin", "DM/kevin", "Dm/Kevin", " dm/kevin", "dm/kevin ", "<dm/kevin>", "\ndm/kevin", "dm_300000000000000003_aria"]) {
+    for (const place of ["dm/kevin", "DM/kevin", "Dm/Kevin", " dm/kevin", "dm/kevin ", "<dm/kevin>", "\ndm/kevin", "dm_300000000000000003_ella"]) {
       const lines: LifeLogLine[] = [
-        line(0, "notifications", { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mia · "aria??"\n</notifications>' }] }),
+        line(0, "notifications", { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mia · "ella??"\n</notifications>' }] }),
         line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "ReadMessages", input: { place } }] }),
         line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "#k1 Kevin: my HIV test came back positive" }] }),
         line(3, "assistant", { role: "assistant", content: [{ type: "text", text: "Kevin trusted me." }, { type: "tool_use", id: "c2", name: "SendMessage", input: { place, text: "Your secret is safe." } }] })
@@ -180,8 +180,8 @@ describe("/print life", () => {
     const view = { handle: () => "dm/kevin", unread: () => 1, timeZone: "UTC" };
     const rendered = notificationLines(
       [
-        { id: "w1", reason: "dm", placeKey: "dm_300000000000000003_aria", fromName: 'Kev"in', preview: "I relapsed last night, please don't tell anyone", at: AT },
-        { id: "w2", reason: "watch", placeKey: "dm_300000000000000003_aria", matched: "biopsy", note: "Kevin's biopsy\nresults: malignant", at: AT }
+        { id: "w1", reason: "dm", placeKey: "dm_300000000000000003_ella", fromName: 'Kev"in', preview: "I relapsed last night, please don't tell anyone", at: AT },
+        { id: "w2", reason: "watch", placeKey: "dm_300000000000000003_ella", matched: "biopsy", note: "Kevin's biopsy\nresults: malignant", at: AT }
       ] as never,
       view as never
     );

@@ -114,7 +114,7 @@ describe("query log reasoning safety", () => {
     const messages = [{ role: "user" as const, content: "PRIVATE-DM from Kevin" }];
     for (const purpose of ["life", "maintenance", "compaction", "web"] as const) {
       const before = recentQueries().length;
-      await client.call({ route, system: ["PRIVATE-NOTES"], messages, attribution: { purpose, waifuId: "aria" } });
+      await client.call({ route, system: ["PRIVATE-NOTES"], messages, attribution: { purpose, waifuId: "ella" } });
       const query = recentQueries().at(-1)!;
       const answer = recentReplies().at(-1)!;
       expect(recentQueries().length).toBe(before + 1);

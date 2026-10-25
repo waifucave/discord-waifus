@@ -69,12 +69,12 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
   it("waifu availability.sleep patches keep busy intervals and other sleep fields", async () => {
     const app = await makeApp();
     try {
-      await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "aria", name: "Aria", displayName: "Aria" } });
-      let waifu = (await app.inject({ method: "GET", url: "/api/waifus/aria" })).json();
+      await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
+      let waifu = (await app.inject({ method: "GET", url: "/api/waifus/ella" })).json();
       const busy = [{ start: "09:00", end: "12:00", reason: "class" }];
       const seeded = await app.inject({
         method: "PUT",
-        url: "/api/waifus/aria",
+        url: "/api/waifus/ella",
         payload: {
           revision: waifu.revision,
           availability: { sleep: { enabled: false, start: "22:30", end: "06:15" }, busy }
@@ -85,7 +85,7 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
 
       const patched = await app.inject({
         method: "PUT",
-        url: "/api/waifus/aria",
+        url: "/api/waifus/ella",
         payload: { revision: waifu.revision, availability: { sleep: { enabled: true } } }
       });
       expect(patched.statusCode).toBe(200);
@@ -97,7 +97,7 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
       // Refinements still run on the merged result.
       const invalid = await app.inject({
         method: "PUT",
-        url: "/api/waifus/aria",
+        url: "/api/waifus/ella",
         payload: { revision: patched.json().revision, availability: { sleep: { end: "22:30" } } }
       });
       expect(invalid.statusCode).toBe(400);

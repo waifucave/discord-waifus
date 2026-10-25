@@ -267,20 +267,25 @@ describe("data root and config", () => {
       const seeded = JSON.parse(await readFile(path.join(root, "user", "waifus", waifu.id, "waifu.json"), "utf8"));
       expect(seeded.persona).toBe(waifu.persona);
       expect(seeded.verbosity).toBe(waifu.verbosity);
+      expect(seeded.wakeOnName).toBe(waifu.wakeOnName ?? true);
       expect(seeded.bio).toBe(waifu.bio);
       expect(seeded.username).toBe(waifu.username);
     }
   });
 
-  it("ships twenty distinct default waifus with valid bios and Discord usernames", () => {
-    expect(PREBUILT_WAIFUS).toHaveLength(20);
+  it("ships the owner's twenty-one default waifus with valid bios and Discord usernames", () => {
+    expect(PREBUILT_WAIFUS.map((waifu) => waifu.name)).toEqual([
+      "Aria", "Lumi", "Riko", "Yuna", "Hinata", "Airi", "Mio", "Sora", "Alia", "Rem", "Raphtalia",
+      "Mizuhara", "Ayame", "Angel", "Makima", "Saber", "Esdeath", "Akame", "C.C.", "Power", "Zero Two"
+    ]);
     const ids = PREBUILT_WAIFUS.map((waifu) => waifu.id);
     expect(new Set(ids).size).toBe(ids.length);
-    const initials = PREBUILT_WAIFUS.map((waifu) => waifu.name[0]);
-    expect(new Set(initials).size).toBe(initials.length);
+    // Names that are common words in chat don't wake her by name.
+    expect(PREBUILT_WAIFUS.filter((waifu) => waifu.wakeOnName === false).map((waifu) => waifu.id).sort()).toEqual(["angel", "power", "rem", "saber"]);
     for (const waifu of PREBUILT_WAIFUS) {
-      expect(waifu.id).toBe(waifu.name.toLowerCase());
-      expect(waifu.name).toMatch(/^[A-Z][a-z]{2,}$/);
+      expect(waifu.id).toBe(waifu.name.toLowerCase().replace(/\./g, "").replace(/\s+/g, "-"));
+      expect(waifu.id).toMatch(/^[a-z]+(-[a-z]+)*$/);
+      expect(waifu.displayName).toBe(waifu.name);
       const words = waifu.persona.split(/\s+/).length;
       expect(words, waifu.id).toBeGreaterThanOrEqual(120);
       expect(words, waifu.id).toBeLessThanOrEqual(220);

@@ -17,7 +17,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import { FakeImageFetcher, quietLogger } from "./contextFixtures.js";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -38,7 +38,7 @@ const image = (id: string, size = 2048): RawDiscordMessage["attachments"][number
 
 async function ctxFor(w: LifeWorld): Promise<ToolContext> {
   const deps = w.cast.deps;
-  const waifu = await readWaifu(w.storage, "aria");
+  const waifu = await readWaifu(w.storage, "ella");
   const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
   return {
     deps,
@@ -59,7 +59,7 @@ const textOf = (content: unknown) =>
 
 /** Pictures in her /tmp, each a different PNG. */
 async function pictures(w: LifeWorld, count: number, size = 4): Promise<string[]> {
-  const dir = path.join(w.root, "user/waifus/aria/tmp/pics");
+  const dir = path.join(w.root, "user/waifus/ella/tmp/pics");
   await mkdir(dir, { recursive: true });
   const paths: string[] = [];
   for (let index = 0; index < count; index += 1) {
@@ -103,7 +103,7 @@ describe("Read of an image (§16.3.3)", () => {
     expect(modes((await lifeTool("Read")!.run({ file_path: b }, ctx)).content)).toEqual(["inline"]);
     // The epoch's count cap (2): the third image is its OCR text.
     expect(modes((await lifeTool("Read")!.run({ file_path: c }, ctx)).content)).toEqual([{ text: "[image: a lemon tart]" }]);
-    const state = await readLifeState(w.storage, "aria");
+    const state = await readLifeState(w.storage, "ella");
     expect(state.inlineImageCount).toBe(2);
     expect(state.shownImageKeys).toHaveLength(3);
     // The bytes are in the image cache under their hash.
@@ -140,18 +140,18 @@ describe("Read of an image (§16.3.3)", () => {
     });
     await pictures(w, 1);
     const wake = async (text: string) => {
-      const posted = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" } });
-      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: posted });
+      const posted = w.discord.post(ROOM, `<@${ELLA_BOT}> ${text}`, { mentions: { [ELLA_BOT]: "Ella" } });
+      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: posted });
       await w.cast.settle();
       // Her wake waits for the burst's quiet time (§4.2): fire it now.
       w.cast.intake.flushDetector();
       await w.cast.settle();
-      await w.cast.life("aria").runNow();
+      await w.cast.life("ella").runNow();
     };
     await wake("look at your picture");
-    await rm(path.join(w.root, "user/waifus/aria/tmp/pics/p4-0.png"));
+    await rm(path.join(w.root, "user/waifus/ella/tmp/pics/p4-0.png"));
     await wake("still there?");
-    expect((await readLifeState(w.storage, "aria")).epoch).toBe(1);
+    expect((await readLifeState(w.storage, "ella")).epoch).toBe(1);
     const last = w.anthropic.calls[w.anthropic.calls.length - 1]!.request;
     expect(JSON.stringify(last.messages)).toContain('"type":"image"');
   });
@@ -174,27 +174,27 @@ describe("pinned images (§5.3)", () => {
         textTurn("ok")
       )
     });
-    const posted = w.discord.post(ROOM, `<@${ARIA_BOT}> look at my cake`, { attachments: [image("9301")], mentions: { [ARIA_BOT]: "Aria" } });
-    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: posted });
+    const posted = w.discord.post(ROOM, `<@${ELLA_BOT}> look at my cake`, { attachments: [image("9301")], mentions: { [ELLA_BOT]: "Ella" } });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: posted });
     await w.cast.settle();
     // Her wake waits for the burst's quiet time (§4.2): fire it now.
     w.cast.intake.flushDetector();
     await w.cast.settle();
-    await w.cast.life("aria").runNow();
-    const before = await readLifeState(w.storage, "aria");
+    await w.cast.life("ella").runNow();
+    const before = await readLifeState(w.storage, "ella");
     expect(before.inlineImageCount).toBe(1);
     // The image's bytes are gone from the cache (and the file may expire from her /tmp).
     const key = before.shownImageKeys[0]!;
     expect(key).toMatch(/^file:/u);
     fetcher.local.delete(key);
-    const again = w.discord.post(ROOM, `<@${ARIA_BOT}> did you see it?`, { mentions: { [ARIA_BOT]: "Aria" } });
-    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: again.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: again });
+    const again = w.discord.post(ROOM, `<@${ELLA_BOT}> did you see it?`, { mentions: { [ELLA_BOT]: "Ella" } });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: again.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: again });
     await w.cast.settle();
     // Her wake waits for the burst's quiet time (§4.2): fire it now.
     w.cast.intake.flushDetector();
     await w.cast.settle();
-    await w.cast.life("aria").runNow();
-    const after = await readLifeState(w.storage, "aria");
+    await w.cast.life("ella").runNow();
+    const after = await readLifeState(w.storage, "ella");
     expect(after.epoch).toBe(2);
     expect(after.summary).toBe("Earlier: Kevin showed me a cake picture.");
     const summaryCall = w.anthropic.calls[4]!.request;
@@ -202,7 +202,7 @@ describe("pinned images (§5.3)", () => {
     // The kept turn's image is text in the new epoch: no image block is sent any more.
     const lastCall = w.anthropic.calls[5]!.request;
     expect(JSON.stringify(lastCall.messages)).not.toContain("\"type\":\"image\"");
-    const log = await readLifeLog(w.storage, "aria", 2);
+    const log = await readLifeLog(w.storage, "ella", 2);
     // Kept as a text-mode image block (its inline budget starts at zero in the new epoch).
     expect(JSON.stringify(log)).toContain('"type":"life_image"');
     expect(JSON.stringify(log)).not.toContain('"mode":"inline"');
@@ -224,20 +224,20 @@ describe("forget purges what the life cached (real fetcher)", () => {
     // The fetcher writes under this world's data root.
     (fetcher as unknown as { options: { dataRoot: string } }).options.dataRoot = w.root;
     (w.cast.deps as { images?: unknown }).images = fetcher;
-    const message = w.discord.post(dmOf("aria"), "my cake!", { attachments: [{ ...image("9401"), size: png.length, url: `https://cdn.discordapp.com/attachments/1/9401/cake-9401.png` }] });
-    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+    const message = w.discord.post(dmOf("ella"), "my cake!", { attachments: [{ ...image("9401"), size: png.length, url: `https://cdn.discordapp.com/attachments/1/9401/cake-9401.png` }] });
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     w.cast.intake.close();
     const ctx = await ctxFor(w);
     const read = await lifeTool("ReadMessages")!.run({ place: "dm/kevin" }, ctx);
     const saved = /\[image: (\/tmp\/dm\/kevin\/[0-9a-z]+-cake-9401\.png)\]/u.exec(textOf(read.content))![1]!;
     const look = await lifeTool("Read")!.run({ file_path: saved }, ctx);
     expect(kinds(look.content)).toContain("life_image");
-    const conversation = path.join(w.root, "user/conversations", `dm_${KEVIN}_aria`);
+    const conversation = path.join(w.root, "user/conversations", `dm_${KEVIN}_ella`);
     const indexed = JSON.parse(await readFile(path.join(conversation, "images.json"), "utf8")) as { keys: string[] };
     expect(indexed.keys).toEqual([expect.stringMatching(/^file:[0-9a-f]{64}$/u)]);
     const cacheDir = path.join(w.root, "app/cache/images");
     expect((await readdir(cacheDir, { recursive: true })).some((entry) => String(entry).length > 0)).toBe(true);
-    const result = await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "conversation" });
+    const result = await dmForget(w.storage, { userId: KEVIN, waifuId: "ella", scope: "conversation" });
     expect(result.deleted.cachedImages).toBe(1);
     const left = (await readdir(cacheDir, { recursive: true }).catch(() => [])).filter((entry) => /\.(bin|png|img)$|^[0-9a-f]{16,}/u.test(String(path.basename(String(entry)))));
     expect(left).toEqual([]);

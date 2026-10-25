@@ -26,7 +26,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-async function ctxFor(w: LifeWorld, waifuId = "aria"): Promise<ToolContext> {
+async function ctxFor(w: LifeWorld, waifuId = "ella"): Promise<ToolContext> {
   const deps = w.cast.deps;
   const waifu = await readWaifu(w.storage, waifuId);
   const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
@@ -44,12 +44,12 @@ async function ctxFor(w: LifeWorld, waifuId = "aria"): Promise<ToolContext> {
 
 const run = (name: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> => lifeTool(name)!.run(input, ctx);
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
-const hostPath = (w: LifeWorld, relative: string) => path.join(w.root, "user", "waifus", "aria", ...relative.split("/"));
+const hostPath = (w: LifeWorld, relative: string) => path.join(w.root, "user", "waifus", "ella", ...relative.split("/"));
 
-/** Kevin DMs Aria (so the DM is a place she may write to, D11). */
-async function kevinDms(w: LifeWorld, content = "hi aria", attachments?: RawDiscordMessage["attachments"]) {
-  const message = w.discord.post(dmOf("aria"), content, attachments ? { attachments } : {});
-  await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+/** Kevin DMs Ella (so the DM is a place she may write to, D11). */
+async function kevinDms(w: LifeWorld, content = "hi ella", attachments?: RawDiscordMessage["attachments"]) {
+  const message = w.discord.post(dmOf("ella"), content, attachments ? { attachments } : {});
+  await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
   w.cast.intake.close();
   return message;
 }
@@ -61,16 +61,16 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     const sent = await run("SendMessage", { place: "bake-club/#general", text: "brownies are ready" }, ctx);
     expect(text(sent)).toMatch(/^sent #[0-9a-z]+$/u);
     expect(w.discord.typing).toEqual(["200000000000000002"]);
-    expect(w.discord.sent).toMatchObject([{ placeKey: ROOM_KEY, content: "brownies are ready", senderBotId: "aria-bot" }]);
+    expect(w.discord.sent).toMatchObject([{ placeKey: ROOM_KEY, content: "brownies are ready", senderBotId: "ella-bot" }]);
     expect(await run("SendMessage", { place: "elsewhere/#random", text: "hi" }, ctx)).toEqual({ content: "error: unknown place; see ~/places.md", isError: true });
     expect(await run("SendMessage", { place: "bake-club/#general", text: "" }, ctx)).toEqual({ content: "error: there is nothing to send", isError: true });
     expect((await run("SendMessage", { place: "bake-club/#general", text: "x".repeat(2001) }, ctx)).isError).toBe(true);
   });
 
   it("never cold-DMs; a DM opens once the user wrote, until undeliverable, forgotten or rate-limited", async () => {
-    const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } }] });
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } }] });
     let ctx = await ctxFor(w);
-    expect((await run("SendMessage", { place: `dm_${KEVIN}_aria`, text: "hey kevin" }, ctx)).isError).toBe(true);
+    expect((await run("SendMessage", { place: `dm_${KEVIN}_ella`, text: "hey kevin" }, ctx)).isError).toBe(true);
     await kevinDms(w);
     ctx = await ctxFor(w);
     expect(text(await run("SendMessage", { place: "dm/kevin", text: "hey kevin!" }, ctx))).toMatch(/^sent #/u);
@@ -80,7 +80,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     const next = await ctxFor(w);
     expect(await run("SendMessage", { place: "dm/kevin", text: "one more" }, next)).toEqual({ content: "error: you can't post there", isError: true });
     // Undeliverable (Discord 50007) closes the DM until he writes again.
-    await updateDmLimit(w.storage, KEVIN, "aria", (limits) => ({ ...limits, replyTimestamps: [] }));
+    await updateDmLimit(w.storage, KEVIN, "ella", (limits) => ({ ...limits, replyTimestamps: [] }));
     w.discord.sendErrors.push(Object.assign(new Error("Cannot send messages to this user"), { code: 50007 }));
     expect(await run("SendMessage", { place: "dm/kevin", text: "hello?" }, await ctxFor(w))).toEqual({ content: "error: they can't receive your messages right now", isError: true });
     expect((await run("SendMessage", { place: "dm/kevin", text: "hello??" }, await ctxFor(w))).isError).toBe(true);
@@ -90,7 +90,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     const w = await lifeWorld(roots);
     await kevinDms(w);
     w.clock.advance(5_000);
-    await updateDmLimit(w.storage, KEVIN, "aria", (limits) => ({ ...limits, floorMessageId: "999999999999999999999" }));
+    await updateDmLimit(w.storage, KEVIN, "ella", (limits) => ({ ...limits, floorMessageId: "999999999999999999999" }));
     expect(await run("SendMessage", { place: "dm/kevin", text: "hi" }, await ctxFor(w))).toEqual({ content: "error: you can't post there", isError: true });
   });
 
@@ -98,7 +98,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     const w = await lifeWorld(roots, { config: (config) => ({ ...config, life: { ...config.life, maxSendPlacesPerTurn: 1 } }) });
     await kevinDms(w);
     const ctx = await ctxFor(w);
-    expect(text(await run("SendMessage", { place: "bake-club/#general", text: "[14:02 #k3] Aria: hello all" }, ctx))).toMatch(/^sent/u);
+    expect(text(await run("SendMessage", { place: "bake-club/#general", text: "[14:02 #k3] Ella: hello all" }, ctx))).toMatch(/^sent/u);
     expect(w.discord.sent[0]!.content).toBe("hello all");
     expect(await run("SendMessage", { place: "dm/kevin", text: "hi" }, ctx)).toEqual({ content: "error: you've already written in 1 places this turn", isError: true });
     expect((await run("SendMessage", { place: "bake-club/#general", text: 'ReadMessages({"place":"bake-club/#general"})' }, ctx)).isError).toBe(true);
@@ -123,7 +123,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
   });
 
   it("a waifu without her own bot cannot post (never through the House bot); the owner is told (M12)", async () => {
-    const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria" }] });
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella" }] });
     const result = await run("SendMessage", { place: "bake-club/#general", text: "hello?" }, await ctxFor(w));
     expect(result.isError).toBe(true);
     expect(text(result)).toMatch(/no Discord bot of your own/u);
@@ -142,7 +142,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
     const sent = await run(
       "SendMessage",
-      { place: "bake-club/#general", text: "the flyer", files: ["~/flyer.txt", "/home/aria/MEMORY.md", "people/kevin.md", "~/places.md", "~/kevin-copy.md", "~/nope.txt"] },
+      { place: "bake-club/#general", text: "the flyer", files: ["~/flyer.txt", "/home/ella/MEMORY.md", "people/kevin.md", "~/places.md", "~/kevin-copy.md", "~/nope.txt"] },
       ctx
     );
     expect(sent.isError).toBeFalsy();
@@ -200,7 +200,7 @@ describe("ReadMessages (§6.2) and React (§6.4)", () => {
     const after = text(await run("ReadMessages", { place: "bake-club/#general", limit: 2 }, ctx));
     expect(after).toMatch(/someone: \(removed\)/u);
     expect(after).not.toContain("message 20");
-    const state = await readLifeFile(w.storage, "aria", "reads");
+    const state = await readLifeFile(w.storage, "ella", "reads");
     expect(state.cursors[ROOM_KEY]?.lastReadMessageId).toBeTruthy();
   });
 
@@ -211,7 +211,7 @@ describe("ReadMessages (§6.2) and React (§6.4)", () => {
     const read = text(await run("ReadMessages", { place: "bake-club/#general", limit: 1 }, ctx));
     const ref = /#([0-9a-z]+)\]/u.exec(read)![1]!;
     expect(text(await run("React", { place: "bake-club/#general", ref: `#${ref}`, emoji: "🎉" }, ctx))).toBe("reacted");
-    expect(w.discord.reactions).toMatchObject([{ placeKey: ROOM_KEY, emoji: "🎉", botId: "aria-bot" }]);
+    expect(w.discord.reactions).toMatchObject([{ placeKey: ROOM_KEY, emoji: "🎉", botId: "ella-bot" }]);
     expect(await run("React", { place: "bake-club/#general", ref: `#${ref}`, emoji: ":partyblob:" }, ctx)).toEqual({ content: "error: there is no :partyblob: emoji here", isError: true });
     expect(await run("React", { place: "bake-club/#general", ref: "#nope", emoji: "🎉" }, ctx)).toEqual({ content: "error: message too old", isError: true });
   });
@@ -254,9 +254,9 @@ describe("ReadMessages downloads (§16.3.1)", () => {
     expect(body).toMatch(/\[file: song\.mp3 · 2\.9 MB · not downloaded\]/u);
     expect(body).toMatch(/\[image: huge\.png · 11(\.0)? MB · not downloaded\]/u);
     expect(await readFile(hostPath(w, `tmp/bake-club/general/${ref}-cake.png`))).toEqual(png);
-    expect(await herFile(w, "aria", `tmp/bake-club/general/${ref}-list.csv`)).toBe("flour,sugar\n");
+    expect(await herFile(w, "ella", `tmp/bake-club/general/${ref}-list.csv`)).toBe("flour,sugar\n");
     // The provenance index knows each download (not visible to her).
-    const index = JSON.parse(await readFile(path.join(w.root, "user/waifus/aria/life/files-index.json"), "utf8")) as { entries: Array<{ attachmentId: string; authorId: string; placeKey: string }> };
+    const index = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/files-index.json"), "utf8")) as { entries: Array<{ attachmentId: string; authorId: string; placeKey: string }> };
     expect(index.entries.map((entry) => entry.attachmentId).sort()).toEqual(["5001", "5002", "5003"]);
     expect(index.entries.every((entry) => entry.authorId === KEVIN && entry.placeKey === ROOM_KEY)).toBe(true);
     // Read again: nothing is fetched again while the files are there.
@@ -290,8 +290,8 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     const w = await lifeWorld(roots);
     // Two people she knows as Kevin (from her DMs).
     for (const userId of [KEVIN, MINA_USER]) {
-      const message = w.discord.post(dmOf("aria", userId), "hi", { authorId: userId, authorName: "Kevin" });
-      await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+      const message = w.discord.post(dmOf("ella", userId), "hi", { authorId: userId, authorName: "Kevin" });
+      await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     }
     w.cast.intake.close();
     const ctx = await ctxFor(w);
@@ -306,11 +306,11 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     expect(text(await watch({ when: [{ from: `<@${KEVIN}>`, words: ["cake"] }], note: "Kevin's cake news" }))).toMatch(/^watching w1 until Sat 24 Oct 15:0\d \(in ~\/watches\.json\)$/u);
     // A timer: no bindings, only a timeout.
     expect(text(await watch({ when: [], note: "tea's ready", timeout_minutes: 5 }))).toMatch(/^watching w2 until /u);
-    const file = JSON.parse((await herFile(w, "aria", "home/watches.json"))!) as Array<Record<string, unknown>>;
+    const file = JSON.parse((await herFile(w, "ella", "home/watches.json"))!) as Array<Record<string, unknown>>;
     expect(file[0]).toEqual({ id: "w1", timeout: expect.stringMatching(/^2026-10-24 15:0\d$/u), once: true, note: "Kevin's cake news", when: [{ from: `<@${KEVIN}>`, words: ["cake"] }] });
     expect(file[1]).toMatchObject({ id: "w2", note: "tea's ready", when: [] });
     // The resolution lives outside her folder.
-    const ids = JSON.parse(await readFile(path.join(w.root, "user/waifus/aria/life/watch-ids.json"), "utf8")) as { watches: Record<string, { bindings: unknown[] }> };
+    const ids = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/watch-ids.json"), "utf8")) as { watches: Record<string, { bindings: unknown[] }> };
     expect(ids.watches["w1"]!.bindings).toEqual([{ fromUserId: KEVIN, fromName: "Kevin", words: ["cake"] }]);
     for (let index = 3; index <= 10; index += 1) expect((await watch({ when: [{ any_message: true }] })).isError).toBeFalsy();
     expect(await watch({ when: [{ any_message: true }] })).toEqual({ content: "error: you already have 10 watches; remove one from ~/watches.json first", isError: true });
@@ -344,7 +344,7 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     expect(await fire("more cake", new Date(now.getTime() + 5 * 60_000))).toEqual([]);
     expect((await fire("more cake", new Date(now.getTime() + 11 * 60_000))).map((hit) => hit.watch.id)).toEqual(["w2"]);
     expect(await fire("cake again", new Date(now.getTime() + 30 * 60_000))).toEqual([]);
-    const left = JSON.parse((await herFile(w, "aria", "home/watches.json"))!) as Array<{ id: string }>;
+    const left = JSON.parse((await herFile(w, "ella", "home/watches.json"))!) as Array<{ id: string }>;
     expect(left.map((entry) => entry.id)).toEqual(["w2"]);
   });
 
@@ -353,7 +353,7 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     const ctx = await ctxFor(w);
     await run("WatchFor", { when: [{ words: ["cake"] }], note: "cake", timeout_minutes: 60 }, ctx);
     await run("WatchFor", { when: [], note: "tea", timeout_minutes: 30 }, ctx);
-    const before = (await herFile(w, "aria", "home/watches.json"))!;
+    const before = (await herFile(w, "ella", "home/watches.json"))!;
     // Deleting the last entry and leaving its comma behind.
     const broken = before.replace(/,\n {2}\{"id": "w2".*\n/u, ",\n");
     // A whole-file Write needs a Read first (the file changes on its own: a watch matches or times out).
@@ -362,11 +362,11 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     const refused = await run("Write", { file_path: "~/watches.json", content: broken }, ctx);
     expect(refused.isError).toBe(true);
     expect(text(refused)).toMatch(/^error: watches\.json line \d+, column \d+: /u);
-    expect(await herFile(w, "aria", "home/watches.json")).toBe(before);
+    expect(await herFile(w, "ella", "home/watches.json")).toBe(before);
     const past = await run("Edit", { file_path: "~/watches.json", old_string: /"timeout": "[^"]+"/u.exec(before)![0], new_string: '"timeout": "2026-10-20 10:00"' }, ctx);
     expect(text(past)).toBe("error: watches.json entry w1: timeout is in the past");
     expect((await run("Edit", { file_path: "~/watches.json", old_string: /,\n {2}\{"id": "w2".*\n/u.exec(before)![0], new_string: "\n" }, ctx)).isError).toBeFalsy();
-    expect(JSON.parse((await herFile(w, "aria", "home/watches.json"))!)).toHaveLength(1);
+    expect(JSON.parse((await herFile(w, "ella", "home/watches.json"))!)).toHaveLength(1);
   });
 });
 
@@ -383,14 +383,14 @@ describe("ScheduleWake and ~/schedule.json (§16.4)", () => {
     expect(text(await schedule({ at: "2026-10-25 18:00", note: "ask Kevin about the exam", repeat: "weekly" }))).toBe("set r1 for Sun 25 Oct 18:00, then weekly (in ~/schedule.json)");
     for (let index = 2; index <= 20; index += 1) expect((await schedule({ in_minutes: 10 + index })).isError).toBeFalsy();
     expect(await schedule({ in_minutes: 60 })).toEqual({ content: "error: you already have 20 reminders; remove one from ~/schedule.json first", isError: true });
-    const file = JSON.parse((await herFile(w, "aria", "home/schedule.json"))!) as Array<Record<string, unknown>>;
+    const file = JSON.parse((await herFile(w, "ella", "home/schedule.json"))!) as Array<Record<string, unknown>>;
     expect(file[0]).toEqual({ id: "r1", at: "2026-10-25 18:00", repeat: "weekly", note: "ask Kevin about the exam" });
     expect(file).toHaveLength(20);
     // A hand-written entry without an id gets the next one; a bad field is refused.
     const entries = file.slice(1);
     await run("Read", { file_path: "~/schedule.json" }, ctx);
     expect(text(await run("Write", { file_path: "~/schedule.json", content: JSON.stringify([...entries, { at: "2026-10-26 09:00", note: "new" }]) }, ctx))).toMatch(/new entries got ids/u);
-    expect((JSON.parse((await herFile(w, "aria", "home/schedule.json"))!) as Array<{ id: string }>).pop()!.id).toBe("r21");
+    expect((JSON.parse((await herFile(w, "ella", "home/schedule.json"))!) as Array<{ id: string }>).pop()!.id).toBe("r21");
     expect(text(await run("Write", { file_path: "~/schedule.json", content: JSON.stringify([{ at: "2026-10-26 09:00", note: "x", repeat: "hourly" }]) }, ctx))).toMatch(/^error: schedule\.json entry 1: /u);
   });
 });
@@ -399,10 +399,10 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
   it("enforces the path rules on every path form", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
-    for (const good of ["MEMORY.md", "~/me.md", "/home/aria/people/kevin.md", "places/bake-club/recipes.md", "/tmp/scratch.txt", "people/../notes.txt", "~/a/b/c/d/e/f/g.md"]) {
+    for (const good of ["MEMORY.md", "~/me.md", "/home/ella/people/kevin.md", "places/bake-club/recipes.md", "/tmp/scratch.txt", "people/../notes.txt", "~/a/b/c/d/e/f/g.md"]) {
       expect((await run("Write", { file_path: good, content: "# x\n" }, ctx)).isError, good).toBeFalsy();
     }
-    for (const bad of ["/etc/passwd", "../me.md", "~/../mina/x.md", "/home/mina/x.md", "/tmp/../home/aria/x.md/..", "a\\b.md", "con.txt", "people/NUL", "~/a/b/c/d/e/f/g/h/i.md", `${"x".repeat(101)}.md`, "", "~", "/tmp"]) {
+    for (const bad of ["/etc/passwd", "../me.md", "~/../mina/x.md", "/home/mina/x.md", "/tmp/../home/ella/x.md/..", "a\\b.md", "con.txt", "people/NUL", "~/a/b/c/d/e/f/g/h/i.md", `${"x".repeat(101)}.md`, "", "~", "/tmp"]) {
       expect((await run("Write", { file_path: bad, content: "x" }, ctx)).isError, bad).toBe(true);
     }
     // Device names in every disguise, and names ending in a dot or a space, are refused.
@@ -412,7 +412,7 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
     // A name that differs only by case is the file or folder already there (case-insensitive disks).
     expect(text(await run("Write", { file_path: "~/People/x.md", content: "x" }, ctx))).toBe("wrote ~/people/x.md (1 B)");
     expect(text(await run("Write", { file_path: "~/me.MD", content: "x" }, ctx))).toBe("wrote ~/me.md (1 B)");
-    expect(await herFile(w, "aria", "home/me.md")).toBe("x");
+    expect(await herFile(w, "ella", "home/me.md")).toBe("x");
     // No host path leaks into any error.
     const outside = await run("Read", { file_path: "/etc/passwd" }, ctx);
     expect(text(outside)).toBe("error: /etc/passwd is outside your folders (your home ~ and /tmp)");
@@ -427,7 +427,7 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
     await symlink(w.root, hostPath(w, "home/rootlink"));
     expect(text(await run("Read", { file_path: "~/link.md" }, ctx))).toBe("error: ~/link.md can't be used: it is a link");
     expect(text(await run("Write", { file_path: "~/link.md", content: "x" }, ctx))).toBe("error: ~/link.md can't be used: it is a link");
-    expect((await run("Read", { file_path: "~/rootlink/user/waifus/aria/home/real.md" }, ctx)).isError).toBe(true);
+    expect((await run("Read", { file_path: "~/rootlink/user/waifus/ella/home/real.md" }, ctx)).isError).toBe(true);
     expect(await readFile(hostPath(w, "home/real.md"), "utf8")).toBe("real\n");
   });
 
@@ -444,7 +444,7 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
     expect(await run("Edit", { file_path: "~/people/kevin.md", old_string: "hates tea", new_string: "x" }, ctx)).toEqual({ content: "error: old_string is not in ~/people/kevin.md; read it first", isError: true });
     expect(text(await run("Edit", { file_path: "~/people/kevin.md", old_string: "likes tea a lot", new_string: "likes coffee now" }, ctx))).toBe("edited ~/people/kevin.md");
     expect(text(await run("Edit", { file_path: "~/people/kevin.md", old_string: "likes", new_string: "loves", replace_all: true }, ctx))).toMatch(/^edited ~\/people\/kevin\.md/u);
-    expect(await herFile(w, "aria", "home/people/kevin.md")).toBe("# Kevin\n- loves tea\n- loves coffee now\n");
+    expect(await herFile(w, "ella", "home/people/kevin.md")).toBe("# Kevin\n- loves tea\n- loves coffee now\n");
     expect(text(await run("Write", { file_path: "~/empty.md", content: "" }, ctx))).toBe("wrote ~/empty.md (0 B)");
     expect(text(await run("Read", { file_path: "~/empty.md" }, ctx))).toBe("(empty file)");
     expect(text(await run("Read", { file_path: "~/missing.md" }, ctx))).toBe("error: ~/missing.md doesn't exist");
@@ -457,7 +457,7 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
       expect(await run(tool, input, ctx)).toEqual({ content: "error: places.md is kept up to date for you and can't be changed", isError: true });
     }
     expect(text(await run("Bash", { command: "rm ~/places.md" }, ctx))).toMatch(/places\.md/u);
-    expect(await herFile(w, "aria", "home/places.md")).toContain("# Your places");
+    expect(await herFile(w, "ella", "home/places.md")).toContain("# Your places");
   });
 
   it("limits a written file to 256 KiB and her home to its file count; binary files are not text", async () => {
@@ -504,7 +504,7 @@ describe("tool list (§16.3)", () => {
     expect(await refreshPlacesFile(w.cast.deps, ctx.waifu)).toBe(true);
     // Unchanged: not rewritten.
     expect(await refreshPlacesFile(w.cast.deps, ctx.waifu)).toBe(false);
-    const listed = (await herFile(w, "aria", "home/places.md"))!;
+    const listed = (await herFile(w, "ella", "home/places.md"))!;
     expect(listed).toMatch(/^# Your places\n\(This file is kept up to date for you/u);
     expect(listed).toContain("- bake-club/#general (Bake Club › #general)");
     expect(listed).toContain("- bake-club/#recipes");

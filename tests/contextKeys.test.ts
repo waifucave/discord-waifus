@@ -26,13 +26,13 @@ afterEach(async () => {
 describe("conversation keys", () => {
   it("encodes guild and DM conversations", () => {
     expect(conversationKey({ kind: "guild", guildId: GUILD, channelId: CHANNEL })).toBe(`g_${GUILD}_${CHANNEL}`);
-    expect(conversationKey({ kind: "dm", userId: USER, waifuId: "aria" })).toBe(`dm_${USER}_aria`);
+    expect(conversationKey({ kind: "dm", userId: USER, waifuId: "ella" })).toBe(`dm_${USER}_ella`);
   });
 
   it("round-trips, including waifu ids that contain underscores, dots and colons", () => {
     const refs: ConversationRef[] = [
       { kind: "guild", guildId: GUILD, channelId: CHANNEL },
-      { kind: "dm", userId: USER, waifuId: "aria" },
+      { kind: "dm", userId: USER, waifuId: "ella" },
       { kind: "dm", userId: USER, waifuId: "mei_chan.v2:alt-1" }
     ];
     for (const ref of refs) {
@@ -43,7 +43,7 @@ describe("conversation keys", () => {
   it("refuses ids that would break the encoding", () => {
     expect(() => conversationKey({ kind: "guild", guildId: "a_b", channelId: CHANNEL })).toThrow();
     expect(() => conversationKey({ kind: "guild", guildId: GUILD, channelId: "../x" })).toThrow();
-    expect(() => conversationKey({ kind: "dm", userId: "u_1", waifuId: "aria" })).toThrow();
+    expect(() => conversationKey({ kind: "dm", userId: "u_1", waifuId: "ella" })).toThrow();
     expect(() => conversationKey({ kind: "dm", userId: USER, waifuId: ".." })).toThrow();
     expect(() => conversationKey({ kind: "dm", userId: USER, waifuId: "a/b" })).toThrow();
   });
@@ -57,7 +57,7 @@ describe("conversation keys", () => {
 
 describe("conversation paths", () => {
   const key = conversationKey({ kind: "guild", guildId: GUILD, channelId: CHANNEL });
-  const dmKey = conversationKey({ kind: "dm", userId: USER, waifuId: "aria" });
+  const dmKey = conversationKey({ kind: "dm", userId: USER, waifuId: "ella" });
 
   it("lays out files under user/conversations/<key>/", () => {
     expect(conversationDirPath(key)).toBe(path.join("user", "conversations", key));

@@ -80,7 +80,7 @@ describe("life request format per curated route", () => {
   it.each(routes)("$providerId/$modelId: no two user messages in a row, nothing lost", async (route) => {
     const { baseUrl, bodies } = await capture();
     const client = new ModelClient({ winter: createWinterRuntime(), credentials: () => "sk-test", providerAlerts: new ProviderAlerts(), connection: () => ({ baseUrl, local: true }) });
-    await client.call({ route, system: ["A", "B"], messages: LOG, tools: TOOLS, attribution: { purpose: "life", waifuId: "aria" } }).catch(() => undefined);
+    await client.call({ route, system: ["A", "B"], messages: LOG, tools: TOOLS, attribution: { purpose: "life", waifuId: "ella" } }).catch(() => undefined);
     expect(bodies.length).toBeGreaterThan(0);
     const body = bodies[bodies.length - 1]!;
     const sequence = roles(body);

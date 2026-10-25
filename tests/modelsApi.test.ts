@@ -121,12 +121,12 @@ describe("model writes (waifus and the assistant)", () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/waifus",
-      payload: { id: "aria", name: "Aria", displayName: "Aria", model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "max" } }
+      payload: { id: "ella", name: "Ella", displayName: "Ella", model: { providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "max" } }
     });
     expect(created.statusCode, created.body).toBe(201);
     expect(created.json().model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "max" });
 
-    const put = (model: unknown, revision: number) => app.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision, model } });
+    const put = (model: unknown, revision: number) => app.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision, model } });
     const unknown = await put({ providerId: "openai", modelId: "gpt-4o" }, 0);
     expect(unknown.statusCode).toBe(400);
     expect(unknown.json()).toMatchObject({ details: { error: "model_not_available", providerId: "openai", modelId: "gpt-4o" } });
@@ -139,7 +139,7 @@ describe("model writes (waifus and the assistant)", () => {
     expect(effort.json()).toMatchObject({ details: { error: "unsupported_effort", effort: "medium", efforts: ["low", "high", "max"] } });
 
     // Omitted keeps, null unsets.
-    const renamed = await app.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: 0, displayName: "Aria!" } });
+    const renamed = await app.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: 0, displayName: "Ella!" } });
     expect(renamed.json().model).toEqual({ providerId: "anthropic", modelId: "claude-sonnet-5-5", effort: "max" });
     const unset = await put(null, renamed.json().revision);
     expect(unset.statusCode).toBe(200);
@@ -200,21 +200,21 @@ describe("/api/runtime models.warnings", () => {
   it("a save that leaves the model as it was keeps the notices; dismissing removes them (persisted ones only)", async () => {
     const { app, root } = await makeApp();
     const SONNET = { providerId: "anthropic", modelId: "claude-sonnet-5-5" };
-    await writeWaifu(root, "aria", { model: SONNET });
+    await writeWaifu(root, "ella", { model: SONNET });
     await appendModelWarnings(root, [
-      { scope: "waifu:aria", code: "effort_dropped", detail: "Effort \"turbo\" is not listed.", previous: "anthropic/claude-sonnet-5-5 (effort turbo)" }
+      { scope: "waifu:ella", code: "effort_dropped", detail: "Effort \"turbo\" is not listed.", previous: "anthropic/claude-sonnet-5-5 (effort turbo)" }
     ]);
     // The Cast editor's persona-only save resends the (offered) model unchanged.
-    const persona = await app.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: 1, persona: "edited", model: SONNET, botId: null } });
+    const persona = await app.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: 1, persona: "edited", model: SONNET, botId: null } });
     expect(persona.statusCode, persona.body).toBe(200);
     expect(await readModelWarnings(root)).toHaveLength(1);
     const view = (await app.inject({ method: "GET", url: "/api/runtime" })).json<{ models: { warnings: Array<Record<string, unknown>> } }>().models.warnings;
-    expect(view).toContainEqual(expect.objectContaining({ scope: "waifu:aria", label: "Aria", dismissible: true }));
+    expect(view).toContainEqual(expect.objectContaining({ scope: "waifu:ella", label: "Ella", dismissible: true }));
 
     expect(ROUTE_POLICY_MANIFEST.find((entry) => entry.method === "DELETE" && entry.path === "/api/runtime/model-warnings/:scope")).toBeDefined();
-    const dismissed = await app.inject({ method: "DELETE", url: `/api/runtime/model-warnings/${encodeURIComponent("waifu:aria")}` });
+    const dismissed = await app.inject({ method: "DELETE", url: `/api/runtime/model-warnings/${encodeURIComponent("waifu:ella")}` });
     expect(dismissed.statusCode, dismissed.body).toBe(200);
-    expect(dismissed.json()).toEqual({ scope: "waifu:aria", dismissed: 1 });
+    expect(dismissed.json()).toEqual({ scope: "waifu:ella", dismissed: 1 });
     expect(await readModelWarnings(root)).toEqual([]);
     expect((await app.inject({ method: "DELETE", url: "/api/runtime/model-warnings/assistant" })).json()).toEqual({ scope: "assistant", dismissed: 0 });
     expect((await app.inject({ method: "DELETE", url: "/api/runtime/model-warnings/nonsense" })).statusCode).toBe(400);

@@ -22,7 +22,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTempRoot));
 });
 
-const KEY = conversationKey({ kind: "dm", userId: "500000000000000005", waifuId: "aria" });
+const KEY = conversationKey({ kind: "dm", userId: "500000000000000005", waifuId: "ella" });
 const exists = (file: string) => access(file).then(() => true, () => false);
 
 async function conversation(): Promise<{ root: string; dir: string }> {

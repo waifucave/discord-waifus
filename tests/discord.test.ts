@@ -205,14 +205,14 @@ describe("Discord member cache helpers", () => {
       orchestrator: null,
       waifus: [
         {
-          id: "aria",
-          displayName: "Aria",
+          id: "ella",
+          displayName: "Ella",
           applicationId: "100000000000000004",
           enabled: true
         }
       ]
     });
-    expect(merged.some((member) => member.userId === "100000000000000004" && member.guildDisplayName === "Aria"))
+    expect(merged.some((member) => member.userId === "100000000000000004" && member.guildDisplayName === "Ella"))
       .toBe(true);
   });
 });
@@ -342,8 +342,8 @@ describe("stripLeakedContextHeader", () => {
   it("strips a full index + timestamp + sender prefix", () => {
     expect(
       stripLeakedContextHeader(
-        "[index: #5] [timestamp: 2026-05-16T12:00:00Z] [sender: Aria] Hey K!",
-        { senderDisplayName: "Aria" }
+        "[index: #5] [timestamp: 2026-05-16T12:00:00Z] [sender: Ella] Hey K!",
+        { senderDisplayName: "Ella" }
       )
     ).toBe("Hey K!");
   });
@@ -351,26 +351,26 @@ describe("stripLeakedContextHeader", () => {
   it("strips trailing reactions and replying-to suffixes", () => {
     expect(
       stripLeakedContextHeader(
-        "[timestamp: 2026-05-16T12:00:00Z] [sender: Aria] Hey K! [reactions: 🔥 x1] [replying to: K: play with me]"
+        "[timestamp: 2026-05-16T12:00:00Z] [sender: Ella] Hey K! [reactions: 🔥 x1] [replying to: K: play with me]"
       )
     ).toBe("Hey K!");
   });
 
   it("strips multi-block leakage with intermediate body text", () => {
     const leaked = [
-      "[timestamp: 2026-05-16T12:00:00Z] [sender: Aria] That didn't really answer, did it...",
+      "[timestamp: 2026-05-16T12:00:00Z] [sender: Ella] That didn't really answer, did it...",
       "[replying to: K: play with me]",
       "",
-      "[timestamp: 2026-05-16T12:00:30Z] [sender: Aria] What kind of play?"
+      "[timestamp: 2026-05-16T12:00:30Z] [sender: Ella] What kind of play?"
     ].join("\n");
-    const out = stripLeakedContextHeader(leaked, { senderDisplayName: "Aria" });
+    const out = stripLeakedContextHeader(leaked, { senderDisplayName: "Ella" });
     expect(out.startsWith("[")).toBe(false);
     expect(out.endsWith("]")).toBe(false);
   });
 
   it("still strips legacy formats for backwards compatibility", () => {
     expect(stripLeakedContextHeader("[just now] Bored, huh?")).toBe("Bored, huh?");
-    expect(stripLeakedContextHeader("#5 [just now] Aria: Hey K!", { senderDisplayName: "Aria" })).toBe("Hey K!");
+    expect(stripLeakedContextHeader("#5 [just now] Ella: Hey K!", { senderDisplayName: "Ella" })).toBe("Hey K!");
     expect(stripLeakedContextHeader("reply_to: #2\nactual reply")).toBe("actual reply");
   });
 
@@ -380,7 +380,7 @@ describe("stripLeakedContextHeader", () => {
   });
 
   it("leaves a clean reply untouched", () => {
-    expect(stripLeakedContextHeader("Hey K!", { senderDisplayName: "Aria" })).toBe("Hey K!");
+    expect(stripLeakedContextHeader("Hey K!", { senderDisplayName: "Ella" })).toBe("Hey K!");
   });
 
   it("strips leaked analysis blocks and keeps the final reply", () => {
@@ -390,7 +390,7 @@ describe("stripLeakedContextHeader", () => {
       "Response draft: Feels like a summoning ritual went off.",
       "</analysis>Feels like a summoning ritual went off. If anyone's lurking besides me, now's a good time to materialize. <:thinknoose:>"
     ].join("\n");
-    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Aria" })).toBe(
+    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Ella" })).toBe(
       "Feels like a summoning ritual went off. If anyone's lurking besides me, now's a good time to materialize. <:thinknoose:>"
     );
   });
@@ -399,7 +399,7 @@ describe("stripLeakedContextHeader", () => {
     expect(
       stripLeakedContextHeader(
         "Analysis: too much private detail. Response draft: Got carried away, didn't I?",
-        { senderDisplayName: "Aria" }
+        { senderDisplayName: "Ella" }
       )
     ).toBe("Got carried away, didn't I?");
   });
@@ -410,7 +410,7 @@ describe("stripLeakedContextHeader", () => {
 
   it("does not strip another speaker's name", () => {
     expect(
-      stripLeakedContextHeader("Kevin: stop saying that", { senderDisplayName: "Aria" })
+      stripLeakedContextHeader("Kevin: stop saying that", { senderDisplayName: "Ella" })
     ).toBe("Kevin: stop saying that");
   });
 
@@ -424,8 +424,8 @@ describe("stripLeakedContextHeader", () => {
 
   it("strips a mid-reply header even when the body is on the next line", () => {
     const leaked =
-      "first line body 😘\n[timestamp: 2026-05-18T14:38:40Z] [sender: Aria]\nsecond line body";
-    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Aria" })).toBe(
+      "first line body 😘\n[timestamp: 2026-05-18T14:38:40Z] [sender: Ella]\nsecond line body";
+    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Ella" })).toBe(
       "first line body 😘\n\nsecond line body"
     );
   });
@@ -435,9 +435,9 @@ describe("stripLeakedContextHeader", () => {
       "first body line",
       "[replying to: K: hi there]",
       "[reactions: 🔥 x2]",
-      "[timestamp: 2026-05-18T14:38:40Z] [sender: Aria] second body line"
+      "[timestamp: 2026-05-18T14:38:40Z] [sender: Ella] second body line"
     ].join("\n");
-    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Aria" })).toBe(
+    expect(stripLeakedContextHeader(leaked, { senderDisplayName: "Ella" })).toBe(
       "first body line\n\nsecond body line"
     );
   });
@@ -451,8 +451,8 @@ describe("stripLeakedContextHeader", () => {
   it("drops a leading other-waifu impersonation line entirely", () => {
     expect(
       stripLeakedContextHeader("Riko: Bravo, you cracked the code!\nokay", {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria", "Riko", "Stupid hoe"]
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella", "Riko", "Stupid hoe"]
       })
     ).toBe("okay");
   });
@@ -460,17 +460,17 @@ describe("stripLeakedContextHeader", () => {
   it("ignores a leading name not present in participantDisplayNames", () => {
     expect(
       stripLeakedContextHeader("Kevin: stop saying that", {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria", "Riko"]
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella", "Riko"]
       })
     ).toBe("Kevin: stop saying that");
   });
 
   it("strips a leading own-name prefix case-insensitively", () => {
     expect(
-      stripLeakedContextHeader("aria: hello there", {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria"]
+      stripLeakedContextHeader("ella: hello there", {
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella"]
       })
     ).toBe("hello there");
   });
@@ -480,13 +480,13 @@ describe("stripLeakedContextHeader", () => {
       "Riko: Bravo, you cracked the code!",
       "🔥",
       "Stupid hoe: proud of you for figuring out a basic discord feature babe",
-      "Aria: He finally graduated from his own tutorial.",
+      "Ella: He finally graduated from his own tutorial.",
       "Slow clap."
     ].join("\n");
     expect(
       stripLeakedContextHeader(leaked, {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria", "Riko", "Stupid hoe", "Lumi"]
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella", "Riko", "Stupid hoe", "Lumi"]
       })
     ).toBe("🔥\nHe finally graduated from his own tutorial.\nSlow clap.");
   });
@@ -501,17 +501,17 @@ describe("stripLeakedContextHeader", () => {
     ].join("\n");
     expect(
       stripLeakedContextHeader(leaked, {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria", "Riko"]
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella", "Riko"]
       })
     ).toBe("actual reply");
   });
 
   it("normalizes an own-name speaker label block into the waifu's actual content", () => {
     expect(
-      stripLeakedContextHeader("Aria:\n  actual reply", {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria", "Riko"]
+      stripLeakedContextHeader("Ella:\n  actual reply", {
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella", "Riko"]
       })
     ).toBe("actual reply");
   });
@@ -519,8 +519,8 @@ describe("stripLeakedContextHeader", () => {
   it("keeps a line whose name prefix is not in the participants list", () => {
     expect(
       stripLeakedContextHeader("Kevin: ok\nyeah", {
-        senderDisplayName: "Aria",
-        participantDisplayNames: ["Aria", "Riko"]
+        senderDisplayName: "Ella",
+        participantDisplayNames: ["Ella", "Riko"]
       })
     ).toBe("Kevin: ok\nyeah");
   });
@@ -536,7 +536,7 @@ function quietLogger() {
 }
 
 describe("stripLeakedContextHeader — clip audit pins", () => {
-  const opts = { senderDisplayName: "Aria", participantDisplayNames: ["Aria", "Riko"] };
+  const opts = { senderDisplayName: "Ella", participantDisplayNames: ["Ella", "Riko"] };
 
   it("strips a leading `#N` legacy-index prefix", () => {
     expect(stripLeakedContextHeader("#3 hot take", opts)).toBe("hot take");
@@ -581,9 +581,9 @@ describe("stripLeakedContextHeader — clip audit pins", () => {
     );
   });
 
-  it("does not strip a mid-line `Aria:` (only leading prefixes are sender-stripped)", () => {
-    expect(stripLeakedContextHeader("omg Aria: did i say that?", opts)).toBe(
-      "omg Aria: did i say that?"
+  it("does not strip a mid-line `Ella:` (only leading prefixes are sender-stripped)", () => {
+    expect(stripLeakedContextHeader("omg Ella: did i say that?", opts)).toBe(
+      "omg Ella: did i say that?"
     );
   });
 
@@ -593,7 +593,7 @@ describe("stripLeakedContextHeader — clip audit pins", () => {
     );
   });
 
-  // Trade-off pin: a leading `Riko:` line — even if Aria intended it as quoted
+  // Trade-off pin: a leading `Riko:` line — even if Ella intended it as quoted
   // dialogue, not impersonation — gets dropped. Keeping this behavior so transcript
   // impersonation is consistently caught; the runtime's retry-once compensates when
   // it would otherwise empty the entire turn.
@@ -625,24 +625,24 @@ describe("stripLeakedContextHeader — clip audit pins", () => {
 describe("self-alias stripping (W2)", () => {
   it("strips a self-nickname prefix and keeps the content", () => {
     const result = stripLeakedContextHeader("K的小娇妻: bro really pulled up with a whole gif 💀", {
-      selfDisplayNames: ["Aria", "K的小娇妻"],
-      participantDisplayNames: ["Aria", "K的小娇妻", "Riko", "Kevin"]
+      selfDisplayNames: ["Ella", "K的小娇妻"],
+      participantDisplayNames: ["Ella", "K的小娇妻", "Riko", "Kevin"]
     });
     expect(result).toBe("bro really pulled up with a whole gif 💀");
   });
 
   it("still drops a genuine other-speaker line", () => {
     const result = stripLeakedContextHeader("Riko: not my line\nactual reply", {
-      selfDisplayNames: ["Aria", "K的小娇妻"],
-      participantDisplayNames: ["Aria", "K的小娇妻", "Riko", "Kevin"]
+      selfDisplayNames: ["Ella", "K的小娇妻"],
+      participantDisplayNames: ["Ella", "K的小娇妻", "Riko", "Kevin"]
     });
     expect(result).toBe("actual reply");
   });
 
   it("keeps senderDisplayName working as a single-alias equivalent", () => {
-    const result = stripLeakedContextHeader("Aria: hey", {
-      senderDisplayName: "Aria",
-      participantDisplayNames: ["Aria", "Riko"]
+    const result = stripLeakedContextHeader("Ella: hey", {
+      senderDisplayName: "Ella",
+      participantDisplayNames: ["Ella", "Riko"]
     });
     expect(result).toBe("hey");
   });

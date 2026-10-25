@@ -44,16 +44,16 @@ async function archivedRoot(): Promise<string> {
     schemaVersion: 2,
     revision: 7,
     memories: [
-      memory("k1", "aria", "Studies chemistry.", { subjects: [{ discordUserId: KEVIN, name: "Kevin" }] }),
-      memory("k2", "aria", "Going through a divorce.", { origin: { dm: true, userId: KEVIN } }),
+      memory("k1", "ella", "Studies chemistry.", { subjects: [{ discordUserId: KEVIN, name: "Kevin" }] }),
+      memory("k2", "ella", "Going through a divorce.", { origin: { dm: true, userId: KEVIN } }),
       memory("k3", "mina", "Kevin hates jazz.", { subjects: [] }),
-      memory("m1", "aria", "Mina runs the bake sale.", { subjects: [{ discordUserId: MINA, name: "Mina" }] }),
-      memory("s1", "aria", "Sam likes jazz.", { subjects: [{ discordUserId: SAM, name: "Sam" }] }),
+      memory("m1", "ella", "Mina runs the bake sale.", { subjects: [{ discordUserId: MINA, name: "Mina" }] }),
+      memory("s1", "ella", "Sam likes jazz.", { subjects: [{ discordUserId: SAM, name: "Sam" }] }),
       memory("k4", "mina", "Kev's cat is called Biscuit.", { subjects: [{ discordUserId: KEVIN, name: "Kev" }] })
     ]
   });
-  await write(root, `${A}/notes-omitted/aria.json`, {
-    waifuId: "aria",
+  await write(root, `${A}/notes-omitted/ella.json`, {
+    waifuId: "ella",
     omitted: [
       { path: "people/kevin.md", recordId: "k1", line: "Studies chemistry.", why: "note_limit" },
       { path: "misc.md", recordId: "x9", line: "The bake sale is Saturday.", why: "note_limit" }
@@ -62,11 +62,11 @@ async function archivedRoot(): Promise<string> {
   await write(root, `${A}/notes-omitted/mina.json`, { waifuId: "mina", omitted: [{ path: "people/kev.md", recordId: "k4", line: "Kev's cat is called Biscuit.", why: "note_limit" }] });
   await write(root, `${A}/memory/pending-observations.json`, {
     observations: [
-      { id: "o1", waifuId: "aria", text: "asked about the exam", subjects: [{ discordUserId: KEVIN, name: "Kevin" }] },
+      { id: "o1", waifuId: "ella", text: "asked about the exam", subjects: [{ discordUserId: KEVIN, name: "Kevin" }] },
       { id: "o2", waifuId: "mina", text: "about the bake sale", subjects: [{ discordUserId: MINA, name: "Mina" }] }
     ]
   });
-  await write(root, `${A}/memory/dream-cursor.json`, { lastDreamAt: T, cursors: { [`dm_${KEVIN}_aria`]: "900", [`g_${GUILD}_${CHANNEL}`]: "901" } });
+  await write(root, `${A}/memory/dream-cursor.json`, { lastDreamAt: T, cursors: { [`dm_${KEVIN}_ella`]: "900", [`g_${GUILD}_${CHANNEL}`]: "901" } });
   await write(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/ledger.json`, {
     entries: {
       m1: { authorId: KEVIN, content: "my exam is friday", images: [] },
@@ -74,16 +74,16 @@ async function archivedRoot(): Promise<string> {
       m3: { authorId: MINA, content: "who brings cake?", images: [] }
     }
   });
-  await write(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/contexts/waifu-aria.json`, { epoch: 3, turns: [{ role: "user", text: `<@${KEVIN}> hi` }, { role: "assistant", text: "hello there" }] });
-  await write(root, `${A}/conversations/dm_${KEVIN}_aria/ledger.json`, { entries: { d1: { authorId: KEVIN, content: "secret" } } });
-  await write(root, `${A}/conversations/dm_${MINA}_aria/ledger.json`, { entries: { d1: { authorId: MINA, content: "hi" } } });
+  await write(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/contexts/waifu-ella.json`, { epoch: 3, turns: [{ role: "user", text: `<@${KEVIN}> hi` }, { role: "assistant", text: "hello there" }] });
+  await write(root, `${A}/conversations/dm_${KEVIN}_ella/ledger.json`, { entries: { d1: { authorId: KEVIN, content: "secret" } } });
+  await write(root, `${A}/conversations/dm_${MINA}_ella/ledger.json`, { entries: { d1: { authorId: MINA, content: "hi" } } });
   // The L2 DM-state step's copies of the original DM states, filed under each user.
-  await write(root, `${A}/dms/${KEVIN}/aria.json`, { waifuId: "aria", userId: KEVIN, userDisplayName: "Kev", pendingSince: T });
+  await write(root, `${A}/dms/${KEVIN}/ella.json`, { waifuId: "ella", userId: KEVIN, userDisplayName: "Kev", pendingSince: T });
   await write(root, `${A}/dms/${KEVIN}/mina.json`, { waifuId: "mina", userId: KEVIN, recentRuns: [] });
-  await write(root, `${A}/dms/${MINA}/aria.json`, { waifuId: "aria", userId: MINA, recentRuns: [] });
+  await write(root, `${A}/dms/${MINA}/ella.json`, { waifuId: "ella", userId: MINA, recentRuns: [] });
   await write(root, `${A}/servers/${GUILD}/orchestrator-history.json`, {
     decisions: [
-      { id: "d1", createdAt: T, reason: "Kevin asked Aria", speakers: ["aria"] },
+      { id: "d1", createdAt: T, reason: "Kevin asked Ella", speakers: ["ella"] },
       { id: "d2", createdAt: T, reason: "Mina asked Mina", speakers: ["mina"] }
     ]
   });
@@ -91,7 +91,7 @@ async function archivedRoot(): Promise<string> {
   await write(root, `${A}/stage-manager/history.json`, { edits: [{ id: "e1", userId: KEVIN, note: "x" }, { id: "e2", userId: MINA, note: "y" }] });
   await write(root, `${A}/reviewer/history.json`, "{ torn");
   await write(root, `${A}/providers.json`, { providers: { openai: { apiKey: `key-for-${KEVIN}` } } });
-  await write(root, `${A}/models/waifu-aria.json`, { note: `chosen while Kevin watched ${KEVIN}` });
+  await write(root, `${A}/models/waifu-ella.json`, { note: `chosen while Kevin watched ${KEVIN}` });
   // Live files the owner's forget-user cleans too.
   await write(root, `user/servers/${GUILD}/members.json`, {
     schemaVersion: 2,
@@ -123,31 +123,31 @@ describe("the archive scrub (D-b)", { timeout: 30_000 }, () => {
   it("the owner's forget-user scrubs the whole archive: records by or about him, by id or a name only he has", async () => {
     const root = await archivedRoot();
     const before = await readFile(path.join(root, A, "providers.json"), "utf8");
-    const modelsBefore = await readFile(path.join(root, A, "models/waifu-aria.json"), "utf8");
+    const modelsBefore = await readFile(path.join(root, A, "models/waifu-ella.json"), "utf8");
     const result = await scrubArchive(root, { userId: KEVIN, names: ["Kevin"], avoidNames: ["Sam"] });
     expect(result.unreadable).toBe(1);
 
     expect(((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id)).toEqual(["m1", "s1"]);
     expect((await read(root, `${A}/memories.json`)).revision).toBe(7);
-    expect((await read(root, `${A}/notes-omitted/aria.json`)).omitted).toEqual([{ path: "misc.md", recordId: "x9", line: "The bake sale is Saturday.", why: "note_limit" }]);
+    expect((await read(root, `${A}/notes-omitted/ella.json`)).omitted).toEqual([{ path: "misc.md", recordId: "x9", line: "The bake sale is Saturday.", why: "note_limit" }]);
     // His record's id drops the omitted line even though the line does not name him.
     expect((await read(root, `${A}/notes-omitted/mina.json`)).omitted).toEqual([]);
     expect(((await read(root, `${A}/memory/pending-observations.json`)).observations as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["o2"]);
     expect((await read(root, `${A}/memory/dream-cursor.json`)).cursors).toEqual({ [`g_${GUILD}_${CHANNEL}`]: "901" });
     expect(Object.keys((await read(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/ledger.json`)).entries as object)).toEqual(["m3"]);
-    expect((await read(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/contexts/waifu-aria.json`)).turns).toEqual([{ role: "assistant", text: "hello there" }]);
-    await expect(readFile(path.join(root, A, `conversations/dm_${KEVIN}_aria/ledger.json`))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await read(root, `${A}/conversations/dm_${MINA}_aria/ledger.json`)).toEqual({ entries: { d1: { authorId: MINA, content: "hi" } } });
+    expect((await read(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/contexts/waifu-ella.json`)).turns).toEqual([{ role: "assistant", text: "hello there" }]);
+    await expect(readFile(path.join(root, A, `conversations/dm_${KEVIN}_ella/ledger.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await read(root, `${A}/conversations/dm_${MINA}_ella/ledger.json`)).toEqual({ entries: { d1: { authorId: MINA, content: "hi" } } });
     // Everything filed under his id goes whole; Mina's copy stays.
-    await expect(readFile(path.join(root, A, `dms/${KEVIN}/aria.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, A, `dms/${KEVIN}/ella.json`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(root, A, `dms/${KEVIN}/mina.json`))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await read(root, `${A}/dms/${MINA}/aria.json`)).toMatchObject({ userId: MINA });
+    expect(await read(root, `${A}/dms/${MINA}/ella.json`)).toMatchObject({ userId: MINA });
     expect(((await read(root, `${A}/servers/${GUILD}/orchestrator-history.json`)).decisions as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["d2"]);
     expect((await read(root, `${A}/servers/${GUILD}/sessions/${CHANNEL}.json`)).participants).toEqual([{ userId: MINA, name: "Mina" }]);
     expect(((await read(root, `${A}/stage-manager/history.json`)).edits as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["e2"]);
     // Keys and model choices are never rewritten; a torn file is left as it is.
     expect(await readFile(path.join(root, A, "providers.json"), "utf8")).toBe(before);
-    expect(await readFile(path.join(root, A, "models/waifu-aria.json"), "utf8")).toBe(modelsBefore);
+    expect(await readFile(path.join(root, A, "models/waifu-ella.json"), "utf8")).toBe(modelsBefore);
     expect(await readFile(path.join(root, A, "reviewer/history.json"), "utf8")).toBe("{ torn");
     // Nothing of him is left anywhere else.
     const again = await scrubArchive(root, { userId: KEVIN, names: ["Kevin"] });
@@ -156,15 +156,15 @@ describe("the archive scrub (D-b)", { timeout: 30_000 }, () => {
 
   it("her own scrub takes only her slice: her records, her omitted lines, her observations, her DM with him", async () => {
     const root = await archivedRoot();
-    await scrubArchive(root, { userId: KEVIN, names: ["Kevin"], waifuId: "aria" });
+    await scrubArchive(root, { userId: KEVIN, names: ["Kevin"], waifuId: "ella" });
     expect(((await read(root, `${A}/memories.json`)).memories as Array<{ id: string }>).map((record) => record.id)).toEqual(["k3", "m1", "s1", "k4"]);
     // Her archived DM state with him goes; his DM state with Mina is the owner's forget-user's.
-    await expect(readFile(path.join(root, A, `dms/${KEVIN}/aria.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, A, `dms/${KEVIN}/ella.json`))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await read(root, `${A}/dms/${KEVIN}/mina.json`)).toMatchObject({ waifuId: "mina" });
-    expect((await read(root, `${A}/notes-omitted/aria.json`)).omitted).toHaveLength(1);
+    expect((await read(root, `${A}/notes-omitted/ella.json`)).omitted).toHaveLength(1);
     expect((await read(root, `${A}/notes-omitted/mina.json`)).omitted).toHaveLength(1);
     expect(((await read(root, `${A}/memory/pending-observations.json`)).observations as Array<{ id: string }>).map((entry) => entry.id)).toEqual(["o2"]);
-    await expect(readFile(path.join(root, A, `conversations/dm_${KEVIN}_aria/ledger.json`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(root, A, `conversations/dm_${KEVIN}_ella/ledger.json`))).rejects.toMatchObject({ code: "ENOENT" });
     // Shared archives (room ledgers, histories) are the owner's forget-user's to scrub.
     expect(Object.keys((await read(root, `${A}/conversations/g_${GUILD}_${CHANNEL}/ledger.json`)).entries as object)).toEqual(["m1", "m2", "m3"]);
   });
@@ -185,7 +185,7 @@ describe("the archive scrub (D-b)", { timeout: 30_000 }, () => {
     await Promise.all([forgetUser(storage, { discordUserId: KEVIN, names: ["Kevin"] }), forgetUser(storage, { discordUserId: MINA, names: ["Mina"] })]);
     expect(await memories(root)).toEqual(["s1"]);
     // An owner forget and two DM users' slices at once give what one after the other gives.
-    const scrubs = [{ userId: KEVIN, names: ["Kevin"] }, { userId: MINA, names: ["Mina"], waifuId: "aria" }, { userId: SAM, names: ["Sam"], waifuId: "aria" }];
+    const scrubs = [{ userId: KEVIN, names: ["Kevin"] }, { userId: MINA, names: ["Mina"], waifuId: "ella" }, { userId: SAM, names: ["Sam"], waifuId: "ella" }];
     const together = await archivedRoot();
     await Promise.all(scrubs.map((input) => scrubArchive(together, input)));
     const inTurn = await archivedRoot();

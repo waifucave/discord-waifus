@@ -23,9 +23,9 @@ describe("assessLoop", () => {
 
   it("does not fire on a varied conversation", () => {
     const result = assessLoop([
-      msg("a", "waifu", "aria", "did you see the storm last night?"),
+      msg("a", "waifu", "ella", "did you see the storm last night?"),
       msg("b", "waifu", "riko", "yeah my power went out for an hour"),
-      msg("c", "waifu", "aria", "I just lit candles and read manga"),
+      msg("c", "waifu", "ella", "I just lit candles and read manga"),
       msg("d", "waifu", "riko", "of course you did, total gremlin behavior")
     ]);
     expect(result.suspected).toBe(false);
@@ -34,9 +34,9 @@ describe("assessLoop", () => {
 
   it("fires when consecutive waifu messages keep restating the same beat", () => {
     const result = assessLoop([
-      msg("a", "waifu", "aria", "we should totally get matching disaster trio shirts"),
+      msg("a", "waifu", "ella", "we should totally get matching disaster trio shirts"),
       msg("b", "waifu", "riko", "yes matching disaster shirts to make the trio official"),
-      msg("c", "waifu", "aria", "matching shirts for the disaster trio would be so official"),
+      msg("c", "waifu", "ella", "matching shirts for the disaster trio would be so official"),
       msg("d", "waifu", "riko", "official disaster trio matching shirts, I am drafting it")
     ]);
     expect(result.suspected).toBe(true);
@@ -45,7 +45,7 @@ describe("assessLoop", () => {
 
   it("fires on a single near-duplicate pair (similarity above 0.8)", () => {
     const result = assessLoop([
-      msg("a", "waifu", "aria", "the broth defines the entire ramen experience honestly"),
+      msg("a", "waifu", "ella", "the broth defines the entire ramen experience honestly"),
       msg("b", "waifu", "riko", "honestly the broth defines the entire ramen experience")
     ]);
     expect(result.suspected).toBe(true);
@@ -53,7 +53,7 @@ describe("assessLoop", () => {
 
   it("ignores user messages when pairing", () => {
     const result = assessLoop([
-      msg("a", "waifu", "aria", "we should get matching shirts"),
+      msg("a", "waifu", "ella", "we should get matching shirts"),
       msg("b", "user", "kevin", "we should get matching shirts"),
       msg("c", "user", "kevin", "we should get matching shirts")
     ]);
@@ -62,15 +62,15 @@ describe("assessLoop", () => {
 
   it("does not fire when old repetition falls outside the tail window", () => {
     const result = assessLoop([
-      msg("a", "waifu", "aria", "matching disaster shirts would be official"),
+      msg("a", "waifu", "ella", "matching disaster shirts would be official"),
       msg("b", "waifu", "riko", "official disaster shirts matching would rock"),
-      msg("c", "waifu", "aria", "disaster shirts official matching ensemble rocks"),
+      msg("c", "waifu", "ella", "disaster shirts official matching ensemble rocks"),
       msg("d", "waifu", "riko", "shirts official disaster matching idea totally rocks"),
-      msg("e", "waifu", "aria", "official matching disaster shirts ensemble rocks"),
+      msg("e", "waifu", "ella", "official matching disaster shirts ensemble rocks"),
       msg("f", "waifu", "riko", "the massive storm knocked out power for miles"),
-      msg("g", "waifu", "aria", "grabbed some candles and started reading manga"),
+      msg("g", "waifu", "ella", "grabbed some candles and started reading manga"),
       msg("h", "waifu", "riko", "cooked ramen with homemade broth for dinner"),
-      msg("i", "waifu", "aria", "finished homework with just one deadline left")
+      msg("i", "waifu", "ella", "finished homework with just one deadline left")
     ]);
     expect(result.suspected).toBe(false);
   });
@@ -79,11 +79,11 @@ describe("assessLoop", () => {
   // so every adjacent pair is dissimilar and only the same-speaker comparison sees the loop.
   it("fires on an A/B/A/B volley where each waifu repeats her own previous message", () => {
     const messages = [
-      msg("a", "waifu", "aria", "volcano cake recipe needs molten chocolate centre"),
+      msg("a", "waifu", "ella", "volcano cake recipe needs molten chocolate centre"),
       msg("b", "waifu", "riko", "garage band rehearsal moved to thursday evening"),
-      msg("c", "waifu", "aria", "molten chocolate centre makes volcano cake recipe"),
+      msg("c", "waifu", "ella", "molten chocolate centre makes volcano cake recipe"),
       msg("d", "waifu", "riko", "thursday evening garage band rehearsal moved"),
-      msg("e", "waifu", "aria", "volcano cake recipe with molten chocolate centre"),
+      msg("e", "waifu", "ella", "volcano cake recipe with molten chocolate centre"),
       msg("f", "waifu", "riko", "rehearsal for garage band moved thursday evening")
     ];
     const result = assessLoop(messages);
@@ -98,13 +98,13 @@ describe("assessLoop", () => {
   it("does not fire on human-led chat where terse waifus answer each human turn alike", () => {
     const result = assessLoop([
       msg("a", "user", "kevin", "I finally beat the boss after twenty tries"),
-      msg("b", "waifu", "aria", "haha yes amazing work kevin"),
+      msg("b", "waifu", "ella", "haha yes amazing work kevin"),
       msg("c", "waifu", "riko", "nice one honestly"),
       msg("d", "user", "kevin", "and then I dropped my phone in the soup"),
-      msg("e", "waifu", "aria", "haha yes amazing kevin"),
+      msg("e", "waifu", "ella", "haha yes amazing kevin"),
       msg("f", "waifu", "riko", "nice one honestly lol"),
       msg("g", "user", "mia", "the soup survived though"),
-      msg("h", "waifu", "aria", "haha yes amazing work"),
+      msg("h", "waifu", "ella", "haha yes amazing work"),
       msg("i", "waifu", "riko", "honestly nice one")
     ]);
     expect(result.suspected).toBe(false);
@@ -113,11 +113,11 @@ describe("assessLoop", () => {
   it("still fires when the same volley runs with no human in between", () => {
     const result = assessLoop([
       msg("a", "user", "kevin", "I finally beat the boss after twenty tries"),
-      msg("b", "waifu", "aria", "haha yes amazing work kevin"),
+      msg("b", "waifu", "ella", "haha yes amazing work kevin"),
       msg("c", "waifu", "riko", "nice one honestly"),
-      msg("e", "waifu", "aria", "haha yes amazing kevin"),
+      msg("e", "waifu", "ella", "haha yes amazing kevin"),
       msg("f", "waifu", "riko", "nice one honestly lol"),
-      msg("h", "waifu", "aria", "haha yes amazing work"),
+      msg("h", "waifu", "ella", "haha yes amazing work"),
       msg("i", "waifu", "riko", "honestly nice one")
     ]);
     expect(result.suspected).toBe(true);
@@ -125,9 +125,9 @@ describe("assessLoop", () => {
 
   it("does not fire when each waifu moves on from her own previous message", () => {
     const result = assessLoop([
-      msg("a", "waifu", "aria", "volcano cake recipe needs molten chocolate"),
+      msg("a", "waifu", "ella", "volcano cake recipe needs molten chocolate"),
       msg("b", "waifu", "riko", "garage band rehearsal moved to thursday"),
-      msg("c", "waifu", "aria", "anyway the bakery opened a second branch downtown"),
+      msg("c", "waifu", "ella", "anyway the bakery opened a second branch downtown"),
       msg("d", "waifu", "riko", "my drummer finally bought new cymbals")
     ]);
     expect(result.suspected).toBe(false);
@@ -136,8 +136,8 @@ describe("assessLoop", () => {
   it("accepts the minimal message shape (adapted ledger entries)", () => {
     expect(
       assessLoop([
-        { authorKind: "waifu", authorId: "aria", content: "the broth defines the entire ramen experience honestly" },
-        { authorKind: "waifu", authorId: "aria", content: "honestly the broth defines the entire ramen experience" }
+        { authorKind: "waifu", authorId: "ella", content: "the broth defines the entire ramen experience honestly" },
+        { authorKind: "waifu", authorId: "ella", content: "honestly the broth defines the entire ramen experience" }
       ]).suspected
     ).toBe(true);
   });

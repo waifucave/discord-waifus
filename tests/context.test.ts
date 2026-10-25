@@ -33,11 +33,11 @@ describe("buildContextMessages coalescing", () => {
     const t0 = new Date("2026-05-16T12:00:00Z");
     const messages = [
       msg({ id: "1", authorId: "user1", content: "hey", createdAt: t0 }),
-      msg({ id: "2", authorId: "aria-bot", content: "Hi K.", createdAt: new Date(t0.getTime() + 1000) }),
-      msg({ id: "3", authorId: "aria-bot", content: "What's up?", createdAt: new Date(t0.getTime() + 2000) }),
-      msg({ id: "4", authorId: "aria-bot", content: "Tell me.", createdAt: new Date(t0.getTime() + 3000) })
+      msg({ id: "2", authorId: "ella-bot", content: "Hi K.", createdAt: new Date(t0.getTime() + 1000) }),
+      msg({ id: "3", authorId: "ella-bot", content: "What's up?", createdAt: new Date(t0.getTime() + 2000) }),
+      msg({ id: "4", authorId: "ella-bot", content: "Tell me.", createdAt: new Date(t0.getTime() + 3000) })
     ];
-    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot"] });
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["ella-bot"] });
     expect(out).toHaveLength(2);
     expect(out[1].content).toBe("Hi K. What's up? Tell me.");
     expect(out[1].id).toBe("2");
@@ -46,15 +46,15 @@ describe("buildContextMessages coalescing", () => {
   it("does not merge across the coalesce window", () => {
     const t0 = new Date("2026-05-16T12:00:00Z");
     const messages = [
-      msg({ id: "1", authorId: "aria-bot", content: "first", createdAt: t0 }),
+      msg({ id: "1", authorId: "ella-bot", content: "first", createdAt: t0 }),
       msg({
         id: "2",
-        authorId: "aria-bot",
+        authorId: "ella-bot",
         content: "much-later",
         createdAt: new Date(t0.getTime() + WAIFU_CHUNK_COALESCE_WINDOW_MS + 1)
       })
     ];
-    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot"] });
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["ella-bot"] });
     expect(out).toHaveLength(2);
   });
 
@@ -63,12 +63,12 @@ describe("buildContextMessages coalescing", () => {
     const messages = Array.from({ length: 20 }, (_value, index) =>
       msg({
         id: `chunk-${index}`,
-        authorId: "aria-bot",
+        authorId: "ella-bot",
         content: `part-${index}`,
         createdAt: new Date(t0.getTime() + index * 2500)
       })
     );
-    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot"] });
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["ella-bot"] });
     expect(out).toHaveLength(1);
     expect(out[0].sourceMessageIds).toEqual(messages.map((message) => message.id));
   });
@@ -76,10 +76,10 @@ describe("buildContextMessages coalescing", () => {
   it("does not merge messages from different waifus", () => {
     const t0 = new Date("2026-05-16T12:00:00Z");
     const messages = [
-      msg({ id: "1", authorId: "aria-bot", content: "hi", createdAt: t0 }),
+      msg({ id: "1", authorId: "ella-bot", content: "hi", createdAt: t0 }),
       msg({ id: "2", authorId: "yuki-bot", content: "hello", createdAt: new Date(t0.getTime() + 1000) })
     ];
-    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot", "yuki-bot"] });
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["ella-bot", "yuki-bot"] });
     expect(out).toHaveLength(2);
   });
 
@@ -133,20 +133,20 @@ describe("buildContextMessages coalescing", () => {
     const messages = [
       msg({
         id: "1",
-        authorId: "aria-bot",
+        authorId: "ella-bot",
         content: "first",
         createdAt: t0,
         reactions: [{ emoji: "🔥", count: 1 }]
       }),
       msg({
         id: "2",
-        authorId: "aria-bot",
+        authorId: "ella-bot",
         content: "second",
         createdAt: new Date(t0.getTime() + 1000),
         reactions: [{ emoji: "🔥", count: 2 }, { emoji: "🎉", count: 1 }]
       })
     ];
-    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot"] });
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["ella-bot"] });
     expect(out).toHaveLength(1);
     expect(out[0].reactions).toEqual(
       expect.arrayContaining([
@@ -159,19 +159,19 @@ describe("buildContextMessages coalescing", () => {
   it("keeps a replied-to waifu chunk separate and does not merge across it", () => {
     const t0 = new Date("2026-05-16T12:00:00Z");
     const messages = [
-      msg({ id: "chunk-1", authorId: "aria-bot", content: "one", createdAt: t0 }),
-      msg({ id: "chunk-2", authorId: "aria-bot", content: "two", createdAt: new Date(t0.getTime() + 1000) }),
-      msg({ id: "chunk-3", authorId: "aria-bot", content: "three", createdAt: new Date(t0.getTime() + 2000) }),
-      msg({ id: "chunk-4", authorId: "aria-bot", content: "four", createdAt: new Date(t0.getTime() + 3000) }),
+      msg({ id: "chunk-1", authorId: "ella-bot", content: "one", createdAt: t0 }),
+      msg({ id: "chunk-2", authorId: "ella-bot", content: "two", createdAt: new Date(t0.getTime() + 1000) }),
+      msg({ id: "chunk-3", authorId: "ella-bot", content: "three", createdAt: new Date(t0.getTime() + 2000) }),
+      msg({ id: "chunk-4", authorId: "ella-bot", content: "four", createdAt: new Date(t0.getTime() + 3000) }),
       msg({
         id: "reply",
         authorId: "user1",
         content: "this one",
         createdAt: new Date(t0.getTime() + 4000),
-        replyTo: { messageId: "chunk-3", authorName: "Aria", contentPreview: "three" }
+        replyTo: { messageId: "chunk-3", authorName: "Ella", contentPreview: "three" }
       })
     ];
-    const out = buildContextMessages(messages, { waifuAuthorIds: ["aria-bot"] });
+    const out = buildContextMessages(messages, { waifuAuthorIds: ["ella-bot"] });
     expect(out.map((message) => message.content)).toEqual(["one two", "three", "four", "this one"]);
     expect(out[0].sourceMessageIds).toEqual(["chunk-1", "chunk-2"]);
     expect(out[1].id).toBe("chunk-3");
