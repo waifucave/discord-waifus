@@ -1358,6 +1358,14 @@ Choices L3 made where the sections above leave room (owner review welcome):
 - **Assistant**: `forget_user` is renamed `forget_person` (its card states the scrub limits);
   `get_setting_help` and `update_app_config` from the overhaul's §10.7 are added. `list_notes`,
   `read_note`, `write_note`, `list_watches` and `list_schedule` wait for the tool-surface redesign.
+- **Assistant confirmation card for host settings** (owner decision, L3 review): `update_app_config`
+  applies ordinary keys directly, but `http.host`, `frontend.staticDir` and `updates.*` only go to a
+  confirmation card (category `app_config_host`, same style as the Remote Access and forget cards)
+  with the exact `PUT /api/config` patch; only the owner's click applies it. `PUT /api/config` itself
+  refuses those keys from an assistant delegation without the card's pending action id (403
+  `AssistantConfirmationRequired`), and from a paired remote device as before (the tool says so and
+  proposes nothing). `frontend.staticDir` applies live for the dashboard on the host (Remote
+  Access's dashboard copy at the next start).
 - **Dashboard**: a Life section (mosaic of every waifu, then one life); Activity gains a Usage tab;
   Settings gains Models, Search, Detector and Life-limits tabs whose forms come from
   `GET /api/help/<topic>` and send only changed keys. The Life screen's notes browser, watches and

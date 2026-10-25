@@ -4,7 +4,10 @@ import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { StorageService } from "../src/storage/storageService.js";
 import { executeAssistantTool, toolDefs } from "../src/api/assistant/tools.js";
-import { LOCAL_REQUEST_PRINCIPAL } from "../src/api/requestPrincipal.js";
+import { createRemoteRequestPrincipal, LOCAL_REQUEST_PRINCIPAL } from "../src/api/requestPrincipal.js";
+import { dispatchInternal } from "../src/api/internalDispatch.js";
+import type { AssistantActionProposal } from "../src/api/assistant/actions.js";
+import { randomBytes } from "node:crypto";
 import { conversationOwner } from "../src/api/assistant/conversations.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -138,6 +141,81 @@ describe("assistant tools", () => {
       const config = (await app.inject({ method: "GET", url: "/api/config" })).json() as { life: { maxSendsPerTurn: number; maxToolRounds: number } };
       expect(config.life.maxSendsPerTurn).toBe(6);
       expect(config.life.maxToolRounds).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("update_app_config only proposes http.host, frontend.staticDir and updates.*: a confirmation card applies them (owner decision)", async () => {
+    const { app } = await makeApp();
+    try {
+      const proposals: AssistantActionProposal[] = [];
+      const ctx = {
+        ...localToolContext(app),
+        delegation: { conversationId: "conversation-1", toolCallId: "call-1" },
+        actions: {
+          propose: async (proposal: AssistantActionProposal) => {
+            proposals.push(proposal);
+            return { version: 1 as const, actionId: "action-1", category: proposal.category, summary: proposal.summary, expiresAt: "2026-10-25T12:00:00.000Z" };
+          },
+          cancelOwnedInvitation: async () => undefined
+        }
+      };
+      const before = (await app.inject({ method: "GET", url: "/api/config" })).json() as { http: { host: string; port: number }; updates: { enabled: boolean } };
+      const result = JSON.parse(
+        await executeAssistantTool(
+          ctx,
+          "update_app_config",
+          JSON.stringify({ changes: { life: { maxSendsPerTurn: 6 }, http: { host: "0.0.0.0", port: 4000 }, frontend: { staticDir: "somewhere" }, updates: { enabled: !before.updates.enabled } } })
+        )
+      );
+      expect(result).toMatchObject({ ok: true, changed: ["life", "http"], status: "confirmation_required", category: "app_config_host", proposed: ["http.host", "frontend.staticDir", "updates.enabled"] });
+      expect(proposals).toHaveLength(1);
+      expect(proposals[0]!.operation).toEqual({ kind: "exact_http", method: "PUT", canonicalTarget: "/api/config", payload: { http: { host: "0.0.0.0" }, frontend: { staticDir: "somewhere" }, updates: { enabled: !before.updates.enabled } } });
+      expect(proposals[0]!.summary).toContain('http.host to "0.0.0.0"');
+      // Ordinary keys applied; the three wait for the owner's click.
+      const after = (await app.inject({ method: "GET", url: "/api/config" })).json() as { life: { maxSendsPerTurn: number }; http: { host: string; port: number }; frontend: { staticDir?: string }; updates: { enabled: boolean } };
+      expect(after.life.maxSendsPerTurn).toBe(6);
+      expect(after.http).toEqual({ ...before.http, port: 4000 });
+      expect(after.frontend.staticDir).toBeUndefined();
+      expect(after.updates.enabled).toBe(before.updates.enabled);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("an assistant delegation cannot set http.host, frontend.staticDir or updates.* without the card", async () => {
+    const { app } = await makeApp();
+    try {
+      const before = (await app.inject({ method: "GET", url: "/api/config" })).json() as { updates: { enabled: boolean } };
+      const put = (payload: Record<string, unknown>, pendingActionId?: string) =>
+        dispatchInternal(app, LOCAL_REQUEST_PRINCIPAL, { conversationId: "conversation-1", toolCallId: "call-1", ...(pendingActionId ? { pendingActionId } : {}) }, {
+          method: "PUT",
+          url: "/api/config",
+          headers: { "idempotency-key": randomBytes(32).toString("base64url") },
+          payload
+        });
+      for (const payload of [{ http: { host: "0.0.0.0" } }, { frontend: { staticDir: "somewhere" } }, { updates: { enabled: !before.updates.enabled } }, { updates: { idleMinutes: 99 } }]) {
+        const refused = await put(payload);
+        expect(refused.statusCode, JSON.stringify(payload)).toBe(403);
+        expect(refused.json(), JSON.stringify(payload)).toMatchObject({ error: "AssistantConfirmationRequired" });
+      }
+      expect((await put({ life: { maxSendsPerTurn: 7 } })).statusCode).toBe(200);
+      // The card's own request (it carries the pending action id) applies.
+      expect((await put({ http: { host: "127.0.0.2" } }, "action-1")).statusCode).toBe(200);
+      expect(((await app.inject({ method: "GET", url: "/api/config" })).json() as { http: { host: string } }).http.host).toBe("127.0.0.2");
+      // A tool call from a paired remote device is refused before any card.
+      const remote = JSON.parse(
+        await executeAssistantTool(
+          {
+            ...localToolContext(app),
+            principal: createRemoteRequestPrincipal({ kind: "remote_device", stableId: "remote:travel-mac", deviceId: "travel-mac", peerFingerprint: Buffer.alloc(16, 1).toString("base64url"), transportSessionId: Buffer.alloc(16, 2).toString("base64url"), trustEpoch: "1" })
+          },
+          "update_app_config",
+          JSON.stringify({ changes: { http: { host: "0.0.0.0" } } })
+        )
+      );
+      expect(remote.error).toMatch(/only be changed on the host itself/u);
     } finally {
       await app.close();
     }

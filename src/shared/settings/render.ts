@@ -177,7 +177,7 @@ function keyMarkdown(group: SettingGroup, info: KeyInfo): string {
     ...(info.default !== undefined && !info.flags.secret ? [`- Default: \`${formatValue(info.default)}\``] : []),
     `- Takes effect: ${info.flags.applies === "restart" ? "at the next start" : info.flags.applies === "reload" ? "after the runtime reload the write triggers" : "at once"}`,
     ...(info.flags.secret ? ["- Secret: write-only; never on the command line."] : []),
-    ...(info.flags.localOnlyWrite ? ["- Only the host itself may change it (not a paired remote device)."] : []),
+    ...(info.flags.localOnlyWrite ? ["- Only the host itself may change it (not a paired remote device); the dashboard assistant only proposes it on a confirmation card."] : []),
     `- HTTP: \`${group.read.method} ${group.read.path}\`${info.flags.readOnly ? "" : `, \`${group.write.method} ${group.write.path}\``}`,
     "",
     "CLI:",

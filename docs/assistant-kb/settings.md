@@ -19,7 +19,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `http.port` | integer 1–65535 | `3888` | The dashboard and API port. (next start) |
 | `runtime.autoConnectDiscord` | boolean | `true` | Connect the Discord bots when the host starts. |
 | `runtime.paused` | boolean | `false` | Pause every life: no wakes are routed and no turn starts; queues are kept and catch up on resume. `waifus set app runtime.paused true` is the same as Pause in the dashboard. |
-| `frontend.staticDir` | string |  | Serve the dashboard from this folder instead of the bundled build (development only). (local-only write; next start) |
+| `frontend.staticDir` | string |  | Serve the dashboard from this folder instead of the bundled build (development only). The dashboard on this computer uses it at once; Remote Access's copy at the next start. (local-only write) |
 | `ocr.enabled` | boolean | `true` | Read text out of images for models without image input. |
 | `ocr.engine` | one of auto \| apple-vision \| bundled-tesseract \| system-tesseract | `auto` | OCR engine: auto (Apple Vision on macOS, else the bundled Tesseract), apple-vision, bundled-tesseract or system-tesseract. |
 | `ocr.cacheTtlHours` | integer 1–720 [hours] | `168` | How long OCR results are cached. |

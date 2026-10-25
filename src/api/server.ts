@@ -456,20 +456,27 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   const applyConfigPatch = async (request: FastifyRequest, patch: UpdateAppConfigBody) => {
     const currentConfig = await loadAppConfig(options.dataRoot);
-    if (
-      request.principal.kind === "remote_device"
-      && (
-        hasOwn(patch.http, "host")
-        || hasOwn(patch.frontend, "staticDir")
-        || (patch.updates !== undefined && Object.entries(patch.updates).some(([key, value]) =>
-          value !== currentConfig.updates[key as keyof typeof currentConfig.updates]))
-      )
-    ) {
+    const guarded =
+      hasOwn(patch.http, "host")
+      || hasOwn(patch.frontend, "staticDir")
+      || (patch.updates !== undefined && Object.entries(patch.updates).some(([key, value]) =>
+        value !== currentConfig.updates[key as keyof typeof currentConfig.updates]));
+    if (request.principal.kind === "remote_device" && guarded) {
       throw new ApiError(
         403,
         "Host bind, filesystem-serving and automatic-update controls are local-only.",
         undefined,
         "RemoteConfigFieldForbidden"
+      );
+    }
+    // The dashboard assistant only proposes these (a confirmation card); the owner's click applies
+    // them, and that request carries the card's pending action id.
+    if (guarded && request.assistantDelegation && !request.assistantDelegation.pendingActionId) {
+      throw new ApiError(
+        403,
+        "The dashboard assistant only proposes host bind, served-folder and automatic-update changes; the owner confirms them on a dashboard card.",
+        undefined,
+        "AssistantConfirmationRequired"
       );
     }
     const saved = await storage.withLocks([APP_CONFIG_LOCK], () => updateAppConfig(options.dataRoot, patch));

@@ -46,7 +46,7 @@ const APP: SettingGroup = {
     "http.port": { help: "The dashboard and API port.", ...restart, example: "3888" },
     "runtime.autoConnectDiscord": { help: "Connect the Discord bots when the host starts.", ...reload, example: "true" },
     "runtime.paused": { help: "Pause every life: no wakes are routed and no turn starts; queues are kept and catch up on resume. `waifus set app runtime.paused true` is the same as Pause in the dashboard.", ...live, example: "false" },
-    "frontend.staticDir": { help: "Serve the dashboard from this folder instead of the bundled build (development only).", localOnlyWrite: true, remoteHidden: true, nullUnset: true, ...restart, example: "dist-frontend" },
+    "frontend.staticDir": { help: "Serve the dashboard from this folder instead of the bundled build (development only). The dashboard on this computer uses it at once; Remote Access's copy at the next start.", localOnlyWrite: true, remoteHidden: true, nullUnset: true, ...live, example: "dist-frontend" },
     "ocr.enabled": { help: "Read text out of images for models without image input.", ...live, example: "true" },
     "ocr.engine": { help: "OCR engine: auto (Apple Vision on macOS, else the bundled Tesseract), apple-vision, bundled-tesseract or system-tesseract.", ...live, example: "auto" },
     "ocr.cacheTtlHours": { help: "How long OCR results are cached.", unit: "hours", ...live, example: "168" },

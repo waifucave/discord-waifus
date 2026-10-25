@@ -121,6 +121,43 @@ function actionController(ctx: AssistantToolContext): AssistantActionController 
   return ctx.actions;
 }
 
+/** What the card says about the keys only the owner's click applies. */
+const GUARDED_APP_CONFIG_NOTE =
+  "The host bind decides who can reach the dashboard and API, the served folder decides what the dashboard runs, and " +
+  "automatic updates install new versions unattended; a wrong value can lock you out or run code you did not mean to.";
+
+/**
+ * Splits an update_app_config patch: `http.host`, `frontend.staticDir` and `updates.*` go to a
+ * confirmation card (the owner's click applies them), the rest applies directly.
+ */
+export function splitGuardedAppConfig(changes: Record<string, unknown>): { guarded: Record<string, unknown>; rest: Record<string, unknown>; keys: string[] } {
+  const guarded: Record<string, unknown> = {};
+  const rest: Record<string, unknown> = { ...changes };
+  const keys: string[] = [];
+  const take = (group: string, key: string) => {
+    const section = rest[group];
+    if (!section || typeof section !== "object" || Array.isArray(section) || !Object.hasOwn(section, key)) return;
+    const { [key]: value, ...others } = section as Record<string, unknown>;
+    guarded[group] = { ...((guarded[group] as Record<string, unknown> | undefined) ?? {}), [key]: value };
+    keys.push(`${group}.${key}`);
+    if (Object.keys(others).length > 0) rest[group] = others;
+    else delete rest[group];
+  };
+  take("http", "host");
+  take("frontend", "staticDir");
+  const updates = rest["updates"];
+  if (updates !== undefined) {
+    guarded["updates"] = updates;
+    keys.push(...(updates && typeof updates === "object" && !Array.isArray(updates) ? Object.keys(updates).map((key) => `updates.${key}`) : ["updates"]));
+    delete rest["updates"];
+  }
+  return { guarded, rest, keys };
+}
+
+function valueAt(record: Record<string, unknown>, dotted: string): unknown {
+  return dotted.split(".").reduce<unknown>((value, part) => (value && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined), record);
+}
+
 function confirmationResult(action: AssistantActionSummary): string {
   return JSON.stringify({
     status: "confirmation_required",
@@ -1006,7 +1043,9 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Change host-wide settings (config.toml): pass only the keys to change as a nested object under `changes`, e.g. " +
       "{ life: { maxSendsPerTurn: 6 } } or { search: { maxPerDay: 200 } }. See get_setting_help('app') for every key. " +
-      "Some keys (http, updates, frontend) can only be changed on the host itself. Apply directly.",
+      "Ordinary keys apply directly. http.host, frontend.staticDir and updates.* are only proposed: a secure dashboard " +
+      "confirmation card waits for the user, and only their click on the host's dashboard applies them (never from a " +
+      "paired remote device).",
     parameters: {
       type: "object",
       properties: { changes: { type: "object" } },
@@ -1015,8 +1054,24 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       if (!args.changes || typeof args.changes !== "object" || Array.isArray(args.changes)) return JSON.stringify({ error: "Pass the keys to change under `changes`." });
-      const result = await inject(ctx, { method: "PUT", url: "/api/config", payload: args.changes });
-      return result.status === 200 ? JSON.stringify({ ok: true, changed: Object.keys(args.changes as Record<string, unknown>) }) : result.body;
+      const { guarded, rest, keys } = splitGuardedAppConfig(args.changes as Record<string, unknown>);
+      if (keys.length > 0 && ctx.principal.kind === "remote_device") {
+        return JSON.stringify({ error: `${keys.join(", ")} can only be changed on the host itself, not from a paired remote device.` });
+      }
+      const out: Record<string, unknown> = {};
+      if (Object.keys(rest).length > 0) {
+        const result = await inject(ctx, { method: "PUT", url: "/api/config", payload: rest });
+        if (result.status !== 200) return result.body;
+        Object.assign(out, { ok: true, changed: Object.keys(rest) });
+      }
+      if (keys.length === 0) return JSON.stringify(out);
+      const action = await actionController(ctx).propose({
+        category: "app_config_host",
+        summary: `Change ${keys.map((key) => `${key} to ${JSON.stringify(valueAt(guarded, key))}`).join(", ")} in config.toml. ${GUARDED_APP_CONFIG_NOTE}`,
+        resource: { type: "app_config", identifier: "config.toml" },
+        operation: { kind: "exact_http", method: "PUT", canonicalTarget: "/api/config", payload: guarded }
+      });
+      return JSON.stringify({ ...out, ...JSON.parse(confirmationResult(action)), proposed: keys });
     }
   },
   {
