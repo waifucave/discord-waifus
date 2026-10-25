@@ -64,7 +64,7 @@ export const ROUTE_HELP: Readonly<Record<string, RouteHelpEntry>> = Object.freez
   "POST /api/waifus": { summary: "Create a waifu.", topic: "waifu" },
   "GET /api/waifus/:waifuId": { summary: "One waifu's settings.", topic: "waifu" },
   "PUT /api/waifus/:waifuId": { summary: "Change a waifu's settings (partial; revision required).", topic: "waifu" },
-  "DELETE /api/waifus/:waifuId": { summary: "Delete a waifu (revision required).", topic: "waifu" },
+  "DELETE /api/waifus/:waifuId": { summary: "Delete a waifu and her bot (revision required; a bot another waifu uses stays).", topic: "waifu" },
   "POST /api/waifus/:waifuId/link-bot": { summary: "Create or link her Discord bot entry.", topic: "bot" },
   "POST /api/waifus/:waifuId/assets/pfp": { summary: "Upload her avatar image.", topic: "waifu" },
   "POST /api/waifus/:waifuId/assets/banner": { summary: "Upload her banner image.", topic: "waifu" },

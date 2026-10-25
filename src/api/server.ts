@@ -817,6 +817,23 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     );
     // Her model notices go with her.
     await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
+    // So does her bot (token and application id), unless another waifu still uses it.
+    const botId = existing.botId;
+    if (botId && !(await listWaifus(storage)).some((waifu) => waifu.botId === botId)) {
+      let removed = false;
+      await storage.updateRevisionedJson({
+        resourceKey: "discord-bots",
+        relativePath: "user/discord-bots.json",
+        schema: DiscordBotsFileSchema,
+        fallback: emptyDiscordBots(),
+        transform: (current) => {
+          const waifus = current.waifus.filter((bot) => bot.id !== botId);
+          removed = waifus.length !== current.waifus.length;
+          return { ...current, waifus };
+        }
+      });
+      if (removed) await options.runtimeControl?.reload("discord-bots-updated");
+    }
     await reconcileDmIntents();
     return reply.status(204).send();
   });

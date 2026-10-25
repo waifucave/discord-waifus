@@ -122,7 +122,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | GET | `/api/usage` | Model calls and cost by local day (?from&to&groupBy&tz&waifuId&purpose). | `usage` |
 | GET | `/api/waifus` | Every waifu. | `waifu` |
 | POST | `/api/waifus` | Create a waifu. | `waifu` |
-| DELETE | `/api/waifus/:waifuId` | Delete a waifu (revision required). | `waifu` |
+| DELETE | `/api/waifus/:waifuId` | Delete a waifu and her bot (revision required; a bot another waifu uses stays). | `waifu` |
 | GET | `/api/waifus/:waifuId` | One waifu's settings. | `waifu` |
 | PUT | `/api/waifus/:waifuId` | Change a waifu's settings (partial; revision required). | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/banner` | Upload her banner image. | `waifu` |
