@@ -59,9 +59,9 @@ describe("Life timeline", () => {
   it("recent sends and wakes come from the host log and never name a DM's person", () => {
     const events = castEvents({
       entries: [
-        { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "aria", placeKey: "dm_300000000000000003_aria", messageId: "1" } },
-        { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "aria", placeKey: "g_1_2", place: "bake-club/#general", messageId: "2" } },
-        { time: AT, level: "info", message: "Life reaction added", context: { category: "life", waifuId: "aria", placeKey: "g_1_3", messageId: "3" } },
+        { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "ella", placeKey: "dm_300000000000000003_ella", messageId: "1" } },
+        { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "ella", placeKey: "g_1_2", place: "bake-club/#general", messageId: "2" } },
+        { time: AT, level: "info", message: "Life reaction added", context: { category: "life", waifuId: "ella", placeKey: "g_1_3", messageId: "3" } },
         { time: AT, level: "info", message: "Life turn started", context: { category: "life", waifuId: "mina", turnId: "t", wakes: 2, reasons: ["mention", "dm"] } },
         { time: AT, level: "info", message: "Something else", context: { category: "life", waifuId: "mina" } }
       ]
@@ -75,17 +75,17 @@ describe("Life timeline", () => {
 describe("Home", () => {
   it("lists owner notices, unfinished upgrades and forgets, queued scrubs and model notices", () => {
     const notices = homeNotices(
-      { models: { warnings: [{ scope: "waifu:aria", label: "Aria", code: "model_unmapped", detail: "pick again", dismissible: true }] } } as never,
+      { models: { warnings: [{ scope: "waifu:ella", label: "Ella", code: "model_unmapped", detail: "pick again", dismissible: true }] } } as never,
       {
-        notices: ["aria is linked to a Discord bot that has no token"],
+        notices: ["ella is linked to a Discord bot that has no token"],
         forgetJobs: [{ userId: "300000000000000003", at: AT, pending: [{ part: "archive", failures: 1, retried: true }] }],
         incompleteMigrations: [{ step: "x-v1", detail: "1 file could not be parsed", at: AT }],
         corruptForgetCopies: 1,
-        pendingScrubs: [{ waifuId: "aria", count: 2 }],
+        pendingScrubs: [{ waifuId: "ella", count: 2 }],
         intake: { paused: false, pausedAt: null, marks: 0 },
-        waifusWithoutBot: [{ waifuId: "aria", reason: "bot_no_token" }]
+        waifusWithoutBot: [{ waifuId: "ella", reason: "bot_no_token" }]
       },
-      new Map([["aria", "Aria"]])
+      new Map([["ella", "Ella"]])
     );
     expect(notices.map((notice) => notice.chip)).toEqual(["notice", "migration", "forget", "forget", "scrub queued", "model_unmapped"]);
     expect(notices.at(-1)?.dismiss).toBeTypeOf("function");
@@ -100,18 +100,18 @@ describe("Home", () => {
       totals: {} as never,
       skippedLines: 0,
       groups: [
-        { key: ["2026-10-23", "aria"], costUsd: 5 } as never,
-        { key: ["2026-10-24", "aria"], costUsd: 0.25 } as never,
+        { key: ["2026-10-23", "ella"], costUsd: 5 } as never,
+        { key: ["2026-10-24", "ella"], costUsd: 0.25 } as never,
         { key: ["2026-10-24", "mina"], costUsd: 0.5 } as never
       ]
     });
     expect(today.total).toBe(0.75);
-    expect(today.byWaifu.get("aria")).toBe(0.25);
+    expect(today.byWaifu.get("ella")).toBe(0.25);
   });
 });
 
 describe("Cast editor", () => {
-  const stored = WaifuConfigSchema.parse({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 4, updatedAt: AT, id: "aria", name: "Aria", displayName: "Aria", model: { providerId: "anthropic", modelId: "claude-haiku-5-5" } }) as WaifuConfig;
+  const stored = WaifuConfigSchema.parse({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 4, updatedAt: AT, id: "ella", name: "Ella", displayName: "Ella", model: { providerId: "anthropic", modelId: "claude-haiku-5-5" } }) as WaifuConfig;
 
   it("sends only the keys that changed, with her revision; unsetting the model sends null", () => {
     expect(waifuPatch(stored, { ...stored })).toEqual({ revision: 4 });
@@ -179,11 +179,11 @@ describe("forget person", () => {
       cachedImages: 2,
       memberLists: 3,
       archive: { files: 4, removed: 1, unreadable: 0, skipped: 0 },
-      lives: [{ waifuId: "aria", removedLines: 2, removedSentences: 1, removedNotes: 1, needsReview: [{ where: "notes/x.md", line: "Kevin" }] }],
+      lives: [{ waifuId: "ella", removedLines: 2, removedSentences: 1, removedNotes: 1, needsReview: [{ where: "notes/x.md", line: "Kevin" }] }],
       pending: [{ part: "archive", failures: 3, retried: false }]
     });
     expect(lines.join("\n")).toContain("3 member-list entries");
-    expect(lines.join("\n")).toContain("aria: 2 log line(s)");
+    expect(lines.join("\n")).toContain("ella: 2 log line(s)");
     expect(lines.join("\n")).toContain("given up after three tries");
   });
 });
@@ -232,7 +232,7 @@ describe("review: dashboard fixes", () => {
   });
 
   it("confirmation dialogs are dialogs with a title and the safe choice first", () => {
-    const html = renderToStaticMarkup(createElement(ConfirmDialog, { title: "Reset Aria's life?", cancelLabel: "Keep", confirmLabel: "Reset", onCancel: () => undefined, onConfirm: () => undefined, children: "text" }));
+    const html = renderToStaticMarkup(createElement(ConfirmDialog, { title: "Reset Ella's life?", cancelLabel: "Keep", confirmLabel: "Reset", onCancel: () => undefined, onConfirm: () => undefined, children: "text" }));
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-modal="true"');
     expect(html).toMatch(/aria-labelledby="([^"]+)"[\s\S]*id="\1"/u);
@@ -248,28 +248,28 @@ describe("her files, reminders and watches (§16.11)", () => {
     expect(hidden).toContain(PRIVATE_FILE_NAME);
     expect(hidden).toContain("private chat");
     expect(hidden).not.toContain("<button");
-    const plain = renderToStaticMarkup(createElement(FileRow, { entry: { name: "people", path: "/home/aria/people", kind: "dir", size: 0, modified: AT }, onOpen: () => undefined }));
+    const plain = renderToStaticMarkup(createElement(FileRow, { entry: { name: "people", path: "/home/ella/people", kind: "dir", size: 0, modified: AT }, onOpen: () => undefined }));
     expect(plain).toContain("people/");
     expect(plain).toContain("folder");
     expect(fileSize(1234)).toBe("1.2 KB");
   });
 
   it("walks back from a folder to her home or /tmp", () => {
-    expect(breadcrumbs({ root: "home", dir: "/home/aria/people/friends", display: "~/people/friends" })).toEqual([
-      { label: "~", dir: "/home/aria" },
-      { label: "people", dir: "/home/aria/people" },
-      { label: "friends", dir: "/home/aria/people/friends" }
+    expect(breadcrumbs({ root: "home", dir: "/home/ella/people/friends", display: "~/people/friends" })).toEqual([
+      { label: "~", dir: "/home/ella" },
+      { label: "people", dir: "/home/ella/people" },
+      { label: "friends", dir: "/home/ella/people/friends" }
     ]);
     expect(breadcrumbs({ root: "tmp", dir: "/tmp", display: "/tmp" })).toEqual([{ label: "/tmp", dir: "/tmp" }]);
   });
 
   it("lists reminders and watches with delete buttons; a private watch shows only that it is private", () => {
-    const reminders = renderToStaticMarkup(createElement(ReminderList, { data: { waifuId: "aria", timeZone: "UTC", entries: [{ id: "r4", at: "2026-10-25 18:00", repeat: "daily", note: "check the flyer" }] }, onDelete: () => undefined }));
+    const reminders = renderToStaticMarkup(createElement(ReminderList, { data: { waifuId: "ella", timeZone: "UTC", entries: [{ id: "r4", at: "2026-10-25 18:00", repeat: "daily", note: "check the flyer" }] }, onDelete: () => undefined }));
     expect(reminders).toContain("check the flyer");
     expect(reminders).toContain("daily");
     expect(reminders).toContain("delete");
     const watches = {
-      waifuId: "aria",
+      waifuId: "ella",
       timeZone: "UTC",
       includePrivate: false,
       entries: [

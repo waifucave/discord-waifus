@@ -38,7 +38,7 @@ function hostBase(): string {
 beforeAll(async () => {
   w = await lifeWorld(roots, { rootBase: hostBase() });
   const deps = w.cast.deps;
-  const waifu = await readWaifu(w.storage, "aria");
+  const waifu = await readWaifu(w.storage, "ella");
   const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
   ctx = {
     deps,
@@ -58,7 +58,7 @@ afterAll(async () => {
   // No host path, host user name or host environment value in anything she saw (unless her own
   // command typed it: an error message may repeat the path she asked for).
   // Her own folder names are not host leaks (os.tmpdir() is "/tmp" on Linux).
-  const own = new Set(["/", "/tmp", "/home", "/home/aria"]);
+  const own = new Set(["/", "/tmp", "/home", "/home/ella"]);
   const forbidden = [w.root, process.cwd(), os.homedir(), os.tmpdir(), "node_modules", "dc-waifus-life-", os.userInfo().username].filter((value) => value.length >= 3 && !own.has(value));
   expect(seen.length).toBeGreaterThan(20);
   for (const { command, text } of seen) {
@@ -81,7 +81,7 @@ let scripts = 0;
 /** Saves a Python program in her /tmp (on disk, like a download); returns its path. */
 async function saveScript(code: string): Promise<string> {
   scripts += 1;
-  const dir = path.join(w.root, "user/waifus/aria/tmp");
+  const dir = path.join(w.root, "user/waifus/ella/tmp");
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, `s${scripts}.py`), code);
   return `/tmp/s${scripts}.py`;
@@ -100,19 +100,19 @@ describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
     expect(passwd.text).not.toMatch(/root:/u);
     expect(exitOf(passwd.text)).not.toBe(0);
     expect((await bash("ls /")).text).toBe("home\ntmp\nexit 0");
-    expect((await bash("ls /home")).text).toBe("aria\nexit 0");
-    expect((await bash("pwd; cd ..; cd ..; cd ..; pwd; ls")).text).toBe("/home/aria\n/\nhome\ntmp\nexit 0");
+    expect((await bash("ls /home")).text).toBe("ella\nexit 0");
+    expect((await bash("pwd; cd ..; cd ..; cd ..; pwd; ls")).text).toBe("/home/ella\n/\nhome\ntmp\nexit 0");
     for (const command of ["ls /etc", "ls /usr/bin", "ls /bin", "ls /proc", "cat /proc/self/environ", "ls /home/mina", "cat ~/../../etc/hosts"]) {
       const result = await bash(command);
       expect(exitOf(result.text), command).not.toBe(0);
       expect(result.text, command).not.toMatch(/root:|localhost|PATH=|node_modules/u);
     }
-    expect((await bash("find / -maxdepth 3 | sort")).text).toBe("/\n/home\n/home/aria\n/home/aria/MEMORY.md\n/home/aria/people\n/tmp\nexit 0");
-    expect((await bash("find / -type f | sort")).text).toBe("/home/aria/MEMORY.md\n/home/aria/people/kevin.md\nexit 0");
+    expect((await bash("find / -maxdepth 3 | sort")).text).toBe("/\n/home\n/home/ella\n/home/ella/MEMORY.md\n/home/ella/people\n/tmp\nexit 0");
+    expect((await bash("find / -type f | sort")).text).toBe("/home/ella/MEMORY.md\n/home/ella/people/kevin.md\nexit 0");
   });
 
   it("absolute host paths are not there, for reading, listing or writing", async () => {
-    const host = [w.root, path.join(w.root, "user/waifus/aria/waifu.json"), process.cwd(), os.homedir(), "/Users", "/var", "/private"];
+    const host = [w.root, path.join(w.root, "user/waifus/ella/waifu.json"), process.cwd(), os.homedir(), "/Users", "/var", "/private"];
     for (const target of host) {
       const read = await bash(`cat ${JSON.stringify(target)}; ls ${JSON.stringify(target)}`);
       expect(exitOf(read.text), target).not.toBe(0);
@@ -123,7 +123,7 @@ describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
     expect(exitOf((await bash("mkdir -p /etc/x")).text)).not.toBe(0);
     expect(exitOf((await bash(`cp ~/MEMORY.md ${JSON.stringify(w.root)}/`)).text)).not.toBe(0);
     await expect(lstat(path.join(w.root, "pwned.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readdir(path.join(w.root, "user/waifus/aria"))).not.toContain("etc");
+    expect(await readdir(path.join(w.root, "user/waifus/ella"))).not.toContain("etc");
     // A path that only looks like a host temp directory is a path in her own /tmp: the file lands
     // in her tmp folder under the data root, never on the host. (just-bash creates missing parent
     // folders on a redirect, unlike real bash.)
@@ -131,7 +131,7 @@ describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
     const lookalike = await bash(`echo pwned > /tmp/${name}/pwned.txt`);
     expect(exitOf(lookalike.text)).toBe(0);
     expect(lookalike.text).toContain(`changed: /tmp/${name}/pwned.txt`);
-    expect(await herFile(w, "aria", `tmp/${name}/pwned.txt`)).toBe("pwned\n");
+    expect(await herFile(w, "ella", `tmp/${name}/pwned.txt`)).toBe("pwned\n");
     await expect(lstat(path.join(w.root, "pwned.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(exitOf((await bash(`rm -r /tmp/${name}`)).text)).toBe(0);
   });
@@ -147,7 +147,7 @@ describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
     // reached through just-bash's filesystem), following it finds nothing, and it is gone when the
     // command ends. A hard link is not possible at all.
     const script = await saveScript(
-      "import os\ntry:\n    os.symlink('/etc/passwd', '/tmp/x')\n    print('symlink made')\nexcept Exception as e:\n    print('symlink', type(e).__name__)\ntry:\n    print(open('/tmp/x').read()[:20])\nexcept Exception as e:\n    print('follow', type(e).__name__)\nprint(sorted(os.listdir('/tmp')))\ntry:\n    os.link('/home/aria/MEMORY.md', '/tmp/h'); print('hardlink')\nexcept Exception as e:\n    print('hardlink', type(e).__name__)\n"
+      "import os\ntry:\n    os.symlink('/etc/passwd', '/tmp/x')\n    print('symlink made')\nexcept Exception as e:\n    print('symlink', type(e).__name__)\ntry:\n    print(open('/tmp/x').read()[:20])\nexcept Exception as e:\n    print('follow', type(e).__name__)\nprint(sorted(os.listdir('/tmp')))\ntry:\n    os.link('/home/ella/MEMORY.md', '/tmp/h'); print('hardlink')\nexcept Exception as e:\n    print('hardlink', type(e).__name__)\n"
     );
     const viaPython = await bash(`python3 ${script}; ls -a /tmp; cat /tmp/x`);
     expect(viaPython.text).toMatch(/^follow \w+Error$/mu);
@@ -156,8 +156,8 @@ describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
     expect(viaPython.text).toMatch(/^hardlink \w+(Error|Exception)$/mu);
     expect(viaPython.text).toMatch(/cat: \/tmp\/x: No such file or directory/u);
     expect(viaPython.text).not.toMatch(/changed:/u);
-    for (const name of ["l1", "l2", "h1"]) await expect(lstat(path.join(w.root, "user/waifus/aria/home", name))).rejects.toMatchObject({ code: "ENOENT" });
-    const tmp = await readdir(path.join(w.root, "user/waifus/aria/tmp")).catch(() => [] as string[]);
+    for (const name of ["l1", "l2", "h1"]) await expect(lstat(path.join(w.root, "user/waifus/ella/home", name))).rejects.toMatchObject({ code: "ENOENT" });
+    const tmp = await readdir(path.join(w.root, "user/waifus/ella/tmp")).catch(() => [] as string[]);
     expect(tmp).not.toContain("x");
     expect(tmp).not.toContain("h");
   });
@@ -171,17 +171,17 @@ describe("Python (§16.3.5)", { timeout: 120_000 }, () => {
           "import os",
           "print(sorted(os.listdir('/')))",
           "print(sorted(os.listdir('/home')))",
-          `for p in ['/etc/passwd', ${JSON.stringify(path.join(w.root, "user/waifus/aria/waifu.json"))}, ${JSON.stringify(os.homedir())}, '/proc/self/environ']:`,
+          `for p in ['/etc/passwd', ${JSON.stringify(path.join(w.root, "user/waifus/ella/waifu.json"))}, ${JSON.stringify(os.homedir())}, '/proc/self/environ']:`,
           "    try:",
           "        open(p).read(); print('OPEN', p)",
           "    except Exception as e:",
           "        print('refused', type(e).__name__)",
-          "print(open('/home/aria/MEMORY.md').read().splitlines()[0])"
+          "print(open('/home/ella/MEMORY.md').read().splitlines()[0])"
         ].join("\n")
       )
     );
     expect(result.text).toContain("['home', 'tmp']");
-    expect(result.text).toContain("['aria']");
+    expect(result.text).toContain("['ella']");
     expect(result.text).not.toContain("OPEN");
     expect(result.text.match(/^refused \w+$/gmu)).toHaveLength(4);
     expect(result.text).toContain("# Memory");
@@ -221,7 +221,7 @@ describe("Python (§16.3.5)", { timeout: 120_000 }, () => {
     const python = await py("import os, json\nprint(json.dumps(dict(os.environ), sort_keys=True))\n");
     for (const result of [shell, python]) {
       expect(result.text).toContain("HOME");
-      expect(result.text).toContain("/home/aria");
+      expect(result.text).toContain("/home/ella");
       for (const [name, value] of Object.entries(process.env)) {
         if (!value || value.length < 6 || ["HOME", "USER", "PWD", "TZ", "PATH", "SHELL", "LANG", "LOGNAME", "OLDPWD", "TERM", "SHLVL", "_"].includes(name)) continue;
         expect(result.text, `host variable ${name}`).not.toContain(value);
@@ -257,7 +257,7 @@ describe("limits stop runaway programs; the host keeps running (§16.12)", { tim
     histogram.disable();
     expect(result).toEqual({ text: "error: the command took longer than 2 s and was stopped; nothing was saved", isError: true });
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(await herFile(w, "aria", "home/should-not-exist.md")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/should-not-exist.md")).toBeUndefined();
     // The host never ran her program: its event loop kept turning (99th percentile under 50 ms).
     expect(histogram.percentile(99) / 1e6).toBeLessThan(50);
   });
@@ -279,9 +279,9 @@ describe("her changes are checked and saved all or nothing (§16.3.5, §16.12)",
   it("files, folders, moves and deletes are saved; places.md can't be removed", async () => {
     const result = await bash("mkdir -p recipes && echo 'flour' > recipes/bread.md && cp people/kevin.md /tmp/k.md && mv /tmp/k.md /tmp/k2.md && echo done");
     expect(result.text).toMatch(/^done\nexit 0\nchanged: [^\n]*~\/recipes\/bread\.md/u);
-    expect(await herFile(w, "aria", "home/recipes/bread.md")).toBe("flour\n");
-    expect(await herFile(w, "aria", "tmp/k2.md")).toBe("# Kevin\n");
-    expect(await herFile(w, "aria", "tmp/k.md")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/recipes/bread.md")).toBe("flour\n");
+    expect(await herFile(w, "ella", "tmp/k2.md")).toBe("# Kevin\n");
+    expect(await herFile(w, "ella", "tmp/k.md")).toBeUndefined();
     const rm = await bash("rm /tmp/k2.md && echo gone");
     expect(rm.text).toContain("deleted: /tmp/k2.md");
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
@@ -290,15 +290,15 @@ describe("her changes are checked and saved all or nothing (§16.3.5, §16.12)",
       expect(exitOf(places.text), command).not.toBe(0);
       expect(places.text).not.toMatch(/changed: [^\n]*places\.md|deleted: [^\n]*places\.md/u);
     }
-    expect(await herFile(w, "aria", "home/places.md")).toContain("# Your places");
+    expect(await herFile(w, "ella", "home/places.md")).toContain("# Your places");
   });
 
   it("a command that breaks watches.json saves nothing, with the exact problem", async () => {
     const result = await bash("echo 'kept?' > ~/ok.md; printf '[{\"timeout\": \"2026-10-25 10:00\", \"note\": \"x\", \"when\": []},]' > ~/watches.json");
     expect(result.isError).toBe(true);
     expect(result.text).toMatch(/\nerror: changes not saved: watches\.json line 1, column \d+: /u);
-    expect(await herFile(w, "aria", "home/ok.md")).toBeUndefined();
-    expect(await herFile(w, "aria", "home/watches.json")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/ok.md")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/watches.json")).toBeUndefined();
   });
 
   it("a change set over her home's limits saves nothing", async () => {
@@ -306,7 +306,7 @@ describe("her changes are checked and saved all or nothing (§16.3.5, §16.12)",
     try {
       const result = await bash("for i in 1 2 3 4 5 6 7 8 9 10; do echo $i > n$i.md; done");
       expect(result.text).toMatch(/error: changes not saved: your home has 10 files already/u);
-      expect(await herFile(w, "aria", "home/n1.md")).toBeUndefined();
+      expect(await herFile(w, "ella", "home/n1.md")).toBeUndefined();
     } finally {
       w.setConfig((config) => ({ ...config, life: { ...config.life, home: { ...config.life.home, maxFiles: 2000 } } }));
     }

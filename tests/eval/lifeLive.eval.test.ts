@@ -29,7 +29,7 @@ import { UNSENT_REPLY_NOTE } from "../../src/life/lifeLoop.js";
 import { newWakeId, enqueueWake } from "../../src/life/wakeQueue.js";
 import { atomicWriteJson } from "../../src/storage/atomic.js";
 import type { LifeLogLine } from "../../src/shared/schemas/life.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, type LifeWorld } from "../lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, type LifeWorld } from "../lifeFixtures.js";
 import { removeTempRoot } from "../testUtils.js";
 
 const LIVE = process.env.WAIFUS_EVAL_LIVE === "1";
@@ -93,28 +93,28 @@ function turnCalls(lines: readonly LifeLogLine[]): string[] {
 }
 
 async function wake(w: LifeWorld, scenario: Scenario): Promise<WakeResult> {
-  const before = (await readLifeLog(w.storage, "aria", (await readLifeState(w.storage, "aria")).epoch).catch(() => [])).length;
-  const epochBefore = (await readLifeState(w.storage, "aria")).epoch;
+  const before = (await readLifeLog(w.storage, "ella", (await readLifeState(w.storage, "ella")).epoch).catch(() => [])).length;
+  const epochBefore = (await readLifeState(w.storage, "ella")).epoch;
   if (scenario.kind === "direct") {
-    const message = w.discord.post(ROOM, `<@${ARIA_BOT}> ${scenario.text}`, { mentions: { [ARIA_BOT]: "Aria" } });
-    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
+    const message = w.discord.post(ROOM, `<@${ELLA_BOT}> ${scenario.text}`, { mentions: { [ELLA_BOT]: "Ella" } });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
     // Her wake waits for the burst's quiet time (§4.2): fire it now.
     await w.cast.settle();
     w.cast.intake.flushDetector();
   } else if (scenario.kind === "offtopic") {
     const message = w.discord.post(ROOM, scenario.text, { authorId: MINA_USER, authorName: "Mina" });
     // As if the detector had chosen her ("maybe for you").
-    await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "detector", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", messageId: message.id, preview: scenario.text.slice(0, 60), at: w.clock.now().toISOString() });
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "detector", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", messageId: message.id, preview: scenario.text.slice(0, 60), at: w.clock.now().toISOString() });
   } else {
-    const message = w.discord.post(dmOf("aria"), scenario.text);
-    await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+    const message = w.discord.post(dmOf("ella"), scenario.text);
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     w.cast.intake.flushDms();
   }
   await w.cast.settle();
   const sentBefore = w.discord.sent.length;
-  await w.cast.life("aria").runNow();
-  const state = await readLifeState(w.storage, "aria");
-  const lines = (await readLifeLog(w.storage, "aria", state.epoch)).slice(state.epoch === epochBefore ? before : 0);
+  await w.cast.life("ella").runNow();
+  const state = await readLifeState(w.storage, "ella");
+  const lines = (await readLifeLog(w.storage, "ella", state.epoch)).slice(state.epoch === epochBefore ? before : 0);
   const calls = turnCalls(lines);
   const firstSend = calls.indexOf("SendMessage");
   return {
@@ -148,7 +148,7 @@ describe.skipIf(!LIVE)("live life evaluation (WAIFUS_EVAL_LIVE=1)", () => {
         return;
       }
       const w = await lifeWorld(roots, {
-        waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", model: { providerId: route.providerId, modelId: route.modelId }, persona: "Aria is a sunny baker in the Bake Club. She is warm, a little chaotic, and loves lemon tarts." }],
+        waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", model: { providerId: route.providerId, modelId: route.modelId }, persona: "Ella is a sunny baker in the Bake Club. She is warm, a little chaotic, and loves lemon tarts." }],
         models: ({ ledger, clock }) => new ModelClient({ winter: createWinterRuntime(), credentials, usageLedger: ledger, now: () => clock.ms })
       });
       const results: WakeResult[] = [];

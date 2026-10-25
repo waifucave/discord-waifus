@@ -157,7 +157,7 @@ describe("DiscordConversationSource", () => {
     expect(out.messages.map((m) => m.id)).toEqual(["13", "14"]);
     expect(out.reachedCursor).toBe(true);
     expect(out.messages[0]!.attachments[0]).toMatchObject({ id: "139", filename: "a.png" });
-    const dm = await source.fetchSince({ conversation: { kind: "dm", waifuId: "aria", userId: "5" }, afterMessageId: null, maxMessages: 10 });
+    const dm = await source.fetchSince({ conversation: { kind: "dm", waifuId: "ella", userId: "5" }, afterMessageId: null, maxMessages: 10 });
     expect(dm).toEqual({ messages: [], reachedCursor: true });
   });
 
@@ -174,7 +174,7 @@ describe("withoutAuthors (the House bot's posts never reach the ledger)", () => 
     const messages = [
       { id: "1", author: { id: "kevin" } },
       { id: "2", author: { id: "orch-bot" } },
-      { id: "3", author: { id: "aria-bot" } },
+      { id: "3", author: { id: "ella-bot" } },
       { id: "4", author: { id: "orch-app" } }
     ];
     expect(withoutAuthors(messages, ["orch-bot", "orch-app", undefined]).map((m) => m.id)).toEqual(["1", "3"]);

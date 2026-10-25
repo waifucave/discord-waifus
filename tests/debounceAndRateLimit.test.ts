@@ -108,8 +108,8 @@ describe("limit notice", () => {
 
   it("renders the per-waifu template with its tokens, or the default", () => {
     const freesAt = new Date(now.getTime() + 12.5 * 60_000).toISOString();
-    expect(renderLimitNotice("", { name: "Aria", user: "Kevin", freesAt, now })).toBe(DEFAULT_LIMIT_NOTICE.replace("{retryInMinutes}", "13"));
-    expect(renderLimitNotice("{name} is busy, {user}. {retryInMinutes}m", { name: "Aria", user: "Kevin", freesAt, now })).toBe("Aria is busy, Kevin. 13m");
+    expect(renderLimitNotice("", { name: "Ella", user: "Kevin", freesAt, now })).toBe(DEFAULT_LIMIT_NOTICE.replace("{retryInMinutes}", "13"));
+    expect(renderLimitNotice("{name} is busy, {user}. {retryInMinutes}m", { name: "Ella", user: "Kevin", freesAt, now })).toBe("Ella is busy, Kevin. 13m");
   });
 });
 
@@ -131,7 +131,7 @@ describe("DM eligibility", () => {
   const bots = {
     orchestrator: { id: "director", displayName: "Director", enabled: true },
     waifus: [
-      { id: "aria-bot", displayName: "Aria", enabled: true },
+      { id: "ella-bot", displayName: "Ella", enabled: true },
       { id: "mina-bot", displayName: "Mina", enabled: true },
       { id: "off-bot", displayName: "Off", enabled: false }
     ]
@@ -140,7 +140,7 @@ describe("DM eligibility", () => {
   it("needs allowDms, a model, an enabled waifu bot and exactly one enabled waifu on it", () => {
     const result = computeDmEligibility(
       [
-        waifu("aria"),
+        waifu("ella"),
         waifu("mina", { allowDms: false }),
         waifu("nomodel", { botId: "nomodel-bot", model: undefined }),
         waifu("off", { botId: "off-bot" }),
@@ -148,14 +148,14 @@ describe("DM eligibility", () => {
       ],
       { ...bots, waifus: [...bots.waifus, { id: "nomodel-bot", displayName: "N", enabled: true }] }
     );
-    expect(result.eligible).toEqual([{ waifuId: "aria", botId: "aria-bot" }]);
-    const noModel = computeDmEligibility([{ ...waifu("aria"), model: undefined } as WaifuConfig], bots);
-    expect(noModel).toEqual({ eligible: [], warnings: ["dm_missing_model:aria"] });
+    expect(result.eligible).toEqual([{ waifuId: "ella", botId: "ella-bot" }]);
+    const noModel = computeDmEligibility([{ ...waifu("ella"), model: undefined } as WaifuConfig], bots);
+    expect(noModel).toEqual({ eligible: [], warnings: ["dm_missing_model:ella"] });
   });
 
   it("warns dm_bot_shared when two enabled waifus share the bot", () => {
-    const result = computeDmEligibility([waifu("aria"), waifu("mina", { botId: "aria-bot", allowDms: false })], bots);
-    expect(result).toEqual({ eligible: [], warnings: ["dm_bot_shared:aria-bot"] });
+    const result = computeDmEligibility([waifu("ella"), waifu("mina", { botId: "ella-bot", allowDms: false })], bots);
+    expect(result).toEqual({ eligible: [], warnings: ["dm_bot_shared:ella-bot"] });
   });
 });
 

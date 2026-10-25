@@ -29,17 +29,17 @@ const line = (seq: number, kind: LifeLogLine["kind"], turnId: string, message: R
 
 async function world() {
   const made = await makeCliApp(roots, apps);
-  expect((await made.app.inject({ method: "POST", url: "/api/waifus", payload: { id: "aria", name: "Aria", displayName: "Aria" } })).statusCode).toBe(201);
+  expect((await made.app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } })).statusCode).toBe(201);
   return { ...made, host: injectTransport(made.app) };
 }
 
 describe("waifus wake / life", () => {
   it("wakes her with a note (queued while Discord is offline)", async () => {
     const { root, host } = await world();
-    const run = await cli(root, host, ["wake", "aria", "check", "the", "garden"]);
+    const run = await cli(root, host, ["wake", "ella", "check", "the", "garden"]);
     expect(run.code).toBe(0);
     expect(run.out).toContain("queued");
-    const status = JSON.parse((await cli(root, host, ["life", "aria", "--json"])).out) as { status: { queue: { wakes: Array<{ reason: string; note?: string }> } } };
+    const status = JSON.parse((await cli(root, host, ["life", "ella", "--json"])).out) as { status: { queue: { wakes: Array<{ reason: string; note?: string }> } } };
     expect(status.status.queue.wakes).toEqual([expect.objectContaining({ reason: "owner", note: "check the garden" })]);
     expect((await cli(root, host, ["wake", "nobody"])).code).toBe(4);
     expect((await cli(root, host, ["wake"])).code).toBe(2);
@@ -47,33 +47,33 @@ describe("waifus wake / life", () => {
 
   it("prints status and the log with DM content left out unless --private", async () => {
     const { root, host, storage } = await world();
-    await updateLifeState(storage, "aria", (state) => ({ ...state, epoch: 1, summary: "Kevin told me about his exam in DMs." }));
-    await appendLifeLog(storage, "aria", 1, [
+    await updateLifeState(storage, "ella", (state) => ({ ...state, epoch: 1, summary: "Kevin told me about his exam in DMs." }));
+    await appendLifeLog(storage, "ella", 1, [
       line(0, "notifications", "t1", { role: "user", content: [{ type: "text", text: '<notifications>\n- dm · dm/kevin · from Kevin · "my exam is tomorrow"\n</notifications>' }] }),
       line(1, "assistant", "t1", { role: "assistant", content: [{ type: "text", text: "He sounds nervous." }, { type: "tool_use", id: "c1", name: "SendMessage", input: { place: "dm/kevin", text: "you've got this" } }] }),
       line(2, "tool_results", "t1", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "sent #a1" }] }),
       line(3, "assistant", "t2", { role: "assistant", content: [{ type: "tool_use", id: "c2", name: "SendMessage", input: { place: "bake-club/#general", text: "lemon cake!" } }] })
     ]);
-    const status = await cli(root, host, ["life", "aria"]);
+    const status = await cli(root, host, ["life", "ella"]);
     expect(status.code).toBe(0);
-    expect(status.out).toContain("Aria (aria)");
+    expect(status.out).toContain("Ella (ella)");
     expect(status.out).toContain("summary:      hidden");
     expect(status.out).not.toContain("exam");
 
-    const log = await cli(root, host, ["life", "aria", "--log", "--limit", "10"]);
+    const log = await cli(root, host, ["life", "ella", "--log", "--limit", "10"]);
     expect(log.code).toBe(0);
     expect(log.out).toContain("lemon cake!");
     expect(log.out).toContain("SendMessage(");
     expect(log.out).toContain("[private chat redacted]");
     for (const secret of ["exam", "you've got this", "nervous"]) expect(log.out).not.toContain(secret);
 
-    const open = await cli(root, host, ["life", "aria", "--log", "--private"]);
+    const open = await cli(root, host, ["life", "ella", "--log", "--private"]);
     expect(open.out).toContain("exam");
     expect(open.out).toContain("you've got this");
 
-    const json = await cli(root, host, ["life", "aria", "--log", "--json"]);
-    expect(JSON.parse(json.out)).toMatchObject({ ok: true, status: { waifuId: "aria" }, log: { includePrivate: false } });
-    expect((await cli(root, host, ["life", "aria", "--limit", "0"])).code).toBe(2);
+    const json = await cli(root, host, ["life", "ella", "--log", "--json"]);
+    expect(JSON.parse(json.out)).toMatchObject({ ok: true, status: { waifuId: "ella" }, log: { includePrivate: false } });
+    expect((await cli(root, host, ["life", "ella", "--limit", "0"])).code).toBe(2);
   });
 });
 
@@ -109,7 +109,7 @@ describe("waifus usage", () => {
   it("reads the ledger by local day, also with the host stopped", async () => {
     const { root } = await world();
     const entry = (at: string, extra: Record<string, unknown> = {}) =>
-      JSON.stringify({ at, purpose: "life", waifuId: "aria", providerId: "anthropic", modelId: "claude-haiku-5-5", status: "ok", usageKnown: true, inputTokens: 100, outputTokens: 10, cacheReadTokens: 50, costUsd: 0.01, durationMs: 3, ...extra });
+      JSON.stringify({ at, purpose: "life", waifuId: "ella", providerId: "anthropic", modelId: "claude-haiku-5-5", status: "ok", usageKnown: true, inputTokens: 100, outputTokens: 10, cacheReadTokens: 50, costUsd: 0.01, durationMs: 3, ...extra });
     await mkdir(path.join(root, "user", "usage"), { recursive: true });
     await writeFile(path.join(root, "user", "usage", "2026-10-24.jsonl"), `${[entry("2026-10-24T10:00:00.000Z"), entry("2026-10-24T11:00:00.000Z", { waifuId: "mina" })].join("\n")}\n`);
     const now = () => new Date("2026-10-24T20:00:00.000Z");
@@ -118,7 +118,7 @@ describe("waifus usage", () => {
     expect(byDay.out).toContain("2026-10-18 … 2026-10-24");
     expect(byDay.out).toMatch(/2026-10-24\s+2 calls\s+\$0\.0200/u);
     const json = JSON.parse((await cli(root, null, ["usage", "--tz", "UTC", "--by", "waifu", "--json"], { now })).out) as { groups: Array<{ key: string[]; calls: number }> };
-    expect(json.groups.map((group) => group.key[0]).sort()).toEqual(["aria", "mina"]);
+    expect(json.groups.map((group) => group.key[0]).sort()).toEqual(["ella", "mina"]);
     expect((await cli(root, null, ["usage", "--by", "colour"], { now })).code).toBe(2);
     expect((await cli(root, null, ["usage", "--from", "yesterday"], { now })).code).toBe(2);
     expect((await cli(root, null, ["usage", "--tz", "Mars/Base"], { now })).code).toBe(2);
@@ -128,47 +128,47 @@ describe("waifus usage", () => {
 describe("waifus files / schedule / watches", () => {
   it("lists her folders, prints a text file, and leaves a DM file unnamed unless --private", async () => {
     const { root, host, storage } = await world();
-    const home = new HomeStore(storage, "aria", "aria", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+    const home = new HomeStore(storage, "ella", "ella", () => homeLimitsOf(AppConfigSchema.parse({}).life));
     await home.files.writeBytes(home.path("home", ["people", "kevin.md"]), Buffer.from("# Kevin\nlikes lemon cake\n"));
     await home.files.writeBytes(home.path("tmp", ["dm", "kevin", "a7-menu.txt"]), Buffer.from("secret brownies"));
     await home.files.writeBytes(home.path("tmp", ["bake-club", "general", "k3-cake.png"]), Buffer.from("89504e470d0a1a0a00", "hex"));
 
-    const list = await cli(root, host, ["files", "aria"]);
+    const list = await cli(root, host, ["files", "ella"]);
     expect(list.code).toBe(0);
     expect(list.out).toContain("~ (her home");
     expect(list.out).toContain("people/");
-    const note = await cli(root, host, ["files", "aria", "people/kevin.md"]);
+    const note = await cli(root, host, ["files", "ella", "people/kevin.md"]);
     expect(note.out).toBe("# Kevin\nlikes lemon cake");
-    expect((await cli(root, host, ["files", "aria", "/home/aria/people"])).out).toContain("kevin.md");
-    expect((await cli(root, host, ["files", "aria", "bake-club/general/k3-cake.png", "--root", "tmp"])).out).toContain("an image");
+    expect((await cli(root, host, ["files", "ella", "/home/ella/people"])).out).toContain("kevin.md");
+    expect((await cli(root, host, ["files", "ella", "bake-club/general/k3-cake.png", "--root", "tmp"])).out).toContain("an image");
 
-    const dm = await cli(root, host, ["files", "aria", "dm", "--root", "tmp"]);
+    const dm = await cli(root, host, ["files", "ella", "dm", "--root", "tmp"]);
     expect(dm.out).toContain("[private chat redacted]");
     expect(dm.out).not.toContain("kevin");
-    const refused = await cli(root, host, ["files", "aria", "/tmp/dm/kevin/a7-menu.txt"]);
+    const refused = await cli(root, host, ["files", "ella", "/tmp/dm/kevin/a7-menu.txt"]);
     expect(refused.code).toBe(4);
     expect(refused.err).not.toContain("brownies");
-    expect((await cli(root, host, ["files", "aria", "/tmp/dm/kevin/a7-menu.txt", "--private"])).out).toBe("secret brownies");
+    expect((await cli(root, host, ["files", "ella", "/tmp/dm/kevin/a7-menu.txt", "--private"])).out).toBe("secret brownies");
 
-    expect((await cli(root, host, ["files", "aria", "nothing.md"])).code).toBe(4);
-    expect((await cli(root, host, ["files", "aria", "x", "--root", "etc"])).code).toBe(2);
-    expect((await cli(root, null, ["files", "aria"])).code).toBe(3);
+    expect((await cli(root, host, ["files", "ella", "nothing.md"])).code).toBe(4);
+    expect((await cli(root, host, ["files", "ella", "x", "--root", "etc"])).code).toBe(2);
+    expect((await cli(root, null, ["files", "ella"])).code).toBe(3);
   });
 
   it("prints her reminders and watches, a DM-bound watch without its words unless --private", async () => {
     const { root, host, storage } = await world();
-    const home = new HomeStore(storage, "aria", "aria", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+    const home = new HomeStore(storage, "ella", "ella", () => homeLimitsOf(AppConfigSchema.parse({}).life));
     const soon = localMinuteText(new Date(Date.now() + 2 * 3_600_000), hostTimeZone());
-    expect((await cli(root, host, ["schedule", "aria"])).out).toContain("no reminders");
+    expect((await cli(root, host, ["schedule", "ella"])).out).toContain("no reminders");
     await home.files.writeBytes(home.home("schedule.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, repeat: "daily", note: "water the plants" }])));
     await home.files.writeBytes(home.home("watches.json"), Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: soon, once: true, note: "his exam", when: [{ place: "dm/kevin", words: ["exam"] }] }])));
-    const schedule = await cli(root, host, ["schedule", "aria"]);
+    const schedule = await cli(root, host, ["schedule", "ella"]);
     expect(schedule.out).toMatch(/r1\s+.*\(daily\)\s+water the plants/u);
-    const watches = await cli(root, host, ["watches", "aria"]);
+    const watches = await cli(root, host, ["watches", "ella"]);
     expect(watches.out).toContain("timer");
     expect(watches.out).toContain("[private chat redacted]");
     expect(watches.out).not.toContain("exam");
-    expect((await cli(root, host, ["watches", "aria", "--private"])).out).toContain("his exam");
-    expect(JSON.parse((await cli(root, host, ["watches", "aria", "--json"])).out)).toMatchObject({ ok: true, includePrivate: false });
+    expect((await cli(root, host, ["watches", "ella", "--private"])).out).toContain("his exam");
+    expect(JSON.parse((await cli(root, host, ["watches", "ella", "--json"])).out)).toMatchObject({ ok: true, includePrivate: false });
   });
 });

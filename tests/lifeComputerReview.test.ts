@@ -29,11 +29,11 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const DM_KEY = `dm_${KEVIN}_aria`;
+const DM_KEY = `dm_${KEVIN}_ella`;
 
 async function ctxFor(w: LifeWorld, o: Partial<ToolContext> = {}): Promise<ToolContext> {
   const deps = w.cast.deps;
-  const waifu = await readWaifu(w.storage, "aria");
+  const waifu = await readWaifu(w.storage, "ella");
   const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
   return {
     deps,
@@ -53,7 +53,7 @@ const run = (name: string, input: unknown, ctx: ToolContext): Promise<ToolOutput
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
 /** A file in her home, written as the owner would (no checks). */
 async function put(w: LifeWorld, relative: string, data: string | Buffer): Promise<void> {
-  const file = path.join(w.root, "user/waifus/aria/home", ...relative.split("/"));
+  const file = path.join(w.root, "user/waifus/ella/home", ...relative.split("/"));
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, data);
 }
@@ -76,7 +76,7 @@ describe("names as the disk compares them (review S1, S2)", () => {
         "- [Ref][r1]",
         "- [Dot](./people/dot.md \"a title\")",
         "- [Tilde](~/people/tilde.md)",
-        "- [Abs](/home/aria/people/abs.md#top)",
+        "- [Abs](/home/ella/people/abs.md#top)",
         "- [Pct](people/pct%20file.md)",
         "- [Case](People/CASE.md)",
         "- [Web](https://example.com/x.md)",
@@ -98,7 +98,7 @@ describe("names as the disk compares them (review S1, S2)", () => {
       "~/people/abs.md",
       "~/people/pct file.md",
       "~/people/case.md",
-      "/home/aria/./MEMORY.md",
+      "/home/ella/./MEMORY.md",
       "~/people/../MEMORY.md",
       "~/Schedule.json",
       "~/WATCHES.json",
@@ -117,7 +117,7 @@ describe("names as the disk compares them (review S1, S2)", () => {
     expect(text(await run("ScheduleWake", { in_minutes: 60, note: "legit" }, ctx))).toMatch(/^set r1 /u);
     const bash = await run("Bash", { command: `rm ~/schedule.json; printf '%s' '[{"at":"1999-01-01 00:00","note":"old"}]' > ~/Schedule.json` }, ctx);
     expect(text(bash)).toContain("error: changes not saved: schedule.json entry 1: at is in the past");
-    expect(await readdir(path.join(w.root, "user/waifus/aria/home"))).toContain("schedule.json");
+    expect(await readdir(path.join(w.root, "user/waifus/ella/home"))).toContain("schedule.json");
     expect((await herEntries(w, "schedule.json")).map((entry) => entry["note"])).toEqual(["legit"]);
     expect(text(await run("Write", { file_path: "~/WATCHES.json", content: '[{"timeout": "1990-01-01 00:00", "note": "x", "when": []}]' }, ctx))).toBe("error: watches.json entry 1: timeout is in the past");
     expect(text(await run("Write", { file_path: "~/Places.md", content: "x" }, ctx))).toMatch(/^error: places\.md /u);
@@ -138,8 +138,8 @@ describe("names as the disk compares them (review S1, S2)", () => {
 describe("forget across a crash (review S7)", () => {
   it("a copy a running Bash saves after the forget's first file step is deleted by the queued scrub after a restart", async () => {
     const w = await lifeWorld(roots);
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "aria"));
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
     await store.saveDownload(store.path("tmp", ["dm", "kevin", "a1-recipe.txt"]), Buffer.from("Kevin's secret recipe\n"), {
       placeKey: DM_KEY,
       messageId: "1",
@@ -162,22 +162,22 @@ describe("forget across a crash (review S7)", () => {
     await firstRead;
     spy.mockRestore();
     // The forget is prepared (step 1 removes the file and its provenance) while the command runs.
-    const prepared = await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "owner", scope: "everything" });
+    const prepared = await w.cast.prepareForget({ waifuId: "ella", userId: KEVIN, source: "owner", scope: "everything" });
     expect(prepared).toBeDefined();
-    expect(await herFile(w, "aria", "tmp/dm/kevin/a1-recipe.txt")).toBeUndefined();
-    const scrubsFile = path.join(w.root, "user/waifus/aria/life/pending-scrubs.json");
+    expect(await herFile(w, "ella", "tmp/dm/kevin/a1-recipe.txt")).toBeUndefined();
+    const scrubsFile = path.join(w.root, "user/waifus/ella/life/pending-scrubs.json");
     const queued = JSON.parse(await readFile(scrubsFile, "utf8")) as { scrubs: Array<{ userId: string; fileHashes?: string[] }> };
     expect(queued.scrubs.find((scrub) => scrub.userId === KEVIN)?.fileHashes).toHaveLength(1);
     expect((await bash).isError).toBeFalsy();
-    expect(await herFile(w, "aria", "home/kept.txt")).toBe("Kevin's secret recipe\n");
+    expect(await herFile(w, "ella", "home/kept.txt")).toBe("Kevin's secret recipe\n");
     // A crash before the scrub ran under her life lock: the in-memory hashes are gone.
     await closeWorlds();
     const restarted = w.restart();
-    vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(restarted.life("ella"), "poke").mockImplementation(() => undefined);
     await restarted.start();
     await restarted.settle();
-    expect(await herFile(w, "aria", "home/kept.txt")).toBeUndefined();
-    expect(await herFile(w, "aria", "tmp/stage.txt")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/kept.txt")).toBeUndefined();
+    expect(await herFile(w, "ella", "tmp/stage.txt")).toBeUndefined();
     // The scrub ran and is cleared, its hashes with it.
     const after = JSON.parse(await readFile(scrubsFile, "utf8")) as { scrubs: Array<{ userId: string; fileHashes?: string[] }> };
     expect(after.scrubs.some((scrub) => scrub.fileHashes !== undefined)).toBe(false);
@@ -187,7 +187,7 @@ describe("forget across a crash (review S7)", () => {
 describe("DM files touched by Bash or Write are DM calls (review S5)", () => {
   it("records a listing, a read by glob, a move and a Write over a DM file", async () => {
     const w = await lifeWorld(roots);
-    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "aria"));
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
     const meta = (id: string) => ({ placeKey: DM_KEY, messageId: id, authorId: KEVIN, attachmentId: `a${id}`, downloadedAt: w.clock.now().toISOString() });
     await store.saveDownload(store.path("tmp", ["dm", "kevin", "a7-results.pdf"]), Buffer.from("%PDF-1.4 fake\n"), meta("1"));
     await store.saveDownload(store.path("tmp", ["dm", "kevin", "a8-note.txt"]), Buffer.from("keep this between us\n"), meta("2"));
@@ -223,7 +223,7 @@ describe("entry limits (review S6)", () => {
     const result = await run("Bash", { command: `python3 -c "\nimport os\nos.makedirs('/tmp/many')\nfor i in range(5200):\n    open('/tmp/many/f%d' % i, 'w').close()\n"`, timeout_ms: 60_000 }, ctx);
     expect(text(result)).toContain("at most 5000 can be saved at once");
     expect(result.isError).toBe(true);
-    expect(await readdir(path.join(w.root, "user/waifus/aria/tmp")).catch(() => [])).not.toContain("many");
+    expect(await readdir(path.join(w.root, "user/waifus/ella/tmp")).catch(() => [])).not.toContain("many");
     expect(Date.now() - started).toBeLessThan(45_000);
   }, 90_000);
 });
@@ -234,7 +234,7 @@ describe("Bash's memory watchdog (review C1)", () => {
     const ctx = await ctxFor(w);
     const result = await run("Bash", { command: `echo before > ~/kept.md; python3 -c "\nimport time\nb = b'x' * (400 * 1024 * 1024)\ntime.sleep(20)\n"`, timeout_ms: 60_000 }, ctx);
     expect(text(result)).toBe("error: the command used too much memory and was stopped; nothing was saved");
-    expect(await herFile(w, "aria", "home/kept.md")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/kept.md")).toBeUndefined();
     // sqlite3 is not one of her commands.
     expect(text(await run("Bash", { command: "sqlite3 :memory: 'select 1'" }, ctx))).toMatch(/sqlite3: command not (found|available)/u);
   }, 90_000);
@@ -243,14 +243,14 @@ describe("Bash's memory watchdog (review C1)", () => {
 describe("a whole-file Write needs a current Read (review B1)", () => {
   it("refuses a stale Write after a watch matched; the matched once-watch never comes back", async () => {
     const w = await lifeWorld(roots);
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const ctx = await ctxFor(w);
     expect(text(await run("WatchFor", { when: [{ place: "bake-club/#general", words: ["exam"] }], note: "Kevin's answer", timeout_minutes: 120 }, ctx))).toMatch(/^watching w1 /u);
     const read = text(await run("Read", { file_path: "~/watches.json" }, ctx));
     expect(read).toContain("Kevin's answer");
-    const stale = (await herFile(w, "aria", "home/watches.json"))!;
+    const stale = (await herFile(w, "ella", "home/watches.json"))!;
     const m = w.discord.post(ROOM, "the exam went fine");
-    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: m.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: m });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: m.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: m });
     await w.cast.settle();
     // Her wake waits for the burst's quiet time (§4.2): fire it now.
     w.cast.intake.flushDetector();
@@ -266,7 +266,7 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     // And a timeout of a once-watch that already matched never wakes her.
     w.clock.ms += 3 * 3_600_000;
     await w.cast.scheduler.tick();
-    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout")).toEqual([]);
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout")).toEqual([]);
   });
 
   it("an owner's DELETE of a reminder sticks against her stale Write", async () => {
@@ -275,7 +275,7 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     await run("ScheduleWake", { in_minutes: 60, note: "one" }, ctx);
     await run("ScheduleWake", { in_minutes: 90, note: "two" }, ctx);
     await run("Read", { file_path: "~/schedule.json" }, ctx);
-    const stale = (await herFile(w, "aria", "home/schedule.json"))!;
+    const stale = (await herFile(w, "ella", "home/schedule.json"))!;
     const store = homeStoreFor(w.cast.deps, ctx.waifu);
     await store.rewriteSchedule("UTC", (entries) => entries.filter((entry) => entry.id !== "r1"));
     const result = await run("Write", { file_path: "~/schedule.json", content: stale.replace('"two"', '"two!"') }, ctx);
@@ -285,14 +285,14 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
 
   it("a corrupt fired list is kept aside, the owner is told, and a reminder due before the loss is dropped without a wake", async () => {
     const w = await lifeWorld(roots);
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const due = later(w, -1);
     await put(w, "schedule.json", `[{"id": "r1", "at": "${due}", "note": "maybe fired already"}]\n`);
-    const side = path.join(w.root, "user/waifus/aria/life/schedule-ids.json");
+    const side = path.join(w.root, "user/waifus/ella/life/schedule-ids.json");
     await mkdir(path.dirname(side), { recursive: true });
     await writeFile(side, "{ torn");
     await w.cast.scheduler.tick();
-    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.filter((wake) => wake.reason === "reminder")).toEqual([]);
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "reminder")).toEqual([]);
     expect(await herEntries(w, "schedule.json")).toEqual([]);
     const names = await readdir(path.dirname(side));
     expect(names.some((name) => name.startsWith("schedule-ids.json.corrupt-"))).toBe(true);
@@ -302,7 +302,7 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     await put(w, "schedule.json", `[{"id": "r2", "at": "${later(w, 10)}", "note": "fires"}]\n`);
     w.clock.ms += 11 * 60_000;
     await w.cast.scheduler.tick();
-    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.note)).toEqual(["fires"]);
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.map((wake) => wake.note)).toEqual(["fires"]);
   });
 });
 
@@ -320,11 +320,11 @@ describe("Read's output and images (review B2, B3)", () => {
     const fetcher = new FakeImageFetcher();
     const w = await lifeWorld(roots, { options: { images: fetcher, ocr: { cachedText: async () => "a lemon tart" } } });
     await put(w, "cake.png", tinyPng());
-    const before = await readLifeState(w.storage, "aria");
+    const before = await readLifeState(w.storage, "ella");
     const session = await ctxFor(w, { mode: "session" });
     const result = await run("Read", { file_path: "~/cake.png" }, session);
     expect(JSON.stringify(result.content)).toContain("[image: a lemon tart]");
-    const after = await readLifeState(w.storage, "aria");
+    const after = await readLifeState(w.storage, "ella");
     expect(after.shownImageKeys).toEqual(before.shownImageKeys);
     expect(after.inlineImageCount).toBe(before.inlineImageCount);
   });
@@ -337,9 +337,9 @@ describe("Read's output and images (review B2, B3)", () => {
     });
     for (let index = 0; index < MAINTENANCE_LISTING_MAX + 5; index += 1) await homeOf(w).write(`notes/n${String(index).padStart(3, "0")}.md`, "x\n");
     await put(w, "cake.png", tinyPng());
-    const waifu = await readWaifu(w.storage, "aria");
+    const waifu = await readWaifu(w.storage, "ella");
     const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === waifu.model!.providerId && entry.modelId === waifu.model!.modelId)!;
-    const before = await readLifeState(w.storage, "aria");
+    const before = await readLifeState(w.storage, "ella");
     const outcome = await runNotesSession(w.cast.deps, { waifu, model, instruction: "[system] tidy", kind: "maintenance" });
     expect(outcome.ok).toBe(true);
     const first = JSON.stringify(w.anthropic.calls[0]!.request.messages[0]);
@@ -347,7 +347,7 @@ describe("Read's output and images (review B2, B3)", () => {
     expect(first).toContain("… and 6 more; use `ls -R`");
     const second = JSON.stringify(w.anthropic.calls[1]!.request.messages);
     expect(second).toContain("[image: a lemon tart]");
-    const after = await readLifeState(w.storage, "aria");
+    const after = await readLifeState(w.storage, "ella");
     expect(after.shownImageKeys).toEqual(before.shownImageKeys);
   });
 });
@@ -355,12 +355,12 @@ describe("Read's output and images (review B2, B3)", () => {
 describe("a Bash journal across a rename (review minors)", () => {
   it("finishes a journal written under her old slug in her current home", async () => {
     const w = await lifeWorld(roots);
-    const store = new HomeStore(w.storage, "aria", "aria", () => homeLimitsOf(AppConfigSchema.parse({}).life));
-    const dir = path.join(w.root, "user/waifus/aria/life/pending-changes");
+    const store = new HomeStore(w.storage, "ella", "ella", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+    const dir = path.join(w.root, "user/waifus/ella/life/pending-changes");
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, "call_9.json"), JSON.stringify({ writes: [{ path: "/home/arya/renamed.md", data: Buffer.from("kept\n").toString("base64") }], deletes: [], dirs: [] }));
     expect(await store.recoverPendingChanges()).toEqual(["call_9"]);
-    expect(await herFile(w, "aria", "home/renamed.md")).toBe("kept\n");
+    expect(await herFile(w, "ella", "home/renamed.md")).toBe("kept\n");
   });
 });
 
@@ -414,7 +414,7 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
 
   it("a watch matches a message posted before its timeout even when catch-up handles it later", async () => {
     const w = await lifeWorld(roots);
-    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "aria"));
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
     await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: later(w, 30), note: "his answer", when: [{ words: ["exam"] }] }]));
     const { fireWatches } = await import("../src/life/watches.js");
     const posted = new Date(w.clock.now().getTime() + 20 * 60_000).toISOString();

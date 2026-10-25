@@ -114,10 +114,10 @@ describe("B1: request ids cannot escape the data root", () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/waifus",
-        payload: { id: "aria.v2", name: "Aria", displayName: "Aria" }
+        payload: { id: "ella.v2", name: "Ella", displayName: "Ella" }
       });
       expect(created.statusCode).toBe(201);
-      expect((await app.inject({ method: "GET", url: "/api/waifus/aria.v2" })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/waifus/ella.v2" })).statusCode).toBe(200);
       expect((await app.inject({ method: "GET", url: "/api/waifus/..." })).statusCode).toBe(400);
       expect((await app.inject({
         method: "POST",

@@ -33,7 +33,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
     }
     const life = server.exchanges.filter((exchange) => !isMaintenance(exchange.body) && !isCompaction(exchange.body));
     expect(life.length).toBeGreaterThanOrEqual(20);
-    const state = await readLifeState(w.storage, "aria");
+    const state = await readLifeState(w.storage, "ella");
     expect(state.epoch).toBe(1);
     for (const [index, exchange] of life.entries()) {
       const body = exchange.body;
@@ -86,7 +86,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
     await roomWake(w, "find me the best recipe", 0);
     const compactions = server.exchanges.filter((exchange) => isCompaction(exchange.body));
     expect(compactions.length).toBeGreaterThanOrEqual(1);
-    const state = await readLifeState(w.storage, "aria");
+    const state = await readLifeState(w.storage, "ella");
     expect(state.epoch).toBeGreaterThan(1);
     // The budget on the wire, measured by the provider (the loopback server's own count of the
     // body). The loop sends a request only when its calibrated estimate (characters / 3.5 times the
@@ -189,7 +189,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
     // ReadMessages saves the picture in her /tmp; she looks at it with Read.
     fetcher.files.set("att:9401", tinyPng(8, 8));
     const { w, server } = await realAnthropicWorld({ options: { images: fetcher } });
-    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     w.discord.post(ROOM, "look at my cake", {
       authorId: KEVIN,
       authorName: "Kevin",
@@ -206,7 +206,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
       step += 1;
       if (step === 1) {
         // Mina pings her while she reads: folded into a later tool-results message.
-        folded = enqueueWake(w.storage, "aria", { id: "w-fold", reason: "mention", placeKey: ROOM_KEY, fromUserId: "300000000000000077", fromName: "Mina", messageId: "900000000000000777", preview: "and mine?", at: new Date(w.clock.ms).toISOString() });
+        folded = enqueueWake(w.storage, "ella", { id: "w-fold", reason: "mention", placeKey: ROOM_KEY, fromUserId: "300000000000000077", fromName: "Mina", messageId: "900000000000000777", preview: "and mine?", at: new Date(w.clock.ms).toISOString() });
         return { thinking: "let me look", toolCalls: [{ name: "ReadMessages", input: { place: "bake-club/#general" } }] };
       }
       if (step === 2) return { thinking: "a cake", toolCalls: [{ name: "Read", input: { file_path: "/tmp/bake-club/general/a0-cake.png" } }] };
@@ -218,17 +218,17 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
       }
       return { thinking: "back again", text: "(done)" };
     };
-    await enqueueWake(w.storage, "aria", { id: "w-cake", reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: "900000000000000776", preview: "look at my cake", at: new Date(w.clock.ms).toISOString() });
-    const running = w.cast.life("aria").runNow();
+    await enqueueWake(w.storage, "ella", { id: "w-cake", reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: "900000000000000776", preview: "look at my cake", at: new Date(w.clock.ms).toISOString() });
+    const running = w.cast.life("ella").runNow();
     await hanging;
     await folded;
-    w.cast.life("aria").abort("pause");
+    w.cast.life("ella").abort("pause");
     await running;
     // Her wakes went back to the queue: the next turn picks them up in the same epoch.
-    await w.cast.life("aria").runNow();
+    await w.cast.life("ella").runNow();
     const life = server.exchanges.filter((exchange) => !isMaintenance(exchange.body) && !isCompaction(exchange.body));
     expect(life.length).toBeGreaterThanOrEqual(5);
-    expect((await readLifeState(w.storage, "aria")).epoch).toBe(1);
+    expect((await readLifeState(w.storage, "ella")).epoch).toBe(1);
     const wire = JSON.stringify(life[life.length - 1]!.body.messages);
     expect(wire).toContain('"type":"image"');
     expect(wire).toContain("and mine?");
@@ -250,7 +250,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
     const { w, server } = await realAnthropicWorld();
     server.next = lifeTurn(() => "dm/kevin", { answer: "hey! yes, saturday works" });
     await dmWake(w, "are you free saturday?");
-    expect(w.discord.sent).toMatchObject([{ placeKey: `dm_${KEVIN}_aria`, content: "hey! yes, saturday works" }]);
+    expect(w.discord.sent).toMatchObject([{ placeKey: `dm_${KEVIN}_ella`, content: "hey! yes, saturday works" }]);
     const first = JSON.stringify(server.exchanges[0]!.body.messages[0]);
     expect(first).toContain("dm · dm/kevin · from Kevin");
   });

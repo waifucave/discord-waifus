@@ -951,7 +951,7 @@ describe("discord bot enabled upgrade", () => {
     await writeJson(root, "user/discord-bots.json", botsFile(
       { id: "orchestrator", displayName: "O", token: "orchestrator-token", enabled: false },
       [
-        { id: "aria", displayName: "Aria", token: "aria-token" },
+        { id: "ella", displayName: "Ella", token: "ella-token" },
         { id: "riko", displayName: "Riko", token: "riko-token", enabled: false },
         { id: "nox", displayName: "Nox", enabled: false }
       ]
@@ -963,7 +963,7 @@ describe("discord bot enabled upgrade", () => {
     const migrated = await readJson<ReturnType<typeof botsFile>>(root, "user/discord-bots.json");
     expect(migrated.orchestrator).toMatchObject({ enabled: true, token: "orchestrator-token" });
     expect(migrated.waifus.map((bot) => [bot.id, bot.enabled])).toEqual([
-      ["aria", true],
+      ["ella", true],
       ["riko", true],
       // No token: the old runtime never logged it in either, so the explicit flag stays.
       ["nox", false]
@@ -988,14 +988,14 @@ describe("discord bot enabled upgrade", () => {
     await ensureDataLayout(root);
     await runMigrations(root);
     await writeJson(root, "user/discord-bots.json", botsFile(null, [
-      { id: "aria", displayName: "Aria", token: "aria-token" },
+      { id: "ella", displayName: "Ella", token: "ella-token" },
       { id: "riko", displayName: "Riko", token: "riko-token", enabled: false }
     ]));
 
     await runMigrations(root);
 
     const after = await readJson<ReturnType<typeof botsFile>>(root, "user/discord-bots.json");
-    expect(after.waifus.map((bot) => [bot.id, bot.enabled])).toEqual([["aria", true], ["riko", false]]);
+    expect(after.waifus.map((bot) => [bot.id, bot.enabled])).toEqual([["ella", true], ["riko", false]]);
   });
 });
 

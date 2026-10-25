@@ -22,28 +22,28 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const storeOf = async (w: LifeWorld) => homeStoreFor(w.cast.deps, await readWaifu(w.storage, "aria"));
-const host = (w: LifeWorld, relative: string) => path.join(w.root, "user/waifus/aria", ...relative.split("/"));
+const storeOf = async (w: LifeWorld) => homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+const host = (w: LifeWorld, relative: string) => path.join(w.root, "user/waifus/ella", ...relative.split("/"));
 
 describe("path rules (§16.2)", () => {
   it("absolute, ~ and home-relative paths; `..` never leaves her folders; segment rules", () => {
     const ok = (input: string) => {
-      const resolved = resolveHerPath(input, "aria");
+      const resolved = resolveHerPath(input, "ella");
       return resolved.ok ? resolved.path.virtual : resolved.error;
     };
-    expect(ok("/home/aria/people/kevin.md")).toBe("/home/aria/people/kevin.md");
-    expect(ok("~/people/kevin.md")).toBe("/home/aria/people/kevin.md");
-    expect(ok("people/kevin.md")).toBe("/home/aria/people/kevin.md");
-    expect(ok("people/../me.md")).toBe("/home/aria/me.md");
+    expect(ok("/home/ella/people/kevin.md")).toBe("/home/ella/people/kevin.md");
+    expect(ok("~/people/kevin.md")).toBe("/home/ella/people/kevin.md");
+    expect(ok("people/kevin.md")).toBe("/home/ella/people/kevin.md");
+    expect(ok("people/../me.md")).toBe("/home/ella/me.md");
     expect(ok("/tmp/a/../b.png")).toBe("/tmp/b.png");
     expect(ok("../mina/x.md")).toBe("../mina/x.md is outside your folders (your home ~ and /tmp)");
     expect(ok("/tmp/../etc/passwd")).toBe("/tmp/../etc/passwd is outside your folders (your home ~ and /tmp)");
-    expect(ok("/home/aria")).toBe("/home/aria is a folder, not a file");
-    expect(resolveHerPath("~", "aria", { allowRoot: true })).toMatchObject({ ok: true, path: { root: "home", segments: [] } });
-    for (const bad of ["con", "nul.txt", "COM1.md", "lpt9", "aux.json", "a\u0001b", "a\\b", "x".repeat(101)]) expect(resolveHerPath(bad, "aria").ok, bad).toBe(false);
+    expect(ok("/home/ella")).toBe("/home/ella is a folder, not a file");
+    expect(resolveHerPath("~", "ella", { allowRoot: true })).toMatchObject({ ok: true, path: { root: "home", segments: [] } });
+    for (const bad of ["con", "nul.txt", "COM1.md", "lpt9", "aux.json", "a\u0001b", "a\\b", "x".repeat(101)]) expect(resolveHerPath(bad, "ella").ok, bad).toBe(false);
     expect(ok("a/b/c/d/e/f/g/h/i.md")).toBe("paths can be at most 8 folders deep");
-    for (const fine of ["console.md", "com10.md", ".hidden", "Ünïcode ✨.md"]) expect(resolveHerPath(fine, "aria").ok, fine).toBe(true);
-    expect(herSlug({ name: "Aria" })).toBe("aria");
+    for (const fine of ["console.md", "com10.md", ".hidden", "Ünïcode ✨.md"]) expect(resolveHerPath(fine, "ella").ok, fine).toBe(true);
+    expect(herSlug({ name: "Ella" })).toBe("ella");
     expect(herSlug({ name: "Zoë Ström" })).toBe("zoe-strom");
     expect(herSlug({ name: "さくら" })).toBe("me");
   });
@@ -56,7 +56,7 @@ describe("path rules (§16.2)", () => {
     const store = await storeOf(w);
     const target = store.resolve("~/me.md");
     expect(target.ok).toBe(true);
-    await expect(store.writeText(target.ok ? target.path : (undefined as never), "hi\n", checkEnvFor(w.cast.deps, "aria"))).rejects.toThrow(/link/u);
+    await expect(store.writeText(target.ok ? target.path : (undefined as never), "hi\n", checkEnvFor(w.cast.deps, "ella"))).rejects.toThrow(/link/u);
     expect(await readdir(elsewhere)).toEqual([]);
   });
 });
@@ -88,11 +88,11 @@ describe("Bash change sets (§16.3.5, §16.9)", () => {
     await homeOf(w).write("notes.md", "one\n");
     const store = await storeOf(w);
     const info = await stat(host(w, "home/notes.md"));
-    const base = new Map([["/home/aria/notes.md", { kind: "file" as const, size: info.size, mtimeMs: info.mtimeMs }]]);
+    const base = new Map([["/home/ella/notes.md", { kind: "file" as const, size: info.size, mtimeMs: info.mtimeMs }]]);
     // Someone (the app, the owner) wrote it in the meantime.
     await writeFile(host(w, "home/notes.md"), "one\ntwo\n");
-    const changes = { writes: [{ path: "/home/aria/notes.md", data: Buffer.from("mine\n") }, { path: "/home/aria/other.md", data: Buffer.from("x\n") }], deletes: [], dirs: [] };
-    await expect(store.applyChanges(changes, base, checkEnvFor(w.cast.deps, "aria"), { journalId: "call_1" })).rejects.toThrow("~/notes.md changed while the command ran; run it again");
+    const changes = { writes: [{ path: "/home/ella/notes.md", data: Buffer.from("mine\n") }, { path: "/home/ella/other.md", data: Buffer.from("x\n") }], deletes: [], dirs: [] };
+    await expect(store.applyChanges(changes, base, checkEnvFor(w.cast.deps, "ella"), { journalId: "call_1" })).rejects.toThrow("~/notes.md changed while the command ran; run it again");
     expect(await homeOf(w).read("notes.md")).toBe("one\ntwo\n");
     expect(await homeOf(w).read("other.md")).toBeUndefined();
   });
@@ -100,25 +100,25 @@ describe("Bash change sets (§16.3.5, §16.9)", () => {
   it("a crash in the middle of a change set is finished at boot from its journal", async () => {
     const w = await lifeWorld(roots);
     await homeOf(w).write("old.md", "old\n");
-    const journal = { writes: [{ path: "/home/aria/new.md", data: Buffer.from("new\n").toString("base64") }, { path: "/tmp/scratch.txt", data: Buffer.from("s").toString("base64") }], deletes: ["/home/aria/old.md"], dirs: ["/home/aria/folder"] };
-    await mkdir(path.join(w.root, "user/waifus/aria/life/pending-changes"), { recursive: true });
-    await writeFile(path.join(w.root, "user/waifus/aria/life/pending-changes/call_9.json"), JSON.stringify(journal));
+    const journal = { writes: [{ path: "/home/ella/new.md", data: Buffer.from("new\n").toString("base64") }, { path: "/tmp/scratch.txt", data: Buffer.from("s").toString("base64") }], deletes: ["/home/ella/old.md"], dirs: ["/home/ella/folder"] };
+    await mkdir(path.join(w.root, "user/waifus/ella/life/pending-changes"), { recursive: true });
+    await writeFile(path.join(w.root, "user/waifus/ella/life/pending-changes/call_9.json"), JSON.stringify(journal));
     // A torn journal (written before anything was applied) is simply dropped.
-    await writeFile(path.join(w.root, "user/waifus/aria/life/pending-changes/call_10.json"), '{"writes": [');
-    await repairLife(w.cast.deps, "aria");
+    await writeFile(path.join(w.root, "user/waifus/ella/life/pending-changes/call_10.json"), '{"writes": [');
+    await repairLife(w.cast.deps, "ella");
     expect(await homeOf(w).read("new.md")).toBe("new\n");
     expect(await homeOf(w).read("old.md")).toBeUndefined();
-    expect(await herFile(w, "aria", "tmp/scratch.txt")).toBe("s");
+    expect(await herFile(w, "ella", "tmp/scratch.txt")).toBe("s");
     expect((await stat(host(w, "home/folder"))).isDirectory()).toBe(true);
-    expect(await readdir(path.join(w.root, "user/waifus/aria/life/pending-changes"))).toEqual([]);
+    expect(await readdir(path.join(w.root, "user/waifus/ella/life/pending-changes"))).toEqual([]);
   });
 
   it("the Write path and the change-set path refuse the same bad watches.json", async () => {
     const w = await lifeWorld(roots);
     const store = await storeOf(w);
     const broken = Buffer.from('[{"timeout": "2026-10-25 10:00", "note": "x", "when": []},]');
-    const changes = { writes: [{ path: "/home/aria/watches.json", data: broken }], deletes: [], dirs: [] };
-    const viaBash = await store.applyChanges(changes, new Map(), checkEnvFor(w.cast.deps, "aria"), { journalId: "c" }).catch((error: unknown) => error);
+    const changes = { writes: [{ path: "/home/ella/watches.json", data: broken }], deletes: [], dirs: [] };
+    const viaBash = await store.applyChanges(changes, new Map(), checkEnvFor(w.cast.deps, "ella"), { journalId: "c" }).catch((error: unknown) => error);
     const viaWrite = await writeHerFile(w, "watches.json", broken.toString()).catch((error: unknown) => error);
     expect(viaBash).toBeInstanceOf(HomeError);
     expect((viaBash as Error).message).toBe((viaWrite as Error).message);
@@ -168,8 +168,8 @@ describe("forget by content hash (§16.9)", () => {
   it("deletes the person's downloads and the copies she moved or made; the DM's download folder goes whole; others stay", async () => {
     const w = await lifeWorld(roots);
     const store = await storeOf(w);
-    const dmKey = `dm_${KEVIN}_aria`;
-    await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/kevin": dmKey }, primary: { [dmKey]: "dm/kevin" } }));
+    const dmKey = `dm_${KEVIN}_ella`;
+    await updateLifeFile(w.storage, "ella", "handles", (file) => ({ ...file, handles: { "dm/kevin": dmKey }, primary: { [dmKey]: "dm/kevin" } }));
     const save = async (name: string, data: string, from: { placeKey: string; authorId: string }, id: string) => {
       const resolved = store.resolve(name);
       if (!resolved.ok) throw new Error(resolved.error);
@@ -185,22 +185,22 @@ describe("forget by content hash (§16.9)", () => {
     await homeOf(w).write("photos/cake-crop.png", "kevin's cake");
     await mkdir(host(w, "tmp/dm/kevin/notes"), { recursive: true });
     await writeFile(host(w, "tmp/dm/kevin/notes/scratch.txt"), "scratch");
-    const removed = await scrubPersonFiles(w.cast.deps, await readWaifu(w.storage, "aria"), { userId: KEVIN });
+    const removed = await scrubPersonFiles(w.cast.deps, await readWaifu(w.storage, "ella"), { userId: KEVIN });
     expect(removed).toBeGreaterThanOrEqual(3);
     expect(await homeOf(w).read("photos/cake.png")).toBeUndefined();
     expect(await homeOf(w).read("kept/secret-copy.txt")).toBeUndefined();
     await expect(stat(host(w, "tmp/dm/kevin"))).rejects.toMatchObject({ code: "ENOENT" });
     // Not traceable: the crop stays (the forget limits say so); Mina's photo stays.
     expect(await homeOf(w).read("photos/cake-crop.png")).toBe("kevin's cake");
-    expect(await herFile(w, "aria", "tmp/bake-club/general/b3-mina.png")).toBe("mina's photo");
-    const index = JSON.parse(await readFile(path.join(w.root, "user/waifus/aria/life/files-index.json"), "utf8")) as { entries: Array<{ authorId: string }> };
+    expect(await herFile(w, "ella", "tmp/bake-club/general/b3-mina.png")).toBe("mina's photo");
+    const index = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/files-index.json"), "utf8")) as { entries: Array<{ authorId: string }> };
     expect(index.entries.map((entry) => entry.authorId)).toEqual([MINA_USER]);
   });
 
   it("/forget conversation removes only what came from the DM", async () => {
     const w = await lifeWorld(roots);
     const store = await storeOf(w);
-    const dmKey = `dm_${KEVIN}_aria`;
+    const dmKey = `dm_${KEVIN}_ella`;
     const save = async (name: string, data: string, placeKey: string, id: string) => {
       const resolved = store.resolve(name);
       if (!resolved.ok) throw new Error(resolved.error);
@@ -208,10 +208,10 @@ describe("forget by content hash (§16.9)", () => {
     };
     await save("/tmp/dm/kevin/a1-dm.txt", "from the dm", dmKey, "1");
     await save("/tmp/bake-club/general/b2-room.txt", "from the room", ROOM_KEY, "2");
-    expect(dmOf("aria").kind).toBe("dm");
-    await scrubPersonFiles(w.cast.deps, await readWaifu(w.storage, "aria"), { userId: KEVIN }, { dmOnly: true });
-    expect(await herFile(w, "aria", "tmp/dm/kevin/a1-dm.txt")).toBeUndefined();
-    expect(await herFile(w, "aria", "tmp/bake-club/general/b2-room.txt")).toBe("from the room");
+    expect(dmOf("ella").kind).toBe("dm");
+    await scrubPersonFiles(w.cast.deps, await readWaifu(w.storage, "ella"), { userId: KEVIN }, { dmOnly: true });
+    expect(await herFile(w, "ella", "tmp/dm/kevin/a1-dm.txt")).toBeUndefined();
+    expect(await herFile(w, "ella", "tmp/bake-club/general/b2-room.txt")).toBe("from the room");
   });
 
   it("a copy a running Bash saves after step 1 is found by the forget's tombstones under her life lock (review S7)", async () => {
@@ -219,15 +219,15 @@ describe("forget by content hash (§16.9)", () => {
     const store = await storeOf(w);
     const resolved = store.resolve("/tmp/dm/kevin/a1-dm.txt");
     if (!resolved.ok) throw new Error(resolved.error);
-    await store.saveDownload(resolved.path, Buffer.from("from the dm"), { placeKey: `dm_${KEVIN}_aria`, authorId: KEVIN, messageId: "1", attachmentId: "1", downloadedAt: w.clock.now().toISOString() });
-    const prepared = await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "owner", scope: "everything" });
+    await store.saveDownload(resolved.path, Buffer.from("from the dm"), { placeKey: `dm_${KEVIN}_ella`, authorId: KEVIN, messageId: "1", attachmentId: "1", downloadedAt: w.clock.now().toISOString() });
+    const prepared = await w.cast.prepareForget({ waifuId: "ella", userId: KEVIN, source: "owner", scope: "everything" });
     expect(prepared).toBeDefined();
-    expect(await herFile(w, "aria", "tmp/dm/kevin/a1-dm.txt")).toBeUndefined();
+    expect(await herFile(w, "ella", "tmp/dm/kevin/a1-dm.txt")).toBeUndefined();
     // Her Bash command, started before the forget, saves its copy now (the provenance is gone).
     const copy = store.resolve("~/kept.txt");
     if (!copy.ok) throw new Error(copy.error);
     await store.files.writeBytes(copy.path, Buffer.from("from the dm"));
     await w.cast.runForget(prepared!);
-    expect(await herFile(w, "aria", "home/kept.txt")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/kept.txt")).toBeUndefined();
   });
 });

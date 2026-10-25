@@ -63,7 +63,7 @@ function client(baseUrl: string) {
 }
 
 const call = (modelClient: ModelClient) =>
-  modelClient.call({ route: ROUTE, system: ["A"], messages: [{ role: "user", content: "hi" }], attribution: { purpose: "life", waifuId: "aria" } });
+  modelClient.call({ route: ROUTE, system: ["A"], messages: [{ role: "user", content: "hi" }], attribution: { purpose: "life", waifuId: "ella" } });
 
 describe("OpenRouter usage with cache writes (winter 0.0.56)", () => {
   it("splits the prompt into disjoint input / cache read / cache write counts and bills OpenRouter's reported cost", async () => {

@@ -1264,43 +1264,50 @@ them):
 
 ### 11.5 Default cast
 
-A new data root is seeded once with twenty editable waifus (`src/config/prebuiltWaifus.ts`, written
-by `seedPrebuiltWaifusOnce` in `src/config/layout.ts`; owner revision 2026-10-25, replacing the
-earlier four Lumi, Nox, Mira and Riko). The marker `user/waifus/.prebuilt-seed.json` stops any
-later seeding: an existing install keeps whatever it was seeded with, edited or deleted, and an
-upgrade never adds, replaces or removes a waifu. A seeded waifu has no model and no bot until the
-owner gives her one.
+A new data root is seeded once with twenty-one editable waifus (`src/config/prebuiltWaifus.ts`,
+written by `seedPrebuiltWaifusOnce` in `src/config/layout.ts`; owner revision 2026-10-25, names
+chosen by the owner, replacing the earlier four Lumi, Nox, Mira and Riko and a rejected first
+twenty). The marker `user/waifus/.prebuilt-seed.json` stops any later seeding: an existing install
+keeps whatever it was seeded with, edited or deleted, and an upgrade never adds, replaces or removes
+a waifu. A seeded waifu has no model and no bot until the owner gives her one.
 
-| Name | In one line | Verbosity | Sleep |
-|---|---|---|---|
-| Alma | hype friend who remembers birthdays and turns a dead chat into a plan | expressive | 00:30–08:30 |
-| Bex | competitive gamer who keeps score of everything | terse | 02:00–10:00 |
-| Cleo | history PhD student who argues for sport | chatty | 00:00–08:00 |
-| Dinah | café cook who asks whether you've eaten | chatty | 22:30–06:30 |
-| Elodie | library assistant matching people to books | chatty | 23:30–07:30 |
-| Faye | dawn birdwatcher, goofy about her life list | chatty | 21:30–05:30 |
-| Gigi | pet-shop gremlin with an animal fact for everything | expressive | 03:00–11:00 |
-| Hana | shy illustrator who opens up in DMs | terse | 00:00–08:00 |
-| Ines | unhurried gardener and houseplant doctor | chatty | 23:00–07:00 |
-| Juno | physics student who knows what's in tonight's sky | chatty | 01:00–09:00 |
-| Kiyo | dry coder and keyboard tinkerer | terse | 02:30–10:30 |
-| Lumi | soft-spoken night owl who collects folklore | chatty | 05:00–13:00 |
-| Maren | indie bassist who answers moods with songs | chatty | 01:30–09:30 |
-| Nell | night-shift nurse, brisk and kind | terse | 08:30–16:00 |
-| Odette | poised pianist with a polite, sharp wit | chatty | 23:00–07:30 |
-| Pippa | community-theater kid who casts the chat in her bits | expressive | 01:00–09:00 |
-| Romy | runner and climber who follows up on goals | terse | 22:00–06:00 |
-| Sadie | thrifter and reality-TV commentator | expressive | 01:00–09:30 |
-| Tamsin | blunt, kind potter | terse | 00:30–08:30 |
-| Vera | deadpan accountant who does the math | terse | 23:30–07:00 |
+| Name | In one line | Verbosity | Sleep | Name wake |
+|---|---|---|---|---|
+| Aria | elegant perfume collector who describes everything by its "notes" | chatty | 00:30–08:30 | on |
+| Lumi | sleepy cozy gamer and seasonal-anime watcher, rates plans in naps | terse | 23:30–10:00 | on |
+| Riko | fighting-game competitor who answers every loss with "run it back" | terse | 02:30–10:30 | on |
+| Yuna | server mom with a horror habit, rates films in locks checked | chatty | 22:30–06:30 | on |
+| Hinata | hyper idol stan and dance-cover girl, counts down to comebacks | expressive | 01:30–09:30 | on |
+| Airi | stubbornly sweet amigurumi crocheter and capsule-toy collector | chatty | 23:30–07:30 | on |
+| Mio | mysterious tarot and moon-phase reader who studies statistics | terse | 03:00–11:00 | on |
+| Sora | aloof film photographer and night skater who answers with songs | terse | 02:00–10:00 | on |
+| Alia | dramatic drama-watcher who narrates the server like a soap opera | expressive | 01:00–09:30 | on |
+| Rem | deadpan insomniac restoring old consoles and hunting lost media | terse | 04:00–11:30 | off |
+| Raphtalia | tsundere-ish gacha player who "doesn't care" about her pity | chatty | 01:00–08:30 | on |
+| Mizuhara | chaotic kitchen scientist with numbered experiment logs | expressive | 00:00–07:30 | on |
+| Ayame | mischievous escape-room game master who hides puzzles in messages | chatty | 00:30–08:00 | on |
+| Angel | 3 a.m. gremlin of cryptids, claw machines and "source: trust me" | expressive | 05:00–13:00 | off |
+| Makima | sunny trip planner of journeys she may never take | expressive | 00:00–08:00 | on |
+| Saber | blunt powerlifter who counts everything in sets and reps | terse | 22:00–05:30 | off |
+| Esdeath | shy miniature painter and cosplay prop maker | terse | 23:30–07:30 | on |
+| Akame | laid-back shrimp keeper for whom everything is "fine" | chatty | 23:00–07:00 | on |
+| C.C. | smug small streamer who calls the server "chat" | expressive | 03:30–11:30 | on |
+| Power | prim planner devotee who ends a point with "Next slide." | chatty | 22:30–06:00 | off |
+| Zero Two | earnest speedrunner who times everything | chatty | 03:00–10:30 | on |
 
-Each has a persona in the third person (who she is, how she talks in rooms and DMs, what she
-follows up on, how she treats quiet people, what she won't do), a verbosity, a sleep window and up to
-two busy blocks, spread across the day so the cast never goes quiet at once. Names have distinct
-first letters and none is a common word, so `wakeOnName` stays on. Each entry also carries a `bio`
-(Discord "About Me", ≤190 characters) and a styled Discord `username` (2–32 characters, Discord's
-username rules); neither is a `WaifuConfig` field yet, so the seeder leaves both out of
-`waifu.json`, and `name` stays the plain name used in prompts, name wakes and the detector.
+Several names are anime character names. These waifus are not those characters and have none of
+their traits: each picked the name as a handle (an old tag, initials, a sibling's joke, or just
+because), and a persona says why at most in one line. Each has a persona in the third person (who
+she is, her obsessions and hooks for search, reminders and watches, how she talks in rooms and DMs,
+how she treats quiet people, what she won't do, one soft spot or contradiction and a tic of her
+own), a verbosity, a sleep window and up to two busy blocks, spread across the day so the cast
+never goes quiet at once. `wakeOnName` is off for names that are common words in chat: Angel,
+Power, Saber, and Rem ("REM sleep", the band); Sora, Mio, Alia and the rest keep it on. Name wakes
+match whole words after NFKC and case folding, so "C.C." wakes on "c.c." (not "cc" or "C.C"
+without the last dot) and "Zero Two" on "zero two" with any spacing (not "zerotwo" or "02"). Each
+entry also carries a `bio` (Discord "About Me", ≤190 characters) and a styled Discord `username`
+(2–32 characters, Discord's username rules); `name` stays the plain name used in prompts, name
+wakes and the detector.
 
 ## 12. Testing and acceptance
 

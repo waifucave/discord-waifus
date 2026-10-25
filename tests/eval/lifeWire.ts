@@ -3,7 +3,7 @@
 import { ModelClient } from "../../src/models/client.js";
 import { createWinterRuntime } from "../../src/models/winter.js";
 import { ProviderAlerts } from "../../src/orchestration/providerAlerts.js";
-import { ARIA_BOT, CHANNEL, dmOf, GUILD, KEVIN, lifeWorld, ROOM, type LifeWorld } from "../lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, dmOf, GUILD, KEVIN, lifeWorld, ROOM, type LifeWorld } from "../lifeFixtures.js";
 import { FakeAnthropic, type ServerTurn } from "./fakeAnthropic.js";
 import type { WireBlock, WireBody } from "./anthropicCacheSim.js";
 
@@ -56,19 +56,19 @@ export async function realAnthropicWorld(roots: string[], servers: FakeAnthropic
 /** Kevin pings her in #general (a few other messages first), then her life runs. */
 export async function roomWake(w: LifeWorld, text: string, chatter = 3): Promise<void> {
   for (let index = 0; index < chatter; index += 1) w.discord.post(ROOM, `chatter ${index}: the oven is preheating`, { authorId: "300000000000000077", authorName: "Mina" });
-  const message = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" } });
-  await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
+  const message = w.discord.post(ROOM, `<@${ELLA_BOT}> ${text}`, { mentions: { [ELLA_BOT]: "Ella" } });
+  await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
   await w.cast.settle();
   // Her wake waits for the burst's quiet time (§4.2): fire it now.
   w.cast.intake.flushDetector();
   await w.cast.settle();
-  await w.cast.life("aria").runNow();
+  await w.cast.life("ella").runNow();
 }
 
 export async function dmWake(w: LifeWorld, text: string): Promise<void> {
-  const message = w.discord.post(dmOf("aria"), text);
-  await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+  const message = w.discord.post(dmOf("ella"), text);
+  await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
   w.cast.intake.flushDms();
   await w.cast.settle();
-  await w.cast.life("aria").runNow();
+  await w.cast.life("ella").runNow();
 }

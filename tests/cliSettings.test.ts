@@ -20,7 +20,7 @@ const GUILD = "100000000000000001";
 const CHANNEL = "200000000000000002";
 const TARGETS: Record<string, string> = {
   app: "app",
-  waifu: "waifu:aria",
+  waifu: "waifu:ella",
   server: `server:${GUILD}`,
   channel: `channel:${GUILD}/${CHANNEL}`,
   assistant: "assistant",
@@ -85,8 +85,8 @@ function remoteAccessTransport(inner: HostTransport): HostTransport {
 }
 
 async function seed(app: FastifyInstance): Promise<void> {
-  expect((await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "aria", name: "Aria", displayName: "Aria" } })).statusCode).toBe(201);
-  expect((await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: { channels: { [CHANNEL]: { channelId: CHANNEL, enabled: true, enabledWaifuIds: ["aria"] } } } })).statusCode).toBe(200);
+  expect((await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } })).statusCode).toBe(201);
+  expect((await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: { channels: { [CHANNEL]: { channelId: CHANNEL, enabled: true, enabledWaifuIds: ["ella"] } } } })).statusCode).toBe(200);
 }
 
 /**
@@ -155,14 +155,14 @@ describe("waifus set/get round-trip over the real API", () => {
     await seed(app);
     const log: HostRequest[] = [];
     const host = injectTransport(app, log);
-    const set = await cli(root, host, ["set", "waifu:aria", "wakeOnName=false", "life.dailyBudgetUsd=2.5", "--json"]);
+    const set = await cli(root, host, ["set", "waifu:ella", "wakeOnName=false", "life.dailyBudgetUsd=2.5", "--json"]);
     expect(set.code).toBe(0);
-    expect(JSON.parse(set.out)).toMatchObject({ ok: true, target: "waifu:aria", changed: ["wakeOnName", "life.dailyBudgetUsd"] });
+    expect(JSON.parse(set.out)).toMatchObject({ ok: true, target: "waifu:ella", changed: ["wakeOnName", "life.dailyBudgetUsd"] });
     expect(log.filter((request) => request.method === "PUT")).toHaveLength(1);
     expect((log.find((request) => request.method === "PUT")!.body as { expectedRevision?: number; revision?: number })).toMatchObject({ wakeOnName: false, life: { dailyBudgetUsd: 2.5 } });
 
-    expect((await cli(root, host, ["unset", "waifu:aria", "life.dailyBudgetUsd"])).code).toBe(0);
-    const after = JSON.parse((await cli(root, host, ["get", "waifu:aria", "--json"])).out) as { values: Record<string, unknown> };
+    expect((await cli(root, host, ["unset", "waifu:ella", "life.dailyBudgetUsd"])).code).toBe(0);
+    const after = JSON.parse((await cli(root, host, ["get", "waifu:ella", "--json"])).out) as { values: Record<string, unknown> };
     expect(after.values["wakeOnName"]).toBe(false);
     expect(after.values["life.dailyBudgetUsd"] ?? null).toBeNull();
 
@@ -172,7 +172,7 @@ describe("waifus set/get round-trip over the real API", () => {
     const detector = JSON.parse((await cli(root, host, ["get", `server:${GUILD}`, "detector.target", "--json"])).out) as { value: unknown };
     expect(detector.value).toBeNull();
     // The channel kept its cast through the server writes.
-    expect(JSON.parse((await cli(root, host, ["get", `channel:${GUILD}/${CHANNEL}`, "enabledWaifuIds", "--json"])).out)).toMatchObject({ value: ["aria"] });
+    expect(JSON.parse((await cli(root, host, ["get", `channel:${GUILD}/${CHANNEL}`, "enabledWaifuIds", "--json"])).out)).toMatchObject({ value: ["ella"] });
   });
 
   it("dotted shorthand for singleton groups and human output", async () => {
@@ -251,15 +251,15 @@ describe("waifus set/get round-trip over the real API", () => {
     const flaky: HostTransport = async (request) => {
       if (request.method === "PUT" && conflicts > 0) {
         conflicts -= 1;
-        await app.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: ((await inner({ method: "GET", path: "/api/waifus/aria" })).body as { revision: number }).revision, displayName: "Someone else" } });
+        await app.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: ((await inner({ method: "GET", path: "/api/waifus/ella" })).body as { revision: number }).revision, displayName: "Someone else" } });
       }
       return inner(request);
     };
-    expect((await cli(root, flaky, ["set", "waifu:aria", "persona", "Bright."])).code).toBe(0);
-    const read = JSON.parse((await cli(root, inner, ["get", "waifu:aria", "--json"])).out) as { values: Record<string, unknown> };
+    expect((await cli(root, flaky, ["set", "waifu:ella", "persona", "Bright."])).code).toBe(0);
+    const read = JSON.parse((await cli(root, inner, ["get", "waifu:ella", "--json"])).out) as { values: Record<string, unknown> };
     expect(read.values).toMatchObject({ persona: "Bright.", displayName: "Someone else" });
     const always: HostTransport = async (request) => (request.method === "PUT" ? { status: 409, body: { error: "Conflict", message: "revision mismatch" }, text: "" } : inner(request));
-    expect((await cli(root, always, ["set", "waifu:aria", "persona", "Again."])).code).toBe(5);
+    expect((await cli(root, always, ["set", "waifu:ella", "persona", "Again."])).code).toBe(5);
   });
 
   it("with the host stopped: app keys read and write config.toml; everything else exits 3", async () => {
@@ -273,10 +273,10 @@ describe("waifus set/get round-trip over the real API", () => {
     if (process.platform !== "win32") expect((await stat(path.join(root, "config.toml"))).mode & 0o777).toBe(0o600);
     expect((await cli(root, null, ["get", "app.life.maxSendsPerTurn"])).out).toBe("9");
     expect((await cli(root, null, ["set", "app", "updates.enabled", "true"])).code).toBe(2);
-    const waifu = await cli(root, null, ["get", "waifu:aria"]);
+    const waifu = await cli(root, null, ["get", "waifu:ella"]);
     expect(waifu.code).toBe(3);
     expect(waifu.err).toContain("waifus start");
-    expect((await cli(root, null, ["wake", "aria"])).code).toBe(3);
+    expect((await cli(root, null, ["wake", "ella"])).code).toBe(3);
     // The offline write holds the host lock while it writes: never while a host holds it (review).
     expect(await hostInstanceState(root)).toEqual({ state: "absent" });
     const held = await acquireHostInstanceLock(root);

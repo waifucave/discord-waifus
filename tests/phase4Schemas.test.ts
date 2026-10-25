@@ -48,9 +48,9 @@ describe("pre-Phase-4 files still parse", () => {
   it("waifu: new prompt and DM settings default in", () => {
     const old = WaifuConfigSchema.parse({
       ...base,
-      id: "aria",
-      name: "Aria",
-      displayName: "Aria",
+      id: "ella",
+      name: "Ella",
+      displayName: "Ella",
       contextWindow: 50,
       params: {}
     });
@@ -189,8 +189,8 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
   it("waifu PUT keeps verbosity, customInstructions, scheduleInPrompt and dm unless sent", async () => {
     const { app } = await makeApp();
     try {
-      await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "aria", name: "Aria", displayName: "Aria" } });
-      const url = "/api/waifus/aria";
+      await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
+      const url = "/api/waifus/ella";
       let waifu = (await app.inject({ method: "GET", url })).json();
       expect(waifu).toMatchObject({ verbosity: "terse", scheduleInPrompt: true, dm: { allowDms: false } });
 

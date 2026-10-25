@@ -247,11 +247,11 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 ## Read-modify-write example
 
 ```bash
-CUR=$(curl -s http://127.0.0.1:3888/api/waifus/juno)
+CUR=$(curl -s http://127.0.0.1:3888/api/waifus/mio)
 REV=$(echo "$CUR" | jq .revision)
-curl -s -X PUT http://127.0.0.1:3888/api/waifus/juno \
+curl -s -X PUT http://127.0.0.1:3888/api/waifus/mio \
   -H 'content-type: application/json' \
-  -d "{\"revision\": $REV, \"displayName\": \"Juno!\"}"
+  -d "{\"revision\": $REV, \"displayName\": \"Mio!\"}"
 ```
 
 

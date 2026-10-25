@@ -55,7 +55,7 @@ async function setup(): Promise<{ root: string; app: FastifyInstance; storage: S
 }
 
 function ledgerLine(at: string, extra: Record<string, unknown> = {}): string {
-  return JSON.stringify({ at, purpose: "life", waifuId: "aria", providerId: "anthropic", modelId: "claude-haiku-5-5", status: "ok", usageKnown: true, inputTokens: 100, outputTokens: 10, cacheReadTokens: 50, costUsd: 0.01, durationMs: 3, ...extra });
+  return JSON.stringify({ at, purpose: "life", waifuId: "ella", providerId: "anthropic", modelId: "claude-haiku-5-5", status: "ok", usageKnown: true, inputTokens: 100, outputTokens: 10, cacheReadTokens: 50, costUsd: 0.01, durationMs: 3, ...extra });
 }
 
 async function writeLedger(root: string, day: string, lines: string[]): Promise<void> {
@@ -79,7 +79,7 @@ describe("GET /api/usage", () => {
     expect(tokyo.skippedLines).toBe(1);
 
     const byWaifu = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2026-10-23&to=2026-10-24&tz=UTC&groupBy=waifu,purpose" })).json());
-    expect(byWaifu.groups.map((group) => group.key)).toEqual([["aria", "life"], ["mina", "web"]]);
+    expect(byWaifu.groups.map((group) => group.key)).toEqual([["ella", "life"], ["mina", "web"]]);
     const filtered = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2026-10-23&to=2026-10-24&tz=UTC&waifuId=mina" })).json());
     expect(filtered.totals.calls).toBe(1);
   });
@@ -158,7 +158,7 @@ describe("search, detector, forget jobs and owner notices", () => {
     await mkdir(path.join(root, "user", "search"), { recursive: true });
     await writeFile(
       path.join(root, "user", "search", "usage.json"),
-      JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: today, day: "2000-01-01", searches: 9, fetches: 4, recent: [{ at: today, waifuId: "aria", kind: "search", query: "lemon tart", ok: true }, { at: today, waifuId: "aria", kind: "fetch", query: "https://example.com", ok: false }] })
+      JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: today, day: "2000-01-01", searches: 9, fetches: 4, recent: [{ at: today, waifuId: "ella", kind: "search", query: "lemon tart", ok: true }, { at: today, waifuId: "ella", kind: "fetch", query: "https://example.com", ok: false }] })
     );
     const body = SearchUsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/search/usage" })).json());
     expect(body).toMatchObject({ searches: 0, fetches: 0, exaKeyConfigured: false, limits: { maxPerDay: 50, maxPerWaifuPerDay: 20, fetchMaxPerTurn: 3 } });
@@ -183,7 +183,7 @@ describe("search, detector, forget jobs and owner notices", () => {
       path.join(root, "user", "servers", guildId, "detector-history.json"),
       JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: new Date().toISOString(), guildId, entries: [
         { at: "2026-10-24T10:00:00.000Z", channelId: "200000000000000002", burstMessageIds: ["1"], choice: "human", probabilities: {} },
-        { at: "2026-10-24T11:00:00.000Z", channelId: "200000000000000002", burstMessageIds: ["2"], choice: "waifu_0", probabilities: { waifu_0: 0.9 }, woke: ["aria"] }
+        { at: "2026-10-24T11:00:00.000Z", channelId: "200000000000000002", burstMessageIds: ["2"], choice: "waifu_0", probabilities: { waifu_0: 0.9 }, woke: ["ella"] }
       ] })
     );
     const body = DetectorHistoryResponseSchema.parse((await app.inject({ method: "GET", url: `/api/detector/history?guildId=${guildId}` })).json());
@@ -219,17 +219,17 @@ describe("search, detector, forget jobs and owner notices", () => {
 
   it("names an enabled waifu whose linked bot cannot log in (not one that speaks through the House bot)", async () => {
     const { app } = await setup();
-    for (const id of ["aria", "mina", "solo"]) {
+    for (const id of ["ella", "mina", "solo"]) {
       expect((await app.inject({ method: "POST", url: "/api/waifus", payload: { id, name: id, displayName: id } })).statusCode).toBe(201);
     }
-    expect((await app.inject({ method: "PUT", url: "/api/discord-bots", payload: { waifus: [{ id: "aria-bot", displayName: "Aria", enabled: true }, { id: "mina-bot", displayName: "Mina", enabled: false, token: "MTAx.fake-token" }] } })).statusCode).toBe(200);
-    for (const [id, botId] of [["aria", "aria-bot"], ["mina", "mina-bot"]] as const) {
+    expect((await app.inject({ method: "PUT", url: "/api/discord-bots", payload: { waifus: [{ id: "ella-bot", displayName: "Ella", enabled: true }, { id: "mina-bot", displayName: "Mina", enabled: false, token: "MTAx.fake-token" }] } })).statusCode).toBe(200);
+    for (const [id, botId] of [["ella", "ella-bot"], ["mina", "mina-bot"]] as const) {
       const current = (await app.inject({ method: "GET", url: `/api/waifus/${id}` })).json() as { revision: number };
       expect((await app.inject({ method: "PUT", url: `/api/waifus/${id}`, payload: { revision: current.revision, botId } })).statusCode).toBe(200);
     }
     const notices = OwnerNoticesResponseSchema.parse((await app.inject({ method: "GET", url: "/api/owner-notices" })).json());
     expect(notices.waifusWithoutBot).toEqual([
-      { waifuId: "aria", reason: "bot_no_token" },
+      { waifuId: "ella", reason: "bot_no_token" },
       { waifuId: "mina", reason: "bot_disabled" }
     ]);
     expect(notices.notices.filter((notice) => notice.includes("nothing she sends reaches Discord"))).toHaveLength(2);

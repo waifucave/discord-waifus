@@ -33,7 +33,7 @@ function request(over: Partial<ModelCallRequest> = {}): ModelCallRequest {
     route: DEEPSEEK,
     system: ["SYSTEM A", "HEADER B"],
     messages: [{ role: "user", content: "hi" }],
-    attribution: { purpose: "life", waifuId: "aria", turnId: "turn-1" },
+    attribution: { purpose: "life", waifuId: "ella", turnId: "turn-1" },
     ...over
   };
 }
@@ -54,7 +54,7 @@ describe("winter identity (0.0.56 W9)", () => {
 describe("ModelClient request shape (spec §5.4, §9.1)", () => {
   it("passes system blocks as system + systemBlocks with a 1h TTL, never as a system message, and the key inline", async () => {
     const { client, chat } = harness();
-    const result = await client.call(request({ cacheKey: "life:aria", effort: "high", maxOutputTokens: 512 }));
+    const result = await client.call(request({ cacheKey: "life:ella", effort: "high", maxOutputTokens: 512 }));
     expect(result.text).toBe("hello");
     expect(result.finishReason).toBe("stop");
     expect(chat.calls).toHaveLength(1);
@@ -67,7 +67,7 @@ describe("ModelClient request shape (spec §5.4, §9.1)", () => {
     expect(turn.cacheTtl).toBe("1h");
     // winter W3: rolling message TTL never above the system TTL.
     expect((turn as { messageCacheTtl?: unknown }).messageCacheTtl).toEqual({ rolling: "1h" });
-    expect(turn.cacheKey).toBe("life:aria");
+    expect(turn.cacheKey).toBe("life:ella");
     expect(turn.effort).toBe("high");
     expect(turn.maxOutputTokens).toBe(512);
     expect(turn.messages.some((message) => message.role === "system")).toBe(false);
@@ -207,14 +207,14 @@ describe("ModelClient usage ledger (spec §9.1)", () => {
   it("writes one ok line per call with the attribution, winter usage and a list-price cost", async () => {
     const chat = fakeAdapter(CHAT_COMPLETIONS, [() => textTurn("ok", { inputTokens: 1_000_000, outputTokens: 1_000_000 })]);
     const { client, lines } = harness({ adapters: [chat] });
-    const result = await client.call(request({ attribution: { purpose: "maintenance", waifuId: "aria", turnId: "t-9", conversationKey: "life:aria" } }));
+    const result = await client.call(request({ attribution: { purpose: "maintenance", waifuId: "ella", turnId: "t-9", conversationKey: "life:ella" } }));
     expect(lines).toHaveLength(1);
     const line = UsageLedgerEntrySchema.parse(lines[0]);
     expect(line).toMatchObject({
       purpose: "maintenance",
-      waifuId: "aria",
+      waifuId: "ella",
       turnId: "t-9",
-      conversationKey: "life:aria",
+      conversationKey: "life:ella",
       providerId: "deepseek",
       modelId: "deepseek-flash",
       status: "ok",
