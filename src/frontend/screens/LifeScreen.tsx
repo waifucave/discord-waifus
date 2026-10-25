@@ -221,7 +221,11 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
               onClick={() =>
                 void act("compact", async () => {
                   const result = await api.compactLife(waifuId);
-                  return result.state === "running" ? "Compacting: it finishes on its own." : `Compacted: epoch ${result.epoch ?? ""} started.`;
+                  return result.state === "running"
+                    ? "Compacting: it finishes on its own."
+                    : result.state === "aborted"
+                      ? "Compaction stopped (a pause or a shutdown); nothing changed."
+                      : `Compacted: epoch ${result.epoch ?? ""} started.`;
                 })
               }
             >

@@ -224,6 +224,7 @@ export async function startEpoch(
         readMessageIds: o.readIds,
         deletedReadIds: [],
         pendingEpochStart: false,
+        pendingEpochReason: undefined,
         epochStrippedThinkingBlocks: o.strippedBlocks,
         lastRequestTokens: undefined,
         ...(o.first && current.systemSnapshot === null
@@ -235,6 +236,15 @@ export async function startEpoch(
   ).then((state) => (saved = state));
   await pruneOldEpochLogs(deps.storage, waifuId, saved!.epoch, { now, ...(o.pruneAll ? { all: true } : {}) }).catch(() => undefined);
   return saved!;
+}
+
+/**
+ * The epoch a forget (§7.5 step 2) or a deferred owner reset (§14.4) left to start. A forget's drops
+ * every old log (its turns are in the scrubbed summary); a reset's keeps them the usual 7 days.
+ */
+export function startPendingEpoch(deps: LifeDeps, waifuId: string, state: LifeState, harness: HarnessNow): Promise<LifeState> {
+  const reset = state.pendingEpochReason === "reset";
+  return startEpoch(deps, waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: reset ? "reset" : "forget", summarized: !reset, strippedBlocks: 0, ...(reset ? {} : { pruneAll: true }) });
 }
 
 export const COMPACTION_INSTRUCTION =
@@ -362,7 +372,7 @@ export async function compactLife(
   }
   const { kept, strippedBlocks, readIds } = keptResult;
   if (o.deferEpoch) {
-    const state = await updateLifeState(deps.storage, o.waifu.id, (current) => ({ ...current, summary, pendingEpochStart: true }), now);
+    const state = await updateLifeState(deps.storage, o.waifu.id, (current) => ({ ...current, summary, pendingEpochStart: true, pendingEpochReason: "forget" as const }), now);
     return { state, summarized };
   }
   const state = await startEpoch(deps, o.waifu.id, {

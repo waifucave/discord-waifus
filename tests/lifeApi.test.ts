@@ -10,7 +10,7 @@ import { dispatchInternal } from "../src/api/internalDispatch.js";
 import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { isPrivateReviewLine, recordNeedsReview } from "../src/life/forget.js";
-import { appendLifeLog, readLifeFile, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
+import { appendLifeLog, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import {
   LifeCompactResponseSchema,
@@ -23,7 +23,7 @@ import {
 } from "../src/shared/schemas/api.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
-import { closeWorlds, KEVIN, lifeWorld, script, type LifeWorld } from "./lifeFixtures.js";
+import { closeWorlds, KEVIN, lifeWorld, script, writeWaifuConfig, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -238,6 +238,67 @@ describe("owner actions on a life", () => {
     const response = await app.inject({ method: "POST", url: "/api/waifus/aria/life/compact", payload: {} });
     expect(response.statusCode).toBe(409);
     expect(response.json().message).toMatch(/no offered model/u);
+  });
+
+  it("a stopping cast refuses owner actions: the wake waits in her queue, compact and reset are RuntimeOffline (review I-4, repro r11)", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hello"), textTurn("Earlier: I said hello.")) });
+    await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "owner", note: "first", at: w.clock.now().toISOString() });
+    await w.cast.life("aria").runNow();
+    const before = await readLifeState(w.storage, "aria");
+    const app = await apiFor(w, { live: true });
+    // The reload window: the old cast stays reachable until stop() returns.
+    await w.cast.stop();
+    expect(w.cast.isStopped).toBe(true);
+    const wake = await app.inject({ method: "POST", url: "/api/waifus/aria/wake", payload: { note: "still there?" } });
+    expect(WakeResponseSchema.parse(wake.json())).toMatchObject({ outcome: "queued_offline" });
+    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toEqual([expect.objectContaining({ reason: "owner", note: "still there?" })]);
+    for (const url of ["/api/waifus/aria/life/compact", "/api/waifus/aria/life/reset"]) {
+      const response = await app.inject({ method: "POST", url, payload: { confirm: true } });
+      expect(response.statusCode, url).toBe(409);
+      expect(response.json(), url).toMatchObject({ error: "RuntimeOffline" });
+    }
+    const after = await readLifeState(w.storage, "aria");
+    expect(after.epoch).toBe(before.epoch);
+    expect(after.summary).toBe(before.summary);
+    // No new life is created on a stopped cast.
+    (w.cast as unknown as { lives: Map<string, unknown> }).lives.delete("aria");
+    expect(() => w.cast.life("aria")).toThrow(/stopping/u);
+    await expect(w.cast.ownerWake("aria", "hi")).rejects.toThrow(/stopping/u);
+  });
+
+  it("reports a compaction a pause or shutdown stopped as aborted, not done", async () => {
+    const w = await lifeWorld(roots, {});
+    const cast = { compactNow: async () => ({ epoch: 3, summarized: false, aborted: true }) };
+    const app = await createApiServer({ dataRoot: w.root, storage: w.storage, runtime: runtimeState(w.root), castRuntime: { cast } as never, remoteTrust: { isAuthorized: () => true } });
+    apps.push(app);
+    const response = LifeCompactResponseSchema.parse((await app.inject({ method: "POST", url: "/api/waifus/aria/life/compact", payload: {} })).json());
+    expect(response).toMatchObject({ state: "aborted", summarized: false });
+  });
+
+  it("a reset without a model starts its epoch as a reset: the old log stays, and a compact starts that epoch without summarising it", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hello"), textTurn("Earlier: I said hello.")) });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    const app = await apiFor(w, { live: true });
+    await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "owner", note: "first", at: w.clock.now().toISOString() });
+    await w.cast.life("aria").runNow();
+    const before = await readLifeState(w.storage, "aria");
+    const oldLog = await readLifeLog(w.storage, "aria", before.epoch);
+    expect(oldLog.length).toBeGreaterThan(0);
+    await writeWaifuConfig(w.storage, { id: "aria", name: "Aria", botId: "aria-bot", model: undefined });
+    const reset = LifeResetResponseSchema.parse((await app.inject({ method: "POST", url: "/api/waifus/aria/life/reset", payload: { confirm: true } })).json());
+    expect(reset).toMatchObject({ deferred: true, epoch: before.epoch });
+    expect(await readLifeState(w.storage, "aria")).toMatchObject({ summary: null, pendingEpochStart: true, pendingEpochReason: "reset" });
+    // A model again, and the owner compacts: the pending epoch starts; the old log is not summarised.
+    await writeWaifuConfig(w.storage, { id: "aria", name: "Aria", botId: "aria-bot" });
+    const compacted = LifeCompactResponseSchema.parse((await app.inject({ method: "POST", url: "/api/waifus/aria/life/compact", payload: {} })).json());
+    expect(compacted).toMatchObject({ state: "done", epoch: before.epoch + 1, summarized: false });
+    const after = await readLifeState(w.storage, "aria");
+    expect(after.summary).toBeNull();
+    expect(after.pendingEpochStart).toBe(false);
+    expect(after.pendingEpochReason).toBeUndefined();
+    expect(after.lastCompaction).toMatchObject({ reason: "reset", summarized: false, fromEpoch: before.epoch });
+    // Kept the usual 7 days, unlike a forget's.
+    expect(await readLifeLog(w.storage, "aria", before.epoch)).toEqual(oldLog);
   });
 });
 

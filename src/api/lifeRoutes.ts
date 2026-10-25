@@ -208,13 +208,20 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
     };
   });
 
-  // An owner wake (§4.1 `owner`): skips sleep and budget. Discord offline: it waits in her queue.
+  // An owner wake (§4.1 `owner`): skips sleep and budget. Discord offline (or the cast stopping
+  // for a reload): it waits in her queue.
   app.post("/api/waifus/:waifuId/wake", async (request) => {
     const waifuId = waifuIdOf(request.params);
     const body = WakeBodySchema.parse(request.body ?? {});
     await existingWaifu(o.storage, waifuId);
     const cast = o.cast();
-    if (cast) return { waifuId, outcome: await cast.ownerWake(waifuId, body.note) };
+    if (cast) {
+      try {
+        return { waifuId, outcome: await cast.ownerWake(waifuId, body.note) };
+      } catch (error) {
+        if (!(error instanceof LifeActionError && error.code === "offline")) throw error;
+      }
+    }
     const note = body.note?.trim().slice(0, 500);
     const wake: Wake = { id: newWakeId(), reason: "owner", ...(note ? { note } : {}), at: now().toISOString() };
     await enqueueWake(o.storage, waifuId, wake);
@@ -231,6 +238,7 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
     try {
       return await work();
     } catch (error) {
+      if (error instanceof LifeActionError && error.code === "offline") throw new ApiError(409, error.message, undefined, "RuntimeOffline");
       if (error instanceof LifeActionError) throw conflict(error.message, { code: error.code });
       if ((error as NodeJS.ErrnoException).code === "ENOENT") throw notFound("That waifu was not found.");
       throw error;
@@ -252,6 +260,8 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
       running.catch(() => undefined);
       return reply.code(202).send({ waifuId, state: "running" });
     }
+    // Aborted (a pause or a shutdown while it ran): nothing changed.
+    if (settled.result.aborted) return { waifuId, state: "aborted", epoch: settled.result.epoch, summarized: false };
     return { waifuId, state: "done", epoch: settled.result.epoch, summarized: settled.result.summarized };
   });
 

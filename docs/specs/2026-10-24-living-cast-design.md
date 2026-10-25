@@ -1317,13 +1317,18 @@ Choices L3 made where the sections above leave room (owner review welcome):
   turns, a result line naming a DM place (a `list_watches` line) is cut at the reference. DM wake
   previews and notes in the queue are hidden. `includePrivate=1` / `--private` show everything,
   local only; the dashboard assistant and Remote Access never get it.
-- **Owner wake with Discord offline** is queued in her `wakes.json` (`outcome: "queued_offline"`) and
-  runs when the cast connects.
-- **Compact and reset** need the live cast (409 `RuntimeOffline` otherwise) and, for compact, a model
-  (409). Compact waits up to 10 seconds, then answers 202 `{state: "running"}` and finishes on its
-  own. Reset starts a fresh epoch with no summary and keeps no turns; notes, plans, the queue and the
-  intake cursors stay, the old log is kept 7 days. Without a model, reset only clears the summary
-  and the fresh epoch starts at her next turn (`deferred: true`).
+- **Owner wake with Discord offline** (or while the cast is stopping for a reload) is queued in her
+  `wakes.json` (`outcome: "queued_offline"`) and runs when the cast connects.
+- **Compact and reset** need the live cast (409 `RuntimeOffline` otherwise, also once `stop()` began:
+  a stopping cast creates no new life and refuses owner actions; those already running are tracked,
+  so `stop()` waits for them) and, for compact, a model (409). Compact waits up to 10 seconds, then
+  answers 202 `{state: "running"}` and finishes on its own; one a pause or a shutdown stopped answers
+  `{state: "aborted"}`. Reset starts a fresh epoch with no summary and keeps no turns; notes, plans,
+  the queue and the intake cursors stay, the old log is kept 7 days. Without a model, reset only
+  clears the summary and the fresh epoch starts at her next turn (`deferred: true`) as a reset
+  (`pendingEpochReason: "reset"`: the old log is kept 7 days, not dropped as after a forget). A
+  compact while an epoch is pending (a forget's or a deferred reset's) starts that epoch and
+  summarises nothing.
 - **Needs review**: each review line's id is the first 16 hex characters of the SHA-256 of
   `where` and `line`; `DELETE` removes that one line and answers `{waifuId, dismissed}` only (the
   Remote Access ledger keeps mutation responses a day). A line from her summary or her wake queue,

@@ -109,6 +109,11 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   compactionPausedUntil: IsoDateStringSchema.optional(),
   /** A forget scrub wrote the summary; the new epoch starts after the scrub (§7.5 step 2). */
   pendingEpochStart: z.boolean().optional(),
+  /**
+   * Why the pending epoch starts: `forget` (absent too) drops every old log; `reset` (an owner reset
+   * without a model, §14.4) keeps them the usual 7 days.
+   */
+  pendingEpochReason: z.enum(["forget", "reset"]).optional(),
   /** Thinking blocks stripped from the kept turns at epoch start, reported on the epoch's first call (§12). */
   epochStrippedThinkingBlocks: z.number().int().nonnegative().optional(),
   /** §5.2 errors: the failed turn, and whether its one follow-up turn has run. */

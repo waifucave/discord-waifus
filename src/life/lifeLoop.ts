@@ -30,7 +30,7 @@ import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
 import { timeLine } from "./clock.js";
-import { compactLife, currentHarness, newTurnId, startEpoch, type HarnessNow } from "./compaction.js";
+import { compactLife, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
@@ -329,9 +329,7 @@ export class Life {
     if (!state.systemSnapshot) {
       return startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "first", summarized: false, strippedBlocks: 0, first: true });
     }
-    if (state.pendingEpochStart) {
-      return startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "forget", summarized: true, strippedBlocks: 0, pruneAll: true });
-    }
+    if (state.pendingEpochStart) return startPendingEpoch(deps, this.waifuId, state, harness);
     const lines = await readLifeLog(deps.storage, this.waifuId, state.epoch);
     if (state.systemSnapshot.harnessHash !== harness.hash) {
       return this.compact(waifu, state, lines, harness, "config", signal);

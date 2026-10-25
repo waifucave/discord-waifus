@@ -275,7 +275,7 @@ export async function summaryWithoutPerson(deps: LifeDeps, waifu: WaifuConfig, i
   const model = lifeModelOf(deps, waifu);
   const harness = model ? await currentHarness(deps, waifu, model) : undefined;
   if (!harness) {
-    return updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, summary: null, pendingEpochStart: true }));
+    return updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, summary: null, pendingEpochStart: true, pendingEpochReason: "forget" as const }));
   }
   const names = scrubNames(identity);
   const outcome = await compactLife(deps, {
@@ -498,7 +498,7 @@ export async function startEpochNow(deps: LifeDeps, waifu: WaifuConfig, reason: 
     const current = await readLifeState(deps.storage, waifu.id);
     return startEpoch(deps, waifu.id, { harness, summary: current.summary, kept: [], readIds: [], reason, summarized: true, strippedBlocks: 0, pruneAll: true });
   }
-  const state = await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, pendingEpochStart: true }));
+  const state = await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, pendingEpochStart: true, pendingEpochReason: "forget" as const }));
   // Every log goes, the current epoch's too: its turns are in the summary, and the next turn starts a new epoch.
   await pruneOldEpochLogs(deps.storage, waifu.id, 0, { all: true }).catch(() => undefined);
   return state;

@@ -386,13 +386,17 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   **403** `PrivateContentLocalOnly`.
 - `POST /api/waifus/:waifuId/wake` `{note?}` (≤ 500 characters) — an owner wake (skips her sleep
   and budget) → `{waifuId, outcome: queued | deferred | quiet | dropped | queued_offline, wakeId?}`;
-  with Discord offline the wake waits in her queue (`queued_offline`).
+  with Discord offline, or while the cast is stopping for a reload, the wake waits in her queue
+  (`queued_offline`).
 - `POST /api/waifus/:waifuId/life/compact` — summarise her life now and start a new epoch → `{state:
-  "done", epoch, summarized}`, or **202** `{state: "running"}` after 10 seconds (it finishes on its
-  own). **409** without a live cast (`RuntimeOffline`), without a model or before her life started.
+  "done", epoch, summarized}`, `{state: "aborted"}` when a pause or a shutdown stopped it (nothing
+  changed), or **202** `{state: "running"}` after 10 seconds (it finishes on its own). An epoch a
+  forget or a deferred reset left pending starts instead, with nothing summarised. **409** without a
+  live cast or while it is stopping (`RuntimeOffline`), without a model or before her life started.
 - `POST /api/waifus/:waifuId/life/reset` `{confirm: true}` — a fresh epoch with no summary (notes,
   plans, queued wakes and intake cursors stay; the old log is kept 7 days) → `{epoch, deferred}`
-  (`deferred`: she has no model now; the epoch starts at her next turn). **409** without a live cast.
+  (`deferred`: she has no model now; the epoch starts at her next turn, as a reset). **409** without a
+  live cast or while it is stopping (`RuntimeOffline`).
 - `GET /api/waifus/:waifuId/life/needs-review[?includePrivate=1]` → `{waifuId, includePrivate,
   items: [{id, at, source, where, line, private?}]}`: lines a forget only listed (a name someone
   else also has). A private line (her summary or queue, a watch bound to a DM, a DM place) reads

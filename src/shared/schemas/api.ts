@@ -253,8 +253,11 @@ export const WakeResponseSchema = z.object({
 
 export const LifeCompactResponseSchema = z.object({
   waifuId: z.string(),
-  /** done: the new epoch started. running: still summarising after the wait (it finishes on its own). */
-  state: z.enum(["done", "running"]),
+  /**
+   * done: the new epoch started. running: still summarising after the wait (it finishes on its own).
+   * aborted: a pause or a shutdown stopped it; nothing changed.
+   */
+  state: z.enum(["done", "running", "aborted"]),
   epoch: z.number().int().positive().optional(),
   summarized: z.boolean().optional()
 });

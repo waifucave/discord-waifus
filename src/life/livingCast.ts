@@ -48,7 +48,7 @@ import { Notes, MEMORY_INDEX } from "./notes.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces } from "./places.js";
 import { printLifeLines, printSystemPromptText } from "./lifeView.js";
-import { compactLife, currentHarness, startEpoch } from "./compaction.js";
+import { compactLife, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
 import { WebTools } from "./search.js";
@@ -167,7 +167,7 @@ export class LivingCast {
     this.turns = new Semaphore(() => config().life.maxConcurrentTurns);
     this.cost = new DailyCost(o.storage.dataRoot, timeZone);
     this.botRoles = new BotRoles({ discord: o.discord, refreshHours: () => config().discord.memberListRefreshHours });
-    this.router = new WakeRouter({ deps, cost: this.cost, poke: (waifuId) => this.life(waifuId).poke() });
+    this.router = new WakeRouter({ deps, cost: this.cost, poke: (waifuId) => this.pokeLife(waifuId) });
     this.detector = o.detector ?? new AddresseeDetector({ credentials, usage: o.usageLedger });
     this.marks = new IntakeMarks(o.storage);
     this.intake = new Intake({ deps, router: this.router, botRoles: this.botRoles, cost: this.cost, detector: this.detector, marks: this.marks });
@@ -178,21 +178,41 @@ export class LivingCast {
       mutex: this.mutex,
       ...(o.tickMs ? { tickMs: o.tickMs } : {}),
       hooks: {
-        poke: (waifuId) => this.life(waifuId).poke(),
+        poke: (waifuId) => this.pokeLife(waifuId),
         maintain: (waifu, signal) => this.maintain(waifu, signal),
         begin: () => this.activity.begin("maintenance")
       }
     });
   }
 
-  /** Her life (created on first use). */
+  /** Her life (created on first use; never once `stop()` began: a stopped cast hosts no new life). */
   life(waifuId: string): Life {
     let life = this.lives.get(waifuId);
     if (!life) {
+      this.assertRunning();
       life = new Life(waifuId, { deps: this.deps, mutex: this.mutex, turns: this.turns, activity: this.activity, cost: this.cost });
       this.lives.set(waifuId, life);
     }
     return life;
+  }
+
+  /** A poke for her loop; nothing once the cast is stopping. */
+  private pokeLife(waifuId: string, o?: { delayMs?: number }): void {
+    if (this.stopped) return;
+    this.life(waifuId).poke(o);
+  }
+
+  /**
+   * Owner actions refuse a cast that is stopping or stopped (the reload window keeps the old cast
+   * reachable until `stop()` returns): the routes answer `RuntimeOffline`, an owner wake is queued.
+   */
+  private assertRunning(): void {
+    if (this.stopped) throw new LifeActionError("offline", "Her life is stopping (a reload or a reconnect); try again in a moment.");
+  }
+
+  /** True once `stop()` began. */
+  get isStopped(): boolean {
+    return this.stopped;
   }
 
   private activeRuns = 0;
@@ -243,7 +263,7 @@ export class LivingCast {
         if (repaired.closedCalls > 0 || repaired.wasInTurn || repaired.tornLines) deps.logger.info("Life repaired after a restart", { category: "life", waifuId: waifu.id, ...repaired });
         // A failed turn's follow-up that never ran is armed again (review M13).
         const failed = (await readLifeState(deps.storage, waifu.id)).failedTurn;
-        if (failed && !failed.followUpDone) this.life(waifu.id).armFollowUp(Date.parse(failed.at));
+        if (failed && !failed.followUpDone && !this.stopped) this.life(waifu.id).armFollowUp(Date.parse(failed.at));
         // `scrubbedAt` keeps only the DM forget window; an older entry is a trace of the person.
         const now = deps.now();
         await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, scrubbedAt: recentScrubs(current.scrubbedAt, now) }));
@@ -437,7 +457,7 @@ export class LivingCast {
     }
     // Late reminders fire once; queued wakes start turns.
     await this.scheduler.tick({ waitForMaintenance: false });
-    for (const waifu of waifus) if ((await pendingWakeCount(deps.storage, waifu.id)) > 0) this.life(waifu.id).poke();
+    for (const waifu of waifus) if ((await pendingWakeCount(deps.storage, waifu.id)) > 0) this.pokeLife(waifu.id);
   }
 
   private async isWaifuAuthor(authorId: string): Promise<boolean> {
@@ -476,8 +496,9 @@ export class LivingCast {
 
   /** `/wake`, the dashboard or the CLI: an `owner` wake (skips sleep and budget, §4.5). */
   async ownerWake(waifuId: string, note?: string): Promise<RouteOutcome> {
+    this.assertRunning();
     const trimmed = note?.trim().slice(0, 500);
-    return this.router.route(waifuId, { id: newWakeId(), reason: "owner", ...(trimmed ? { note: trimmed } : {}), at: this.deps.now().toISOString() });
+    return this.track(this.router.route(waifuId, { id: newWakeId(), reason: "owner", ...(trimmed ? { note: trimmed } : {}), at: this.deps.now().toISOString() }));
   }
 
   /** Nightly maintenance plus pending scrubs (the scheduler holds her life lock). */
@@ -542,7 +563,8 @@ export class LivingCast {
     const deps = this.deps;
     const { waifu, identity, scrub } = prepared;
     const none: ForgetScrubResult = { waifuId: waifu.id, removedLines: 0, removedSentences: 0, needsReview: [] };
-    if (prepared.rateLimited) return { ...none, queued: true };
+    // Rate limited, or the cast is stopping: the scrub stays queued (it runs at her next start).
+    if (prepared.rateLimited || this.stopped) return { ...none, queued: true };
     if (prepared.source === "dm") {
       // Recorded before the abort, so a burst of requests cannot abort her turns again and again.
       const now = deps.now();
@@ -567,7 +589,7 @@ export class LivingCast {
       })
       .finally(() => {
         lease?.();
-        life.poke({ delayMs: 0 });
+        if (!this.stopped) life.poke({ delayMs: 0 });
       });
   }
 
@@ -618,6 +640,11 @@ export class LivingCast {
    * Pause and shutdown abort it; an aborted summary changes nothing.
    */
   async compactNow(waifuId: string): Promise<{ epoch: number; summarized: boolean; aborted: boolean }> {
+    this.assertRunning();
+    return this.track(this.compactNowRun(waifuId));
+  }
+
+  private async compactNowRun(waifuId: string): Promise<{ epoch: number; summarized: boolean; aborted: boolean }> {
     const deps = this.deps;
     const waifu = await readWaifu(deps.storage, waifuId);
     const model = lifeModelOf(deps, waifu);
@@ -628,9 +655,17 @@ export class LivingCast {
     const lease = this.activity.begin("maintenance");
     try {
       return await this.mutex.run(lifeLocks.life(waifuId), async () => {
+        // Stopped while it waited for her lock: nothing starts.
+        if (controller.signal.aborted) return { epoch: (await readLifeState(deps.storage, waifuId)).epoch, summarized: false, aborted: true };
         const state = await readLifeState(deps.storage, waifuId);
-        const lines = await readLifeLog(deps.storage, waifuId, state.epoch);
         const harness = await currentHarness(deps, waifu, model);
+        // A forget or a deferred reset left an epoch to start: that epoch starts now, nothing is
+        // summarised again (a reset's old log would come back into the summary).
+        if (state.pendingEpochStart) {
+          const next = await startPendingEpoch(deps, waifuId, state, harness);
+          return { epoch: next.epoch, summarized: false, aborted: false };
+        }
+        const lines = await readLifeLog(deps.storage, waifuId, state.epoch);
         const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
         const outcome = await compactLife(deps, {
           waifu,
@@ -648,7 +683,7 @@ export class LivingCast {
     } finally {
       lease?.();
       this.ownerRuns.delete(controller);
-      this.life(waifuId).poke();
+      this.pokeLife(waifuId);
     }
   }
 
@@ -659,6 +694,11 @@ export class LivingCast {
    * starts at her next turn (the summary is cleared now).
    */
   async resetLife(waifuId: string): Promise<{ epoch: number; deferred: boolean }> {
+    this.assertRunning();
+    return this.track(this.resetLifeRun(waifuId));
+  }
+
+  private async resetLifeRun(waifuId: string): Promise<{ epoch: number; deferred: boolean }> {
     const deps = this.deps;
     const waifu = await readWaifu(deps.storage, waifuId);
     const model = lifeModelOf(deps, waifu);
@@ -674,13 +714,14 @@ export class LivingCast {
           deps.logger.info("Life reset by the owner", { category: "life", waifuId, epoch: next.epoch });
           return { epoch: next.epoch, deferred: false };
         }
-        const next = await updateLifeState(deps.storage, waifuId, (current) => ({ ...current, summary: null, ...(current.systemSnapshot ? { pendingEpochStart: true } : {}) }));
+        // Her next turn starts the epoch as a reset (the old log is kept 7 days, as with a model).
+        const next = await updateLifeState(deps.storage, waifuId, (current) => ({ ...current, summary: null, ...(current.systemSnapshot ? { pendingEpochStart: true, pendingEpochReason: "reset" as const } : {}) }));
         deps.logger.info("Life reset by the owner; the fresh epoch starts at her next turn", { category: "life", waifuId });
         return { epoch: next.epoch, deferred: true };
       });
     } finally {
       lease?.();
-      life.poke();
+      if (!this.stopped) life.poke();
     }
   }
 
@@ -719,7 +760,7 @@ export class LivingCast {
 /** An owner action on a life that cannot run now (`no_model`, `not_started`). */
 export class LifeActionError extends Error {
   override name = "LifeActionError";
-  constructor(readonly code: "no_model" | "not_started", message: string) {
+  constructor(readonly code: "no_model" | "not_started" | "offline", message: string) {
     super(message);
   }
 }

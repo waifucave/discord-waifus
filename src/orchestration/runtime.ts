@@ -33,7 +33,7 @@ import { forgetCapturedTraffic } from "../shared/queryLog.js";
 import { personMatcher } from "../life/text.js";
 import { forgetConversationImageIndex } from "../discord/imageIndex.js";
 import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
-import { LivingCast } from "../life/livingCast.js";
+import { LifeActionError, LivingCast } from "../life/livingCast.js";
 import type { ForgetScrubResult } from "../life/forget.js";
 import { sharedModelClient } from "../models/client.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
@@ -530,7 +530,11 @@ export class CastRuntime {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");
     if (!(await this.guildCast(event.guildId)).has(waifu.id)) return event.respond(`${waifu.displayName} isn't cast in this server.`);
-    const outcome = await this.cast.ownerWake(waifu.id, event.note);
+    // A cast that is stopping (a reload) refuses: the wake is dropped and the owner told so.
+    const outcome = await this.cast.ownerWake(waifu.id, event.note).catch((error: unknown) => {
+      if (error instanceof LifeActionError && error.code === "offline") return "dropped" as const;
+      throw error;
+    });
     await event.respond(
       outcome === "queued"
         ? `Woke ${waifu.displayName}.`
