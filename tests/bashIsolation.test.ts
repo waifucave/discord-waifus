@@ -24,8 +24,19 @@ let ctx: ToolContext;
 /** Every command and the result she saw: checked for host paths at the end. */
 const seen: Array<{ command: string; text: string }> = [];
 
+/**
+ * Her own folders are /home/<slug> and /tmp. A host data root under /tmp (Linux's default temp
+ * directory) would share its first segment with her /tmp, so "/tmp/dc-waifus-life-x/pwned.txt"
+ * would name a file she may make in her own /tmp rather than a host path. The world is made where
+ * no host path can look like one of hers.
+ */
+function hostBase(): string {
+  const tmp = os.tmpdir();
+  return /^\/(tmp|home)(\/|$)/u.test(tmp) ? "/var/tmp" : tmp;
+}
+
 beforeAll(async () => {
-  w = await lifeWorld(roots);
+  w = await lifeWorld(roots, { rootBase: hostBase() });
   const deps = w.cast.deps;
   const waifu = await readWaifu(w.storage, "aria");
   const route = deps.catalog().models.find((model) => model.providerId === waifu.model!.providerId && model.modelId === waifu.model!.modelId)!;
@@ -46,7 +57,9 @@ beforeAll(async () => {
 afterAll(async () => {
   // No host path, host user name or host environment value in anything she saw (unless her own
   // command typed it: an error message may repeat the path she asked for).
-  const forbidden = [w.root, process.cwd(), os.homedir(), os.tmpdir(), "node_modules", "dc-waifus-life-", os.userInfo().username].filter((value) => value.length >= 3);
+  // Her own folder names are not host leaks (os.tmpdir() is "/tmp" on Linux).
+  const own = new Set(["/", "/tmp", "/home", "/home/aria"]);
+  const forbidden = [w.root, process.cwd(), os.homedir(), os.tmpdir(), "node_modules", "dc-waifus-life-", os.userInfo().username].filter((value) => value.length >= 3 && !own.has(value));
   expect(seen.length).toBeGreaterThan(20);
   for (const { command, text } of seen) {
     for (const value of forbidden) if (!command.includes(value)) expect(text, `${command} leaked ${JSON.stringify(value)}`).not.toContain(value);
@@ -111,6 +124,16 @@ describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
     expect(exitOf((await bash(`cp ~/MEMORY.md ${JSON.stringify(w.root)}/`)).text)).not.toBe(0);
     await expect(lstat(path.join(w.root, "pwned.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readdir(path.join(w.root, "user/waifus/aria"))).not.toContain("etc");
+    // A path that only looks like a host temp directory is a path in her own /tmp: the file lands
+    // in her tmp folder under the data root, never on the host. (just-bash creates missing parent
+    // folders on a redirect, unlike real bash.)
+    const name = path.basename(w.root);
+    const lookalike = await bash(`echo pwned > /tmp/${name}/pwned.txt`);
+    expect(exitOf(lookalike.text)).toBe(0);
+    expect(lookalike.text).toContain(`changed: /tmp/${name}/pwned.txt`);
+    expect(await herFile(w, "aria", `tmp/${name}/pwned.txt`)).toBe("pwned\n");
+    await expect(lstat(path.join(w.root, "pwned.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(exitOf((await bash(`rm -r /tmp/${name}`)).text)).toBe(0);
   });
 
   it("no links: ln -s and ln fail, Python cannot make one, and nothing is created on disk", async () => {

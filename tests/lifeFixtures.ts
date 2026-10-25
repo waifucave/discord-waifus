@@ -305,9 +305,11 @@ export async function lifeWorld(
     paused?: () => boolean;
     /** A ModelClient of the test's own (e.g. the real winter adapters against a loopback server). */
     models?: (o: { ledger: MemoryLedger; clock: Clock }) => ModelClient;
+    /** Where the temp data root is made (default: the OS temp directory). */
+    rootBase?: string;
   } = {}
 ): Promise<LifeWorld> {
-  const root = await makeTempRoot("dc-waifus-life-");
+  const root = await makeTempRoot("dc-waifus-life-", o.rootBase);
   roots.push(root);
   await ensureDataLayout(root);
   const storage = new StorageService(root);
