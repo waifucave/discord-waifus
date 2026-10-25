@@ -746,10 +746,7 @@ export class LivingCast {
     return (await new Notes(this.deps.storage, waifuId).read(MEMORY_INDEX)) ?? "(no MEMORY.md yet)";
   }
 
-  /**
-   * The last 20 life-log lines. Unless `private`: DM tool results and arguments, every quoted part of
-   * a DM notification line and her own text in a turn that touched a DM are redacted (§10.4, D14).
-   */
+  /** The last 20 life-log lines; unless `private`, DM content is left out by the §14.4 rule (§10.4, D14). */
   async printLife(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
     const state = await readLifeState(this.deps.storage, waifuId);
     const all = await readLifeLog(this.deps.storage, waifuId, state.epoch);

@@ -1372,7 +1372,13 @@ Choices L3 made where the sections above leave room (owner review welcome):
 - **Dashboard**: a Life section (mosaic of every waifu, then one life); Activity gains a Usage tab;
   Settings gains Models, Search, Detector and Life-limits tabs whose forms come from
   `GET /api/help/<topic>` and send only changed keys. The Life screen's notes browser, watches and
-  reminders wait for the tool-surface redesign.
+  reminders wait for the tool-surface redesign. The Life view is keyed per waifu (a reveal never
+  carries over); it shows her summary, timeline, review lines and web searches only from a
+  response whose own `includePrivate` matches the toggle, and a failed refetch leaves nothing old
+  on screen (each fetch's error is shown). Older pages merge with the live page by `seq` and are
+  dropped on an epoch change, when the live page no longer reaches them, and after any action.
+  Grid layouts collapse at phone width; confirmation dialogs are `role="dialog"` with Escape and
+  focus handling; secret settings are write-only inputs.
 - **I17**: the runtime state's non-remote part moves to `src/shared/schemas/runtime.ts`; the
   dashboard's remaining hand-mirrored shapes are those the server builds by hand (curated models,
   provider status, assistant events, help payloads) and Remote Access (D5).
