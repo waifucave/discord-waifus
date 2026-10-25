@@ -48,14 +48,19 @@ Discord runtime and supervises its own remote-role helper child.
 choices are listed in spec §14.4, L4's "as built" notes in §16, which overrides §6 and §7.1–§7.3)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
-`LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: guild bursts coalesce
-2 s, DMs wait for a 30 s quiet timer capped at 180 s, mentions/replies/names/`@everyone`/shared
-roles/watches map straight to wakes, everything else goes to the addressee detector in
-`detector/`) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
+`LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: typing-aware holds in
+`intakeHold.ts`, spec §4.2: a room burst fires 1.5 s after its last message, a DM 2.5 s, later while
+an author of the burst is typing there (6 s per typing event, from the House bot's and DM bots' raw
+`TYPING_START` packets), capped at 10 s / 60 s from the first message; a human message's
+mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu,
+previewing the author's newest message), watches and waifu-authored messages route at once,
+everything else goes to the addressee detector in `detector/`) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
 per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
 (`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
-`life.maxConcurrentTurns` slot; notifications (with the previewed message's ref), the tool loop, the unsent-reply check, caps, her bot typing while she works (`typing.ts`, spec §6.3); an
+`life.maxConcurrentTurns` slot; notifications (with the previewed message's ref; wakes ready mid-turn
+are folded into the next tool-results message after its results, recorded in `currentTurn` before
+they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing while she works (`typing.ts`, spec §6.3); an
 interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
 each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` lease and counts in
 `queues.active`) → `ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks
@@ -198,11 +203,13 @@ PUT shim in `src/api/server.ts`.
   enabled waifu, server `paused` is the kill switch.
 - *Threads*: threads/forum posts are their own conversations that inherit the parent's cast
   unless the channel's `threads` is `"off"` (`stores/threads.ts`, `threads.json`).
-- *Debounce* (`src/orchestration/debounce.ts`, `discord.debounce.*`): the keyed debouncer behind
-  the intake's DM quiet timer (`dmMs` 30 s, `dmMaxWaitMs` 180 s).
+- *Debounce* (`discord.debounce.*`): the intake's typing-aware holds (`src/life/intakeHold.ts`:
+  `serverMs` 1.5 s / `serverMaxWaitMs` 10 s in rooms, `dmMs` 2.5 s / `dmMaxWaitMs` 60 s in DMs,
+  `typingHoldMs` 6 s per typing event). `src/orchestration/debounce.ts` keeps the plain keyed
+  debouncer.
 - *DMs* (`src/orchestration/dm/`): eligibility (`computeDmEligibility`: enabled waifu with a model,
   the only enabled waifu on an enabled waifu bot) decides which bots log in with
-  `[Guilds, DirectMessages, DirectMessageReactions]`; a waifu write calls `reconcileDmIntents()`,
+  `[Guilds, DirectMessages, DirectMessageReactions, DirectMessageTyping]`; a waifu write calls `reconcileDmIntents()`,
   which re-logs only bots whose intents changed. DM state lives in `user/dms/<userId>/<waifuId>.json`,
   rate-limit counters in `user/dms/<userId>/limits/<waifuId>.json` (pure math in `rateLimit.ts`).
   Every forget writes a floor message id (`floorMessageId`) so `ConversationMessageCache.setFloor`

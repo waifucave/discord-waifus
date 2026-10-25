@@ -38,6 +38,9 @@ async function mention(w: LifeWorld, text: string, o: { attachments?: Parameters
   const message = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" }, ...(o.attachments ? { attachments: o.attachments } : {}) });
   await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
   await w.cast.settle();
+  // Her wake waits for the burst's quiet time (§4.2): fire it now.
+  w.cast.intake.flushDetector();
+  await w.cast.settle();
 }
 
 const wakeTurn = () =>
@@ -57,6 +60,30 @@ describe("Living cast goldens", () => {
     await expect(`${serializeSystem(first)}\n=== tools ===\n${serializeTools(first.tools)}\n`).toMatchFileSnapshot("./__snapshots__/life-system-prompt.txt");
     const last = w.anthropic.calls[2]!.request;
     await expect(serializeRequest(last, { tools: false }).replace(serializeSystem(last), "(system: see life-system-prompt.txt)")).toMatchFileSnapshot("./__snapshots__/life-wake-turn.txt");
+  });
+
+  it("a notification that arrives mid-turn, after a tool result", async () => {
+    let w!: LifeWorld;
+    w = await lifeWorld(roots, {
+      waifus: [ARIA],
+      scripts: [
+        async function* () {
+          // Mina pings her while she reads; her burst fires before the read's result comes back.
+          const ping = w.discord.post(ROOM, `<@${ARIA_BOT}> can you bring the piping bags too?`, { authorId: MINA_USER, authorName: "Mina", mentions: { [ARIA_BOT]: "Aria" } });
+          await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: ping });
+          w.cast.intake.flushDetector();
+          await w.cast.intake.settle();
+          yield* toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]);
+        },
+        () => toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "yes!! lemon tarts, and i'll bring the piping bags" } }]),
+        () => textTurn("(sent)")
+      ]
+    });
+    await seedNotes(w);
+    await mention(w, "are you coming saturday? we need someone on dessert");
+    await w.cast.life("aria").runNow();
+    const second = w.anthropic.calls[1]!.request;
+    await expect(serializeMessages(second.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-mid-turn.txt");
   });
 
   it("a DM wake", async () => {

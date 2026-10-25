@@ -1,9 +1,12 @@
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, closeWorlds, dmOf, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, closeWorlds, dmOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { scanDmContent, viewLogLine } from "../src/life/lifeView.js";
 import { removeTempRoot } from "./testUtils.js";
-import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
+import { readLifeFile, readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
+import { repairLife } from "../src/life/repair.js";
 import { UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
 import { SEARCH_USAGE_PATH } from "../src/life/search.js";
@@ -19,6 +22,9 @@ afterEach(async () => {
 async function mention(world: LifeWorld, text = "aria are you coming saturday?") {
   const message = world.discord.post(ROOM, text, { mentions: { [ARIA_BOT]: "Aria" } });
   await world.cast.onGuildMessage({ guildId: ROOM.kind === "guild" ? ROOM.guildId : "", channelId: ROOM.kind === "guild" ? ROOM.channelId : "", messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false });
+  await world.cast.settle();
+  // Her wake waits for the burst's quiet time (§4.2): fire it now.
+  world.cast.intake.flushDetector();
   await world.cast.settle();
   return message;
 }
@@ -203,5 +209,132 @@ describe("life loop", () => {
       ["lemon cake", true],
       ["sprinkles", false]
     ]);
+  });
+});
+
+describe("mid-turn notifications (§4.6, §5.2)", () => {
+  const lifeFile = (world: LifeWorld, name: string) => path.join(world.root, "user", "waifus", "aria", "life", name);
+  /** A mention from Mina in the room, queued as the router queues it once its burst fired. */
+  function minaPing(world: LifeWorld, text: string) {
+    const message = world.discord.post(ROOM, text, { authorId: MINA_USER, authorName: "Mina" });
+    return enqueueWake(world.storage, "aria", { id: `w-${message.id}`, reason: "mention", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", messageId: message.id, preview: text, at: world.clock.now().toISOString() });
+  }
+  const reminder = (world: LifeWorld, note: string) => enqueueWake(world.storage, "aria", { id: newWakeId(), reason: "reminder", note, at: world.clock.now().toISOString() });
+
+  it("a wake that becomes ready during a tool call is delivered right after it: after the tool results, with refs, before the time line; never inside the running call", async () => {
+    let world!: LifeWorld;
+    const backend = {
+      search: async () => {
+        // Mina pings her while the search runs.
+        await minaPing(world, "aria can you bring the piping bags?");
+        return { ok: true as const, tier: "anonymous" as const, tool: "web_search_exa", rawText: "", truncated: false, results: [] };
+      },
+      fetchPage: async () => {
+        throw new Error("no page fetches in this test");
+      },
+      close: async () => undefined
+    };
+    world = await lifeWorld(roots, {
+      options: { webBackend: backend as never },
+      scripts: script(toolTurn([{ name: "WebSearch", input: { query: "piping bag sizes" } }]), textTurn("ok"))
+    });
+    await reminder(world, "look up piping bags");
+    await world.cast.life("aria").runNow();
+    // The folded mention makes the turn direct: her plain-text end gets the unsent-reply check.
+    expect(world.anthropic.calls).toHaveLength(3);
+    expect(JSON.stringify(world.anthropic.calls[0]!.request.messages)).not.toContain("piping bags?");
+    const messages = world.anthropic.calls[1]!.request.messages;
+    const blocks = messages[messages.length - 1]!.content as Array<{ type: string; text?: string }>;
+    expect(blocks.map((block) => block.type)).toEqual(["tool_result", "text", "text"]);
+    expect(blocks[1]!.text).toMatch(/^<notifications>\n- mention · bake-club\/#general · from Mina · (?:\d+ unread · )?#[0-9a-z]+ "aria can you bring the piping bags\?"\n<\/notifications>$/);
+    expect(blocks[2]!.text).toMatch(/^\[.*\]$/);
+    // Taken exactly once: the queue is empty, and one log line shows it.
+    expect((await readLifeFile(world.storage, "aria", "wakes")).immediate).toEqual([]);
+    const state = await readLifeState(world.storage, "aria");
+    const log = await readLifeLog(world.storage, "aria", state.epoch);
+    expect(log.filter((line) => JSON.stringify(line.message).includes("piping bags?"))).toHaveLength(1);
+    expect(log.map((line) => line.kind)).toEqual(["notifications", "assistant", "tool_results", "assistant", "system_note", "assistant"]);
+  });
+
+  it("a turn that ends in plain text leaves a wake that arrived during its last call for the next turn", async () => {
+    let world!: LifeWorld;
+    world = await lifeWorld(roots, {
+      scripts: [
+        async function* () {
+          await minaPing(world, "aria you there?");
+          yield* textTurn("ok, noted");
+        },
+        () => textTurn("(later)"),
+        () => textTurn("(nothing to send)")
+      ]
+    });
+    await reminder(world, "water the plants");
+    await world.cast.life("aria").runNow();
+    expect(JSON.stringify(world.anthropic.calls[0]!.request.messages)).not.toContain("aria you there?");
+    const state = await readLifeState(world.storage, "aria");
+    const log = await readLifeLog(world.storage, "aria", state.epoch);
+    // The second turn opens with it.
+    const opened = log.filter((line) => line.kind === "notifications").map((line) => JSON.stringify(line.message));
+    expect(opened).toHaveLength(2);
+    expect(opened[1]).toContain("aria you there?");
+    expect(log.filter((line) => JSON.stringify(line.message).includes("aria you there?"))).toHaveLength(1);
+    expect((await readLifeFile(world.storage, "aria", "wakes")).immediate).toEqual([]);
+  });
+
+  it("a crash after a fold puts every wake of the open turn back once; a crash between recording and taking a wake doubles nothing", async () => {
+    let world!: LifeWorld;
+    let snapshot: { state: string; wakes: string } | undefined;
+    world = await lifeWorld(roots, {
+      scripts: [
+        async function* () {
+          await minaPing(world, "aria are the tarts ready?");
+          yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+        },
+        async function* () {
+          // The process dies during the call after the fold: what is on disk now is what boot sees.
+          snapshot = { state: await readFile(lifeFile(world, "state.json"), "utf8"), wakes: await readFile(lifeFile(world, "wakes.json"), "utf8") };
+          yield* textTurn("done");
+        },
+        () => textTurn("(nothing to send)")
+      ]
+    });
+    await reminder(world, "check the oven");
+    await world.cast.life("aria").runNow();
+    expect(snapshot).toBeDefined();
+    const atCrash = JSON.parse(snapshot!.state) as { currentTurn: { wakes: Array<{ reason: string }> } };
+    expect(atCrash.currentTurn.wakes.map((wake) => wake.reason)).toEqual(["reminder", "mention"]);
+    expect((JSON.parse(snapshot!.wakes) as { immediate: unknown[] }).immediate).toEqual([]);
+    await writeFile(lifeFile(world, "state.json"), snapshot!.state);
+    await writeFile(lifeFile(world, "wakes.json"), snapshot!.wakes);
+    await repairLife(world.cast.deps, "aria");
+    const queued = (await readLifeFile(world.storage, "aria", "wakes")).immediate;
+    expect(queued.map((wake) => wake.reason)).toEqual(["reminder", "mention"]);
+    // Recorded in her state but still in the queue (the crash came before the take): one copy each.
+    await updateLifeState(world.storage, "aria", (current) => ({ ...current, status: "turn", currentTurn: { id: "t-x", startedAt: world.clock.now().toISOString(), rounds: 1, wakeIds: queued.map((wake) => wake.id), wakes: queued } }));
+    await repairLife(world.cast.deps, "aria");
+    expect((await readLifeFile(world.storage, "aria", "wakes")).immediate.map((wake) => wake.id)).toEqual(queued.map((wake) => wake.id));
+  });
+
+  it("a round that ends the turn (a cap) folds nothing: the wake starts the next turn", async () => {
+    let world!: LifeWorld;
+    world = await lifeWorld(roots, {
+      config: (config) => ({ ...config, life: { ...config.life, maxToolRounds: 1 } }),
+      scripts: [
+        async function* () {
+          await minaPing(world, "aria quick one");
+          yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+        },
+        () => textTurn("(next turn)"),
+        () => textTurn("(nothing to send)")
+      ]
+    });
+    await reminder(world, "loop");
+    await world.cast.life("aria").runNow();
+    const state = await readLifeState(world.storage, "aria");
+    const log = await readLifeLog(world.storage, "aria", state.epoch);
+    const capped = log.find((line) => line.kind === "tool_results")!;
+    expect(JSON.stringify(capped.message)).toContain("[system] turn ended: max tool rounds");
+    expect(JSON.stringify(capped.message)).not.toContain("aria quick one");
+    expect(JSON.stringify(log.filter((line) => line.kind === "notifications")[1]!.message)).toContain("aria quick one");
   });
 });

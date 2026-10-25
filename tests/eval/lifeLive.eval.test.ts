@@ -98,6 +98,9 @@ async function wake(w: LifeWorld, scenario: Scenario): Promise<WakeResult> {
   if (scenario.kind === "direct") {
     const message = w.discord.post(ROOM, `<@${ARIA_BOT}> ${scenario.text}`, { mentions: { [ARIA_BOT]: "Aria" } });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    await w.cast.settle();
+    w.cast.intake.flushDetector();
   } else if (scenario.kind === "offtopic") {
     const message = w.discord.post(ROOM, scenario.text, { authorId: MINA_USER, authorName: "Mina" });
     // As if the detector had chosen her ("maybe for you").

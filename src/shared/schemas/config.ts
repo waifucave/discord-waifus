@@ -73,22 +73,26 @@ const DiscordImagesConfigSchema = z
     diskCacheTtlHours: DISCORD_IMAGE_FIELDS.diskCacheTtlHours.default(DEFAULT_DISCORD_IMAGES.diskCacheTtlHours)
   })
   .default({ ...DEFAULT_DISCORD_IMAGES });
-// Debounce (spec 9.2, Living cast §4.1, §4.2): the channel debounce batches a burst for the
-// addressee detector only; the DM timer is the `dm` wake's quiet period (15 s after the user's last
-// message, capped at `dmMaxWaitMs`).
+// Debounce and typing holds (Living cast §4.2): a room burst (direct wakes and the detector alike)
+// fires `serverMs` after its last message, a DM `dmMs` after the person's last message; while an
+// author of the pending burst is typing there (a typing event counts for `typingHoldMs` unless a
+// message from them arrives first) it waits, at most `serverMaxWaitMs` / `dmMaxWaitMs` from the
+// burst's first message.
 const DEBOUNCE_FIELDS = {
   serverMs: z.number().int().min(0).max(30_000),
   serverMaxWaitMs: z.number().int().min(0).max(120_000),
   dmMs: z.number().int().min(0).max(120_000),
-  dmMaxWaitMs: z.number().int().min(0).max(300_000)
+  dmMaxWaitMs: z.number().int().min(0).max(300_000),
+  typingHoldMs: z.number().int().min(0).max(30_000)
 };
-export const DEFAULT_DEBOUNCE = { serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 15_000, dmMaxWaitMs: 180_000 };
+export const DEFAULT_DEBOUNCE = { serverMs: 1500, serverMaxWaitMs: 10_000, dmMs: 2500, dmMaxWaitMs: 60_000, typingHoldMs: 6000 };
 const DiscordDebounceConfigSchema = z
   .object({
     serverMs: DEBOUNCE_FIELDS.serverMs.default(DEFAULT_DEBOUNCE.serverMs),
     serverMaxWaitMs: DEBOUNCE_FIELDS.serverMaxWaitMs.default(DEFAULT_DEBOUNCE.serverMaxWaitMs),
     dmMs: DEBOUNCE_FIELDS.dmMs.default(DEFAULT_DEBOUNCE.dmMs),
-    dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.default(DEFAULT_DEBOUNCE.dmMaxWaitMs)
+    dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.default(DEFAULT_DEBOUNCE.dmMaxWaitMs),
+    typingHoldMs: DEBOUNCE_FIELDS.typingHoldMs.default(DEFAULT_DEBOUNCE.typingHoldMs)
   })
   .default({ ...DEFAULT_DEBOUNCE });
 export type DebounceConfig = z.infer<typeof DiscordDebounceConfigSchema>;
@@ -394,7 +398,8 @@ export const UpdateAppConfigBodySchema = z.object({
       serverMs: DEBOUNCE_FIELDS.serverMs.optional(),
       serverMaxWaitMs: DEBOUNCE_FIELDS.serverMaxWaitMs.optional(),
       dmMs: DEBOUNCE_FIELDS.dmMs.optional(),
-      dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.optional()
+      dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.optional(),
+      typingHoldMs: DEBOUNCE_FIELDS.typingHoldMs.optional()
     }).strict().optional(),
     dm: z.object({
       resumeWindowMinutes: DM_RUNTIME_FIELDS.resumeWindowMinutes.optional()

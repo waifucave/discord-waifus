@@ -66,7 +66,7 @@ A waifu answers DMs sent to her own bot when her
 other waifus, with the same model and prompt rules as in servers. Requirements: the waifu is enabled, has a model, and is the ONLY enabled waifu linked to
 her bot (a shared bot takes no DMs; `GET /api/runtime` → `discord.dm.warnings` shows
 `dm_bot_shared:<botId>`, `dm_missing_model:<waifuId>` or `dm_intent_pending_reconnect:<botId>`).
-The DM intents (Direct Messages, DM reactions) are not privileged and need no Developer Portal
+The DM intents (Direct Messages, DM reactions, DM typing) are not privileged and need no Developer Portal
 toggle. They are fixed at login, so saving a waifu change to `dm.allowDms`, `botId` or `enabled`
 re-logs only the bots whose intents changed (about 2 seconds offline); other bots keep `[Guilds]`.
 A user must share a server with the bot (or have it installed) to DM it, and the bot can't see a

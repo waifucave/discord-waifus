@@ -149,6 +149,11 @@ export interface DiscordGatewayFacade {
   }): Promise<{ messages: RawDiscordMessage[]; reachedCursor: boolean }>;
   /** Spec 9.1: a human's DM to a DM-eligible waifu bot (group DMs, bots and self are dropped). */
   onDirectMessage?(listener: DiscordDirectMessageListener): () => void;
+  /**
+   * Living cast §4.2: someone started typing, in a guild channel or thread (House bot) or in a DM with
+   * a DM-eligible waifu bot. Intake holds a pending burst of theirs while they type.
+   */
+  onTyping?(listener: DiscordTypingListener): () => void;
   /** Spec 9.1.5: a confirmed DM `/forget`; the listener returns the text shown to the user. */
   onDmForgetCommand?(listener: DiscordDmForgetCommandListener): () => void;
   sendDirectMessage?(input: {
@@ -258,6 +263,21 @@ export type DiscordDirectMessageEvent = {
   createdAt: string;
 };
 export type DiscordDirectMessageListener = (event: DiscordDirectMessageEvent) => void | Promise<void>;
+
+/** A gateway TYPING_START packet's ids (`bot` when its member says so); undefined for any other packet. */
+export function typingPacket(packet: unknown): { guildId?: string; channelId: string; userId: string; bot: boolean } | undefined {
+  const p = packet as { t?: unknown; d?: { guild_id?: unknown; channel_id?: unknown; user_id?: unknown; member?: { user?: { bot?: unknown } } } } | null;
+  if (!p || p.t !== "TYPING_START" || !p.d) return undefined;
+  const { guild_id: guildId, channel_id: channelId, user_id: userId } = p.d;
+  if (typeof channelId !== "string" || typeof userId !== "string") return undefined;
+  return { ...(typeof guildId === "string" ? { guildId } : {}), channelId, userId, bot: p.d.member?.user?.bot === true };
+}
+
+/** A typing start (Living cast §4.2); `bot` when Discord says the typist is a bot. */
+export type DiscordTypingEvent =
+  | { kind: "guild"; guildId: string; channelId: string; userId: string; bot: boolean }
+  | { kind: "dm"; waifuId: string; botId: string; userId: string; bot: boolean };
+export type DiscordTypingListener = (event: DiscordTypingEvent) => void;
 
 export type DiscordDmForgetScope = "conversation" | "everything";
 export type DiscordDmForgetCommandEvent = { waifuId: string; botId: string; userId: string; scope: DiscordDmForgetScope };
@@ -410,6 +430,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly clientDmWaifu = new Map<string, string>();
   private readonly dmChannels = new Map<string, string>(); // `${botId}:${userId}` → DM channel id
   private readonly dmListeners = new Set<DiscordDirectMessageListener>();
+  private readonly typingListeners = new Set<DiscordTypingListener>();
   private readonly dmForgetListeners = new Set<DiscordDmForgetCommandListener>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {
@@ -711,6 +732,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         this.dispatchListener("Discord DM listener failed", listener, event, { botId, waifuId, messageId: event.messageId });
       }
     });
+    // §4.2: typing in her DMs holds the person's pending DM wake (ids only, never logged). Read from
+    // the raw packet: her bot caches no users, so discord.js would drop the event without a user.
+    client.on(Events.Raw, (packet: unknown) => {
+      const typing = typingPacket(packet);
+      if (!typing || typing.guildId || typing.userId === client.user?.id || this.clients.get(botId) !== client) return;
+      this.emitTyping({ kind: "dm", waifuId, botId, userId: typing.userId, bot: typing.bot });
+    });
     client.on(Events.InteractionCreate, (interaction) => {
       if (!interaction.isChatInputCommand() || interaction.commandName !== DM_FORGET_COMMAND_NAME || interaction.guildId) return;
       this.runBackground("Discord DM forget interaction failed", { botId, waifuId }, () =>
@@ -775,6 +803,15 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onDirectMessage(listener: DiscordDirectMessageListener): () => void {
     this.dmListeners.add(listener);
     return () => this.dmListeners.delete(listener);
+  }
+
+  onTyping(listener: DiscordTypingListener): () => void {
+    this.typingListeners.add(listener);
+    return () => this.typingListeners.delete(listener);
+  }
+
+  private emitTyping(event: DiscordTypingEvent): void {
+    for (const listener of this.typingListeners) this.dispatchTo(listener, event);
   }
 
   onDmForgetCommand(listener: DiscordDmForgetCommandListener): () => void {
@@ -1082,6 +1119,12 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         this.dispatchListener("Discord thread listener failed", listener, event, { guildId, threadId, change });
       }
     };
+    // §4.2: typing in a room holds a pending burst of the typist's (intake ignores everyone else).
+    client.on(Events.Raw, (packet: unknown) => {
+      const typing = typingPacket(packet);
+      if (!typing?.guildId || typing.userId === client.user?.id) return;
+      this.emitTyping({ kind: "guild", guildId: typing.guildId, channelId: typing.channelId, userId: typing.userId, bot: typing.bot });
+    });
     client.on(Events.ThreadCreate, (thread) => emitThread("create", thread));
     client.on(Events.ThreadUpdate, (oldThread, newThread) => emitThread("update", newThread, oldThread));
     client.on(Events.ThreadDelete, (thread) => emitThread("delete", thread));
@@ -1713,6 +1756,8 @@ function discordClientOptions(kind: DiscordBotKind, o: { guildMembersIntent?: bo
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMessageReactions,
+        // Non-privileged: typing starts, so a burst waits while its author is still typing (§4.2).
+        GatewayIntentBits.GuildMessageTyping,
         GatewayIntentBits.MessageContent,
         // Non-privileged: emoji/sticker create/update/delete events for the GuildDirectory.
         GatewayIntentBits.GuildExpressions,
@@ -1723,10 +1768,11 @@ function discordClientOptions(kind: DiscordBotKind, o: { guildMembersIntent?: bo
     };
   }
   return {
-    // DM-eligible waifu bots (spec 9.1) add the non-privileged DM intents; DM content needs no
-    // Message Content intent. Partials: DM channels and uncached messages (reactions, deletes).
+    // DM-eligible waifu bots (spec 9.1) add the non-privileged DM intents (typing too, §4.2); DM
+    // content needs no Message Content intent. Partials: DM channels and uncached messages
+    // (reactions, deletes).
     intents: o.dm
-      ? [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.DirectMessageReactions]
+      ? [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.DirectMessageReactions, GatewayIntentBits.DirectMessageTyping]
       : [GatewayIntentBits.Guilds],
     ...(o.dm ? { partials: [Partials.Channel, Partials.Message, Partials.Reaction] } : {}),
     makeCache: Options.cacheWithLimits({

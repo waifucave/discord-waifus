@@ -286,7 +286,7 @@ MESSAGE CONTENT INTENT   (required)
 SERVER MEMBERS INTENT    (only if you turn on discord.guildMembersIntent)
 ```
 
-The non-privileged intents (Guilds, Guild Messages, Guild Message Reactions, Guild Expressions) are requested
+The non-privileged intents (Guilds, Guild Messages, Guild Message Reactions, Guild Message Typing, Guild Expressions) are requested
 automatically. A **waifu bot** only posts, reacts and attaches files, so it needs no privileged intent. DMs need
 none either: turn on **Cast → Direct messages** for a waifu with her own bot.
 

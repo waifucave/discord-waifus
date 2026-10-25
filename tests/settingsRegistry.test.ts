@@ -96,7 +96,8 @@ describe("settings registry", () => {
       ["life.webFetch.maxRedirects", 0, 10],
       ["life.webFetch.cacheMinutes", 0, 1_440],
       ["discord.debounce.dmMs", 0, 120_000],
-      ["discord.debounce.dmMaxWaitMs", 0, 300_000]
+      ["discord.debounce.dmMaxWaitMs", 0, 300_000],
+      ["discord.debounce.typingHoldMs", 0, 30_000]
     ];
     for (const [key, min, max] of expectations) {
       const info = findKey(`app.${key}`);

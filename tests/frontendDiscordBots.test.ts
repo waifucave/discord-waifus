@@ -117,7 +117,7 @@ describe("intent and permission lists match what the gateway uses", () => {
     expect(plain).toEqual(["Guilds"]);
     const withDms = await requestedIntents("waifu", { dmBots: async () => [{ botId: "aria-bot", waifuId: "aria" }] });
     expect(withDms.filter((name) => PRIVILEGED.has(name))).toEqual([]);
-    expect(withDms).toEqual(["DirectMessageReactions", "DirectMessages", "Guilds"]);
+    expect(withDms).toEqual(["DirectMessageReactions", "DirectMessageTyping", "DirectMessages", "Guilds"]);
     expect(intentListFor("waifu").filter((intent) => intent.portalToggle || intent.privileged)).toEqual([]);
   });
 

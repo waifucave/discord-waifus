@@ -156,7 +156,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
     expect((await queued(w, "aria")).immediate).toHaveLength(1);
   });
 
-  it("a DM wakes her 15 s after the last message (timer reset), capped at 180 s", async () => {
+  it("a DM wakes her 2.5 s after the last message (timer reset), capped at 60 s", async () => {
     const w = await world();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const dm = async (text: string) => {
@@ -164,21 +164,155 @@ describe("wake reasons (§4.1, §4.2)", () => {
       await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     };
     await dm("hey");
-    await vi.advanceTimersByTimeAsync(12_000);
+    await vi.advanceTimersByTimeAsync(2_000);
     await dm("quick question");
-    await vi.advanceTimersByTimeAsync(12_000);
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(await reasons(w, "aria")).toEqual([]);
-    await vi.advanceTimersByTimeAsync(4_000);
+    await vi.advanceTimersByTimeAsync(600);
     await w.cast.settle();
     const wake = (await queued(w, "aria")).immediate[0];
     expect(wake).toMatchObject({ reason: "dm", placeKey: `dm_${KEVIN}_aria`, fromName: "Kevin", count: 2, preview: "quick question" });
-    // A user who keeps writing every 10 s is answered after 180 s at the latest.
-    for (let index = 0; index < 18; index += 1) {
+    // A user who keeps writing every 2 s is answered after 60 s at the latest.
+    for (let index = 0; index < 31; index += 1) {
       await dm(`msg ${index}`);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(2_000);
     }
     await w.cast.settle();
     expect((await queued(w, "aria")).immediate.length).toBe(2);
+  });
+});
+
+describe("typing-aware holds (§4.2)", () => {
+  /** Posts a guild message and runs it through intake without firing its burst. */
+  async function post(w: LifeWorld, text: string, o: Parameters<LifeWorld["discord"]["post"]>[2] = {}): Promise<RawDiscordMessage> {
+    const message = w.discord.post(ROOM, text, o);
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria", "mina"], authorIsWaifu: false, raw: message });
+    return message;
+  }
+  const typing = (w: LifeWorld, userId: string, bot = false) => w.cast.onTyping({ kind: "guild", guildId: GUILD, channelId: CHANNEL, userId, bot });
+  const dmTyping = (w: LifeWorld, userId: string, bot = false) => w.cast.onTyping({ kind: "dm", waifuId: "aria", botId: "aria-bot", userId, bot });
+  async function advance(w: LifeWorld, ms: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
+    await w.cast.settle();
+  }
+  async function fakeTimers(): Promise<LifeWorld & { detector: ReturnType<typeof fakeDetector> }> {
+    const w = await world();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    return w;
+  }
+
+  it("a mention waits the quiet time, then wakes her; with nobody typing it is not held longer", async () => {
+    const w = await fakeTimers();
+    await post(w, `<@${ARIA_BOT}> hi`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await advance(w, 1_400);
+    expect(await reasons(w, "aria")).toEqual([]);
+    await advance(w, 200);
+    expect(await reasons(w, "aria")).toEqual(["mention"]);
+  });
+
+  it("the author typing holds the wake for 6 s per typing event; their next message ends the hold and becomes the preview (mention + follow-up = one wake)", async () => {
+    const w = await fakeTimers();
+    const ping = await post(w, `<@${ARIA_BOT}>`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await advance(w, 1_000);
+    typing(w, KEVIN);
+    // Past the 1.5 s quiet time, still inside the typing hold.
+    await advance(w, 4_000);
+    expect(await reasons(w, "aria")).toEqual([]);
+    // A second typing event extends the hold past the first one's 6 s.
+    typing(w, KEVIN);
+    await advance(w, 2_500);
+    expect(await reasons(w, "aria")).toEqual([]);
+    // The follow-up arrives: Kevin is no longer typing; the burst fires 1.5 s later.
+    const question = await post(w, "what do you think about lemon tarts?");
+    await advance(w, 1_400);
+    expect(await reasons(w, "aria")).toEqual([]);
+    await advance(w, 200);
+    const wakes = (await queued(w, "aria")).immediate;
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ reason: "mention", fromName: "Kevin", messageId: question.id, preview: "what do you think about lemon tarts?" });
+    expect(wakes[0]!.messageId).not.toBe(ping.id);
+    // The follow-up rode on the direct burst: no detector call for it.
+    expect(w.detector.calls).toEqual([]);
+    expect(await reasons(w, "mina")).toEqual([]);
+  });
+
+  it("a typing event counts for 6 s: once it lapses without a message the wake fires", async () => {
+    const w = await fakeTimers();
+    await post(w, `<@${ARIA_BOT}> hey`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await advance(w, 1_000);
+    typing(w, KEVIN);
+    await advance(w, 5_900);
+    expect(await reasons(w, "aria")).toEqual([]);
+    await advance(w, 200);
+    expect(await reasons(w, "aria")).toEqual(["mention"]);
+  });
+
+  it("a room burst is held at most 10 s from its first message, however long the author keeps typing", async () => {
+    const w = await fakeTimers();
+    await post(w, `<@${ARIA_BOT}> so`, { mentions: { [ARIA_BOT]: "Aria" } });
+    for (let index = 0; index < 4; index += 1) {
+      typing(w, KEVIN);
+      await advance(w, 2_400);
+    }
+    expect(await reasons(w, "aria")).toEqual([]);
+    typing(w, KEVIN);
+    await advance(w, 500);
+    expect(await reasons(w, "aria")).toEqual(["mention"]);
+  });
+
+  it("a DM is held while the person types, at most 60 s from their first message", async () => {
+    const w = await fakeTimers();
+    const dm = async (text: string) => {
+      const message = w.discord.post(dmOf("aria"), text);
+      await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+    };
+    await dm("hey");
+    await advance(w, 2_000);
+    dmTyping(w, KEVIN);
+    await advance(w, 5_900);
+    expect(await reasons(w, "aria")).toEqual([]);
+    await advance(w, 200);
+    expect(await reasons(w, "aria")).toEqual(["dm"]);
+    // Typing on and off for over a minute: the cap wakes her at 60 s.
+    await dm("so about that recipe");
+    for (let index = 0; index < 12; index += 1) {
+      dmTyping(w, KEVIN);
+      await advance(w, 4_900);
+    }
+    expect(await reasons(w, "aria")).toEqual(["dm"]);
+    dmTyping(w, KEVIN);
+    await advance(w, 1_300);
+    expect(await reasons(w, "aria")).toEqual(["dm", "dm"]);
+  });
+
+  it("typing by someone with no message in the burst, by a bot or by a waifu holds nothing", async () => {
+    const w = await fakeTimers();
+    await post(w, `<@${ARIA_BOT}> hi`, { mentions: { [ARIA_BOT]: "Aria" } });
+    await advance(w, 1_000);
+    typing(w, MINA_USER);
+    typing(w, MINA_BOT, true);
+    typing(w, ARIA_BOT, true);
+    // Discord marks the typist as a bot: ignored even with Kevin's id.
+    typing(w, KEVIN, true);
+    // Typing in a DM does not hold a room burst.
+    dmTyping(w, KEVIN);
+    await advance(w, 600);
+    expect(await reasons(w, "aria")).toEqual(["mention"]);
+  });
+
+  it("a waifu's message is never held, and a burst sent to the detector waits for its author's typing too", async () => {
+    const w = await fakeTimers();
+    await post(w, `<@${ARIA_BOT}> taste this`, { ...asMina, mentions: { [ARIA_BOT]: "Aria" } });
+    // Routed at once, before any timer.
+    expect(await reasons(w, "aria")).toEqual(["mention"]);
+    w.detector.answer = { choice: "waifu_1", probabilities: { waifu_1: 1 } };
+    await post(w, "anyone know a good frosting?");
+    await advance(w, 1_000);
+    typing(w, KEVIN);
+    await advance(w, 3_000);
+    expect(w.detector.calls).toEqual([]);
+    await advance(w, 3_100);
+    expect(w.detector.calls).toHaveLength(1);
   });
 });
 

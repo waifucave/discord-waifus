@@ -5,7 +5,7 @@ import { ChannelType, Client, Events, IntentsBitField, Partials } from "discord.
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { DiscordJsGateway, buildDmCommandPayloads, buildHouseCommandPayloads } from "../src/discord/client.js";
-import type { DiscordDirectMessageEvent, DiscordJsGatewayOptions } from "../src/discord/client.js";
+import type { DiscordDirectMessageEvent, DiscordJsGatewayOptions, DiscordTypingEvent } from "../src/discord/client.js";
 import type { DiscordConversationEvent } from "../src/discord/gatewayEvents.js";
 import type { DiscordBotConfig } from "../src/shared/schemas/domain.js";
 import { quietLogger } from "./contextFixtures.js";
@@ -84,7 +84,7 @@ describe("DM intents", () => {
     const fakes = fakeClients();
     const gateway = makeGateway(fakes, () => [{ botId: "aria-bot", waifuId: "aria" }]);
     await gateway.connect();
-    expect(intentsOf(fakes.options.get("aria-bot"))).toEqual(["DirectMessageReactions", "DirectMessages", "Guilds"]);
+    expect(intentsOf(fakes.options.get("aria-bot"))).toEqual(["DirectMessageReactions", "DirectMessageTyping", "DirectMessages", "Guilds"]);
     expect(fakes.options.get("aria-bot")?.partials).toEqual([Partials.Channel, Partials.Message, Partials.Reaction]);
     expect(intentsOf(fakes.options.get("mina-bot"))).toEqual(["Guilds"]);
     expect(gateway.dmIntentStatus()).toEqual([
@@ -113,6 +113,29 @@ describe("DM intents", () => {
     expect(await gateway.reconcileDmIntents()).toEqual({ relogged: ["mina-bot"] });
     expect(intentsOf(fakes.options.get("mina-bot"))).toEqual(["Guilds"]);
     expect(fakes.logins.get("aria-bot")).toBe(1);
+  });
+});
+
+describe("typing starts (Living cast §4.2)", () => {
+  it("the House bot reports room typing, a DM bot reports DM typing; ids only, from the raw packet", async () => {
+    const fakes = fakeClients();
+    const gateway = makeGateway(fakes, () => [{ botId: "aria-bot", waifuId: "aria" }]);
+    await gateway.connect();
+    expect(intentsOf(fakes.options.get("house"))).toContain("GuildMessageTyping");
+    const events: DiscordTypingEvent[] = [];
+    gateway.onTyping((event) => void events.push(event));
+    const raw = (id: string, d: Record<string, unknown>) => fakes.clients.get(id)!.emit(Events.Raw, { t: "TYPING_START", op: 0, s: 1, d });
+    raw("house", { guild_id: "100000000000000001", channel_id: "200000000000000002", user_id: "300000000000000003", timestamp: 1, member: { user: { id: "300000000000000003", bot: false } } });
+    raw("house", { guild_id: "100000000000000001", channel_id: "200000000000000002", user_id: "400000000000000005", timestamp: 1, member: { user: { id: "400000000000000005", bot: true } } });
+    raw("aria-bot", { channel_id: "700000000000000007", user_id: "300000000000000003", timestamp: 1 });
+    // Not a typing packet, and a DM packet the House bot (which has no DM intent) would never get.
+    fakes.clients.get("house")!.emit(Events.Raw, { t: "MESSAGE_CREATE", op: 0, s: 2, d: {} });
+    raw("house", { channel_id: "700000000000000007", user_id: "300000000000000003", timestamp: 1 });
+    expect(events).toEqual([
+      { kind: "guild", guildId: "100000000000000001", channelId: "200000000000000002", userId: "300000000000000003", bot: false },
+      { kind: "guild", guildId: "100000000000000001", channelId: "200000000000000002", userId: "400000000000000005", bot: true },
+      { kind: "dm", waifuId: "aria", botId: "aria-bot", userId: "300000000000000003", bot: false }
+    ]);
   });
 });
 

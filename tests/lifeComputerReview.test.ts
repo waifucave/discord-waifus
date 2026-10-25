@@ -252,6 +252,9 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     const m = w.discord.post(ROOM, "the exam went fine");
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: m.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: m });
     await w.cast.settle();
+    // Her wake waits for the burst's quiet time (§4.2): fire it now.
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
     expect(await herEntries(w, "watches.json")).toEqual([]);
     // She writes back what she read, plus a timer: refused, the file changed since her Read.
     const entries = JSON.parse(stale) as unknown[];
