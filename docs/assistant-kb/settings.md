@@ -83,7 +83,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `search.maxPerSecond` | integer 0–10 | `2` | Web searches started per second, host-wide (paced, not refused; 0 = no WebSearch). |
 | `search.maxPerDay` | integer 0–10000 | `50` | Web searches per day, host-wide (0 = no WebSearch). The optional Exa key is the `exa` provider credential, not config. |
 | `search.maxPerWaifuPerDay` | integer 0–10000 | `20` | Web searches one waifu may make per day (0 = no WebSearch). |
-| `detector.target` | string | `openrouter:cloudflare/clef` | The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:cloudflare/clef, openai:gpt-6-luna or laya:english; "" turns it off (then a first message in 10 minutes or a question wakes one waifu at random). Also GET/PUT /api/detector/config. |
+| `detector.target` | string | `openrouter:typesafe/jev-1.14` | The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:typesafe/jev-1.14, openai:gpt-6-luna or laya:english; "" turns it off (then a first message in 10 minutes or a question wakes one waifu at random). Also GET/PUT /api/detector/config. |
 | `updates.enabled` | boolean | `false` | Install newer patch releases automatically when every managed process is idle (global npm installs only). (local-only write) |
 | `updates.checkIntervalMinutes` | integer 15–1440 [minutes] | `60` | How often npm is checked for a newer patch release. (local-only write) |
 | `updates.idleMinutes` | integer 1–120 [minutes] | `5` | How long everything must be quiet before an update installs. (local-only write) |

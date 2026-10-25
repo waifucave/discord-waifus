@@ -1139,7 +1139,7 @@ repaired, as before; the point is that the repaired file is then converted.
 | `life.webFetch.maxPerWaifuPerDay` / `maxPerTurn` | 20 / 3 |
 | `life.webFetch.directMaxChars` / `maxBytes` / `timeoutMs` / `maxRedirects` / `cacheMinutes` | 2000 / 5242880 / 20000 / 5 / 15 |
 | `models.allowed` / `models.maxOutputUsdPerMTok` | §9.2 / 10 |
-| `detector.target` | the old one-shot default target |
+| `detector.target` | `openrouter:typesafe/jev-1.14` (40/40 on the addressee benchmark, 2026-10-25; Clef 36/40) |
 | `discord.debounce.dmMs` / `dmMaxWaitMs` | 15000 / 180000 |
 | `discord.dm.resumeWindowMinutes` | 60 (now the boot catch-up window) |
 | Waifu: `model`, `life.dailyBudgetUsd` (none), `dm.sleepNotice` (""), `wakeOnName` (true) | |

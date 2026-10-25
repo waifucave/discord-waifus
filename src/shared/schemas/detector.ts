@@ -11,8 +11,11 @@ export const DetectorTargetSchema = z
   .regex(/^(openai:gpt-6-luna|openrouter:[A-Za-z0-9~._\/-]+(?::free)?|laya:(english|multilingual|typed-decisions))$/)
   .refine((v) => !v.startsWith("openrouter:respan/span-"), "Yes/no-only models are not supported.");
 
-/** The old one-shot default target, kept as the detector's default (spec §11.3). */
-export const DEFAULT_DETECTOR_TARGET = "openrouter:cloudflare/clef";
+/** The detector's default target (spec §4.3): Jev scored 40/40 on the addressee benchmark. */
+export const DEFAULT_DETECTOR_TARGET = "openrouter:typesafe/jev-1.14";
+
+/** The 2.x one-shot default target; a server that still had it gets no override on upgrade (§11.2). */
+export const LEGACY_ONE_SHOT_TARGET = "openrouter:cloudflare/clef";
 
 /** A stored target: a decision API target, or "" for none. */
 export const DetectorTargetOrNoneSchema = z.union([DetectorTargetSchema, z.literal("")]);

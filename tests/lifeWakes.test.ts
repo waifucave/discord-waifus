@@ -187,7 +187,7 @@ describe("addressee detector (§4.3)", () => {
     const w = await world();
     w.detector.answer = { choice: "waifu_1", probabilities: { waifu_1: 0.9, none: 0.1 } };
     await say(w, "what do you think about lemon tarts");
-    expect(w.detector.calls[0]).toEqual({ target: "openrouter:cloudflare/clef", candidates: ["aria", "mina"] });
+    expect(w.detector.calls[0]).toEqual({ target: "openrouter:typesafe/jev-1.14", candidates: ["aria", "mina"] });
     expect(await reasons(w, "mina")).toEqual(["detector"]);
     w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
     await say(w, "so who's baking saturday");
@@ -197,7 +197,7 @@ describe("addressee detector (§4.3)", () => {
     expect((await queued(w, "aria")).immediate.length + (await queued(w, "mina")).immediate.length).toBe(2);
     const history = DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8")));
     expect(history.entries.map((entry) => entry.choice)).toEqual(["waifu_1", "anyone", "human"]);
-    expect(history.entries[0]).toMatchObject({ channelId: CHANNEL, woke: ["mina"], probabilities: { waifu_1: 0.9 }, target: "openrouter:cloudflare/clef" });
+    expect(history.entries[0]).toMatchObject({ channelId: CHANNEL, woke: ["mina"], probabilities: { waifu_1: 0.9 }, target: "openrouter:typesafe/jev-1.14" });
     expect(history.entries[2]!.woke).toBeUndefined();
   });
 

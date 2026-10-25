@@ -10,7 +10,7 @@
 
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_DETECTOR_TARGET, DetectorTargetSchema } from "../../shared/schemas/detector.js";
+import { DetectorTargetSchema, LEGACY_ONE_SHOT_TARGET } from "../../shared/schemas/detector.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
 import type { MigrationStepOutcome } from "../migrations.js";
 import { archivePath } from "./livingCastArchive.js";
@@ -50,7 +50,7 @@ export async function migrateLivingCastServerFields(dataRoot: string): Promise<M
       server.orchestratorMode === ONE_SHOT_MODE &&
       server.detector === undefined &&
       typeof target === "string" &&
-      target !== DEFAULT_DETECTOR_TARGET &&
+      target !== LEGACY_ONE_SHOT_TARGET &&
       DetectorTargetSchema.safeParse(target).success
     ) {
       server.detector = { target };
