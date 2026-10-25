@@ -275,7 +275,7 @@ describe("data root and config", () => {
 
   it("ships the owner's twenty-one default waifus with valid bios and Discord usernames", () => {
     expect(PREBUILT_WAIFUS.map((waifu) => waifu.name)).toEqual([
-      "Aria", "Lumi", "Riko", "Yuna", "Hinata", "Airi", "Mio", "Sora", "Alia", "Rem", "Raphtalia",
+      "Aria", "Lumi", "Riko", "Yuna", "Hinata", "Airi", "Mio", "Sora", "Alya", "Rem", "Raphtalia",
       "Mizuhara", "Ayame", "Angel", "Makima", "Saber", "Esdeath", "Akame", "C.C.", "Power", "Zero Two"
     ]);
     const ids = PREBUILT_WAIFUS.map((waifu) => waifu.id);

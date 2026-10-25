@@ -1281,7 +1281,7 @@ a waifu. A seeded waifu has no model and no bot until the owner gives her one.
 | Airi | stubbornly sweet amigurumi crocheter and capsule-toy collector | chatty | 23:30–07:30 | on |
 | Mio | mysterious tarot and moon-phase reader who studies statistics | terse | 03:00–11:00 | on |
 | Sora | aloof film photographer and night skater who answers with songs | terse | 02:00–10:00 | on |
-| Alia | dramatic drama-watcher who narrates the server like a soap opera | expressive | 01:00–09:30 | on |
+| Alya | dramatic drama-watcher who narrates the server like a soap opera | expressive | 01:00–09:30 | on |
 | Rem | deadpan insomniac restoring old consoles and hunting lost media | terse | 04:00–11:30 | off |
 | Raphtalia | tsundere-ish gacha player who "doesn't care" about her pity | chatty | 01:00–08:30 | on |
 | Mizuhara | chaotic kitchen scientist with numbered experiment logs | expressive | 00:00–07:30 | on |
@@ -1302,7 +1302,7 @@ she is, her obsessions and hooks for search, reminders and watches, how she talk
 how she treats quiet people, what she won't do, one soft spot or contradiction and a tic of her
 own), a verbosity, a sleep window and up to two busy blocks, spread across the day so the cast
 never goes quiet at once. `wakeOnName` is off for names that are common words in chat: Angel,
-Power, Saber, and Rem ("REM sleep", the band); Sora, Mio, Alia and the rest keep it on. Name wakes
+Power, Saber, and Rem ("REM sleep", the band); Sora, Mio, Alya and the rest keep it on. Name wakes
 match whole words after NFKC and case folding, so "C.C." wakes on "c.c." (not "cc" or "C.C"
 without the last dot) and "Zero Two" on "zero two" with any spacing (not "zerotwo" or "02"). Each
 entry also carries a `bio` (Discord "About Me", ≤190 characters) and a styled Discord `username`
