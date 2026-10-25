@@ -313,6 +313,22 @@ export type DiscordBotsFile = {
   waifus: DiscordBotConfig[];
 };
 
+/** `PUT /api/discord-bots`: send only what changes (`revision` makes it conditional). */
+export type UpdateDiscordBotsBody = {
+  revision?: number;
+  orchestrator?: DiscordBotConfig | null;
+  waifus?: DiscordBotConfig[];
+};
+
+/** `POST /api/waifus/:id/link-bot`. */
+export type WaifuBotLink = {
+  linked: boolean;
+  botId: string;
+  applicationId: string | null;
+  tokenConfigured: boolean;
+  next: string;
+};
+
 export type UpdateAssistantConfigBody = z.input<typeof UpdateAssistantConfigBodySchema>;
 
 export type ProviderCredentialStatus =

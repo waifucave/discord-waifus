@@ -40,6 +40,8 @@ import type {
   WakeResult,
   WatchesResponse,
   DiscordBotsFile,
+  UpdateDiscordBotsBody,
+  WaifuBotLink,
   ModelsResponse,
   OperationAccepted,
   PairInvitation,
@@ -384,8 +386,12 @@ export const api = {
     request<{ accepted: boolean; message: string }>("POST", "/api/cache/ocr/clear"),
   discordBots: (signal?: AbortSignal) =>
     request<DiscordBotsFile>("GET", "/api/discord-bots", { signal }),
-  putDiscordBots: (bots: DiscordBotsFile) =>
+  /** Entries merge by id and a stored token is kept when none is sent; `waifus` replaces the whole array. */
+  putDiscordBots: (bots: UpdateDiscordBotsBody) =>
     request<DiscordBotsFile>("PUT", "/api/discord-bots", { body: bots }),
+  /** Ensures her bot entry (id = her id), sets its Application ID when given and sets her `botId`. */
+  linkWaifuBot: (waifuId: string, body: { applicationId?: string } = {}) =>
+    request<WaifuBotLink>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/link-bot`, { body }),
   // Models (Living cast §9.2): the curated list every model picker offers.
   models: (signal?: AbortSignal) => request<ModelsResponse>("GET", "/api/models", { signal }),
   assistantConfig: (signal?: AbortSignal) =>
