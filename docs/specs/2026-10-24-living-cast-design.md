@@ -88,13 +88,14 @@ are archived by migration (§11.2).
 | `everyone` | `@everyone` / `@here` in a channel where she is cast | Direct. |
 | `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. |
 | `dm` | A DM to her bot, 15 s after the user's last message | Timer resets on each message; capped at `discord.debounce.dmMaxWaitMs` (default 180 s). |
-| `detector` | The addressee detector chose her, or chose "anyone" and the draw picked her | §4.3. |
+| `detector` | The addressee detector chose her, chose "anyone" and the draw picked her, or chose "all" | §4.3. An `all` wake carries `forAll` and reads "for all of you" (§4.7). |
 | `reminder` | One of her `schedule_wake` entries came due | Carries her own note. |
 | `morning` | Her sleep window ended with deferred wakes | One batched summary (§4.7). |
 | `owner` | `/wake`, the dashboard or the CLI | Carries the owner's note. Bypasses sleep and budget (§4.5). |
 
-**Staggering.** When one message wakes several waifus through `everyone` or a shared `role`, each
-is woken after a random 0–20 s delay so later ones can see earlier replies.
+**Staggering.** When one message wakes several waifus through `everyone` or a shared `role`, or a
+burst wakes several through the detector's `all`, each is woken after a random 0–20 s delay so
+later ones can see earlier replies (they may not; that is accepted).
 
 **Waifu authors.** Messages written by other waifus only wake her through `mention`, `role`,
 reply-to-her and `watch`. They never reach the detector, and the `name` rule never applies to
@@ -119,7 +120,7 @@ message in it is, also a plain message that arrives after the mention within the
 
 One wake per message (owner decision D-c): when a waifu's watch fired for any message in the
 burst, the detector skips her for that burst. `waifu_<i>` naming her wakes nobody; the `anyone`
-draw leaves her out; other waifus can still be picked. A burst whose whole cast was woken by
+draw and `all` leave her out; other waifus can still be picked. A burst whose whole cast was woken by
 watches never reaches the detector.
 
 Edits: an edit that adds a mention of her to a human message less than 2 minutes old counts as a
@@ -129,17 +130,29 @@ Edits: an edit that adds a mention of her to a human message less than 2 minutes
 
 One question about the newest human burst in a channel: who is it for?
 
-- **Choices**: `waifu_<i>` for each cast waifu in that channel (at most 7 for Laya, 17 otherwise),
-  `human` (addressed to another person), `anyone` (open to the room), `none` (not conversational:
-  a bot command, a link dump, a reaction-only line).
+- **Choices**: `waifu_<i>` for each cast waifu in that channel (at most 6 for Laya, 16 otherwise,
+  so a question has at most 10 options for Laya, whose calibration warns from 11, and 20 elsewhere,
+  the most a decision backend was seen to accept), `human` (addressed to another person), `anyone`
+  (open to the room: one cast member answering is enough, "anyone know a good movie?"), `all` (the
+  whole cast here, or several of them together: "what can you all do", "you three"), `none` (not
+  conversational: a bot command, a link dump, a bare emoji or reaction-only line).
+- **Instructions** (owner-reviewed in the `detector-state` golden) also say: when a cast member has
+  just been talking with that person, an unnamed follow-up (a short reply, thanks, "nice to meet
+  you too", "can you do X?") is for her, not `anyone`; a Discord reply is for the author it
+  answers; a bare emoji, laugh or reaction with no question is `none` unless clearly aimed at
+  someone.
 - **State** (JSON, the one-shot state shape trimmed): `date`, `now`, the cast (`option`, `id`,
   `names`, persona ≤300 chars) and `chronologicalChat` with the last 12 messages (OCR text
-  included, at most 8,000 characters, newest kept).
+  included; `replyTo` with the author's name when a message is a Discord reply, "someone" for a
+  forgotten author; at most 8,000 characters, newest kept).
 - **Mapping**:
   - `waifu_<i>` → wake her (`detector`).
   - `anyone` → draw one cast waifu, weighted by availability (awake and free ×3, busy ×1, asleep
     or over budget ×0) and by time since she last spoke in that place (longer is likelier). An
     empty draw ends there.
+  - `all` → wake every cast waifu in that channel (not only the question's candidates) except the
+    ones a watch already woke for the burst, with `forAll`; several are staggered (§4.1). The
+    router's guards apply to each as usual (an asleep or over-budget one is deferred).
   - `human` / `none` → nothing.
 - **Targets**: the existing native-choice catalog and protocol (OpenAI decisions, OpenRouter
   decision models, local Laya). One global target `detector.target`, plus a per-server override.
@@ -150,8 +163,9 @@ One question about the newest human burst in a channel: who is it for?
 - **History**: the last 300 results per guild in `user/servers/<guildId>/detector-history.json`
   (`{at, channelId, burstMessageIds, choice, probabilities, woke?}`).
 - **Benchmark**: `scripts/decision-benchmark/` is repurposed with new case groups
-  (addressed-by-name, reply-to-waifu, human-to-human, open question, link dump, multilingual,
-  ambiguous), measuring exact-choice accuracy, calibration (Brier, ECE) and latency per target.
+  (addressed-by-name, reply-to-waifu, human-to-human, open question, whole cast, follow-up, link
+  dump, multilingual, ambiguous), measuring exact-choice accuracy, calibration (Brier, ECE) and
+  latency per target.
 
 ### 4.4 Guards
 
@@ -199,7 +213,7 @@ Availability (`waifu.availability.sleep`, busy blocks) stays as configured today
 ### 4.6 Wake queue
 
 - One persistent queue per waifu: `user/waifus/<id>/life/wakes.json`.
-  - `immediate`: `[{id, reason, placeKey?, fromUserId?, messageId?, preview?, note?, at}]`, at
+  - `immediate`: `[{id, reason, placeKey?, fromUserId?, messageId?, preview?, note?, forAll?, at}]`, at
     most 200; beyond that, entries for the same place merge into counters.
   - `deferred`: per-place counters (`{placeKey → {mentions, messages, dms, detector, fromUserIds}}`)
     plus the full list of deferred reminders and watch matches with their notes. Never dropped.
@@ -217,8 +231,8 @@ One text block in a user turn, followed by the time line (§5.4):
 
 ```
 <notifications>
-- mention · Bake Club › #general · from Kevin · 3 unread · "aria are you coming saturday? we need someo…"
-- dm · Kevin · 2 unread · "hey quick question about the recipe you…"
+- mention · Bake Club › #general · from Kevin · 3 unread · #k3 "aria are you coming saturday? we need someo…"
+- dm · Kevin · 2 unread · #b0 "hey quick question about the recipe you…"
 - reminder · "ask Kevin how the exam went" (you set this Tue 18:00)
 - watch · Bake Club › #recipes · "brownie" · from Mina · "anyone have a good brownie rec…" · your note: "Mina wanted brownie tips"
 </notifications>
@@ -227,6 +241,13 @@ One text block in a user turn, followed by the time line (§5.4):
 - Preview: the triggering message rendered as a transcript body (mentions as names, attachments as
   `[image]` / `[file: …]`), first 60 characters, then `…`.
 - `unread`: messages in that place newer than the higher of her read cursor and the forget floor.
+- Ref: the previewed message's ref goes in front of its preview (`#k3 "…"`, as in a chat line), so
+  she can `reply_to` it without reading first. It is assigned when the block is rendered, together
+  with the refs of the messages before it (from the buffer and the latest page, served from the
+  buffer when the conversation is trusted; a message found in neither gets no ref), so refs stay
+  in message order; a send likewise gives the messages before it their refs before its own.
+- Labels: each reason has one label (`mention`, `your name`, `maybe for you` for `detector`, …);
+  a `detector` wake with `forAll` reads `for all of you`.
 - `morning`:
 
 ```
@@ -515,7 +536,7 @@ read_messages({ place: string, limit?: number = 15 (1–50), before?: string /* 
   `life.maxInlineImageBytesPerEpoch` (12 MiB raw) allow; every other occurrence renders as
   `[image: <ocr text>]` or `[image]`. The decided mode is stored in the tool result (§5.3).
 - Refs: `src/discord/refStore.ts` (refs.json plus its lock) is the only writer; `read_messages`,
-  previews and notices assign refs in message-id order. Refs older than 10,000 messages or 30 days
+  notifications (§4.7), sends and notices assign refs in message-id order. Refs older than 10,000 messages or 30 days
   in that place are pruned; a pruned or unknown ref returns `error: message too old`.
 - Source: a new stateless `ConversationMessageCache.readPage({conversation, beforeId?, limit})`. It
   serves from the buffer when the conversation is trusted and the buffer covers the page, otherwise
@@ -545,6 +566,19 @@ send_message({ place: string, text: string (1–2000 chars), reply_to?: string /
   never DM-eligible either.
 - Shows typing in that place for `typingDelayMs(text)` (30 ms per character, 0.6–4.5 s) before
   sending; the tool call takes that long.
+- **Typing while she works** (`src/life/typing.ts`, `TypingKeeper`, one per life): during a turn
+  her bot shows typing in the place of the turn's first wake that has one (reminders and `morning`
+  have none), refreshed every 8 s (Discord clears it after about 10 s). A direct wake (`mention`,
+  reply-to-her, `name`, `dm`, an owner wake with a place) starts it at turn start. An uncertain
+  one (`detector`, `watch`, `everyone`, a shared `role`) starts it only once she commits: a call
+  other than `ReadMessages` after her first `ReadMessages` in the turn, from the moment that call
+  starts streaming (a `SendMessage`'s text streams inside it), or when it runs on a route that
+  streams no call start. Plain streamed text is her own thoughts and starts nothing; reading alone
+  never shows typing. It stops for good in a place once she sent there, and at turn end, abort,
+  `stop()` and before a mid-turn compaction; maintenance and compaction sessions never type. A
+  send to another place types there as above. Typing comes only from her own bot (a guild place
+  needs her `botId`; a DM place must be hers); a waifu without one shows nothing. Failures are
+  warnings at most once a minute per place and never affect the turn.
 - Mentions: `<@Name>` resolves through `denormalizeModelContentForDiscord` and pings only people
   present in that place. `@everyone`, `@here` and role pings are neutralised.
 - Deterministic outbound filter (kept from `outputValidator.ts`): strips a leading copied
@@ -1685,8 +1719,11 @@ minute, and at every turn start. Writes, edits, `rm` and `mv` of it are refused.
 ### 16.7 Harness changes (§8)
 
 Block A's `<life>` keeps its meaning; the tool sentences become:
-- Read the conversation with ReadMessages before you reply; files people send are saved in `/tmp`
-  for a week; open them with Read.
+- Notifications come with a short preview and its ref. When the preview alone isn't enough, read
+  the conversation with ReadMessages before you reply; once she has read it and sent, she is done
+  unless she expects something new (no re-reading the room right after a send just to confirm).
+  "maybe for you" is only a guess: if the room shows it's meant for someone else, she lets it be.
+  Files people send are saved in `/tmp` for a week; open them with Read.
 - Only SendMessage reaches people (it can attach files); React adds a reaction.
 - You have your own folder (your home). Keep notes there like a diary, as soon as you learn
   something; `MEMORY.md` is your index, one line per note. Your memory of today is summarised later

@@ -1,0 +1,86 @@
+// "Typing…" while she works (Living cast spec §6.3): one keeper per life shows her bot typing in the
+// place of the wake that started the turn, refreshed every 8 s (Discord clears it after about 10 s)
+// until she sends there or the turn ends. A direct wake starts it at turn start; an uncertain one
+// (detector, watch, @everyone, a shared role) only once she commits: any call other than
+// ReadMessages after her first ReadMessages, from the moment it starts streaming (a SendMessage's
+// reply text streams inside the call). Plain text is her own thoughts and commits nothing. Never in
+// maintenance or compaction (they never use a keeper; a mid-turn compaction stops it). A waifu without her own bot shows nothing; a failure is
+// a warning at most once a minute and never touches the turn.
+
+import { parseConversationKey } from "../orchestration/context/keys.js";
+import type { Wake, WakeReason } from "../shared/schemas/life.js";
+import type { LifeDeps } from "./deps.js";
+
+export const TYPING_REFRESH_MS = 8_000;
+const WARN_EVERY_MS = 60_000;
+
+/** Wakes that show typing from the turn's start: someone spoke to her (or the owner woke her). */
+const TYPING_DIRECT: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner"]);
+
+/** The place typing would show in for a turn's wakes, and whether it starts at once. */
+export function typingPlan(wakes: readonly Wake[]): { placeKey: string; immediate: boolean } | undefined {
+  const first = wakes.find((wake) => wake.placeKey !== undefined && wake.reason !== "reminder" && wake.reason !== "morning");
+  if (!first?.placeKey) return undefined;
+  return { placeKey: first.placeKey, immediate: (first.reasons ?? [first.reason]).some((reason) => TYPING_DIRECT.has(reason)) };
+}
+
+export class TypingKeeper {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private placeKey: string | undefined;
+  /** Places she sent to this turn: typing never comes back there. */
+  private readonly done = new Set<string>();
+  private warnedAt = -Infinity;
+
+  constructor(
+    private readonly deps: Pick<LifeDeps, "discord" | "logger" | "now">,
+    private readonly waifu: { id: string; botId?: string | undefined }
+  ) {}
+
+  get active(): string | undefined {
+    return this.placeKey;
+  }
+
+  /** Shows typing in `placeKey` now and keeps it alive (a no-op when it already is, or she sent there). */
+  start(placeKey: string): void {
+    if (this.placeKey === placeKey || this.done.has(placeKey)) return;
+    this.stop();
+    const place = parseConversationKey(placeKey);
+    if (!place) return;
+    if (place.kind === "guild" && !this.waifu.botId) return;
+    if (place.kind === "dm" && place.waifuId !== this.waifu.id) return;
+    this.placeKey = placeKey;
+    this.send();
+    this.timer = setInterval(() => this.send(), TYPING_REFRESH_MS);
+    this.timer.unref?.();
+  }
+
+  /** She sent in `placeKey`: typing stops there for the rest of the turn. */
+  sent(placeKey: string): void {
+    this.done.add(placeKey);
+    if (this.placeKey === placeKey) this.stop();
+  }
+
+  /** Stops refreshing (the turn ended, was aborted, or the life stopped). */
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    this.placeKey = undefined;
+  }
+
+  private send(): void {
+    const key = this.placeKey;
+    const place = key ? parseConversationKey(key) : undefined;
+    const discord = this.deps.discord();
+    if (!place || !discord) return;
+    const sending =
+      place.kind === "dm"
+        ? discord.sendDirectTyping?.({ waifuId: this.waifu.id, userId: place.userId })
+        : discord.sendTyping({ guildId: place.guildId, channelId: place.channelId, senderBotId: this.waifu.botId! });
+    void Promise.resolve(sending).catch((error: unknown) => {
+      const now = this.deps.now().getTime();
+      if (now - this.warnedAt < WARN_EVERY_MS) return;
+      this.warnedAt = now;
+      this.deps.logger.warn("Could not show typing", { category: "life", waifuId: this.waifu.id, message: error instanceof Error ? error.message : String(error) });
+    });
+  }
+}

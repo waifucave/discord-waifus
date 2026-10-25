@@ -55,7 +55,7 @@ roles/watches map straight to wakes, everything else goes to the addressee detec
 per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
 (`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
-`life.maxConcurrentTurns` slot; notifications, the tool loop, the unsent-reply check, caps; an
+`life.maxConcurrentTurns` slot; notifications (with the previewed message's ref), the tool loop, the unsent-reply check, caps, her bot typing while she works (`typing.ts`, spec §6.3); an
 interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
 each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` lease and counts in
 `queues.active`) → `ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks

@@ -37,6 +37,7 @@ function mergeInto(existing: Wake, wake: Wake): Wake {
     ...(wake.preview ? { preview: wake.preview } : {}),
     ...(wake.fromUserId ? { fromUserId: wake.fromUserId } : {}),
     ...(wake.fromName ? { fromName: wake.fromName } : {}),
+    ...(wake.forAll ? { forAll: true } : {}),
     at: wake.at
   };
 }

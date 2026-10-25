@@ -6,7 +6,7 @@ import { AddresseeDetector } from "../src/life/detector/decider.js";
 import { decisionRequest } from "../src/life/detector/protocol.js";
 import type { UsageLedgerLine } from "../src/orchestration/usageLedger.js";
 
-const GROUPS = ["addressed_by_name", "reply_to_waifu", "human_to_human", "open_question", "link_dump", "multilingual", "ambiguous"];
+const GROUPS = ["addressed_by_name", "reply_to_waifu", "human_to_human", "open_question", "whole_cast", "follow_up", "link_dump", "multilingual", "ambiguous"];
 
 describe("addressee cases", () => {
   it("cover the spec's groups with unique ids and labels every target can answer", () => {

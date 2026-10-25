@@ -5,6 +5,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
+import { renderNotifications } from "../src/life/notifications.js";
 import { newWakeId } from "../src/life/wakeQueue.js";
 import { updateDmLimit } from "../src/orchestration/dm/dmStore.js";
 import { DetectorHistoryFileSchema } from "../src/shared/schemas/detector.js";
@@ -39,14 +40,16 @@ const TWO = [
   { id: "mina", name: "Mina", botId: "mina-bot" }
 ];
 
-type FakeDetector = { calls: Array<{ target: string; candidates: string[] }>; answer: { choice: string; probabilities: Record<string, number> } | Error };
+type FakeDetector = { calls: Array<{ target: string; candidates: string[] }>; states: string[]; answer: { choice: string; probabilities: Record<string, number> } | Error };
 
-function fakeDetector(): FakeDetector & { decide: (input: { target: string; question: { candidates: Array<{ waifuId: string }> } }) => Promise<{ choice: string; probabilities: Record<string, number> }>; close(): void } {
+function fakeDetector(): FakeDetector & { decide: (input: { target: string; question: { state: string; candidates: Array<{ waifuId: string }> } }) => Promise<{ choice: string; probabilities: Record<string, number> }>; close(): void } {
   const detector = {
     calls: [] as FakeDetector["calls"],
+    states: [] as string[],
     answer: { choice: "none", probabilities: { none: 1 } } as FakeDetector["answer"],
-    async decide(input: { target: string; question: { candidates: Array<{ waifuId: string }> } }) {
+    async decide(input: { target: string; question: { state: string; candidates: Array<{ waifuId: string }> } }) {
       detector.calls.push({ target: input.target, candidates: input.question.candidates.map((candidate) => candidate.waifuId) });
+      detector.states.push(input.question.state);
       if (detector.answer instanceof Error) throw detector.answer;
       return detector.answer;
     },
@@ -196,6 +199,50 @@ describe("addressee detector (§4.3)", () => {
     expect(history.entries.map((entry) => entry.choice)).toEqual(["waifu_1", "anyone", "human"]);
     expect(history.entries[0]).toMatchObject({ channelId: CHANNEL, woke: ["mina"], probabilities: { waifu_1: 0.9 }, target: "openrouter:cloudflare/clef" });
     expect(history.entries[2]!.woke).toBeUndefined();
+  });
+
+  it("all wakes the whole cast, staggered, as 'for all of you'; a watched waifu is skipped (D-c)", async () => {
+    const w = await world({ options: { random: () => 0.5 } });
+    const routes: Array<{ waifuId: string; stagger: boolean }> = [];
+    const route = w.cast.router.route.bind(w.cast.router);
+    vi.spyOn(w.cast.router, "route").mockImplementation((waifuId, wake, context = {}) => {
+      routes.push({ waifuId, stagger: context.stagger === true });
+      return route(waifuId, wake, { ...context, stagger: false });
+    });
+    w.detector.answer = { choice: "all", probabilities: { all: 0.8, anyone: 0.2 } };
+    const asked = await say(w, "what can you all do");
+    expect(routes).toEqual([
+      { waifuId: "aria", stagger: true },
+      { waifuId: "mina", stagger: true }
+    ]);
+    const [aria] = (await queued(w, "aria")).immediate;
+    expect(aria).toMatchObject({ reason: "detector", forAll: true, messageId: asked.id });
+    expect(await reasons(w, "mina")).toEqual(["detector"]);
+    const view = { timeZone: "UTC", handle: () => "bake-club/#general", unread: () => undefined, ref: () => "a7" };
+    expect(renderNotifications({ wakes: [aria!] }, view)).toContain('- for all of you · bake-club/#general · from Kevin · #a7 "what can you all do"');
+    const history = DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8")));
+    expect(history.entries.at(-1)).toMatchObject({ choice: "all", woke: ["aria", "mina"] });
+    // Her watch already woke Aria for the burst: only Mina gets the detector wake, never staggered alone.
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "movies", when: [{ place: "bake-club/#general", words: ["movie"] }] }]));
+    routes.length = 0;
+    await say(w, "you two pick a movie for tonight");
+    expect(routes).toEqual([
+      { waifuId: "aria", stagger: false },
+      { waifuId: "mina", stagger: false }
+    ]);
+    expect(await reasons(w, "aria")).toEqual(["detector", "watch"]);
+    expect(await reasons(w, "mina")).toEqual(["detector", "detector"]);
+  });
+
+  it("the state marks a Discord reply with the author it answers", async () => {
+    const w = await world();
+    const hers = w.discord.post(ROOM, "hi Kevin, nice to meet you!", { authorId: MINA_BOT, authorName: "Mina", bot: true });
+    await say(w, "lol", { replyTo: hers.id });
+    await say(w, "nice to meet you too", { replyTo: (await say(w, "hello all")).id });
+    const chat = JSON.parse(w.detector.states.at(-1)!).chronologicalChat as Array<{ text: string; replyTo?: string }>;
+    expect(chat.find((line) => line.text === "nice to meet you too")).toMatchObject({ replyTo: "Kevin" });
+    expect(chat.find((line) => line.text === "lol")).toMatchObject({ replyTo: "Mina" });
+    expect(chat.find((line) => line.text === "hello all")).not.toHaveProperty("replyTo");
   });
 
   it("direct reasons anywhere in the burst skip the detector; a server override and no target are honoured", async () => {

@@ -13,7 +13,8 @@ import { ModelClient } from "../src/models/client.js";
 import { ProviderAlerts } from "../src/orchestration/providerAlerts.js";
 import type { ProviderEvent } from "@yanlinglabs/winter-provider-runtime";
 import { ANTHROPIC_MESSAGES, CHAT_COMPLETIONS, errorTurn, fakeAdapter, fakeWinter, hangingTurn, OPENAI_RESPONSES, textTurn } from "./modelFakes.js";
-import { closeWorlds, KEVIN, lifeWorld, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { readConversationRefs } from "../src/discord/refStore.js";
+import { closeWorlds, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -133,6 +134,22 @@ describe("turn endings", () => {
     const first = JSON.stringify(w.anthropic.calls[0]!.request.messages);
     expect(first).toContain("dm/someone");
     expect(first).not.toContain("dm_300000000000000098_aria");
+  });
+
+  it("a notification carries the message's ref; refs stay in message order through her send (§4.7)", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: script(toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "right here!", reply_to: "#a1" } }]), textTurn("(sent)"))
+    });
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    w.discord.post(ROOM, "hi aria");
+    const asked = w.discord.post(ROOM, "where did you go");
+    await enqueueWake(w.storage, "aria", { id: "w-ref", reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: asked.id, preview: "where did you go", at: w.clock.now().toISOString() });
+    await w.cast.life("aria").runNow();
+    expect(JSON.stringify(w.anthropic.calls[0]!.request.messages)).toContain('from Kevin · #a1 \\"where did you go\\"');
+    expect(w.discord.sent.at(-1)).toMatchObject({ replyToMessageId: asked.id });
+    expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain("sent #a2");
+    const refs = await readConversationRefs(w.storage, ROOM_KEY as never);
+    expect(Object.values(refs.refs).sort()).toEqual(["a0", "a1", "a2"]);
   });
 
   it("a direct wake folded in mid-turn makes the turn direct: the unsent-reply check runs (I1)", async () => {

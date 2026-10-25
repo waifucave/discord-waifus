@@ -490,7 +490,15 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   turn.sentPlaces.add(place.placeKey);
   turn.sends = (turn.sends ?? 0) + 1;
   deps.notices?.clear(`no-bot:${waifu.id}`);
-  const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [messageId], now);
+  // The messages before hers without a ref get theirs first (the buffer and one page before it,
+  // served from the buffer when the conversation is trusted), so her send never takes a ref ahead
+  // of a message written before it (refs stay in message order, §4.7).
+  const dmFloor = place.kind === "dm" ? await readDmFloor(deps.storage, place.userId!, waifu.id).catch(() => undefined) : undefined;
+  const earlier = await deps.conversations.readPage({ conversation: place.ref, beforeId: messageId, limit: 50 }).catch(() => ({ messages: [] as RawDiscordMessage[] }));
+  const before = [...deps.conversations.bufferedMessages(place.ref), ...earlier.messages]
+    .filter((message) => compareIds(message.id, messageId) < 0 && aboveFloor(message.id, dmFloor))
+    .map((message) => message.id);
+  const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [...before, messageId], now);
   await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
   // A room's handle lets the dashboard name the place; a DM's handle would name the person.
   deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });

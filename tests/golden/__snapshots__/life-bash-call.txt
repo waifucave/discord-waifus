@@ -1,7 +1,7 @@
 === 0 user ===
 --- text ---
 <notifications>
-- mention · bake-club/#general · from Kevin · "<@Aria> kevin passed his exam!!"
+- mention · bake-club/#general · from Kevin · #a1 "<@Aria> kevin passed his exam!!"
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00 · awake]
@@ -23,6 +23,6 @@ changed: ~/people/kevin.md
 {"place":"bake-club/#general","text":"KEVIN!! knew you'd pass"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-sent #a0
+sent #a2
 --- text ---
 [Sat 24 Oct 14:00 · awake]
