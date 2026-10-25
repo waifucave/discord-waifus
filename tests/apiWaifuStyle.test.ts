@@ -46,7 +46,7 @@ async function makeAppWithLogger() {
 }
 
 describe("waifu style fields", () => {
-  it("creates with defaults and round-trips verbosity/customInstructions/scheduleInPrompt", async () => {
+  it("creates with defaults and round-trips customInstructions/scheduleInPrompt", async () => {
     const { app } = await makeAppWithLogger();
     try {
       const created = await app.inject({
@@ -55,23 +55,21 @@ describe("waifu style fields", () => {
         payload: { id: "styled", name: "Styled", displayName: "Styled" }
       });
       expect(created.statusCode).toBe(201);
-      expect(created.json()).toMatchObject({ verbosity: "terse", customInstructions: "", scheduleInPrompt: true });
+      expect(created.json()).toMatchObject({ customInstructions: "", scheduleInPrompt: true });
 
       const put = await app.inject({
         method: "PUT",
         url: "/api/waifus/styled",
-        payload: { revision: 0, verbosity: "expressive", customInstructions: "Never use emoji.", scheduleInPrompt: false }
+        payload: { revision: 0, customInstructions: "Never use emoji.", scheduleInPrompt: false }
       });
       expect(put.statusCode).toBe(200);
       expect(put.json()).toMatchObject({
-        verbosity: "expressive",
         customInstructions: "Never use emoji.",
         scheduleInPrompt: false
       });
 
       const get = await app.inject({ method: "GET", url: "/api/waifus/styled" });
       expect(get.json()).toMatchObject({
-        verbosity: "expressive",
         customInstructions: "Never use emoji.",
         scheduleInPrompt: false
       });
@@ -90,7 +88,6 @@ describe("waifu style fields", () => {
           id: "keep",
           name: "Keep",
           displayName: "Keep",
-          verbosity: "chatty",
           customInstructions: "Speak softly.",
           scheduleInPrompt: false
         }
@@ -103,7 +100,6 @@ describe("waifu style fields", () => {
       expect(renamed.statusCode).toBe(200);
       expect(renamed.json()).toMatchObject({
         displayName: "Kept",
-        verbosity: "chatty",
         customInstructions: "Speak softly.",
         scheduleInPrompt: false
       });
@@ -112,16 +108,10 @@ describe("waifu style fields", () => {
     }
   });
 
-  it("rejects an invalid verbosity and customInstructions over 4000 characters; accepts exactly 4000", async () => {
+  it("rejects customInstructions over 4000 characters; accepts exactly 4000", async () => {
     const { app } = await makeAppWithLogger();
     try {
       await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "lim", name: "Lim", displayName: "Lim" } });
-      const badVerbosity = await app.inject({
-        method: "PUT",
-        url: "/api/waifus/lim",
-        payload: { revision: 0, verbosity: "loud" }
-      });
-      expect(badVerbosity.statusCode).toBe(400);
       const tooLong = await app.inject({
         method: "PUT",
         url: "/api/waifus/lim",

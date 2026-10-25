@@ -15,9 +15,6 @@ Everything configurable on a character: persona, style, model, schedule, DMs.
 - `botId` — which Discord bot entry (Settings → App → Discord bots) she posts with (without one she cannot post).
 - `username`, `bio`, `nicknames` — her own bot's Discord profile (see "Discord profile" below).
 - `availability` — optional sleep window and busy blocks.
-- `verbosity` — `terse` (default; one short line), `chatty` (one to three lines) or `expressive`
-  (up to a short paragraph). One setting drives the prompt wording, the length validator and the
-  message splitter, so use this instead of writing length rules into the persona.
 - `customInstructions` — optional free text (max 4000 characters, default empty) appended to her
   prompt after the persona, for extra behaviour rules that don't belong in the character sketch.
 - `scheduleInPrompt` — boolean, default true. When false, her schedule (what she is doing right
@@ -77,7 +74,8 @@ ever sent inline, larger ones become their OCR text or `[image]`.
 ## Customizing the prompt
 
 The prompt layout editor was removed: the prompt structure is fixed. Customize a waifu through the
-persona, `verbosity` and `customInstructions` (plus `scheduleInPrompt`). Existing waifus were
+persona and `customInstructions` (plus `scheduleInPrompt`). How long and how she writes belongs in
+the persona; the reply style setting (`verbosity`) was removed on 2026-10-25 and is ignored if sent. Existing waifus were
 migrated: a disabled schedule block became `scheduleInPrompt: false`, and any other layout choice
 was dropped. API clients may still send `promptLayout` for one release; it is ignored.
 

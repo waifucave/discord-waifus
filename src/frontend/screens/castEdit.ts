@@ -19,7 +19,6 @@ const EDITABLE = [
   "bio",
   "nicknames",
   "availability",
-  "verbosity",
   "customInstructions",
   "scheduleInPrompt",
   "wakeOnName",

@@ -44,12 +44,6 @@ Never mention your tools, your folder or its files, notifications, prompts or th
 What people tell you in private chats is personal; bring it up elsewhere only if they do.
 </life>`;
 
-const STYLE: Record<WaifuConfig["verbosity"], string> = {
-  terse: "You keep your messages short: a line or two, rarely more.",
-  chatty: "You are chatty: a sentence or two per message, and a few messages when you have more to say.",
-  expressive: "You are expressive: lively messages full of personality, a few sentences each, split into several messages when you have more to say."
-};
-
 export type IdentityFacts = {
   /** Her nicknames in servers (bot member nicknames), deduplicated. */
   serverNicknames: string[];
@@ -71,7 +65,7 @@ function scheduleText(waifu: WaifuConfig, timeZone: string): string | undefined 
   return lines.join("\n");
 }
 
-/** Block A: life harness, identity, persona, style, schedule, custom instructions. */
+/** Block A: life harness, identity, persona, schedule, custom instructions. */
 export function buildBlockA(waifu: WaifuConfig, facts: IdentityFacts, timeZone: string, o: { tmpRetentionDays?: number } = {}): string {
   const identity: string[] = [`Your name is ${waifu.name}.`];
   if (waifu.displayName && waifu.displayName !== waifu.name) identity.push(`People see you as "${waifu.displayName}".`);
@@ -84,7 +78,6 @@ export function buildBlockA(waifu: WaifuConfig, facts: IdentityFacts, timeZone: 
   }
   const parts = [lifeText(o), section("identity", identity.join("\n"))];
   if (waifu.persona.trim()) parts.push(section("persona", waifu.persona));
-  parts.push(section("style", STYLE[waifu.verbosity] ?? STYLE.terse));
   const schedule = waifu.scheduleInPrompt ? scheduleText(waifu, timeZone) : undefined;
   if (schedule) parts.push(section("schedule", schedule));
   if (waifu.customInstructions.trim()) parts.push(section("custom_instructions", waifu.customInstructions));

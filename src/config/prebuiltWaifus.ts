@@ -20,7 +20,6 @@ export type PrebuiltWaifu = Pick<
   | "enabled"
   | "persona"
   | "availability"
-  | "verbosity"
 > & Partial<Pick<WaifuConfig, "wakeOnName">> & { bio?: string; username?: string };
 
 export const PREBUILT_BIO_MAX_CHARS = 190;
@@ -32,7 +31,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Aria",
     username: "𝓐𝓻𝓲𝓪",
     enabled: true,
-    verbosity: "chatty",
     bio: "Fragrance counter on weekends, scent diary always. Tell me your favorite smell and I'll tell you who you are.",
     availability: {
       sleep: { enabled: true, start: "00:30", end: "08:30" },
@@ -51,7 +49,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Lumi",
     username: "˚₊‧ lumi ‧₊˚",
     enabled: true,
-    verbosity: "terse",
     bio: "cozy games, seasonal anime, one large cat. currently napping. probably.",
     availability: {
       sleep: { enabled: true, start: "23:30", end: "10:00" },
@@ -70,7 +67,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Riko",
     username: "RIKO ⚔",
     enabled: true,
-    verbosity: "terse",
     bio: "fighting games. labbing, losing, learning. if you beat me we're playing again. run it back.",
     availability: {
       sleep: { enabled: true, start: "02:30", end: "10:30" },
@@ -89,7 +85,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Yuna",
     username: "yuna ♡",
     enabled: true,
-    verbosity: "chatty",
     bio: "horror buff, cinema night shift, unofficial server mom. drink some water, hon. then watch this film. (five locks.)",
     availability: {
       sleep: { enabled: true, start: "22:30", end: "06:30" },
@@ -111,7 +106,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Hinata",
     username: "✧ HINATA ✧",
     enabled: true,
-    verbosity: "expressive",
     bio: "COMEBACK SEASON!!! dance cover girl, lightstick collector, and i WILL hype you up whether you like it or not ☆",
     availability: {
       sleep: { enabled: true, start: "01:30", end: "09:30" },
@@ -130,7 +124,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Airi",
     username: "⋆｡°✩ airi ✩°｡⋆",
     enabled: true,
-    verbosity: "chatty",
     bio: "crocheting your pet from the photos you post (｡•ᴗ•｡) capsule toy hoarder, design student, kart racing menace. say hi!",
     availability: {
       sleep: { enabled: true, start: "23:30", end: "07:30" },
@@ -149,7 +142,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Mio",
     username: "☽ ᴍɪᴏ ☾",
     enabled: true,
-    verbosity: "terse",
     bio: "the moon is waxing. pull a card? ☾",
     availability: {
       sleep: { enabled: true, start: "03:00", end: "11:00" },
@@ -168,7 +160,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Sora",
     username: "s o r a",
     enabled: true,
-    verbosity: "terse",
     bio: "film cameras, empty car parks, shoegaze. sorry in advance. i'll send you a song.",
     availability: {
       sleep: { enabled: true, start: "02:00", end: "10:00" },
@@ -190,7 +181,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Alya",
     username: "𝔄𝔩𝔶𝔞 ♛",
     enabled: true,
-    verbosity: "expressive",
     bio: "*enters stage left* main character of a drama only i am watching. slow burns ranked. no spoilers. EVER. ♛",
     availability: {
       sleep: { enabled: true, start: "01:00", end: "09:30" },
@@ -210,7 +200,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     username: "▒ rem ▒",
     enabled: true,
     wakeOnName: false,
-    verbosity: "terse",
     bio: "named after the sleep stage i never reach. restoring old consoles. looking for lost media. if you have a box of cables in a loft, call me",
     availability: {
       sleep: { enabled: true, start: "04:00", end: "11:30" },
@@ -229,7 +218,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Raphtalia",
     username: "𝗿𝗮𝗽𝗵𝘁𝗮𝗹𝗶𝗮",
     enabled: true,
-    verbosity: "chatty",
     bio: "free-to-play (mostly). pity counter: none of your business. it's Raph if you're nice. whatever.",
     availability: {
       sleep: { enabled: true, start: "01:00", end: "08:30" },
@@ -248,7 +236,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Mizuhara",
     username: "ＭＩＺＵＨＡＲＡ",
     enabled: true,
-    verbosity: "expressive",
     bio: "EXPERIMENT LOG #215: pending. home cook, kitchen scientist, owner of one very tired smoke alarm.",
     availability: {
       sleep: { enabled: true, start: "00:00", end: "07:30" },
@@ -267,7 +254,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Ayame",
     username: "𝚊𝚢𝚊𝚖𝚎",
     enabled: true,
-    verbosity: "chatty",
     bio: "Escape room game master. Every word of this bio is a clue. Or none of them are.",
     availability: {
       sleep: { enabled: true, start: "00:30", end: "08:00" },
@@ -287,7 +273,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     username: "†angel†",
     enabled: true,
     wakeOnName: false,
-    verbosity: "expressive",
     bio: "mom named me angel. bold call. cryptids, claw machines, gas station snacks ranked by luck. source: trust me",
     availability: {
       sleep: { enabled: true, start: "05:00", end: "13:00" },
@@ -306,7 +291,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Makima",
     username: "𝘮𝘢𝘬𝘪𝘮𝘢 ✈",
     enabled: true,
-    verbosity: "expressive",
     bio: "day 1: plan a trip. day 2: plan another one. collecting flight deals, night markets and postcards ✈",
     availability: {
       sleep: { enabled: true, start: "00:00", end: "08:00" },
@@ -326,7 +310,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     username: "SABER",
     enabled: true,
     wakeOnName: false,
-    verbosity: "terse",
     bio: "Training for my first meet. Accountability partner on request. Owned by a pug named Brick.",
     availability: {
       sleep: { enabled: true, start: "22:00", end: "05:30" },
@@ -348,7 +331,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Esdeath",
     username: "꒰ esdeath ꒱",
     enabled: true,
-    verbosity: "terse",
     bio: "sorry about the name, my brother made this account. i paint minis and make cosplay props :)",
     availability: {
       sleep: { enabled: true, start: "23:30", end: "07:30" },
@@ -367,7 +349,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Akame",
     username: "𓆝 akame 𓆟",
     enabled: true,
-    verbosity: "chatty",
     bio: "shrimp keeper, moss grower, generally fine with whatever. it's fine. ask me about my tank ≈",
     availability: {
       sleep: { enabled: true, start: "23:00", end: "07:00" },
@@ -386,7 +367,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "C.C.",
     username: "c.c.",
     enabled: true,
-    verbosity: "expressive",
     bio: "small streamer, big ego. eleven viewers, all legends. no, i won't tell you what C.C. stands for.",
     availability: {
       sleep: { enabled: true, start: "03:30", end: "11:30" },
@@ -406,7 +386,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     username: "𝐏𝐎𝐖𝐄𝐑",
     enabled: true,
     wakeOnName: false,
-    verbosity: "chatty",
     bio: "1. Planner enthusiast. 2. Fountain pen collector. 3. Will summarize your argument in three points. Next slide.",
     availability: {
       sleep: { enabled: true, start: "22:30", end: "06:00" },
@@ -425,7 +404,6 @@ export const PREBUILT_WAIFUS: PrebuiltWaifu[] = [
     displayName: "Zero Two",
     username: "ᶻᵉʳᵒ ᵗʷᵒ",
     enabled: true,
-    verbosity: "chatty",
     bio: "speedrunner. lost a PB by 0.02s once, hence the name. ask me about routes, i dare you ⏱",
     availability: {
       sleep: { enabled: true, start: "03:00", end: "10:30" },

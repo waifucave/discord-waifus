@@ -173,8 +173,6 @@ export const WaifuLifeSettingsSchema = z.object({
 });
 export type WaifuLifeSettings = z.infer<typeof WaifuLifeSettingsSchema>;
 
-export const WAIFU_VERBOSITIES = ["terse", "chatty", "expressive"] as const;
-export type WaifuVerbosity = (typeof WAIFU_VERBOSITIES)[number];
 
 /** Her bot's Discord username (Living cast §17): trimmed, 2–32 characters, Discord's word rules. */
 export const DiscordUsernameSchema = z
@@ -236,7 +234,6 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .transform((value) => value ?? undefined),
   availability: WaifuAvailabilitySchema,
   // Prompt settings the life harness reads (Living cast §8).
-  verbosity: z.enum(WAIFU_VERBOSITIES).default("terse"),
   customInstructions: z.string().max(4000).default(""),
   scheduleInPrompt: z.boolean().default(true),
   // Her name, display name and server nicknames wake her as whole words (Living cast §4.1 `name`);

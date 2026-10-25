@@ -7,7 +7,6 @@ import {
   DiscordBotsFileSchema,
   ModelChoiceSchema,
   ServerConfigSchema,
-  WAIFU_VERBOSITIES,
   WaifuAvailabilitySchema,
   WaifuConfigSchema,
   WaifuLifeSettingsSchema
@@ -47,7 +46,6 @@ export const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
   persona: z.string().optional(),
   model: ModelChoicePatchSchema,
   availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
-  verbosity: z.enum(WAIFU_VERBOSITIES).optional(),
   customInstructions: z.string().max(4000).optional(),
   scheduleInPrompt: z.boolean().optional(),
   dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),

@@ -175,7 +175,6 @@ function CharacterEditor({
         displayName: "",
         persona: "",
         enabled: true,
-        verbosity: "terse",
         customInstructions: "",
         scheduleInPrompt: true,
         wakeOnName: true,
@@ -200,7 +199,6 @@ function CharacterEditor({
           displayName: draft.displayName || draft.name || "Unnamed",
           persona: draft.persona ?? "",
           ...(draft.model ? { model: draft.model } : {}),
-          verbosity: draft.verbosity,
           customInstructions: draft.customInstructions,
           scheduleInPrompt: draft.scheduleInPrompt,
           ...(draft.wakeOnName !== undefined ? { wakeOnName: draft.wakeOnName } : {}),
@@ -301,10 +299,9 @@ function CharacterEditor({
         <div className="cell fcell" style={{ flex: "none" }}>
           <label className="field-label">Persona</label>
           <textarea className="textarea" rows={7} value={draft.persona ?? ""} onChange={(e) => set({ persona: e.target.value })} placeholder="Who is she? Voice, history, quirks, relationships…" />
-          <span className="field-hint">Character only — message length and chat format are enforced by the harness, not the persona.</span>
+          <span className="field-hint">Who she is, including how she writes: short and lowercase, long and careful, and so on.</span>
         </div>
         <WaifuStyleFields
-          verbosity={draft.verbosity}
           customInstructions={draft.customInstructions}
           onChange={set}
         />

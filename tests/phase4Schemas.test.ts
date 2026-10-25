@@ -57,8 +57,8 @@ describe("pre-Phase-4 files still parse", () => {
     // Living cast L1 dropped the per-waifu window and gateway params (living-cast-models-v1).
     expect(old).not.toHaveProperty("contextWindow");
     expect(old).not.toHaveProperty("params");
+    expect(old).not.toHaveProperty("verbosity");
     expect(old).toMatchObject({
-      verbosity: "terse",
       customInstructions: "",
       scheduleInPrompt: true,
       dm: { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" }
@@ -67,7 +67,6 @@ describe("pre-Phase-4 files still parse", () => {
 
   it("waifu: prompt settings validated", () => {
     const input = { ...base, id: "a", name: "A", displayName: "A" };
-    expect(() => WaifuConfigSchema.parse({ ...input, verbosity: "loud" })).toThrow();
     expect(() => WaifuConfigSchema.parse({ ...input, customInstructions: "x".repeat(4001) })).toThrow();
     expect(WaifuConfigSchema.parse({ ...input, dm: { rateLimit: null } }).dm.rateLimit).toBeNull();
   });
@@ -186,20 +185,19 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
     }
   });
 
-  it("waifu PUT keeps verbosity, customInstructions, scheduleInPrompt and dm unless sent", async () => {
+  it("waifu PUT keeps customInstructions, scheduleInPrompt and dm unless sent", async () => {
     const { app } = await makeApp();
     try {
       await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
       const url = "/api/waifus/ella";
       let waifu = (await app.inject({ method: "GET", url })).json();
-      expect(waifu).toMatchObject({ verbosity: "terse", scheduleInPrompt: true, dm: { allowDms: false } });
+      expect(waifu).toMatchObject({ scheduleInPrompt: true, dm: { allowDms: false } });
 
       const seeded = await app.inject({
         method: "PUT",
         url,
         payload: {
           revision: waifu.revision,
-          verbosity: "expressive",
           customInstructions: "Be kind.",
           scheduleInPrompt: false,
           dm: { allowDms: true, rateLimit: null, limitNotice: "slow down" }
@@ -208,7 +206,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       expect(seeded.statusCode).toBe(200);
       waifu = seeded.json();
       expect(waifu).toMatchObject({
-        verbosity: "expressive",
         customInstructions: "Be kind.",
         scheduleInPrompt: false,
         dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "slow down" }
@@ -219,7 +216,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       expect(unrelated.statusCode).toBe(200);
       waifu = unrelated.json();
       expect(waifu).toMatchObject({
-        verbosity: "expressive",
         customInstructions: "Be kind.",
         scheduleInPrompt: false,
         dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "slow down" }

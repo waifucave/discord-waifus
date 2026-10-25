@@ -146,7 +146,6 @@ const WAIFU: SettingGroup = {
     "availability.sleep.start": { help: "When her sleep starts (local time).", unit: "HH:mm", example: "23:00" },
     "availability.sleep.end": { help: "When her sleep ends (local time).", unit: "HH:mm", example: "07:00" },
     "availability.busy": { help: "Daily busy blocks [{start, end, reason}] (HH:mm, local). Wakes still reach her; she knows she is busy.", leaf: true, example: '[{"start":"09:00","end":"12:00","reason":"bakery shift"}]' },
-    verbosity: { help: "How long her messages are: terse, chatty or expressive.", example: "chatty" },
     customInstructions: { help: "Extra instructions added to her prompt (at most 4000 characters).", example: "Never talk about politics." },
     scheduleInPrompt: { help: "Tell her about her schedule (sleep and busy blocks) in her prompt.", example: "true" },
     wakeOnName: { help: "Her name, display name or server nickname in a message wakes her (turn off for names that are common words).", example: "true" },

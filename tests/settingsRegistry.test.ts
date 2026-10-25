@@ -111,7 +111,7 @@ describe("settings registry", () => {
     }
     expect(findKey("app.life.maxSendsPerTurn")).toMatchObject({ type: "integer", default: 8 });
     expect(findKey("waifu.life.dailyBudgetUsd")).toMatchObject({ nullable: true, default: null });
-    expect(findKey("waifu.verbosity")).toMatchObject({ type: "enum", enum: ["terse", "chatty", "expressive"], default: "terse" });
+    expect(findKey("waifu.verbosity")).toBeUndefined();
     expect(findKey("app.ocr.engine")).toMatchObject({ type: "enum" });
   });
 

@@ -116,7 +116,6 @@ Target `waifu:<waifuId>` (e.g. `waifu:aria`) · stored in `user/waifus/<waifuId>
 | `availability.sleep.start` | string [HH:mm] | `23:00` | When her sleep starts (local time). |
 | `availability.sleep.end` | string [HH:mm] | `07:00` | When her sleep ends (local time). |
 | `availability.busy` | JSON | `[]` | Daily busy blocks [{start, end, reason}] (HH:mm, local). Wakes still reach her; she knows she is busy. |
-| `verbosity` | one of terse \| chatty \| expressive | `terse` | How long her messages are: terse, chatty or expressive. |
 | `customInstructions` | string | `""` | Extra instructions added to her prompt (at most 4000 characters). |
 | `scheduleInPrompt` | boolean | `true` | Tell her about her schedule (sleep and busy blocks) in her prompt. |
 | `wakeOnName` | boolean | `true` | Her name, display name or server nickname in a message wakes her (turn off for names that are common words). |

@@ -63,8 +63,7 @@ export type {
   WaifuAvailability,
   WaifuBusyInterval,
   WaifuConfig,
-  WaifuSleepSchedule,
-  WaifuVerbosity
+  WaifuSleepSchedule
 } from "../../shared/schemas/domain";
 export type { WaifuDmSettings } from "../../shared/schemas/dm";
 export type { ThreadRecord, ThreadsFile } from "../../shared/schemas/threads";

@@ -3,13 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   CUSTOM_INSTRUCTIONS_MAX,
-  VERBOSITY_OPTIONS,
   WaifuStyleFields,
   customInstructionsStatus,
-  verbosityExample,
   waifuStyleBlocksSave
 } from "../src/frontend/components/WaifuStyleFields.js";
-import { WAIFU_VERBOSITIES, WaifuConfigSchema } from "../src/shared/schemas/domain.js";
+import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 
 describe("custom instructions counter and validation", () => {
   it("matches the server limit", () => {
@@ -34,34 +32,15 @@ describe("custom instructions counter and validation", () => {
   });
 });
 
-describe("verbosity options", () => {
-  it("offers exactly the schema's values, each with a one-line example", () => {
-    expect(VERBOSITY_OPTIONS.map((option) => option.value)).toEqual([...WAIFU_VERBOSITIES]);
-    for (const option of VERBOSITY_OPTIONS) {
-      expect(option.example.length).toBeGreaterThan(10);
-      expect(option.example).not.toContain("\n");
-    }
-  });
-
-  it("falls back to the terse example when unset", () => {
-    expect(verbosityExample(undefined)).toBe(verbosityExample("terse"));
-    expect(verbosityExample("expressive")).not.toBe(verbosityExample("terse"));
-  });
-});
-
 describe("WaifuStyleFields", () => {
-  it("renders the select, the selected example and the live counter", () => {
+  it("renders the custom instructions and the live counter, and no message length setting", () => {
     const html = renderToStaticMarkup(
       createElement(WaifuStyleFields, {
-        verbosity: "chatty",
         customInstructions: "Be kind.",
         onChange: () => undefined
       })
     );
-    expect(html).toContain("Terse");
-    expect(html).toContain("Chatty");
-    expect(html).toContain("Expressive");
-    expect(html).toContain(verbosityExample("chatty"));
+    expect(html).not.toContain("Message length");
     expect(html).toContain("8 / 4000");
     expect(html).toContain('aria-invalid="false"');
   });
@@ -69,7 +48,6 @@ describe("WaifuStyleFields", () => {
   it("flags an over-limit value", () => {
     const html = renderToStaticMarkup(
       createElement(WaifuStyleFields, {
-        verbosity: undefined,
         customInstructions: "x".repeat(4005),
         onChange: () => undefined
       })

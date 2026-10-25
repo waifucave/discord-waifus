@@ -178,7 +178,7 @@ describe("waifu-drop-prompt-layout-v1", () => {
 
   it("leaves already-clean waifus byte-for-byte alone", async () => {
     const root = await freshRoot();
-    await writeWaifu(root, "clean", { verbosity: "chatty", scheduleInPrompt: false });
+    await writeWaifu(root, "clean", { customInstructions: "Be kind.", scheduleInPrompt: false });
     const before = await readFile(path.join(root, "user/waifus/clean/waifu.json"), "utf8");
 
     expect(await dropPromptLayoutFromWaifus(root)).toBe(0);

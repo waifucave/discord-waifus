@@ -266,7 +266,7 @@ describe("data root and config", () => {
     for (const waifu of PREBUILT_WAIFUS) {
       const seeded = JSON.parse(await readFile(path.join(root, "user", "waifus", waifu.id, "waifu.json"), "utf8"));
       expect(seeded.persona).toBe(waifu.persona);
-      expect(seeded.verbosity).toBe(waifu.verbosity);
+      expect(seeded).not.toHaveProperty("verbosity");
       expect(seeded.wakeOnName).toBe(waifu.wakeOnName ?? true);
       expect(seeded.bio).toBe(waifu.bio);
       expect(seeded.username).toBe(waifu.username);

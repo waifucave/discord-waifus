@@ -333,7 +333,7 @@ describe("Backend API", () => {
   // data. AgentConfigBodySchema/UpdateWaifuBodySchema must re-declare every defaulted field as
   // truly optional-without-default so "absent from the PUT body" means "leave it alone."
   describe("PATCH-true body schemas: PUT must not manufacture schema defaults into the merge", () => {
-    it("PUT waifu with only {revision, displayName} leaves the model and verbosity untouched and ignores retired fields", async () => {
+    it("PUT waifu with only {revision, displayName} leaves the model and custom instructions untouched and ignores retired fields", async () => {
       const { app } = await makeApp();
       try {
         await app.inject({
@@ -354,17 +354,19 @@ describe("Backend API", () => {
           payload: {
             revision: 0,
             model: { providerId: "deepseek", modelId: "deepseek-flash" },
-            verbosity: "chatty",
+            customInstructions: "Speak softly.",
             // Retired by Living cast L1: accepted from stale clients, never stored.
             contextWindow: 77,
             tools: { toolUse: false },
             params: { temperature: 0.2 },
-            promptLayout: staleLayout
+            promptLayout: staleLayout,
+            // Retired 2026-10-25: the reply style setting.
+            verbosity: "chatty"
           }
         });
         expect(seeded.statusCode).toBe(200);
         expect(seeded.json().model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
-        for (const retired of ["contextWindow", "tools", "params", "promptLayout"]) expect(seeded.json()).not.toHaveProperty(retired);
+        for (const retired of ["contextWindow", "tools", "params", "promptLayout", "verbosity"]) expect(seeded.json()).not.toHaveProperty(retired);
 
         const renamed = await app.inject({
           method: "PUT",
@@ -374,7 +376,7 @@ describe("Backend API", () => {
         expect(renamed.statusCode).toBe(200);
         expect(renamed.json().displayName).toBe("New Display Name");
         expect(renamed.json().model).toEqual({ providerId: "deepseek", modelId: "deepseek-flash" });
-        expect(renamed.json().verbosity).toBe("chatty");
+        expect(renamed.json().customInstructions).toBe("Speak softly.");
         expect(renamed.json()).not.toHaveProperty("promptLayout");
 
         const get = await app.inject({ method: "GET", url: "/api/waifus/patch-true" });
@@ -420,7 +422,7 @@ describe("Backend API", () => {
         const created = create.json();
         expect(created.enabled).toBe(true);
         expect(created.persona).toBe("");
-        expect(created.verbosity).toBe("terse");
+        expect(created.customInstructions).toBe("");
         expect(created).not.toHaveProperty("model");
         expect(created).not.toHaveProperty("promptLayout");
       } finally {
