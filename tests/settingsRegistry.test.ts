@@ -73,7 +73,6 @@ describe("settings registry", () => {
   it("covers the Living cast keys (§11.3) with their bounds", () => {
     const expectations: Array<[string, number | undefined, number | undefined]> = [
       ["life.maxConcurrentTurns", 1, 16],
-      ["life.maxToolRounds", 1, 30],
       ["life.maxTurnMs", 30_000, 600_000],
       ["life.maxLogMessages", 50, 2_000],
       ["life.maxContextTokens", 32_000, 100_000],

@@ -114,17 +114,20 @@ describe("life loop", () => {
     expect(world.anthropic.calls).toHaveLength(2);
   });
 
-  it("stops at the tool-round cap with a system line", async () => {
+  it("has no round cap, but ends a turn whose same calls fail three rounds in a row", async () => {
     const world = await lifeWorld(roots, {
-      config: (config) => ({ ...config, life: { ...config.life, maxToolRounds: 2 } }),
-      scripts: script(toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]))
+      scripts: [
+        ...Array.from({ length: 14 }, () => () => toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }])),
+        ...Array.from({ length: 4 }, () => () => toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general" } }]))
+      ]
     });
     await enqueueWake(world.storage, "ella", { id: newWakeId(), reason: "reminder", note: "loop", at: world.clock.now().toISOString() });
     await world.cast.life("ella").runNow();
-    expect(world.anthropic.calls).toHaveLength(2);
+    // 14 working rounds go on; the empty send fails three times and the turn ends.
+    expect(world.anthropic.calls).toHaveLength(17);
     const state = await readLifeState(world.storage, "ella");
     const log = await readLifeLog(world.storage, "ella", state.epoch);
-    expect(JSON.stringify(log[log.length - 1]!.message)).toContain("[system] turn ended: max tool rounds");
+    expect(JSON.stringify(log[log.length - 1]!.message)).toContain("[system] turn ended: the same call kept failing");
   });
 
   it("keeps the room and DM places as handles and remembers who wrote", async () => {
@@ -318,10 +321,10 @@ describe("mid-turn notifications (§4.6, §5.2)", () => {
   it("a round that ends the turn (a cap) folds nothing: the wake starts the next turn", async () => {
     let world!: LifeWorld;
     world = await lifeWorld(roots, {
-      config: (config) => ({ ...config, life: { ...config.life, maxToolRounds: 1 } }),
       scripts: [
         async function* () {
           await minaPing(world, "ella quick one");
+          world.clock.advance(181_000);
           yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
         },
         () => textTurn("(next turn)"),
@@ -333,7 +336,7 @@ describe("mid-turn notifications (§4.6, §5.2)", () => {
     const state = await readLifeState(world.storage, "ella");
     const log = await readLifeLog(world.storage, "ella", state.epoch);
     const capped = log.find((line) => line.kind === "tool_results")!;
-    expect(JSON.stringify(capped.message)).toContain("[system] turn ended: max tool rounds");
+    expect(JSON.stringify(capped.message)).toContain("[system] turn ended: max turn time");
     expect(JSON.stringify(capped.message)).not.toContain("ella quick one");
     expect(JSON.stringify(log.filter((line) => line.kind === "notifications")[1]!.message)).toContain("ella quick one");
   });

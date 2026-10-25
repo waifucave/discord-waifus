@@ -48,7 +48,6 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `models.allowed` | list of strings | `["meta/muse-spark-1.3-contributor","openrouter/meta/muse-spark-1.3-contributor","anthropic/claude-haiku-5-5","openrouter/anthropic/claude-haiku-5.5","anthropic/claude-sonnet-5-5","openrouter/anthropic/claude-sonnet-5.5","deepseek/deepseek-flash","openrouter/deepseek/deepseek-v4.1-flash","openai/gpt-6-luna","openrouter/openai/gpt-6-luna","openai/gpt-6.1-sol","openrouter/openai/gpt-6.1-sol"]` | The curated model routes waifus and the assistant may use (winter route keys such as anthropic/claude-sonnet-5-5). Routes the installed catalog lacks are hidden. |
 | `models.maxOutputUsdPerMTok` | number >0–10 [USD] | `10` | Routes above this output price per million tokens are hidden (at most 10). |
 | `life.maxConcurrentTurns` | integer 1–16 | `4` | How many lives may run a turn at the same time on this host. |
-| `life.maxToolRounds` | integer 1–30 | `12` | A turn ends after this many model calls. |
 | `life.maxTurnMs` | integer 30000–600000 [ms] | `180000` | A turn ends after this long. |
 | `life.maxLogMessages` | integer 50–2000 | `400` | Compact her life when its log reaches this many messages. |
 | `life.maxContextTokens` | integer 32000–100000 [tokens] | `96000` | Her context budget: compaction keeps every request under this (and under the model's window), below long-context price tiers. |

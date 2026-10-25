@@ -75,7 +75,6 @@ const APP: SettingGroup = {
     "models.allowed": { help: "The curated model routes waifus and the assistant may use (winter route keys such as anthropic/claude-sonnet-5-5). Routes the installed catalog lacks are hidden.", leaf: true, ...reload, example: '["anthropic/claude-haiku-5-5","openai/gpt-6-luna"]' },
     "models.maxOutputUsdPerMTok": { help: "Routes above this output price per million tokens are hidden (at most 10).", unit: "USD", ...reload, example: "10" },
     "life.maxConcurrentTurns": { help: "How many lives may run a turn at the same time on this host.", ...reload, example: "4" },
-    "life.maxToolRounds": { help: "A turn ends after this many model calls.", ...reload, example: "12" },
     "life.maxTurnMs": { help: "A turn ends after this long.", unit: "ms", ...reload, example: "180000" },
     "life.maxLogMessages": { help: "Compact her life when its log reaches this many messages.", ...reload, example: "400" },
     "life.maxContextTokens": { help: "Her context budget: compaction keeps every request under this (and under the model's window), below long-context price tiers.", unit: "tokens", ...reload, example: "96000" },

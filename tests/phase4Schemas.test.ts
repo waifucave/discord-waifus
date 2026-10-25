@@ -115,7 +115,7 @@ describe("pre-Phase-4 files still parse", () => {
     expect(config.ocr.enabled).toBe(false);
     expect(config.compaction).toEqual({ enabled: true, triggerRatio: 0.7, maxMessages: 150, keepRecent: 30, waitTimeoutMs: 6000 });
     expect(config).not.toHaveProperty("memory");
-    expect(config.life).toMatchObject({ maxConcurrentTurns: 4, maxToolRounds: 12, maxContextTokens: 96000, maintenanceHourLocal: 5, maxInlineImagesPerEpoch: 8 });
+    expect(config.life).toMatchObject({ maxConcurrentTurns: 4, maxContextTokens: 96000, maintenanceHourLocal: 5, maxInlineImagesPerEpoch: 8 });
     expect(config.discord.images).toEqual({
       maxBytes: 5 * 1024 * 1024,
       fetchTimeoutMs: 5000,
@@ -171,13 +171,13 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       const first = await app.inject({
         method: "PUT",
         url: "/api/config",
-        payload: { compaction: { triggerRatio: 0.5 }, life: { maxToolRounds: 6 } }
+        payload: { compaction: { triggerRatio: 0.5 }, life: { maxSendsPerTurn: 6 } }
       });
       expect(first.statusCode).toBe(200);
       const second = await app.inject({ method: "PUT", url: "/api/config", payload: { ocr: { enabled: false } } });
       expect(second.statusCode).toBe(200);
       expect(second.json().compaction).toMatchObject({ triggerRatio: 0.5, maxMessages: 150 });
-      expect(second.json().life).toMatchObject({ maxToolRounds: 6, maintenanceHourLocal: 5 });
+      expect(second.json().life).toMatchObject({ maxSendsPerTurn: 6, maintenanceHourLocal: 5 });
       const got = (await app.inject({ method: "GET", url: "/api/config" })).json();
       expect(got.compaction.triggerRatio).toBe(0.5);
       expect(got.discord.images.maxBytes).toBe(5 * 1024 * 1024);

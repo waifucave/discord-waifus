@@ -146,9 +146,9 @@ describe("assistant tools", () => {
       expect(whole.length).toBeLessThanOrEqual(12_100);
       const changed = JSON.parse(await executeAssistantTool(ctx, "update_app_config", JSON.stringify({ changes: { life: { maxSendsPerTurn: 6 } } })));
       expect(changed).toEqual({ ok: true, changed: ["life"] });
-      const config = (await app.inject({ method: "GET", url: "/api/config" })).json() as { life: { maxSendsPerTurn: number; maxToolRounds: number } };
+      const config = (await app.inject({ method: "GET", url: "/api/config" })).json() as { life: { maxSendsPerTurn: number } };
       expect(config.life.maxSendsPerTurn).toBe(6);
-      expect(config.life.maxToolRounds).toBeGreaterThan(0);
+      expect(config.life).not.toHaveProperty("maxToolRounds");
     } finally {
       await app.close();
     }

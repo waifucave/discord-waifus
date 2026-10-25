@@ -242,7 +242,6 @@ const BashConfigSchema = z
 // long-context price tier in the curated list.
 const LIFE_FIELDS = {
   maxConcurrentTurns: z.number().int().min(1).max(16),
-  maxToolRounds: z.number().int().min(1).max(30),
   maxTurnMs: z.number().int().min(30_000).max(600_000),
   maxLogMessages: z.number().int().min(50).max(2_000),
   maxContextTokens: z.number().int().min(32_000).max(100_000),
@@ -257,7 +256,6 @@ const LIFE_FIELDS = {
 };
 export const DEFAULT_LIFE_CONFIG = {
   maxConcurrentTurns: 4,
-  maxToolRounds: 12,
   maxTurnMs: 180_000,
   maxLogMessages: 400,
   maxContextTokens: 96_000,
@@ -273,7 +271,6 @@ export const DEFAULT_LIFE_CONFIG = {
 export const LifeConfigSchema = z
   .object({
     maxConcurrentTurns: LIFE_FIELDS.maxConcurrentTurns.default(DEFAULT_LIFE_CONFIG.maxConcurrentTurns),
-    maxToolRounds: LIFE_FIELDS.maxToolRounds.default(DEFAULT_LIFE_CONFIG.maxToolRounds),
     maxTurnMs: LIFE_FIELDS.maxTurnMs.default(DEFAULT_LIFE_CONFIG.maxTurnMs),
     maxLogMessages: LIFE_FIELDS.maxLogMessages.default(DEFAULT_LIFE_CONFIG.maxLogMessages),
     maxContextTokens: LIFE_FIELDS.maxContextTokens.default(DEFAULT_LIFE_CONFIG.maxContextTokens),
@@ -411,7 +408,6 @@ export const UpdateAppConfigBodySchema = z.object({
   }).strict().optional(),
   life: z.object({
     maxConcurrentTurns: LIFE_FIELDS.maxConcurrentTurns.optional(),
-    maxToolRounds: LIFE_FIELDS.maxToolRounds.optional(),
     maxTurnMs: LIFE_FIELDS.maxTurnMs.optional(),
     maxLogMessages: LIFE_FIELDS.maxLogMessages.optional(),
     maxContextTokens: LIFE_FIELDS.maxContextTokens.optional(),

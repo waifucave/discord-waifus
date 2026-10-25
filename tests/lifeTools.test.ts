@@ -63,7 +63,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(w.discord.typing).toEqual(["200000000000000002"]);
     expect(w.discord.sent).toMatchObject([{ placeKey: ROOM_KEY, content: "brownies are ready", senderBotId: "ella-bot" }]);
     expect(await run("SendMessage", { place: "elsewhere/#random", text: "hi" }, ctx)).toEqual({ content: "error: unknown place; see ~/places.md", isError: true });
-    expect(await run("SendMessage", { place: "bake-club/#general", text: "" }, ctx)).toEqual({ content: "error: there is nothing to send", isError: true });
+    expect(await run("SendMessage", { place: "bake-club/#general", text: "" }, ctx)).toEqual({ content: "error: there is nothing to send: put your message in text, or save a file with Write first and list its path in files", isError: true });
     expect((await run("SendMessage", { place: "bake-club/#general", text: "x".repeat(2001) }, ctx)).isError).toBe(true);
     // Missing access says why and that it can change, so she doesn't write the room off.
     w.discord.sendErrors.push(Object.assign(new Error("Missing Access"), { code: 50001 }));

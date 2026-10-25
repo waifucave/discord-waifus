@@ -147,11 +147,11 @@ describe("registry-driven settings forms", () => {
   });
 
   it("only changed keys become a nested patch", () => {
-    const keys = [key({}), key({ path: "life.maxToolRounds", id: "app.life.maxToolRounds", max: 30 })];
-    const config = { life: { maxSendsPerTurn: 8, maxToolRounds: 12 } };
-    const { changes, errors } = formChanges(keys, config, { "life.maxSendsPerTurn": "8", "life.maxToolRounds": "14" });
+    const keys = [key({}), key({ path: "life.maxSendPlacesPerTurn", id: "app.life.maxSendPlacesPerTurn", max: 10 })];
+    const config = { life: { maxSendsPerTurn: 8, maxSendPlacesPerTurn: 3 } };
+    const { changes, errors } = formChanges(keys, config, { "life.maxSendsPerTurn": "8", "life.maxSendPlacesPerTurn": "5" });
     expect(errors).toEqual({});
-    expect(nestedPatch(changes)).toEqual({ life: { maxToolRounds: 14 } });
+    expect(nestedPatch(changes)).toEqual({ life: { maxSendPlacesPerTurn: 5 } });
   });
 });
 

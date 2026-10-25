@@ -350,7 +350,8 @@ idle ──wake──► coalesce 2 s ──► turn:
      if no tool calls → end turn
      execute tool calls in order (§5.7 intents for side effects) → append one tool-results user message:
         tool results (errors with is_error) + folded <notifications> for new wakes + time line
-     stop when rounds ≥ life.maxToolRounds (12) or wall time ≥ life.maxTurnMs (180 s)
+     stop when wall time ≥ life.maxTurnMs (180 s) or the same calls fail three rounds in a row
+     (no cap on rounds)
    }
    unsent-reply check (below) → idle
 ```
@@ -1184,7 +1185,7 @@ repaired, as before; the point is that the repaired file is then converted.
 | Key | Default |
 |---|---|
 | `life.maxConcurrentTurns` | 4 |
-| `life.maxToolRounds` / `life.maxTurnMs` | 12 / 180000 |
+| `life.maxTurnMs` | 180000 |
 | `life.maxLogMessages` | 400 |
 | `life.maxContextTokens` | 96000 |
 | `life.maxInlineImagesPerEpoch` | 8 |
@@ -1213,7 +1214,6 @@ Bounds (validated by the config schema):
 | Key | Range |
 |---|---|
 | `life.maxContextTokens` | 32000–100000 (below the lowest long-context tier in the curated list) |
-| `life.maxToolRounds` | 1–30 |
 | `life.maxTurnMs` | 30000–600000 |
 | `life.maxLogMessages` | 50–2000 |
 | `life.maxConcurrentTurns` | 1–16 |

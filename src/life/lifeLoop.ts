@@ -9,7 +9,8 @@
 //       finish = refusal → end; no tool calls → end (after the unsent-reply check)
 //       run tool calls in order (intents for side effects, §5.7) → append one tool-results message:
 //         results (+ folded notifications for new wakes) + time line
-//       caps: life.maxToolRounds rounds or life.maxTurnMs → "[system] turn ended: <limit>"
+//       caps: life.maxTurnMs, or the same failing calls three rounds in a row →
+//         "[system] turn ended: <limit>" (no cap on the number of rounds)
 //     }
 //
 // Her text is private: only SendMessage and React reach people. One turn at a time per waifu
@@ -50,6 +51,8 @@ import { compareIds } from "../discord/rawMessage.js";
 import { assignConversationRefs } from "../discord/refStore.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 
+/** Identical all-failing rounds after the first before the turn ends (three in a row in all). */
+const MAX_FAILED_REPEATS = 2;
 export const COALESCE_MS = 2_000;
 export const FOLLOW_UP_DELAY_MS = 60_000;
 export const MEMORY_WARNING_RATIO = 0.85;
@@ -542,6 +545,9 @@ export class Life {
     let unsentChecked = false;
     let rounds = 0;
     let badRequests = 0;
+    // The same calls failing round after round (a model stuck in a loop) end the turn.
+    let failedCalls: string | undefined;
+    let failedRepeats = 0;
     for (;;) {
       if (run.signal.aborted) return this.closeInterrupted(run);
       let request;
@@ -641,9 +647,13 @@ export class Life {
         return this.endTurn(run, rounds, result.finishReason === "length" ? "length" : "done");
       }
       const executed = await this.runTools(run, calls, result.finishReason === "length");
+      const allFailed = executed.results.length > 0 && executed.results.every((block) => (block as { is_error?: boolean }).is_error === true);
+      const signature = JSON.stringify(calls.map((call) => [call.name, call.input]));
+      failedRepeats = allFailed && signature === failedCalls ? failedRepeats + 1 : 0;
+      failedCalls = allFailed ? signature : undefined;
       const capped =
-        rounds >= config().life.maxToolRounds
-          ? "max tool rounds"
+        failedRepeats >= MAX_FAILED_REPEATS
+          ? "the same call kept failing"
           : deps.now().getTime() - run.startedMs >= config().life.maxTurnMs
             ? "max turn time"
             : overBudget()

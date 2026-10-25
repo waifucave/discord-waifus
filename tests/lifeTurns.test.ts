@@ -63,11 +63,11 @@ describe("turn endings", () => {
     let queuedAfterCap: string[] | undefined;
     let cappedTail: string | undefined;
     w = await lifeWorld(roots, {
-      config: (config) => ({ ...config, life: { ...config.life, maxToolRounds: 1 } }),
       scripts: [
         // The first turn's only round: the late wake arrives while it runs (once).
         () => {
           void mentionWake(w, "w-late");
+          w.clock.advance(181_000);
           return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
         },
         // The next turn's first call: the capped turn ended with the late wake still queued.
@@ -86,7 +86,7 @@ describe("turn endings", () => {
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await reminder(w, "first");
     await w.cast.life("ella").runNow();
-    expect(cappedTail).toContain("[system] turn ended: max tool rounds");
+    expect(cappedTail).toContain("[system] turn ended: max turn time");
     expect(cappedTail).not.toContain("<notifications>");
     expect(queuedAfterCap).toEqual(["w-late"]);
     // Exactly the capped turn, the next turn and its unsent-reply check: no turn re-queued it.

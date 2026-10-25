@@ -424,7 +424,7 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   if (text && isOnlyToolCallSyntax(text, ctx.toolNames)) return toolError("that looks like a tool call, not a message; write what you want to say");
   const attached = args.files.length > 0 ? await attachments(ctx, args.files) : { files: [], skipped: [] };
   if (!text && attached.files.length === 0) {
-    return toolError(attached.skipped.length > 0 ? `nothing was sent: not attached: ${attached.skipped.join(", ")}` : "there is nothing to send");
+    return toolError(attached.skipped.length > 0 ? `nothing was sent: not attached: ${attached.skipped.join(", ")}` : "there is nothing to send: put your message in text, or save a file with Write first and list its path in files");
   }
   let replyToId: string | undefined;
   if (args.reply_to) {
@@ -528,10 +528,10 @@ function sendSchema(maxFiles: number): Record<string, unknown> {
     type: "object",
     properties: {
       place: { type: "string", description: "A place handle." },
-      text: { type: "string", maxLength: 2000, description: maxFiles > 0 ? "The message (may be empty when you attach a file)." : "The message." },
+      text: { type: "string", maxLength: 2000, description: maxFiles > 0 ? "The message itself. It may be empty only when you attach a file." : "The message itself." },
       reply_to: { type: "string", description: "Optional: the ref of the message you are replying to, like #k3." },
       ...(maxFiles > 0
-        ? { files: { type: "array", items: { type: "string" }, maxItems: maxFiles, description: `Optional: paths of files to attach, like /tmp/cake-small.png (at most ${maxFiles}).` } }
+        ? { files: { type: "array", items: { type: "string" }, maxItems: maxFiles, description: `Optional: paths of files to attach, like /tmp/cake-small.png (at most ${maxFiles}). To post something you write as a file, save it with Write first.` } }
         : {})
     },
     required: ["place"],
