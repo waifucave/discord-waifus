@@ -13,6 +13,9 @@
 // entry but leave out its name and path (`[private chat redacted]`); reading, writing or deleting a
 // private file, or listing a private folder, needs `includePrivate=1`, which only a local request
 // may send (403 `PrivateContentLocalOnly` otherwise, and always for the dashboard assistant).
+// `watches.json` with a DM-bound watch reads, without `includePrivate`, as a redacted copy (that
+// watch's note and bindings `[private chat redacted]`, read-only); writing or deleting it then needs
+// `includePrivate`. Paths compare as her disk does (`/tmp/DM/…` is `/tmp/dm/…`).
 // Errors never carry host paths: her store's messages name only her paths.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -21,8 +24,8 @@ import { loadAppConfig } from "../config/appConfig.js";
 import { HerFilesError, type HerEntry } from "../life/home/herFiles.js";
 import { HomeError, isTextBytes, sha256, type CheckEnv, type HomeStore } from "../life/home/homeStore.js";
 import { checkEnvFor, homeStoreFor, offlineCheckEnv } from "../life/home/index.js";
-import { isPlacesFile, specialJsonFile, type HerPath, type HerRoot } from "../life/home/pathRules.js";
-import { parseStrictJson, type WatchEntry } from "../life/home/specialFiles.js";
+import { isDmFolderPath, isPlacesFile, specialJsonFile, type HerPath, type HerRoot } from "../life/home/pathRules.js";
+import { formatEntries, parseStrictJson, type WatchEntry } from "../life/home/specialFiles.js";
 import { isDmPlaceKey, isDmPlaceRef } from "../life/lifeView.js";
 import type { LivingCast } from "../life/livingCast.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
@@ -113,9 +116,30 @@ async function mapped<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** A folder under `/tmp/dm/<handle>` (or the handle folder itself) names a private chat. */
+/** A folder under `/tmp/dm/<handle>` (or the handle folder itself, any spelling) names a private chat. */
 function privateFolder(p: Pick<HerPath, "root" | "segments">): boolean {
-  return p.root === "tmp" && p.segments[0] === "dm" && p.segments.length >= 2;
+  return isDmFolderPath(p) && p.segments.length >= 2;
+}
+
+/**
+ * Her watches.json as the owner may see it without `includePrivate`: undefined when nothing in it
+ * is private, the redacted copy when a watch is bound to a DM, or "refuse" when the file does not
+ * read whole and might hold one.
+ */
+export async function redactedWatchesText(home: HomeStore, timeZone: string, text: string): Promise<string | "refuse" | undefined> {
+  const { entries, ids } = await home.readWatches(timeZone);
+  const anyPrivate = entries.some((entry) => isPrivateWatch(entry, ids));
+  if (!readsWhole(text, entries.length)) {
+    const mayHoldDm = anyPrivate || isDmPlaceRef(text) || Object.values(ids.watches).some((watch) => watch.bindings.some((binding) => isDmPlaceKey(binding.placeKey)));
+    return mayHoldDm ? "refuse" : undefined;
+  }
+  if (!anyPrivate) return undefined;
+  return formatEntries(
+    entries.map((entry) => {
+      const { private: _private, ...view } = watchView(entry, ids, false);
+      return view;
+    })
+  );
 }
 
 /** The file's type by its first bytes (never by its name). */
@@ -193,18 +217,25 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     return { home: homeStoreFor({ storage: o.storage, config: () => config }, waifu), env: () => offlineCheckEnv(o.storage, waifuId, { now: now(), timeZone: timeZone() }) };
   };
 
-  /** The `*` part of a files URL → her path. */
-  const filePath = (home: HomeStore, request: FastifyRequest, o2: { allowRoot?: boolean } = {}): HerPath => {
+  /** The `*` part of a files URL → her path, spelled as on disk. */
+  const filePath = async (home: HomeStore, request: FastifyRequest, o2: { allowRoot?: boolean } = {}): Promise<HerPath> => {
     const raw = String((request.params as Record<string, unknown>)["*"] ?? "");
     const input = raw.startsWith("~") ? raw : `/${raw}`;
-    const resolved = home.resolve(input, o2);
+    const resolved = await home.resolveExisting(input, o2);
     if (!resolved.ok) throw badRequest(resolved.error);
     return resolved.path;
   };
 
-  /** A private file (D14), by its folder or its provenance. */
+  /** A private file (D14), by its folder (any spelling) or its provenance. */
   const isPrivateFile = async (home: HomeStore, p: HerPath, index?: FilesIndex): Promise<boolean> =>
-    (p.root === "tmp" && p.segments[0] === "dm") || (await home.dmOrigin(p, index)) !== undefined;
+    isDmFolderPath(p) || (await home.dmOrigin(p, index)) !== undefined;
+
+  /** watches.json holding a DM-bound watch can't be replaced or deleted without includePrivate. */
+  const refusePrivateWatches = async (home: HomeStore, p: HerPath, includePrivate: boolean) => {
+    if (includePrivate || specialJsonFile(p) !== "watches") return;
+    const text = await home.readWatchesText();
+    if (text !== undefined && (await redactedWatchesText(home, timeZone(), text)) !== undefined) throw privateRefused();
+  };
 
   /** Assistant writes need the owner's click on the confirmation card (§16.11). */
   const refuseUnconfirmedAssistant = (request: FastifyRequest) => {
@@ -221,13 +252,13 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     let folder: HerPath;
     const dir = query.dir?.trim() ?? "";
     if (dir.startsWith("/") || dir.startsWith("~")) {
-      const resolved = home.resolve(dir, { allowRoot: true });
+      const resolved = await home.resolveExisting(dir, { allowRoot: true });
       if (!resolved.ok) throw badRequest(resolved.error);
       if (query.root && resolved.path.root !== query.root) throw badRequest(`${dir} is not under ${query.root === "home" ? "her home" : "/tmp"}.`);
       folder = resolved.path;
     } else {
       const root: HerRoot = query.root ?? "home";
-      const resolved = home.resolve(dir ? `${root === "home" ? "~" : "/tmp"}/${dir}` : root === "home" ? "~" : "/tmp", { allowRoot: true });
+      const resolved = await home.resolveExisting(dir ? `${root === "home" ? "~" : "/tmp"}/${dir}` : root === "home" ? "~" : "/tmp", { allowRoot: true });
       if (!resolved.ok) throw badRequest(resolved.error);
       folder = resolved.path;
     }
@@ -264,7 +295,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
       usage:
         folder.root === "home"
           ? { bytes: usage.bytes, files: usage.files, maxBytes: config.life.home.maxBytes, maxFiles: config.life.home.maxFiles }
-          : { bytes: usage.bytes, files: usage.files, maxBytes: config.life.tmp.maxBytes }
+          : { bytes: usage.bytes, files: usage.files, maxBytes: config.life.tmp.maxBytes, maxFiles: config.life.tmp.maxFiles, retentionDays: config.life.tmp.retentionDays }
     };
   });
 
@@ -273,7 +304,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const includePrivate = includePrivateOf(request);
     const { raw } = z.object({ raw: z.enum(["0", "1", "true", "false"]).optional() }).parse({ raw: (request.query as Record<string, unknown> | undefined)?.["raw"] });
     const { home } = await homeOf(waifuId);
-    const p = filePath(home, request);
+    const p = await filePath(home, request);
     const info = await home.files.inspect(p);
     if (info.kind === "missing") throw notFound(`${p.display} doesn't exist`);
     if (info.kind === "link") throw new ApiError(400, `${p.display} can't be used: it is a link`, undefined, "LinkRefused");
@@ -281,8 +312,19 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const isPrivate = await isPrivateFile(home, p);
     if (isPrivate && !includePrivate) throw privateRefused();
     if (info.size > RAW_MAX_BYTES) throw new ApiError(413, `${p.display} is too large to open here`, undefined, "HomeLimit");
-    const data = await mapped(() => home.files.readBytes(p, { maxBytes: RAW_MAX_BYTES }));
-    const sniffed = sniffKind(data);
+    let data = await mapped(() => home.files.readBytes(p, { maxBytes: RAW_MAX_BYTES }));
+    let sniffed = sniffKind(data);
+    // A DM-bound watch's words never leave the host without includePrivate.
+    let redactedFile = false;
+    if (!includePrivate && specialJsonFile(p) === "watches") {
+      const redacted = await redactedWatchesText(home, timeZone(), data.toString("utf8"));
+      if (redacted === "refuse") throw privateRefused();
+      if (redacted !== undefined) {
+        data = Buffer.from(redacted, "utf8");
+        sniffed = sniffKind(data);
+        redactedFile = true;
+      }
+    }
     if (raw === "1" || raw === "true") {
       // Her bytes are untrusted: never rendered as a page on the dashboard's origin.
       const inline = sniffed.kind === "image";
@@ -307,9 +349,10 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
       hash: sha256(data),
       ...(sniffed.kind === "text" && !tooLarge ? { text: data.toString("utf8") } : {}),
       ...(tooLarge ? { tooLarge: true as const } : {}),
-      ...(isPlacesFile(p) ? { readOnly: true as const } : {}),
+      ...(isPlacesFile(p) || redactedFile ? { readOnly: true as const } : {}),
       ...(special ? { special } : {}),
-      ...(isPrivate ? { private: true as const } : {}),
+      ...(isPrivate || redactedFile ? { private: true as const } : {}),
+      ...(redactedFile ? { redacted: true as const } : {}),
       includePrivate
     };
   });
@@ -320,8 +363,9 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const includePrivate = includePrivateOf(request);
     const body = HerFileWriteBodySchema.parse(request.body ?? {});
     const { home, env } = await homeOf(waifuId);
-    const p = filePath(home, request);
+    const p = await filePath(home, request);
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
+    await refusePrivateWatches(home, p, includePrivate);
     const written = await mapped(() => home.writeText(p, body.text, env(), body.expectedHash !== undefined ? { expectedHash: body.expectedHash } : {}));
     return { waifuId, path: p.virtual, display: p.display, hash: written.hash, size: written.bytes, created: written.created, rewritten: written.rewritten };
   });
@@ -332,8 +376,9 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const includePrivate = includePrivateOf(request);
     const query = z.object({ expectedHash: z.string().regex(/^[0-9a-f]{64}$/u).optional() }).parse({ expectedHash: (request.query as Record<string, unknown> | undefined)?.["expectedHash"] });
     const { home, env } = await homeOf(waifuId);
-    const p = filePath(home, request);
+    const p = await filePath(home, request);
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
+    await refusePrivateWatches(home, p, includePrivate);
     const deleted = await mapped(() => home.deleteFile(p, env(), query.expectedHash !== undefined ? { expectedHash: query.expectedHash } : {}));
     if (!deleted) throw notFound(`${p.display} doesn't exist`);
     // No path in the answer: Remote Access keeps mutation answers for a day.

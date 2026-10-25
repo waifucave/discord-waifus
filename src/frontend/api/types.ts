@@ -517,6 +517,8 @@ export type AssistantActionDetail = {
   category: string;
   summary: string;
   expiresAt: string;
+  /** A proposed file write: the whole new text (at most 16 KB). */
+  fileText?: string;
   secure?: {
     kind: "pairing_request";
     requestId: string;

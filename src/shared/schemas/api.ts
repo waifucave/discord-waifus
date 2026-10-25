@@ -305,8 +305,14 @@ export const HerFilesListResponseSchema = z.object({
   includePrivate: z.boolean(),
   /** Entries whose name was left out. */
   redacted: z.number().int().nonnegative(),
-  /** The whole root: bytes and files, and its limits (`maxFiles` for her home only). */
-  usage: z.object({ bytes: z.number().int().nonnegative(), files: z.number().int().nonnegative(), maxBytes: z.number().int().positive(), maxFiles: z.number().int().positive().optional() })
+  /** The whole root: bytes and files, and its limits (`/tmp` also says how many days a file is kept). */
+  usage: z.object({
+    bytes: z.number().int().nonnegative(),
+    files: z.number().int().nonnegative(),
+    maxBytes: z.number().int().positive(),
+    maxFiles: z.number().int().positive().optional(),
+    retentionDays: z.number().int().positive().optional()
+  })
 });
 
 export const HER_FILE_KINDS = ["text", "image", "pdf", "binary"] as const;
@@ -329,11 +335,16 @@ export const HerFileResponseSchema = z.object({
   text: z.string().optional(),
   /** A text file too large to show here (fetch it with `?raw=1`). */
   tooLarge: z.literal(true).optional(),
-  /** `~/places.md`: kept up to date by the app; writes are refused. */
+  /** `~/places.md` (kept up to date by the app) or a redacted watches.json: writes are refused. */
   readOnly: z.literal(true).optional(),
   /** `~/schedule.json` / `~/watches.json`: every write is checked (§16.4, §16.5). */
   special: z.enum(["schedule", "watches"]).optional(),
   private: z.literal(true).optional(),
+  /**
+   * `~/watches.json` with a watch bound to a private chat, read without `includePrivate`: the text
+   * is a redacted copy (read-only here; changing the file needs `includePrivate`).
+   */
+  redacted: z.literal(true).optional(),
   includePrivate: z.boolean()
 });
 

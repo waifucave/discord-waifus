@@ -211,7 +211,16 @@ export function AssistantActionCard({
         </div>
         <span className="chip butter">{detail ? "pending" : "loading"}</span>
       </div>
-      <p className="t-small">{detail?.summary ?? item.summary}</p>
+      {detail?.fileText !== undefined ? (
+        <>
+          <p className="t-small">{detail.summary.split("\n")[0]}</p>
+          <pre className="mono t-small" tabIndex={0} aria-label="The new text" style={{ maxHeight: 320, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: 0, padding: 8, border: "1px solid var(--line)" }}>
+            {detail.fileText || "(empty file)"}
+          </pre>
+        </>
+      ) : (
+        <p className="t-small">{detail?.summary ?? item.summary}</p>
+      )}
       {pairing && (
         <>
           <p className="t-small t-mute">

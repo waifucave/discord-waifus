@@ -1005,7 +1005,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "List a folder of a waifu's own computer (Living cast §16): her home (`/home/<name>`, `~`: her notes in any " +
       "layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app) " +
-      "or /tmp (files people sent, deleted 7 days after the last write). Entries have name, path, kind, size and " +
+      "or /tmp (files people sent, deleted after the number of days its usage.retentionDays says, 7 by default, since the last write). Entries have name, path, kind, size and " +
       "modified time. Files from private chats are never shown to you: they appear as `[private chat redacted]`.",
     parameters: {
       type: "object",
@@ -1051,7 +1051,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "write_file",
     description:
       "Propose creating or replacing a text file in a waifu's folders (the whole new text). It runs only if the user " +
-      "accepts the separate secure dashboard confirmation card, which shows the file and the start of the text; the " +
+      "accepts the separate secure dashboard confirmation card, which shows the file and the whole text; the " +
       "same checks as her own Write tool apply when it runs (places.md is refused; schedule.json and watches.json " +
       "must stay valid JSON in her format). At most 16 KB; larger edits are for the dashboard's editor.",
     parameters: {

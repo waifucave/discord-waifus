@@ -244,12 +244,16 @@ async function assistantActionDetail(
   action: AssistantActionLease,
   principal: RequestPrincipal
 ) {
+  // A proposed file write shows its whole text on the card (at most 16 KB), not only the summary's start.
+  const proposed = action.operation.kind === "exact_http" ? (action.operation.payload as { text?: unknown } | undefined) : undefined;
+  const fileText = action.category === "waifu_file_write" && typeof proposed?.text === "string" ? proposed.text : undefined;
   const detail = {
     version: 1 as const,
     actionId: action.actionId,
     category: action.category,
     summary: action.summary,
-    expiresAt: action.expiresAt
+    expiresAt: action.expiresAt,
+    ...(fileText !== undefined ? { fileText } : {})
   };
   if (action.operation.kind !== "derived_pairing_approval") return detail;
   const request = await currentPairingRequest(app, action, principal);

@@ -14,7 +14,7 @@ import { breadcrumbs, entryDetail, fileSize, matchingReveal, PRIVATE_HIDDEN, wat
 
 type Message = { tone: "ok" | "err" | "warn"; text: string };
 
-const rowStyle = { display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", padding: "6px 0", borderTop: "1px solid var(--line-soft, #e6e6e6)" } as const;
+const rowStyle = { display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", padding: "6px 0", borderTop: "1px solid var(--line)" } as const;
 
 /** The file browser: her home or /tmp, one folder at a time, and the file open below it. */
 export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; includePrivate: boolean }) {
@@ -22,6 +22,7 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
   const [dir, setDir] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState<{ path: string; isNew?: boolean } | undefined>(undefined);
   const [newName, setNewName] = useState("");
+  const [createNote, setCreateNote] = useState<string | undefined>(undefined);
   const newId = useId();
   const list = useApi<HerFilesList>((s) => api.herFiles(waifuId, { root, ...(dir ? { dir } : {}), includePrivate }, s), [waifuId, root, dir, includePrivate]);
   const data = list.error ? undefined : matchingReveal(list.data, includePrivate);
@@ -41,7 +42,16 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
   const createFile = () => {
     const name = newName.trim().replace(/^\/+/u, "");
     if (!name || !data) return;
-    setOpen({ path: `${data.dir}/${name}`, isNew: true });
+    // A name already here (her disk ignores case) opens that file instead of replacing it.
+    const existing = data.entries.find((entry) => entry.path !== undefined && entry.name.toLowerCase() === name.toLowerCase());
+    if (existing?.path) {
+      setCreateNote(`${existing.name} already exists; it is open below.`);
+      if (existing.kind === "dir") setDir(existing.path);
+      else setOpen({ path: existing.path });
+    } else {
+      setCreateNote(undefined);
+      setOpen({ path: `${data.dir}/${name}`, isNew: true });
+    }
     setNewName("");
   };
 
@@ -58,7 +68,8 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
         {data && (
           <span className="t-micro" style={{ textTransform: "none", letterSpacing: "0.04em" }}>
             {fileSize(data.usage.bytes)} of {fileSize(data.usage.maxBytes)}
-            {data.usage.maxFiles !== undefined ? ` · ${data.usage.files} of ${data.usage.maxFiles} files` : " · files are deleted 7 days after they were last written"}
+            {data.usage.maxFiles !== undefined ? ` · ${data.usage.files} of ${data.usage.maxFiles} files` : ""}
+            {data.usage.retentionDays !== undefined ? ` · files are deleted ${data.usage.retentionDays === 1 ? "a day" : `${data.usage.retentionDays} days`} after they were last written` : ""}
           </span>
         )}
       </div>
@@ -90,6 +101,7 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
               Create
             </button>
           </div>
+          {createNote && <Notice tone="warn">{createNote}</Notice>}
         </>
       )}
       {open && (
@@ -151,6 +163,7 @@ function FileViewer({
   const shown = file.error ? undefined : file.data && file.data.includePrivate === includePrivate ? file.data : undefined;
   const [draft, setDraft] = useState<string | undefined>(isNew ? "" : undefined);
   const [message, setMessage] = useState<Message | undefined>(undefined);
+  const [conflicted, setConflicted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [imageUrl, setImageUrl] = useState<string | undefined>(undefined);
@@ -190,6 +203,7 @@ function FileViewer({
     if (draft === undefined) return;
     setBusy(true);
     setMessage(undefined);
+    setConflicted(false);
     try {
       const result = await api.writeHerFile(waifuId, path, { text: draft, expectedHash: isNew ? null : (shown?.hash ?? null) }, includePrivate);
       setMessage({ tone: "ok", text: `Saved ${result.display} (${fileSize(result.size)})${result.rewritten ? "; new entries got their ids" : ""}.` });
@@ -199,8 +213,13 @@ function FileViewer({
         file.reload();
       }
     } catch (err) {
-      // The server's own words: a JSON problem names its line and column.
-      setMessage({ tone: "err", text: (err as Error).message });
+      // The server's own words: a JSON problem names its line and column. A change on disk since it
+      // was opened (she wrote it, a reminder fired) offers to load the file again.
+      const status = (err as { status?: number }).status;
+      if (status === 409 || status === 428) {
+        setConflicted(true);
+        setMessage({ tone: "warn", text: isNew ? "A file with this name exists now; reload to open it (your text stays here until you do)." : "The file changed since you opened it. Reload to see it (your changes here are dropped), or copy them first." });
+      } else setMessage({ tone: "err", text: (err as Error).message });
     } finally {
       setBusy(false);
     }
@@ -219,8 +238,18 @@ function FileViewer({
     }
   };
 
+  const reloadFile = () => {
+    setConflicted(false);
+    setMessage(undefined);
+    if (isNew) onChanged(path);
+    else {
+      setDraft(undefined);
+      file.reload();
+    }
+  };
+
   return (
-    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line-soft, #e6e6e6)", display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
         <span className="mono t-small" style={{ overflowWrap: "anywhere", flex: "1 1 200px" }}>{display}</span>
         {shown && <span className="t-micro">{fileSize(shown.size)} · {when(shown.modified)}</span>}
@@ -231,7 +260,15 @@ function FileViewer({
       </div>
       {file.error && <Notice tone="err">{file.error.message}</Notice>}
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
-      {shown?.readOnly && <span className="t-small t-mute">Kept up to date by the app: she can read it, nobody changes it.</span>}
+      {conflicted && (
+        <div>
+          <button className="btn sm" onClick={reloadFile}>
+            reload
+          </button>
+        </div>
+      )}
+      {shown?.readOnly && !shown.redacted && <span className="t-small t-mute">Kept up to date by the app: she can read it, nobody changes it.</span>}
+      {shown?.redacted && <span className="t-small t-mute">A watch here is bound to a private chat, so its words are hidden and the file can't be changed here; reveal private chats on the host to edit it.</span>}
       {shown?.special && <span className="t-small t-mute">Every save is checked; a problem is shown with its line and column and nothing is saved.</span>}
       {shown?.tooLarge && <span className="t-small t-mute">Too large to edit here.</span>}
       {(editable || shown?.text !== undefined) && draft !== undefined && (
@@ -276,6 +313,8 @@ export function PlansPanel({ waifuId, includePrivate }: { waifuId: string; inclu
   const watches = useApi<WatchesResponse>((s) => api.watches(waifuId, includePrivate, s), [waifuId, includePrivate]);
   const watchData = watches.error ? undefined : matchingReveal(watches.data, includePrivate);
   const [message, setMessage] = useState<Message | undefined>(undefined);
+  const [pending, setPending] = useState<{ kind: "reminder" | "watch"; id: string } | undefined>(undefined);
+  const returnTo = useRef<HTMLElement | null>(null);
 
   const drop = async (work: () => Promise<unknown>, reload: () => void) => {
     setMessage(undefined);
@@ -287,13 +326,46 @@ export function PlansPanel({ waifuId, includePrivate }: { waifuId: string; inclu
       reload();
     }
   };
+  const ask = (kind: "reminder" | "watch", id: string) => {
+    returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPending({ kind, id });
+  };
+  const confirm = () => {
+    const target = pending;
+    setPending(undefined);
+    if (!target) return;
+    if (target.kind === "reminder") void drop(() => api.deleteReminder(waifuId, target.id), schedule.reload);
+    else void drop(() => api.deleteWatch(waifuId, target.id), watches.reload);
+  };
+  const refresh = () => {
+    setMessage(undefined);
+    schedule.reload();
+    watches.reload();
+  };
 
   return (
     <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
-      <div className="t-title" style={{ marginBottom: 8 }}>Reminders and watches</div>
+      <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", marginBottom: 8 }}>
+        <span className="t-title">Reminders and watches</span>
+        <button className="btn ghost sm" onClick={refresh}>
+          refresh
+        </button>
+      </div>
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
-      <ReminderList data={schedule.error ? undefined : schedule.data} error={schedule.error?.message} onDelete={(id) => void drop(() => api.deleteReminder(waifuId, id), schedule.reload)} />
-      <WatchList data={watchData} includePrivate={includePrivate} error={watches.error?.message} onDelete={(id) => void drop(() => api.deleteWatch(waifuId, id), watches.reload)} />
+      <ReminderList data={schedule.error ? undefined : schedule.data} error={schedule.error?.message} onDelete={(id) => ask("reminder", id)} />
+      <WatchList data={watchData} includePrivate={includePrivate} error={watches.error?.message} onDelete={(id) => ask("watch", id)} />
+      {pending && (
+        <ConfirmDialog
+          title={`Delete ${pending.kind} ${pending.id}?`}
+          cancelLabel="Keep"
+          confirmLabel="Delete"
+          returnFocus={() => returnTo.current}
+          onCancel={() => setPending(undefined)}
+          onConfirm={confirm}
+        >
+          <p className="t-small">{pending.kind === "reminder" ? "It is removed from her schedule.json and won't wake her." : "It is removed from her watches.json; she is not told."}</p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }
@@ -311,7 +383,7 @@ export function ReminderList({ data, error, onDelete }: { data: ScheduleResponse
           <span className="mono t-small" style={{ flex: "none" }}>{entry.at}</span>
           {entry.repeat && <span className="chip lavender">{entry.repeat}</span>}
           <span className="t-small" style={{ flex: "1 1 200px", overflowWrap: "anywhere" }}>{entry.note}</span>
-          <button className="btn ghost sm" onClick={() => onDelete(entry.id)}>
+          <button className="btn ghost sm" aria-label={`Delete reminder ${entry.id}`} onClick={() => onDelete(entry.id)}>
             delete
           </button>
         </div>
@@ -338,7 +410,7 @@ export function WatchList({ data, includePrivate, error, onDelete }: { data: Wat
               {hidden ? <span className="t-mute">{PRIVATE_HIDDEN}</span> : `${watchWhenText(entry)} · ${entry.note}`}
             </span>
             {entry.private && <span className="chip sky">private chat</span>}
-            <button className="btn ghost sm" onClick={() => onDelete(entry.id)}>
+            <button className="btn ghost sm" aria-label={`Delete watch ${entry.id}`} onClick={() => onDelete(entry.id)}>
               delete
             </button>
           </div>
