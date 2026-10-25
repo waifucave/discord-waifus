@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { RuntimeStateSchema } from "../backend/runtime.js";
+import { DiscordRuntimeStatusSchema } from "../shared/schemas/runtime.js";
 import {
   hostInstanceState,
   PROCESS_START_TIME_SLACK_MS,
@@ -14,8 +15,12 @@ import {
 // (any non-negative integer, not literally CURRENT_SCHEMA_VERSION) so a stale runtime/pid file
 // left on disk by a pre-upgrade process doesn't crash `waifus status`/`waifus stop`. The strict
 // literal in RuntimeStateSchema itself is untouched — it still governs every write.
+// The discord block changed shape across versions (2.x wrote `orchestratorConnected`, 3.0 writes
+// `houseConnected`), so a file from an older host reads as "not connected" instead of failing:
+// otherwise `status`/`doctor`/`stop` could not even find an old host's pid right after an upgrade.
 export const RuntimeStateReadSchema = RuntimeStateSchema.extend({
-  schemaVersion: z.number().int().nonnegative()
+  schemaVersion: z.number().int().nonnegative(),
+  discord: DiscordRuntimeStatusSchema.catch({ connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] })
 });
 
 /**
