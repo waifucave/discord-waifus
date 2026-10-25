@@ -10,7 +10,7 @@
 import { crc32, deflateSync, inflateSync } from "node:zlib";
 import jpeg from "jpeg-js";
 import omggif from "omggif";
-import { decode as decodeWebpBytes, decodeAnimation as decodeWebpAnimation, encode as encodeWebpBytes } from "@stacksjs/ts-webp";
+import { decode as decodeWebpBytes, encode as encodeWebpBytes } from "@stacksjs/ts-webp";
 
 export type ImageIo = {
   /** Reads a file of the virtual filesystem (path already resolved to absolute by the caller via `resolve`). Throws an Error whose message is shown to the user when missing. */
@@ -23,7 +23,7 @@ export type ImageIo = {
 export type ImageResult = { stdout: string; stderr: string; exitCode: number };
 
 /** Images above this many pixels are refused before decoding or creating them. */
-export const IMAGE_MAX_PIXELS = 40_000_000;
+export const IMAGE_MAX_PIXELS = 24_000_000;
 
 /** Largest side `image resize` produces. */
 const MAX_RESIZE_SIDE = 10_000;
@@ -527,7 +527,7 @@ function readSample(line: Uint8Array, index: number, bitDepth: number): number {
 function decodeJpeg(bytes: Uint8Array): Raster {
   const size = jpegDimensions(bytes);
   if (size !== null) checkPixels(size.width, size.height, "the image");
-  const decoded = jpeg.decode(bytes, { useTArray: true, formatAsRGBA: true, maxMemoryUsageInMB: 512, maxResolutionInMP: 40 });
+  const decoded = jpeg.decode(bytes, { useTArray: true, formatAsRGBA: true, maxMemoryUsageInMB: 256, maxResolutionInMP: IMAGE_MAX_PIXELS / 1_000_000 });
   checkPixels(decoded.width, decoded.height, "the image");
   return { width: decoded.width, height: decoded.height, data: decoded.data };
 }
@@ -582,25 +582,82 @@ function decodeWebp(bytes: Uint8Array): { raster: Raster; frames: number } {
   if (header === null) throw new ImageError("corrupt WebP data (unknown or truncated header)");
   checkPixels(header.width, header.height, "the image");
   if (header.animated) {
-    const animation = decodeWebpAnimation(bytes);
-    const first = animation.frames[0];
+    // Every frame's header is read and checked first; only the first frame is ever decoded.
+    const frames = webpAnimationFrames(bytes, header);
+    const first = frames[0];
     if (first === undefined) throw new ImageError("corrupt WebP data (no frames)");
-    checkPixels(animation.width, animation.height, "the image");
-    const canvas = new Uint8Array(animation.width * animation.height * 4);
-    const frame = first.image;
-    for (let y = 0; y < frame.height; y++) {
-      const ty = first.y + y;
-      if (ty >= animation.height) break;
-      const width = Math.min(frame.width, animation.width - first.x);
-      if (width <= 0) break;
-      canvas.set(frame.data.subarray(y * frame.width * 4, (y * frame.width + width) * 4), (ty * animation.width + first.x) * 4);
+    const still = decodeWebpBytes(first.still);
+    if (still.width !== first.width || still.height !== first.height || still.data.length !== still.width * still.height * 4) {
+      throw new ImageError("corrupt WebP data (the first frame does not match its header)");
     }
-    return { raster: { width: animation.width, height: animation.height, data: canvas }, frames: animation.frames.length };
+    const canvas = new Uint8Array(header.width * header.height * 4);
+    for (let y = 0; y < still.height; y++) {
+      const ty = first.y + y;
+      canvas.set(still.data.subarray(y * still.width * 4, (y + 1) * still.width * 4), (ty * header.width + first.x) * 4);
+    }
+    return { raster: { width: header.width, height: header.height, data: canvas }, frames: frames.length };
   }
   const decoded = decodeWebpBytes(bytes);
   checkPixels(decoded.width, decoded.height, "the image");
   if (decoded.data.length !== decoded.width * decoded.height * 4) throw new ImageError("corrupt WebP data (unexpected pixel data)");
   return { raster: { width: decoded.width, height: decoded.height, data: decoded.data }, frames: 1 };
+}
+
+/**
+ * An animated WebP's frames (ANMF chunks), each checked against the pixel limit and the canvas
+ * before anything is decoded, with the first frame's image data rewrapped as a still WebP.
+ */
+function webpAnimationFrames(bytes: Uint8Array, canvas: { width: number; height: number }): Array<{ x: number; y: number; width: number; height: number; still: Uint8Array }> {
+  const u24 = (at: number) => bytes[at]! | (bytes[at + 1]! << 8) | (bytes[at + 2]! << 16);
+  const u32 = (at: number) => (bytes[at]! | (bytes[at + 1]! << 8) | (bytes[at + 2]! << 16) | (bytes[at + 3]! << 24)) >>> 0;
+  const frames: Array<{ x: number; y: number; width: number; height: number; still: Uint8Array }> = [];
+  let pos = 12;
+  while (pos + 8 <= bytes.length) {
+    const type = ascii(bytes, pos, 4);
+    const size = u32(pos + 4);
+    const start = pos + 8;
+    if (start + size > bytes.length) throw new ImageError(`truncated WebP data (the ${type.trim()} chunk is cut off)`);
+    if (type === "ANMF") {
+      if (size < 16) throw new ImageError("corrupt WebP data (a frame header is too short)");
+      const x = u24(start) * 2;
+      const y = u24(start + 3) * 2;
+      const width = u24(start + 6) + 1;
+      const height = u24(start + 9) + 1;
+      checkPixels(width, height, `frame ${frames.length + 1}`);
+      if (x + width > canvas.width || y + height > canvas.height) throw new ImageError(`corrupt WebP data (frame ${frames.length + 1} lies outside the image)`);
+      const payload = bytes.subarray(start + 16, start + size);
+      frames.push({ x, y, width, height, still: frames.length === 0 ? stillWebp(payload, width, height) : new Uint8Array(0) });
+    }
+    pos = start + size + (size % 2);
+  }
+  return frames;
+}
+
+/** A frame's sub-chunks (ALPH, VP8 or VP8L) as a still WebP file. */
+function stillWebp(payload: Uint8Array, width: number, height: number): Uint8Array {
+  const hasAlpha = ascii(payload, 0, 4) === "ALPH";
+  const parts: Uint8Array[] = [];
+  if (hasAlpha) {
+    const vp8x = new Uint8Array(18);
+    vp8x.set([0x56, 0x50, 0x38, 0x58, 10, 0, 0, 0, 0x10]);
+    const w = width - 1;
+    const h = height - 1;
+    vp8x.set([w & 0xff, (w >> 8) & 0xff, (w >> 16) & 0xff, h & 0xff, (h >> 8) & 0xff, (h >> 16) & 0xff], 12);
+    parts.push(vp8x);
+  }
+  parts.push(payload);
+  const body = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(12 + body);
+  out.set([0x52, 0x49, 0x46, 0x46]);
+  const riff = body + 4;
+  out.set([riff & 0xff, (riff >> 8) & 0xff, (riff >> 16) & 0xff, (riff >>> 24) & 0xff], 4);
+  out.set([0x57, 0x45, 0x42, 0x50], 8);
+  let at = 12;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
 }
 
 /** Reads the canvas size from the first RIFF chunk (VP8, VP8L or VP8X) without decoding. */

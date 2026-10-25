@@ -34,13 +34,25 @@ export type BashWorkerInput = {
   maxOutputBytes: number;
   /** In-memory filesystem cap, in bytes. */
   maxFileSystemBytes: number;
+  /** Most entries a change set may carry; past it nothing is sent and the host refuses the set. */
+  maxChanges: number;
 };
 
 export type BashWorkerChange = { writes: Array<{ path: string; data: Uint8Array }>; deletes: string[]; dirs: string[] };
 
 export type BashWorkerMessage =
   | { type: "read"; id: number; path: string }
-  | { type: "done"; stdout: string; stderr: string; exitCode: number; changes: BashWorkerChange }
+  | {
+      type: "done";
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      changes: BashWorkerChange;
+      /** Every path the command read, listed, stat'ed, removed, moved or copied (the host's DM check). */
+      touched: string[];
+      /** Set instead of `changes` when the command changed more than `maxChanges` entries. */
+      tooMany?: number;
+    }
   | { type: "fatal"; message: string };
 
 export type BashHostMessage = { type: "read-result"; id: number; data?: Uint8Array; error?: string };
@@ -104,6 +116,12 @@ const inner = new InMemoryFs(undefined, { maxTotalBytes: input.maxFileSystemByte
 const pending = new Map<string, { origin: string; size: number; mtime: Date }>();
 /** Paths a command changed (the change set is computed under them). */
 const dirty = new Set<string>();
+/** Paths it read, listed or moved (bounded; the host checks them for private-chat files). */
+const touched = new Set<string>();
+const MAX_TOUCHED = 50_000;
+function touch(p: string): void {
+  if (touched.size < MAX_TOUCHED && (within(p, home) || within(p, "/tmp"))) touched.add(p);
+}
 const originals = new Map<string, ManifestEntry>();
 
 inner.mkdirSync(home, { recursive: true });
@@ -155,15 +173,21 @@ class GuardedFs implements IFileSystem {
   }
 
   async readFile(p: string, options?: Parameters<IFileSystem["readFile"]>[1]): Promise<string> {
-    return inner.readFile(this.guardRead("open", p), options);
+    const n = this.guardRead("open", p);
+    touch(n);
+    return inner.readFile(n, options);
   }
 
   async readFileBytes(p: string) {
-    return inner.readFileBytes(this.guardRead("open", p));
+    const n = this.guardRead("open", p);
+    touch(n);
+    return inner.readFileBytes(n);
   }
 
   async readFileBuffer(p: string): Promise<Uint8Array> {
-    return inner.readFileBuffer(this.guardRead("open", p));
+    const n = this.guardRead("open", p);
+    touch(n);
+    return inner.readFileBuffer(n);
   }
 
   async writeFile(p: string, content: Parameters<IFileSystem["writeFile"]>[1], options?: Parameters<IFileSystem["writeFile"]>[2]): Promise<void> {
@@ -192,6 +216,7 @@ class GuardedFs implements IFileSystem {
 
   async stat(p: string) {
     const n = this.guardRead("stat", p);
+    touch(n);
     const lazy = pending.get(n);
     // An original nobody read yet: its size and time from the host, without loading it.
     if (lazy) return { isFile: true, isDirectory: false, isSymbolicLink: false, mode: 0o644, size: lazy.size, mtime: lazy.mtime };
@@ -223,18 +248,25 @@ class GuardedFs implements IFileSystem {
     const n = this.guardRead("scandir", p);
     if (n === "/") return ["home", "tmp"];
     if (n === "/home") return [input.slug];
-    return inner.readdir(n);
+    const names = await inner.readdir(n);
+    touch(n);
+    for (const name of names) touch(path.posix.join(n, name));
+    return names;
   }
 
   async readdirWithFileTypes(p: string) {
     const n = this.guardRead("scandir", p);
     if (n === "/") return [{ name: "home", isFile: false, isDirectory: true, isSymbolicLink: false }, { name: "tmp", isFile: false, isDirectory: true, isSymbolicLink: false }];
     if (n === "/home") return [{ name: input.slug, isFile: false, isDirectory: true, isSymbolicLink: false }];
-    return inner.readdirWithFileTypes(n);
+    const entries = await inner.readdirWithFileTypes(n);
+    touch(n);
+    for (const entry of entries) touch(path.posix.join(n, entry.name));
+    return entries;
   }
 
   async rm(p: string, options?: Parameters<IFileSystem["rm"]>[1]): Promise<void> {
     const n = this.guardWrite("rm", p);
+    touch(n);
     dropPending(n);
     markDirty(n);
     await inner.rm(n, options);
@@ -243,6 +275,8 @@ class GuardedFs implements IFileSystem {
   async cp(src: string, dest: string, options?: Parameters<IFileSystem["cp"]>[2]): Promise<void> {
     const from = this.guardRead("cp", src);
     const to = this.guardWrite("cp", dest);
+    touch(from);
+    touch(to);
     markDirty(to);
     // The copy is new content of hers: load the source first so the copy is a real file.
     if (pending.has(from)) await inner.readFileBuffer(from);
@@ -254,6 +288,8 @@ class GuardedFs implements IFileSystem {
   async mv(src: string, dest: string): Promise<void> {
     const from = this.guardWrite("rename", src);
     const to = this.guardWrite("rename", dest);
+    touch(from);
+    touch(to);
     const final = (await isDir(to)) ? path.posix.join(to, path.posix.basename(from)) : to;
     markDirty(from);
     markDirty(final);
@@ -318,12 +354,14 @@ async function walk(root: string, out: Map<string, "file" | "dir">): Promise<voi
   for (const name of await inner.readdir(root)) await walk(path.posix.join(root, name), out);
 }
 
-async function changeSet(): Promise<BashWorkerChange> {
+async function changeSet(): Promise<BashWorkerChange | { tooMany: number }> {
   const roots = [...dirty].filter((p) => p !== "/dev/null" && (within(p, home) || within(p, "/tmp")));
   // Only the outermost changed roots.
   const outer = roots.filter((p) => !roots.some((other) => other !== p && within(p, other)));
   const final = new Map<string, "file" | "dir">();
   for (const root of outer) await walk(root, final);
+  // Far more than can be saved: say so without copying anything.
+  if (final.size > input.maxChanges * 2) return { tooMany: final.size };
   const changes: BashWorkerChange = { writes: [], deletes: [], dirs: [] };
   for (const [p, entry] of originals) {
     if (!outer.some((root) => within(p, root))) continue;
@@ -346,6 +384,8 @@ async function changeSet(): Promise<BashWorkerChange> {
   }
   // Deepest deletes are covered by their folder's; the host removes recursively.
   changes.deletes = changes.deletes.filter((p) => !changes.deletes.some((other) => other !== p && within(p, other)));
+  const count = changes.writes.length + changes.deletes.length + changes.dirs.length;
+  if (count > input.maxChanges) return { tooMany: count };
   return changes;
 }
 
@@ -401,9 +441,21 @@ async function main(): Promise<void> {
     // exception: it reads as the shell's error, and what the script changed before it still counts.
     result = { stdout: "", stderr: `bash: ${shellError(error)}\n`, exitCode: 1 };
   }
-  const changes = await changeSet();
+  const computed = await changeSet();
+  const changes: BashWorkerChange = "tooMany" in computed ? { writes: [], deletes: [], dirs: [] } : computed;
   const transfer = changes.writes.map((write) => write.data.buffer).filter((buffer): buffer is ArrayBuffer => buffer instanceof ArrayBuffer);
-  port.postMessage({ type: "done", stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode, changes } satisfies BashWorkerMessage, transfer);
+  port.postMessage(
+    {
+      type: "done",
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+      changes,
+      touched: [...touched],
+      ...("tooMany" in computed ? { tooMany: computed.tooMany } : {})
+    } satisfies BashWorkerMessage,
+    transfer
+  );
 }
 
 main().catch((error: unknown) => {

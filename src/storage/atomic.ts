@@ -5,6 +5,11 @@ import { discardOwnedEmptyMetadataFile, protectNewPrivateMetadataFile } from "./
 export type AtomicWriteOptions = {
   mode?: number;
   privateMetadata?: boolean;
+  /**
+   * false: skip the flush to disk (still written to a temp and renamed, so readers never see half a
+   * file). For a batch whose caller journals it and flushes the files together afterwards.
+   */
+  durable?: boolean;
 };
 
 export async function atomicWriteJson(
@@ -51,7 +56,7 @@ export async function atomicWriteFile(
       protectedTemp = true;
       if (typeof content === "string") await handle.writeFile(content, "utf8");
       else await handle.writeFile(content);
-      await handle.sync();
+      if (options.durable !== false) await handle.sync();
     } finally {
       await handle.close();
     }
@@ -63,7 +68,7 @@ export async function atomicWriteFile(
     if (protectedTemp) await rm(tmpPath, { force: true }).catch(() => undefined);
     throw error;
   }
-  await syncDirectoryBestEffort(dir);
+  if (options.durable !== false) await syncDirectoryBestEffort(dir);
 }
 
 // Windows reports a destination briefly held open by another reader, an antivirus scanner or

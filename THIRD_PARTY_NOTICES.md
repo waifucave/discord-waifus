@@ -80,3 +80,19 @@ distributed under its own license, available at its source URL.
 - **jpeg-js** 0.4.4 — BSD-3-Clause — https://github.com/jpeg-js/jpeg-js (JPEG decode and encode).
 - **omggif** 1.0.10 — MIT — https://github.com/deanm/omggif (GIF decode and encode).
 - **@stacksjs/ts-webp** 0.1.6 — MIT — https://github.com/stacksjs/ts-webp (WebP decode and encode).
+
+just-bash also brings these with it. npm installs them although the app never runs them: the
+waifus' Bash leaves out `sqlite3`, `tar` and `js-exec`, the only commands that use them, and npm
+cannot skip one package's optional dependencies without skipping the app's own (the Remote Access
+helpers are optional dependencies too).
+
+- **sql.js** 1.15.1 — MIT — https://github.com/sql-js/sql.js (SQLite compiled to WebAssembly; behind
+  just-bash's `sqlite3`).
+- **@mongodb-js/zstd** 7.0.0 — Apache License 2.0 — https://github.com/mongodb-js/zstd (optional
+  native addon; its install script fetches a prebuilt binary with `prebuild-install`; behind `tar`'s
+  zstd mode). If it fails to install, nothing in the app changes.
+- **node-liblzma** 2.2.0 — LGPL-3.0 — https://github.com/oorabona/node-liblzma (optional native addon,
+  loaded with `node-gyp-build`; behind `tar`'s xz mode). Dynamically linked and unmodified; if it
+  fails to install, nothing in the app changes.
+- **typescript** 6.0.3 — Apache License 2.0 — https://github.com/microsoft/TypeScript (a runtime
+  dependency of just-bash for its `js-exec` command).

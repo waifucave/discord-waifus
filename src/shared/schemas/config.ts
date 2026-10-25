@@ -186,10 +186,12 @@ export type WebFetchConfig = z.infer<typeof WebFetchConfigSchema>;
 // simulated Bash.
 const HOME_FIELDS = {
   maxBytes: z.number().int().min(1024 * 1024).max(1024 * 1024 * 1024),
-  maxFiles: z.number().int().min(10).max(20_000)
+  maxFiles: z.number().int().min(10).max(20_000),
+  maxFolders: z.number().int().min(10).max(5_000)
 };
 const TMP_FIELDS = {
   maxBytes: z.number().int().min(1024 * 1024).max(2 * 1024 * 1024 * 1024),
+  maxFiles: z.number().int().min(10).max(20_000),
   retentionDays: z.number().int().min(1).max(90)
 };
 const ATTACHMENT_FIELDS = { maxBytes: z.number().int().min(64 * 1024).max(50 * 1024 * 1024) };
@@ -198,18 +200,27 @@ const BASH_FIELDS = {
   enabled: z.boolean(),
   python: z.boolean(),
   maxTimeoutMs: z.number().int().min(1_000).max(300_000),
-  maxOutputChars: z.number().int().min(1_000).max(100_000)
+  maxOutputChars: z.number().int().min(1_000).max(100_000),
+  maxMemoryMb: z.number().int().min(128).max(4_096)
 };
-export const DEFAULT_HOME_CONFIG = { maxBytes: 50 * 1024 * 1024, maxFiles: 2_000 };
-export const DEFAULT_TMP_CONFIG = { maxBytes: 200 * 1024 * 1024, retentionDays: 7 };
+export const DEFAULT_HOME_CONFIG = { maxBytes: 50 * 1024 * 1024, maxFiles: 2_000, maxFolders: 500 };
+export const DEFAULT_TMP_CONFIG = { maxBytes: 200 * 1024 * 1024, maxFiles: 2_000, retentionDays: 7 };
 export const DEFAULT_ATTACHMENTS_CONFIG = { maxBytes: 10 * 1024 * 1024 };
 export const DEFAULT_SEND_CONFIG = { maxFiles: 4 };
-export const DEFAULT_BASH_CONFIG = { enabled: true, python: true, maxTimeoutMs: 60_000, maxOutputChars: 16_000 };
+export const DEFAULT_BASH_CONFIG = { enabled: true, python: true, maxTimeoutMs: 60_000, maxOutputChars: 16_000, maxMemoryMb: 512 };
 const HomeConfigSchema = z
-  .object({ maxBytes: HOME_FIELDS.maxBytes.default(DEFAULT_HOME_CONFIG.maxBytes), maxFiles: HOME_FIELDS.maxFiles.default(DEFAULT_HOME_CONFIG.maxFiles) })
+  .object({
+    maxBytes: HOME_FIELDS.maxBytes.default(DEFAULT_HOME_CONFIG.maxBytes),
+    maxFiles: HOME_FIELDS.maxFiles.default(DEFAULT_HOME_CONFIG.maxFiles),
+    maxFolders: HOME_FIELDS.maxFolders.default(DEFAULT_HOME_CONFIG.maxFolders)
+  })
   .default({ ...DEFAULT_HOME_CONFIG });
 const TmpConfigSchema = z
-  .object({ maxBytes: TMP_FIELDS.maxBytes.default(DEFAULT_TMP_CONFIG.maxBytes), retentionDays: TMP_FIELDS.retentionDays.default(DEFAULT_TMP_CONFIG.retentionDays) })
+  .object({
+    maxBytes: TMP_FIELDS.maxBytes.default(DEFAULT_TMP_CONFIG.maxBytes),
+    maxFiles: TMP_FIELDS.maxFiles.default(DEFAULT_TMP_CONFIG.maxFiles),
+    retentionDays: TMP_FIELDS.retentionDays.default(DEFAULT_TMP_CONFIG.retentionDays)
+  })
   .default({ ...DEFAULT_TMP_CONFIG });
 const AttachmentsConfigSchema = z.object({ maxBytes: ATTACHMENT_FIELDS.maxBytes.default(DEFAULT_ATTACHMENTS_CONFIG.maxBytes) }).default({ ...DEFAULT_ATTACHMENTS_CONFIG });
 const SendConfigSchema = z.object({ maxFiles: SEND_FIELDS.maxFiles.default(DEFAULT_SEND_CONFIG.maxFiles) }).default({ ...DEFAULT_SEND_CONFIG });
@@ -218,7 +229,8 @@ const BashConfigSchema = z
     enabled: BASH_FIELDS.enabled.default(DEFAULT_BASH_CONFIG.enabled),
     python: BASH_FIELDS.python.default(DEFAULT_BASH_CONFIG.python),
     maxTimeoutMs: BASH_FIELDS.maxTimeoutMs.default(DEFAULT_BASH_CONFIG.maxTimeoutMs),
-    maxOutputChars: BASH_FIELDS.maxOutputChars.default(DEFAULT_BASH_CONFIG.maxOutputChars)
+    maxOutputChars: BASH_FIELDS.maxOutputChars.default(DEFAULT_BASH_CONFIG.maxOutputChars),
+    maxMemoryMb: BASH_FIELDS.maxMemoryMb.default(DEFAULT_BASH_CONFIG.maxMemoryMb)
   })
   .default({ ...DEFAULT_BASH_CONFIG });
 
@@ -416,15 +428,16 @@ export const UpdateAppConfigBodySchema = z.object({
       maxRedirects: WEB_FETCH_FIELDS.maxRedirects.optional(),
       cacheMinutes: WEB_FETCH_FIELDS.cacheMinutes.optional()
     }).strict().optional(),
-    home: z.object({ maxBytes: HOME_FIELDS.maxBytes.optional(), maxFiles: HOME_FIELDS.maxFiles.optional() }).strict().optional(),
-    tmp: z.object({ maxBytes: TMP_FIELDS.maxBytes.optional(), retentionDays: TMP_FIELDS.retentionDays.optional() }).strict().optional(),
+    home: z.object({ maxBytes: HOME_FIELDS.maxBytes.optional(), maxFiles: HOME_FIELDS.maxFiles.optional(), maxFolders: HOME_FIELDS.maxFolders.optional() }).strict().optional(),
+    tmp: z.object({ maxBytes: TMP_FIELDS.maxBytes.optional(), maxFiles: TMP_FIELDS.maxFiles.optional(), retentionDays: TMP_FIELDS.retentionDays.optional() }).strict().optional(),
     attachments: z.object({ maxBytes: ATTACHMENT_FIELDS.maxBytes.optional() }).strict().optional(),
     send: z.object({ maxFiles: SEND_FIELDS.maxFiles.optional() }).strict().optional(),
     bash: z.object({
       enabled: BASH_FIELDS.enabled.optional(),
       python: BASH_FIELDS.python.optional(),
       maxTimeoutMs: BASH_FIELDS.maxTimeoutMs.optional(),
-      maxOutputChars: BASH_FIELDS.maxOutputChars.optional()
+      maxOutputChars: BASH_FIELDS.maxOutputChars.optional(),
+      maxMemoryMb: BASH_FIELDS.maxMemoryMb.optional()
     }).strict().optional()
   }).strict().optional(),
   search: z.object({

@@ -2,6 +2,7 @@ import { deflateSync, inflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import jpeg from "jpeg-js";
 import omggif from "omggif";
+import { encode as encodeWebp } from "@stacksjs/ts-webp";
 import { IMAGE_HELP, IMAGE_MAX_PIXELS, runImageCommand, type ImageIo } from "../src/life/bash/imageCommand.js";
 
 // --- in-memory virtual folder ---------------------------------------------------------------
@@ -32,6 +33,47 @@ function file(io: MemoryIo, name: string): Uint8Array {
   const data = io.files.get(`/home/her/${name}`);
   if (data === undefined) throw new Error(`missing ${name}`);
   return data;
+}
+
+// --- test-local animated WebP writer --------------------------------------------------------
+
+/** The image chunk (VP8L) of a lossless still WebP filled with one color. */
+function stillFrame(width: number, height: number, rgba: Rgba): Uint8Array {
+  const data = new Uint8Array(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) data.set(rgba, i);
+  const still = encodeWebp({ width, height, data }, { lossless: true });
+  const type = Buffer.from(still.subarray(12, 16)).toString("latin1");
+  if (type !== "VP8L") throw new Error(`expected a VP8L chunk, got ${type}`);
+  const size = Buffer.from(still).readUInt32LE(16);
+  return still.subarray(12, 20 + size + (size % 2));
+}
+
+function riffChunk(type: string, data: Uint8Array): Buffer {
+  const head = Buffer.alloc(8);
+  head.write(type, 0, "latin1");
+  head.writeUInt32LE(data.length, 4);
+  return Buffer.concat([head, data, data.length % 2 ? Buffer.alloc(1) : Buffer.alloc(0)]);
+}
+
+function u24(value: number): number[] {
+  return [value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff];
+}
+
+/** An animated WebP (VP8X + ANIM + one ANMF per frame); frame sizes are written as declared. */
+function animatedWebp(width: number, height: number, frames: Array<{ x: number; y: number; width: number; height: number; chunk: Uint8Array }>): Uint8Array {
+  const vp8x = Uint8Array.from([0x02, 0, 0, 0, ...u24(width - 1), ...u24(height - 1)]);
+  const anim = Uint8Array.from([0, 0, 0, 0, 0, 0]);
+  const parts = [riffChunk("VP8X", vp8x), riffChunk("ANIM", anim)];
+  for (const frame of frames) {
+    const header = Uint8Array.from([...u24(frame.x / 2), ...u24(frame.y / 2), ...u24(frame.width - 1), ...u24(frame.height - 1), 0, 0, 0, 0]);
+    parts.push(riffChunk("ANMF", Buffer.concat([header, frame.chunk])));
+  }
+  const body = Buffer.concat(parts);
+  const head = Buffer.alloc(12);
+  head.write("RIFF", 0, "latin1");
+  head.writeUInt32LE(body.length + 4, 4);
+  head.write("WEBP", 8, "latin1");
+  return Uint8Array.from(Buffer.concat([head, body]));
 }
 
 // --- test-local PNG writer (any color type, bit depth, all filters, Adam7) --------------------
@@ -250,6 +292,19 @@ describe("image info", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toBe("image: /home/her/nope.png: No such file or directory\n");
     expect(result.stdout).toMatch(/^a\.png: png 4x3, /);
+  });
+
+  it("uses only the first frame of an animated WebP, placed on its canvas", async () => {
+    const blue = stillFrame(2, 1, [0, 0, 255, 255]);
+    const green = stillFrame(3, 3, [0, 255, 0, 255]);
+    const io = memoryIo({ "anim.webp": animatedWebp(4, 4, [{ x: 2, y: 2, width: 2, height: 1, chunk: blue }, { x: 0, y: 0, width: 3, height: 3, chunk: green }]) });
+    const info = await runImageCommand(["info", "anim.webp"], io);
+    expect(info.stdout).toMatch(/^anim\.webp: webp 4x4, \d+ B, alpha, animated \(2 frames; only the first is used\)\n$/);
+    expect((await runImageCommand(["convert", "anim.webp", "first.png"], io)).exitCode).toBe(0);
+    const out = readPng(file(io, "first.png"));
+    expect(out.at(2, 2)).toEqual([0, 0, 255, 255]);
+    expect(out.at(3, 2)).toEqual([0, 0, 255, 255]);
+    expect(out.at(0, 0)).toEqual([0, 0, 0, 0]);
   });
 
   it("notes that an animated GIF keeps only its first frame", async () => {
@@ -570,14 +625,62 @@ describe("image errors", () => {
   });
 
   it("refuses images above IMAGE_MAX_PIXELS before decoding", async () => {
-    expect(IMAGE_MAX_PIXELS).toBe(40_000_000);
+    expect(IMAGE_MAX_PIXELS).toBe(24_000_000);
     // IHDR says 50000x50000 but the data is a single tiny row: it must never be inflated.
     const huge = makePng({ width: 1, height: 1, colorType: 6, bitDepth: 8, sample: () => [0, 0, 0, 255], declaredWidth: 50_000, declaredHeight: 50_000 });
     const result = await failing(["convert", "huge.png", "out.png"], { "huge.png": huge });
-    expect(result.stderr).toBe("image: huge.png: the image is 50000x50000, too large (at most 40,000,000 pixels)\n");
+    expect(result.stderr).toBe("image: huge.png: the image is 50000x50000, too large (at most 24,000,000 pixels)\n");
     expect((await failing(["info", "huge.png"], { "huge.png": huge })).stderr).toContain("too large");
     const gif = Uint8Array.from(Buffer.from("GIF89a\x50\xc3\x50\xc3\x00\x00\x00;", "latin1"));
     expect((await failing(["info", "huge.gif"], { "huge.gif": gif })).stderr).toContain("50000x50000, too large");
+  });
+
+  it("checks every animated WebP frame header before decoding and decodes only the first", async () => {
+    // Frame 2 claims 16384x16384 (268M pixels): refused from its header alone, before any decode.
+    const red = stillFrame(2, 2, [255, 0, 0, 255]);
+    const hostile = animatedWebp(16_384, 16_384, [
+      { x: 0, y: 0, width: 2, height: 2, chunk: red },
+      { x: 0, y: 0, width: 16_384, height: 16_384, chunk: red },
+    ]);
+    const started = Date.now();
+    expect((await failing(["info", "a.webp"], { "a.webp": hostile })).stderr).toBe("image: a.webp: the image is 16384x16384, too large (at most 24,000,000 pixels)\n");
+    const giantFrame = animatedWebp(4, 4, [{ x: 0, y: 0, width: 2, height: 2, chunk: red }, { x: 0, y: 0, width: 50_000, height: 50_000, chunk: red }]);
+    expect((await failing(["info", "a.webp"], { "a.webp": giantFrame })).stderr).toBe("image: a.webp: frame 2 is 50000x50000, too large (at most 24,000,000 pixels)\n");
+    const outside = animatedWebp(4, 4, [
+      { x: 0, y: 0, width: 2, height: 2, chunk: red },
+      { x: 4, y: 0, width: 2, height: 2, chunk: red },
+    ]);
+    expect((await failing(["info", "a.webp"], { "a.webp": outside })).stderr).toBe("image: a.webp: corrupt WebP data (frame 2 lies outside the image)\n");
+    // A later frame's data is never decoded: frame 2 declares 4000x4000 but holds a 2x2 picture.
+    const io = memoryIo({ "a.webp": animatedWebp(4_000, 4_000, [{ x: 0, y: 0, width: 2, height: 2, chunk: red }, { x: 0, y: 0, width: 4_000, height: 4_000, chunk: red }]) });
+    expect((await runImageCommand(["convert", "a.webp", "b.webp"], io)).exitCode).toBe(0);
+    // A first frame whose data does not match its header is refused.
+    const mismatch = animatedWebp(8, 8, [{ x: 0, y: 0, width: 4, height: 4, chunk: red }]);
+    expect((await failing(["info", "a.webp"], { "a.webp": mismatch })).stderr).toBe("image: a.webp: corrupt WebP data (the first frame does not match its header)\n");
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("refuses a JPEG whose header declares too many pixels, from the header", async () => {
+    // SOI, SOF0 claiming 30000x30000, EOI: never decoded.
+    const sof = [0xff, 0xc0, 0x00, 0x11, 0x08, 0x75, 0x30, 0x75, 0x30, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01];
+    const huge = Uint8Array.from([0xff, 0xd8, ...sof, 0xff, 0xd9]);
+    expect((await failing(["info", "h.jpg"], { "h.jpg": huge })).stderr).toBe("image: h.jpg: the image is 30000x30000, too large (at most 24,000,000 pixels)\n");
+    // Behind a segment the header scan cannot follow, jpeg-js checks the frame against the same limit.
+    const hidden = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x02, 0x00, ...sof, 0xff, 0xd9]);
+    const result = await failing(["info", "h.jpg"], { "h.jpg": hidden });
+    expect(result.stderr).toMatch(/^image: h\.jpg: /);
+  });
+
+  it("refuses a GIF frame that lies outside its canvas", async () => {
+    const buffer = new Uint8Array(4096);
+    const writer = new omggif.GifWriter(buffer, 2, 2, { palette: [0xff0000, 0x00ff00] });
+    writer.addFrame(0, 0, 2, 2, Uint8Array.from([0, 0, 0, 0]));
+    const gif = buffer.slice(0, writer.end());
+    // The image descriptor: ',' x(2) y(2) width(2) height(2).
+    const descriptor = gif.indexOf(0x2c, 13);
+    gif[descriptor + 5] = 0xff;
+    gif[descriptor + 6] = 0x7f;
+    expect((await failing(["info", "g.gif"], { "g.gif": gif })).stderr).toMatch(/^image: g\.gif: corrupt GIF data/);
   });
 
   it("validates --quality", async () => {

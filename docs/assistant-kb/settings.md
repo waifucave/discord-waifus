@@ -69,7 +69,9 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.webFetch.cacheMinutes` | integer 0–1440 [minutes] | `15` | Fetched pages are cached this long. |
 | `life.home.maxBytes` | integer 1048576–1073741824 [bytes] | `52428800` | Her home folder (her notes, reminders, watches and anything she keeps) may hold at most this much; a write past it is refused. |
 | `life.home.maxFiles` | integer 10–20000 | `2000` | Files her home folder may hold. |
+| `life.home.maxFolders` | integer 10–5000 | `500` | Folders her home folder may hold. |
 | `life.tmp.maxBytes` | integer 1048576–2147483648 [bytes] | `209715200` | Her /tmp (downloads and scratch files) may hold at most this much; the oldest files there are deleted when a download would not fit. |
+| `life.tmp.maxFiles` | integer 10–20000 | `2000` | Files her /tmp may hold; a Bash command or a write past it is refused, and a download deletes the oldest files first. |
 | `life.tmp.retentionDays` | integer 1–90 [days] | `7` | Files in her /tmp are deleted this many days after they were last written (her home is never touched). |
 | `life.attachments.maxBytes` | integer 65536–52428800 [bytes] | `10485760` | Largest attachment ReadMessages downloads into her /tmp (images, PDFs and text files; larger ones are only listed). |
 | `life.send.maxFiles` | integer 0–10 | `4` | Files she may attach to one message (0 = none). |
@@ -77,6 +79,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.bash.python` | boolean | `true` | Let her Bash run python3 (CPython compiled to WebAssembly, inside the same isolation). |
 | `life.bash.maxTimeoutMs` | integer 1000–300000 [ms] | `60000` | The longest one Bash command may run (she asks for up to this; the default is 10 seconds). The worker is terminated at the limit and nothing is saved. |
 | `life.bash.maxOutputChars` | integer 1000–100000 [characters] | `16000` | Bash output she sees (the rest is cut). |
+| `life.bash.maxMemoryMb` | integer 128–4096 [MiB] | `512` | How much the host process may grow while one Bash command runs (its WebAssembly Python memory included). Past it the command is stopped and nothing is saved. |
 | `search.maxPerSecond` | integer 0–10 | `2` | Web searches started per second, host-wide (paced, not refused; 0 = no WebSearch). |
 | `search.maxPerDay` | integer 0–10000 | `50` | Web searches per day, host-wide (0 = no WebSearch). The optional Exa key is the `exa` provider credential, not config. |
 | `search.maxPerWaifuPerDay` | integer 0–10000 | `20` | Web searches one waifu may make per day (0 = no WebSearch). |
