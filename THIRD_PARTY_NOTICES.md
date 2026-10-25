@@ -65,3 +65,18 @@ removes 272 entries from EFF Short Wordlist 1 and assigns new zero-based indices
 1,024 words while retaining their source order. EFF does not endorse this adaptation. The exact
 source and derived hashes, selection rules, and change policy are documented in
 `contracts/wordlists/README.md`.
+
+## Her own computer (Living cast: Bash, Read and image tools)
+
+These npm dependencies are installed with the app (pinned exactly in `package.json`); each is
+distributed under its own license, available at its source URL.
+
+- **just-bash** 3.6.0 — Apache License 2.0 — https://github.com/vercel-labs/just-bash. The simulated
+  shell behind the waifus' `Bash` tool. It ships a WebAssembly build of **CPython** 3.13 (Python
+  Software Foundation License Version 2 — https://docs.python.org/3/license.html) used for
+  `python3`.
+- **unpdf** 1.8.1 — MIT — https://github.com/unjs/unpdf. Bundles Mozilla **PDF.js** (Apache License
+  2.0 — https://github.com/mozilla/pdf.js); used to read PDF text.
+- **jpeg-js** 0.4.4 — BSD-3-Clause — https://github.com/jpeg-js/jpeg-js (JPEG decode and encode).
+- **omggif** 1.0.10 — MIT — https://github.com/deanm/omggif (GIF decode and encode).
+- **@stacksjs/ts-webp** 0.1.6 — MIT — https://github.com/stacksjs/ts-webp (WebP decode and encode).
