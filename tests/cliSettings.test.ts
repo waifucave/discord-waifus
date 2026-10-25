@@ -89,10 +89,21 @@ async function seed(app: FastifyInstance): Promise<void> {
   expect((await app.inject({ method: "PUT", url: `/api/servers/${GUILD}`, payload: { channels: { [CHANNEL]: { channelId: CHANNEL, enabled: true, enabledWaifuIds: ["aria"] } } } })).statusCode).toBe(200);
 }
 
+/**
+ * The round-trip cases: each group's keys in parts of at most KEYS_PER_CASE. Each key costs two CLI
+ * calls over the real API (about 25 ms alone); while the suite's WebAssembly-heavy Bash tests run in
+ * other workers everything is several times slower, and the `app` group (over 100 keys since L4)
+ * in one case passed its 60 s timeout.
+ */
+const KEYS_PER_CASE = 25;
+const ROUND_TRIP_CASES = SETTING_GROUPS.flatMap((group) => {
+  const count = groupKeyInfos(group).length;
+  const parts = Math.max(1, Math.ceil(count / KEYS_PER_CASE));
+  return Array.from({ length: parts }, (_, part) => ({ groupId: group.id, part, label: part + 1, parts }));
+});
+
 describe("waifus set/get round-trip over the real API", () => {
-  // One test per group (each about 1–3 s alone): a single test over all ~90 keys took 30–60 s when
-  // the whole suite ran in parallel workers.
-  it.each(SETTING_GROUPS.map((group) => group.id))("every writable key of group %s is settable and readable through the CLI and HTTP, with a value other than its default", async (groupId) => {
+  it.each(ROUND_TRIP_CASES)("every writable key of group $groupId (part $label of $parts) is settable and readable through the CLI and HTTP, with a value other than its default", async ({ groupId, part }) => {
     const { app, root } = await makeApp();
     await seed(app);
     const host = remoteAccessTransport(injectTransport(app));
@@ -103,7 +114,7 @@ describe("waifus set/get round-trip over the real API", () => {
       const target = TARGETS[group.id];
       expect(target, group.id).toBeDefined();
       expect(ADAPTERS[group.id], group.id).toBeDefined();
-      for (const info of groupKeyInfos(group)) {
+      for (const info of groupKeyInfos(group).slice(part * KEYS_PER_CASE, (part + 1) * KEYS_PER_CASE)) {
         if (info.flags.readOnly || info.flags.secret) continue;
         const text = nonDefaultText(info);
         if (text === undefined) {
