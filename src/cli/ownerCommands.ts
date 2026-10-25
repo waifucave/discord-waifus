@@ -74,7 +74,7 @@ export async function runOwnerCommand(parsed: ParsedCli, dataRoot: string, o: Ow
         return setCommand(ctx, args, { ...(fromEnv ? { fromEnv } : {}), ...(file ? { file } : {}), stdin: flagBoolean(flags, "stdin") });
       }
       case "unset":
-        return unsetCommand(ctx, args);
+        return unsetCommand(ctx, args, { yes: flagBoolean(flags, "yes") });
       case "wake":
         return wakeCommand(ctx, args);
       case "life":

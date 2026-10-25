@@ -1353,7 +1353,10 @@ Choices L3 made where the sections above leave room (owner review welcome):
   `GET /api/runtime`); `app` keys also offline in `config.toml`, except `updates.enabled`, which
   stays with `waifus update --auto`. Targets are `group[:id]` plus the dotted shorthand for
   singleton groups (`app.life.maxSendsPerTurn`). `waifus forget` asks for the word "forget" on a
-  terminal and refuses without one unless `--yes`. `waifus notes` is deferred with the tool-surface
+  terminal and refuses without one unless `--yes`; `waifus unset` of a secret (a provider's
+  `apiKey`) asks for "remove" the same way. An offline `app` write holds the host instance lock
+  while it writes (exit 3 while a host holds it). The CLI reaches the host at the configured
+  `http.host`, then 127.0.0.1, then ::1. `waifus notes` is deferred with the tool-surface
   redesign.
 - **Assistant**: `forget_user` is renamed `forget_person` (its card states the scrub limits);
   `get_setting_help` and `update_app_config` from the overhaul's §10.7 are added. `list_notes`,

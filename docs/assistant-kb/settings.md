@@ -296,7 +296,7 @@ DC_WAIFUS_HOME overrides the data root (default ~/.dc-waifus). DC_WAIFUS_LAYA_PY
 - `waifus list [GROUP]` — List the settings groups, or one group's keys with type, default and help (and its targets when the host runs).
 - `waifus get TARGET [KEY]` · `waifus get app.life.maxSendsPerTurn` · `waifus get app.search` — Read settings: a whole target, a part of one (app.search) or one key.
 - `waifus set TARGET KEY VALUE` · `waifus set TARGET KEY=VALUE [KEY=VALUE…]` · `waifus set app.life.maxSendsPerTurn 6` · `waifus set provider:anthropic apiKey --from-env ANTHROPIC_KEY` — Change settings: one key, or several KEY=VALUE pairs in one write.
-- `waifus unset TARGET KEY [KEY…]` · `waifus unset waifu:aria life.dailyBudgetUsd` — Reset keys: a key that takes null is cleared, any other key goes back to its default.
+- `waifus unset TARGET KEY [KEY…] [--yes]` · `waifus unset waifu:aria life.dailyBudgetUsd` — Reset keys: a key that takes null is cleared, any other key goes back to its default.
 - `waifus wake WAIFU [NOTE…]` — Wake a waifu now, with an optional note she sees (an owner wake skips sleep and budget).
 - `waifus life WAIFU [--log] [--limit N] [--private]` — A waifu's life: status, queue and today's cost; --log adds the recent life log.
 - `waifus forget USER_ID [--yes] [--dry-run]` — Forget a Discord user everywhere (best-effort scrub); asks for confirmation unless --yes.

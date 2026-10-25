@@ -11,9 +11,7 @@ import { SETTING_GROUPS, settingGroup } from "../shared/settings/registry.js";
 import { topicMarkdown } from "../shared/settings/render.js";
 import { resolveTopic, suggestTopics } from "../shared/settings/topics.js";
 import type { KeyInfo, SettingGroup, SettingGroupId } from "../shared/settings/types.js";
-import { hostInstanceState } from "../storage/instanceLock.js";
-import { processIsAlive } from "./processState.js";
-import { processStartTime } from "../storage/instanceLock.js";
+import { acquireHostInstanceLock, InstanceLockHeldError, type HostInstanceLock } from "../storage/instanceLock.js";
 import { call, CliFailure, display, EXIT, HOST_NOT_RUNNING, requireHost, usageError, type CliContext, type ExitCode } from "./cliContext.js";
 import type { HostTransport } from "./hostClient.js";
 
@@ -121,9 +119,26 @@ async function revisioned(
 
 const enc = encodeURIComponent;
 
-async function hostIsStarting(dataRoot: string): Promise<boolean> {
-  const state = await hostInstanceState(dataRoot, { isAlive: processIsAlive, startTime: (pid) => processStartTime(pid) }).catch(() => undefined);
-  return state?.state === "starting" || state?.state === "running";
+const HOST_STARTING = "A host is starting on this data root (or runs without answering yet); try again in a moment.";
+
+/**
+ * Runs an offline write of config.toml while holding the host instance lock, so no host starts
+ * (and reads the file) in the middle of it. A host that holds the lock (starting, or running
+ * without answering) is exit 3.
+ */
+async function whileNoHost<T>(dataRoot: string, write: () => Promise<T>): Promise<T> {
+  let lock: HostInstanceLock;
+  try {
+    lock = await acquireHostInstanceLock(dataRoot);
+  } catch (error) {
+    if (error instanceof InstanceLockHeldError) throw new CliFailure(EXIT.host, HOST_STARTING);
+    throw error;
+  }
+  try {
+    return await write();
+  } finally {
+    await lock.release();
+  }
 }
 
 export const ADAPTERS: Record<SettingGroupId, GroupAdapter> = {
@@ -143,8 +158,7 @@ export const ADAPTERS: Record<SettingGroupId, GroupAdapter> = {
       }
       const parsed = UpdateAppConfigBodySchema.safeParse(patch);
       if (!parsed.success) throw new CliFailure(EXIT.usage, parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
-      if (await hostIsStarting(ctx.dataRoot)) throw new CliFailure(EXIT.host, "A host is starting on this data root (or runs without answering yet); try again in a moment.");
-      return { view: stripEnvelope(await updateAppConfig(ctx.dataRoot, parsed.data)) };
+      return { view: stripEnvelope(await whileNoHost(ctx.dataRoot, () => updateAppConfig(ctx.dataRoot, parsed.data))) };
     }
   },
   waifu: {
@@ -467,8 +481,8 @@ export async function setCommand(ctx: CliContext, args: readonly string[], sourc
   return EXIT.ok;
 }
 
-/** `waifus unset TARGET KEY…`. */
-export async function unsetCommand(ctx: CliContext, args: readonly string[]): Promise<ExitCode> {
+/** `waifus unset TARGET KEY… [--yes]`: removing a secret (a provider key) asks first. */
+export async function unsetCommand(ctx: CliContext, args: readonly string[], o: { yes?: boolean } = {}): Promise<ExitCode> {
   const { target, keys } = splitTargetAndKey(args);
   if (keys.length === 0) throw usageError("Name the key(s) to unset.");
   const changes = keys.map((path) => {
@@ -476,6 +490,16 @@ export async function unsetCommand(ctx: CliContext, args: readonly string[]): Pr
     if (info.flags.readOnly) throw usageError(`${info.id} is read-only.`);
     return { info, value: info.flags.secret ? undefined : unsetValue(info), unset: true };
   });
+  const secrets = changes.filter((change) => change.info.flags.secret);
+  if (secrets.length > 0 && !o.yes) {
+    const what = `${target.label}'s ${secrets.map((change) => change.info.path).join(", ")}`;
+    if (!ctx.ask) throw usageError(`Removing ${what} cannot be undone: run it on a terminal to confirm, or pass --yes.`);
+    const answer = (await ctx.ask(`Remove ${what}? Type "remove" to confirm: `)).trim().toLowerCase();
+    if (answer !== "remove") {
+      ctx.err("Nothing was changed.");
+      return EXIT.usage;
+    }
+  }
   const result = await ADAPTERS[target.group.id].write(ctx, target, changes);
   if (ctx.json) ctx.out(JSON.stringify({ ok: true, target: target.label, ...(result.revision !== undefined ? { revision: result.revision } : {}), changed: keys }, null, 2));
   else for (const line of changedLines(target, changes, result.view, result.revision)) ctx.out(line);

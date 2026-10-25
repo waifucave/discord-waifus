@@ -10,6 +10,7 @@ import type { HostRequest, HostTransport } from "../src/cli/hostClient.js";
 import { ADAPTERS } from "../src/cli/settingsCommands.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { coerceValue, groupKeyInfos } from "../src/shared/settings/introspect.js";
+import { acquireHostInstanceLock, hostInstanceState } from "../src/storage/instanceLock.js";
 import type { KeyInfo } from "../src/shared/settings/types.js";
 import { SETTING_GROUPS } from "../src/shared/settings/registry.js";
 import { cli, injectTransport, makeCliApp } from "./cliFixtures.js";
@@ -213,7 +214,19 @@ describe("waifus set/get round-trip over the real API", () => {
     expect(prompted.out).not.toContain("secret-token-value");
     const bots = JSON.parse((await app.inject({ method: "GET", url: "/api/discord-bots" })).body) as { orchestrator: { tokenConfigured: boolean } };
     expect(bots.orchestrator.tokenConfigured).toBe(true);
-    expect((await cli(root, host, ["unset", "provider:anthropic", "apiKey"])).code).toBe(0);
+    // Removing a key asks first: refused without a terminal, kept on a wrong answer (review).
+    const noTerminal = await cli(root, host, ["unset", "provider:anthropic", "apiKey"]);
+    expect(noTerminal.code).toBe(2);
+    expect(noTerminal.err).toContain("--yes");
+    const declined = await cli(root, host, ["unset", "provider:anthropic", "apiKey"], { ask: async () => "no" });
+    expect(declined.code).toBe(2);
+    expect(declined.err).toContain("Nothing was changed.");
+    expect((await cli(root, host, ["get", "provider:anthropic", "apiKey"])).out).toContain("(set");
+    const confirmed = await cli(root, host, ["unset", "provider:anthropic", "apiKey"], { ask: async (question) => (question.includes("anthropic") ? "remove" : "") });
+    expect(confirmed.code).toBe(0);
+    expect((await cli(root, host, ["get", "provider:anthropic", "apiKey"])).out).toBe("(not set)");
+    expect((await cli(root, host, ["set", "provider:anthropic", "apiKey", "--stdin"], { stdin: `${secret}\n` })).code).toBe(0);
+    expect((await cli(root, host, ["unset", "provider:anthropic", "apiKey", "--yes"])).code).toBe(0);
     expect((await cli(root, host, ["get", "provider:anthropic", "apiKey"])).out).toBe("(not set)");
   });
 
@@ -251,6 +264,17 @@ describe("waifus set/get round-trip over the real API", () => {
     expect(waifu.code).toBe(3);
     expect(waifu.err).toContain("waifus start");
     expect((await cli(root, null, ["wake", "aria"])).code).toBe(3);
+    // The offline write holds the host lock while it writes: never while a host holds it (review).
+    expect(await hostInstanceState(root)).toEqual({ state: "absent" });
+    const held = await acquireHostInstanceLock(root);
+    try {
+      const busy = await cli(root, null, ["set", "app", "life.maxSendsPerTurn", "4"]);
+      expect(busy.code).toBe(3);
+      expect(busy.err).toContain("try again");
+      expect(await readFile(path.join(root, "config.toml"), "utf8")).toMatch(/maxSendsPerTurn = 9/u);
+    } finally {
+      await held.release();
+    }
   });
 
   it("list shows groups and keys; help resolves topics offline and unknown ones exit 2", async () => {

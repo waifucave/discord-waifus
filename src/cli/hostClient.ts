@@ -5,6 +5,7 @@
 // a URL; request bodies carry them.
 
 import path from "node:path";
+import { loadAppConfig } from "../config/appConfig.js";
 import { appDataPath } from "../config/paths.js";
 import { processIsAlive, readProcessState } from "./processState.js";
 import { hostPidIsGenuine, RuntimeStateReadSchema } from "./hostIdentity.js";
@@ -59,7 +60,9 @@ export function fetchTransport(baseUrl: string): HostTransport {
 
 /**
  * The running host of `dataRoot`, verified: its pid file, its process identity and its own answer
- * about who it is. Undefined when no host runs.
+ * about who it is. Undefined when no host runs. The address is the configured `http.host` (a
+ * wildcard or `localhost` reads as loopback), then 127.0.0.1, then ::1: a host bound to IPv6
+ * loopback only is reached too.
  */
 export async function connectHost(
   dataRoot: string,
@@ -68,11 +71,24 @@ export async function connectHost(
   const probe = o.probe ?? { isAlive: processIsAlive, startTime: (pid: number) => processStartTime(pid) };
   const state = await readProcessState(appDataPath(dataRoot, "pid.json"), RuntimeStateReadSchema).catch(() => undefined);
   if (!state || !(await hostPidIsGenuine(dataRoot, state, probe))) return undefined;
-  const transport = fetchTransport(`http://${loopbackHost(o.host)}:${state.port}`);
-  const runtime = await transport({ method: "GET", path: "/api/runtime", timeoutMs: 5_000 });
-  const body = runtime.body as { pid?: unknown; dataRoot?: unknown } | undefined;
-  if (runtime.status !== 200 || body?.pid !== state.pid || typeof body.dataRoot !== "string" || path.resolve(body.dataRoot) !== path.resolve(dataRoot)) {
-    throw new HostUnavailableError(`The process on port ${state.port} is not this data root's host; stop it or check --data-root.`);
+  const configured = o.host ?? (await loadAppConfig(dataRoot).then((config) => config.http.host).catch(() => undefined));
+  const addresses = [...new Set([loopbackHost(configured), "127.0.0.1", "[::1]"])];
+  let unreachable: HostUnavailableError | undefined;
+  for (const address of addresses) {
+    const transport = fetchTransport(`http://${address}:${state.port}`);
+    let runtime: HostResponse;
+    try {
+      runtime = await transport({ method: "GET", path: "/api/runtime", timeoutMs: 5_000 });
+    } catch (error) {
+      if (!(error instanceof HostUnavailableError)) throw error;
+      unreachable ??= error;
+      continue;
+    }
+    const body = runtime.body as { pid?: unknown; dataRoot?: unknown } | undefined;
+    if (runtime.status !== 200 || body?.pid !== state.pid || typeof body.dataRoot !== "string" || path.resolve(body.dataRoot) !== path.resolve(dataRoot)) {
+      throw new HostUnavailableError(`The process on port ${state.port} is not this data root's host; stop it or check --data-root.`);
+    }
+    return transport;
   }
-  return transport;
+  throw unreachable ?? new HostUnavailableError("The host could not be reached.");
 }

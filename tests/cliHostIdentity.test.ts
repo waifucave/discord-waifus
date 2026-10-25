@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
+import { connectHost } from "../src/cli/hostClient.js";
 import { runCommand, type CliRuntimeOptions } from "../src/cli/commands.js";
 import { parseCliArgs } from "../src/cli/parser.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -162,5 +165,32 @@ describe("B21b: CLI verifies host identity before reporting or signalling", () =
     }));
     expect(code).toBe(0);
     expect(lines.join("\n")).toContain(`already running (pid ${HOLDER})`);
+  });
+});
+
+describe("connectHost", () => {
+  it("reaches a host bound to IPv6 loopback only (::1) after 127.0.0.1 refuses (review)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    const server = http.createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(request.url === "/api/runtime" ? { pid: process.pid, dataRoot: root } : {}));
+    });
+    const listening = await new Promise<boolean>((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(0, "::1", () => resolve(true));
+    });
+    if (!listening) return; // No IPv6 loopback on this machine: nothing to check.
+    try {
+      const port = (server.address() as AddressInfo).port;
+      await writeFile(appDataPath(root, "pid.json"), JSON.stringify({ ...createRuntimeState({ pid: process.pid, startedAt: new Date().toISOString(), packageVersion: "0.1.0", port, dataRoot: root, mode: "start", paused: false, discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] }, queues: { active: 0, configuredGuilds: 0 } }) }));
+      const transport = await connectHost(root, { probe: { isAlive: () => true, startTime: async () => null } });
+      expect(transport).toBeDefined();
+      const runtime = await transport!({ method: "GET", path: "/api/runtime" });
+      expect(runtime.body).toMatchObject({ pid: process.pid });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

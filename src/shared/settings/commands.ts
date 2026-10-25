@@ -44,7 +44,9 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
   {
     name: "unset",
     summary: "Reset keys: a key that takes null is cleared, any other key goes back to its default.",
-    usage: ["waifus unset TARGET KEY [KEY…]", "waifus unset waifu:aria life.dailyBudgetUsd"]
+    usage: ["waifus unset TARGET KEY [KEY…] [--yes]", "waifus unset waifu:aria life.dailyBudgetUsd"],
+    description: "Removing a secret (a provider's apiKey) asks for confirmation on a terminal; without one it needs --yes.",
+    flags: [{ name: "--yes", help: "Do not ask before removing a secret (needed without a terminal)." }]
   },
   {
     name: "wake",
