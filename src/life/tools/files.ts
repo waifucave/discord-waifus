@@ -20,6 +20,7 @@ import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
 import { pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { notePlace } from "../placeRecorder.js";
+import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 import { parseInput, toolError, type LifeResultBlock, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const READ_DEFAULT_LINES = 2_000;
@@ -224,24 +225,27 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   // A whole-file Write of her reminders or watches replaces what the app changed since she read it
   // (a reminder fired, a watch matched or timed out, the owner deleted one): it needs a current Read.
   const special = specialJsonFile(target.path);
+  if (special === "profile" && ctx.mode === "session") return toolError(PROFILE_TIDY_REFUSED);
   const known = special ? ctx.turn.readHashes?.get(pathKey(target.path.virtual)) : undefined;
   const name = target.path.segments[0];
   // A file from a DM she replaces (or a new one in a DM's folder) makes the call a DM call (D14).
   await noteDmFile(store, target.path);
+  const why = special === "watches" ? "a watch matched or timed out" : special === "profile" ? "your profile was changed for you" : "a reminder fired";
   const guard = special
     ? {
         expectedHash: known ? known : null,
         staleMessage:
           known === undefined
             ? `error: ${name} already exists; Read it first (Write replaces the whole file)`
-            : `error: ${name} changed since you read it (${special === "watches" ? "a watch matched or timed out" : "a reminder fired"}); Read it again`
+            : `error: ${name} changed since you read it (${why}); Read it again`
       }
     : {};
   try {
     const result = await store.writeText(target.path, parsed.value.content, checkEnvFor(ctx.deps, ctx.waifu.id), guard);
     if (special) rememberRead(ctx, result.path, result.hash);
     await noteDmFile(store, result.path);
-    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})` };
+    const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
+    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}` };
   } catch (error) {
     return failure(error);
   }
@@ -262,6 +266,7 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
+  if (specialJsonFile(target.path) === "profile" && ctx.mode === "session") return toolError(PROFILE_TIDY_REFUSED);
   await noteDmFile(store, target.path);
   try {
     const result = await store.editText(target.path, parsed.value.old_string, parsed.value.new_string, parsed.value.replace_all === true, checkEnvFor(ctx.deps, ctx.waifu.id));
@@ -269,7 +274,8 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     const key = pathKey(target.path.virtual);
     if (specialJsonFile(target.path) && ctx.turn.readHashes?.has(key)) rememberRead(ctx, target.path, result.hash);
     const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
-    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}` };
+    const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
+    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}` };
   } catch (error) {
     return failure(error);
   }

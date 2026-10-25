@@ -98,6 +98,7 @@ export class CastRuntime {
       models: options.models ?? sharedModelClient(options.storage.dataRoot),
       config: () => appConfig,
       isPaused: () => this.stopping || (this.options.isPaused?.() ?? false),
+      profileSync: this.discordProfiles,
       usageLedger: this.usageLedger,
       // Turns, maintenance and forget scrubs hold update leases and count as active runs (review I7).
       ...(options.updateActivity ? { updateActivity: options.updateActivity } : {}),

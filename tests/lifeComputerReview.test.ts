@@ -409,7 +409,7 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
     expect(JSON.stringify(tools["Bash"]!.inputSchema)).toContain("(default 10000, at most 30000)");
     const defaults = Object.fromEntries(modelTools(["SendMessage"], config).map((tool) => [tool.name, tool]));
     expect(JSON.stringify(defaults["SendMessage"]!.inputSchema)).toContain('"maxItems":4');
-    expect(defaults["SendMessage"]!.description).toContain("MEMORY.md, the notes it links to, schedule.json, watches.json and places.md can't be attached.");
+    expect(defaults["SendMessage"]!.description).toContain("MEMORY.md, the notes it links to, schedule.json, watches.json, places.md and profile.json can't be attached.");
   });
 
   it("a watch matches a message posted before its timeout even when catch-up handles it later", async () => {

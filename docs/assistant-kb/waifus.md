@@ -46,6 +46,9 @@ every change to these fields, her images or her bot link.
   `content-type` (PNG, JPEG, WebP or GIF, at most 8 MB; the bytes must be that type). An unchanged
   image is never uploaded again.
 
+She can change her own `username`, `bio` and `nicknames` too: they are also her file
+`~/profile.json` (see life.md); her edit becomes these fields, and changing them here rewrites it.
+
 `null` unsets each field. Only fields that differ from what her bot shows are sent. A rate limit is
 recorded with its retry time and retried by the app; nothing is sent again before then.
 `GET /api/waifus/:id/discord-profile` shows `state` (`synced`, `pending`, `rate_limited`, `error`,

@@ -367,6 +367,8 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
     await refusePrivateWatches(home, p, includePrivate);
     const written = await mapped(() => home.writeText(p, body.text, env(), body.expectedHash !== undefined ? { expectedHash: body.expectedHash } : {}));
+    // Her profile.json is her config (§17.1): her bot follows it.
+    if (written.profileChanged) void o.cast()?.deps.profileSync?.syncWaifu(waifuId).catch(() => undefined);
     return { waifuId, path: p.virtual, display: p.display, hash: written.hash, size: written.bytes, created: written.created, rewritten: written.rewritten };
   });
 

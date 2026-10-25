@@ -478,6 +478,9 @@ describe("profile API", () => {
       expect(saved.statusCode).toBe(200);
       expect(saved.json()).toMatchObject({ username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
       expect(syncDiscordProfile).toHaveBeenCalledWith("aria");
+      // Her ~/profile.json follows the dashboard edit (§17.1).
+      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "aria", "home", "profile.json"), "utf8"));
+      expect(file).toEqual({ name: "Aria", username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
       const cleared = await server.inject({ method: "PUT", url: "/api/waifus/aria", payload: { revision: saved.json().revision, bio: null } });
       expect(cleared.json().bio).toBeUndefined();
       expect(cleared.json().username).toBe("Ari");
@@ -489,7 +492,8 @@ describe("profile API", () => {
       const big = Buffer.concat([PNG, Buffer.alloc(2 * 1024 * 1024)]);
       const upload = await server.inject({ method: "POST", url: "/api/waifus/aria/assets/pfp", headers: { "content-type": "image/png" }, payload: big });
       expect(upload.statusCode).toBe(201);
-      expect(syncDiscordProfile).toHaveBeenCalledTimes(3);
+      // Create, two PUTs and the upload.
+      expect(syncDiscordProfile).toHaveBeenCalledTimes(4);
 
       const status = await server.inject({ method: "GET", url: "/api/waifus/aria/discord-profile" });
       expect(status.statusCode).toBe(200);

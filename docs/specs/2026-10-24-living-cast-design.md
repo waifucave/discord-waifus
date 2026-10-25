@@ -2227,3 +2227,43 @@ keep waiting) and answers the status. The Cast editor's "Discord profile" sectio
 (`WaifuDiscordProfileFields.tsx`, wording in `utils/discordProfile.ts`) edits the three fields
 (saved with Save), uploads the images at once and shows the status line, e.g. "Username change
 waiting for Discord's rate limit (try again in 34 min)".
+
+### 17.1 `~/profile.json`: her profile as her own file (owner addition, 2026-10-25)
+
+Her profile is also a file in her home that she reads and changes with Read, Write, Edit and Bash:
+
+```json
+{
+  "name": "Aria",
+  "username": "Ari ✨",
+  "bio": "Sunny baker. Ask me about lemon tarts.",
+  "nicknames": { "bake-club": "Ari" }
+}
+```
+
+- **One source of truth.** The file and her config's `username`, `bio` and `nicknames` say the same
+  thing. Her write is checked (`src/life/home/profileFile.ts`, a special file in `homeStore.ts`
+  like `schedule.json`/`watches.json`) and then saved to her config (under her home lock, then her
+  waifu lock; a Bash change set journals it with the files). A dashboard, CLI or HTTP change rewrites
+  the file (`rewriteProfileFile` after `POST`/`PUT /api/waifus/…`); the turn start and the
+  scheduler's housekeeping rewrite it too when it is missing or says something else, keeping her own
+  layout while it agrees. Her stale whole-file Write gets "profile.json changed since you read it
+  (your profile was changed for you); Read it again", as for her other special files.
+- **Checks** (nothing is saved on an error): strict JSON with line and column; one object with only
+  `name`, `username`, `bio`, `nicknames`; `name` is her plain name, shown for reference and refused
+  if changed (it stays her identity in prompts, wake on name and the detector); `username` by
+  Discord's rules (null or "" = her display name); `bio` at most 400 characters (null or "" = the
+  app leaves the description alone); a nickname 1–32 characters. Nickname keys are servers as her
+  places name them (the part of a room handle before `/#`, like `bake-club`; a server's name or id
+  works too); an unknown server is refused with examples from her servers. The file renders a
+  server by that slug, or by its id when the slug is ambiguous or unknown. It can't be deleted.
+- **After a valid change** the profile sync runs and the tool result says what happens, from the
+  live sync status: "saved; Discord will show the new username shortly", "saved; Discord allows only
+  about 2 username changes an hour, so your new username shows in ~34 min; it's already on its way,
+  don't change it again before then", "saved; Discord shows it once you're back online", or that
+  she has no Discord account of her own (or shares one). An unchanged profile says so.
+- **Not shared, not tidied.** profile.json is never attached by SendMessage (with MEMORY.md and the
+  other system files), the forget scrub leaves it alone, and in a session outside her life (nightly
+  maintenance, a forget's notes scrub) Write, Edit and Bash refuse to change it.
+- **Prompt.** `<life>` gains one sentence: "Your Discord profile is in profile.json: you may change
+  your username, bio and server nicknames when you want to, sparingly."

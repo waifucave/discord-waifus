@@ -80,7 +80,7 @@ import { runNotesSession, scrubInstruction } from "./maintenance.js";
 import { markedUserIds, MEMORY_INDEX } from "./home/memoryIndex.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import type { HomeStore } from "./home/homeStore.js";
-import { PLACES_FILE, SCHEDULE_FILE, WATCHES_FILE } from "./home/pathRules.js";
+import { PLACES_FILE, PROFILE_FILE, SCHEDULE_FILE, WATCHES_FILE } from "./home/pathRules.js";
 import { homeDir, lifeDir, legacyNotesDir } from "./paths.js";
 import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
@@ -584,7 +584,7 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   const home = homeStoreFor(deps, waifu);
   // Every text file of her home (§16.9), except the ones step 3 handled by their own rules (her
   // reminders and watches) and places.md (the app's).
-  const all = new Map([...(await home.readAllText())].filter(([notePath]) => ![SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE].includes(notePath)));
+  const all = new Map([...(await home.readAllText())].filter(([notePath]) => ![SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE].includes(notePath)));
   let notesChanged = (await deletePersonNotes(home, all, identity, out)).length > 0;
   // Notes marked as someone else's: a name match there (or in the index line linking one) is
   // listed for review, never removed (two people may share the name).

@@ -88,6 +88,8 @@ export type LivingCastOptions = {
   updateActivity?: { begin(): (() => void) | undefined };
   /** Busy work (turns, maintenance, forget scrubs) for `/api/runtime` `queues.active`. */
   onActiveRunsChange?: (activeRuns: number) => void;
+  /** Her bot's Discord profile sync (spec §17), run after she changes ~/profile.json. */
+  profileSync?: { syncWaifu(waifuId: string): Promise<void> };
 };
 
 export type OwnerForgetResult = { scrubbed: ForgetScrubResult[] };
@@ -153,7 +155,8 @@ export class LivingCast {
       random: o.random ?? Math.random,
       sleep: o.sleep ?? abortableSleep,
       isPaused: o.isPaused,
-      notices: this.notices
+      notices: this.notices,
+      ...(o.profileSync ? { profileSync: o.profileSync } : {})
     };
     this.web = new WebTools({
       storage: o.storage,

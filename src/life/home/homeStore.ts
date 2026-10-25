@@ -37,6 +37,7 @@ import {
   parseVirtual,
   pathKey,
   PLACES_FILE,
+  PROFILE_FILE,
   resolveHerPath,
   SCHEDULE_FILE,
   specialJsonFile,
@@ -60,6 +61,7 @@ import {
   type ResolvedBinding,
   type WatchEntry
 } from "./specialFiles.js";
+import { checkProfileText, profileFileText, profileServers, sameProfile, saveProfileToConfig, type ProfileFields } from "./profileFile.js";
 
 /** A file written by Write, Edit or the API (§16.2). */
 export const WRITE_MAX_BYTES = 256 * 1024;
@@ -159,7 +161,9 @@ const JournalSchema = z.object({
   deletes: z.array(z.string()),
   dirs: z.array(z.string()),
   watchIds: WatchIdsSchema.optional(),
-  scheduleIds: ScheduleIdsSchema.optional()
+  scheduleIds: ScheduleIdsSchema.optional(),
+  // Spec 17.1: her checked profile.json, saved to her config with the files.
+  profile: z.object({ username: z.string().optional(), bio: z.string().optional(), nicknames: z.record(z.string(), z.string()).optional() }).optional()
 });
 type Journal = z.infer<typeof JournalSchema>;
 
@@ -286,9 +290,17 @@ export class HomeStore {
     p: HerPath,
     data: Buffer | undefined,
     env: CheckEnv
-  ): Promise<{ data?: Buffer; watchIds?: WatchIds; scheduleIds?: ScheduleIds }> {
+  ): Promise<{ data?: Buffer; watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields }> {
     const special = specialJsonFile(p);
     if (!special) return data ? { data } : {};
+    if (special === "profile") {
+      if (data === undefined) throw new HomeError(`error: ${PROFILE_FILE} can't be deleted; change what's in it instead`, "special");
+      if (!isTextBytes(data)) throw new HomeError(`error: ${PROFILE_FILE} must be text (JSON)`, "special");
+      const waifu = await readWaifu(this.storage, this.waifuId);
+      const checked = checkProfileText(data.toString("utf8"), { name: waifu.name, servers: await profileServers(this.storage) });
+      if (!checked.ok) throw new HomeError(checked.error, "special");
+      return { data, profile: checked.fields };
+    }
     const text = data === undefined ? "[]\n" : data.toString("utf8");
     if (data !== undefined && !isTextBytes(data)) throw new HomeError(`error: ${p.segments[0]} must be text (JSON)`, "special");
     if (special === "schedule") {
@@ -420,7 +432,7 @@ export class HomeStore {
    * Creates or replaces a text file (folders made as needed). `expectedHash`: the content hash the
    * writer last saw (the API's revision): a different file on disk is a conflict.
    */
-  async writeText(p: HerPath, content: string, env: CheckEnv, o: { expectedHash?: string | null; staleMessage?: string } = {}): Promise<{ bytes: number; created: boolean; hash: string; rewritten: boolean; path: HerPath }> {
+  async writeText(p: HerPath, content: string, env: CheckEnv, o: { expectedHash?: string | null; staleMessage?: string } = {}): Promise<{ bytes: number; created: boolean; hash: string; rewritten: boolean; path: HerPath; profileChanged?: boolean }> {
     if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
     return this.locked(async () => {
       p = await this.files.canonical(p);
@@ -440,8 +452,8 @@ export class HomeStore {
       const data = special.data ?? raw;
       this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
       await this.files.writeBytes(p, data);
-      await this.saveSpecialSide(special);
-      return { bytes: data.length, created: existing === undefined, hash: sha256(data), rewritten: data !== raw, path: p };
+      const profileChanged = await this.saveSpecialSide(special);
+      return { bytes: data.length, created: existing === undefined, hash: sha256(data), rewritten: data !== raw, path: p, ...(special.profile ? { profileChanged } : {}) };
     });
   }
 
@@ -479,7 +491,7 @@ export class HomeStore {
   }
 
   /** Replaces `oldString` (exactly once unless `replaceAll`). Returns how many were replaced. */
-  async editText(p: HerPath, oldString: string, newString: string, replaceAll: boolean, env: CheckEnv): Promise<{ count: number; rewritten: boolean; hash: string }> {
+  async editText(p: HerPath, oldString: string, newString: string, replaceAll: boolean, env: CheckEnv): Promise<{ count: number; rewritten: boolean; hash: string; profileChanged?: boolean }> {
     if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
     if (oldString.length === 0) throw new HomeError("error: old_string must not be empty", "invalid");
     if (oldString === newString) throw new HomeError("error: old_string and new_string are the same", "invalid");
@@ -503,8 +515,8 @@ export class HomeStore {
       const data = special.data ?? raw;
       this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
       await this.files.writeBytes(p, data);
-      await this.saveSpecialSide(special);
-      return { count: replaceAll ? count : 1, rewritten: data !== raw, hash: sha256(data) };
+      const profileChanged = await this.saveSpecialSide(special);
+      return { count: replaceAll ? count : 1, rewritten: data !== raw, hash: sha256(data), ...(special.profile ? { profileChanged } : {}) };
     });
   }
 
@@ -528,9 +540,11 @@ export class HomeStore {
     });
   }
 
-  private async saveSpecialSide(o: { watchIds?: WatchIds; scheduleIds?: ScheduleIds }): Promise<void> {
+  /** Saves what a special-file write carries beside the file; returns whether her profile config changed. */
+  private async saveSpecialSide(o: { watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields }): Promise<boolean> {
     if (o.watchIds) await this.writeSide(lifePaths.watchIds(this.waifuId), o.watchIds);
     if (o.scheduleIds) await this.writeSide(lifePaths.scheduleIds(this.waifuId), o.scheduleIds);
+    return o.profile ? saveProfileToConfig(this.storage, this.waifuId, o.profile) : false;
   }
 
   // ---- Bash change sets ---------------------------------------------------------------------------------
@@ -540,7 +554,7 @@ export class HomeStore {
    * untouched, her special files checked, the limits and names checked on the result, and nothing
    * changed under her since the command started. Journalled first (`journalId`, the tool call id).
    */
-  async applyChanges(changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string; deadlineMs?: number }): Promise<AppliedChanges> {
+  async applyChanges(changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string; deadlineMs?: number }): Promise<AppliedChanges & { profileChanged?: boolean }> {
     const entries = changes.writes.length + changes.deletes.length + changes.dirs.length;
     if (entries > MAX_CHANGE_SET_ENTRIES) {
       throw new HomeError(`error: the command changed ${entries} files and folders; at most ${MAX_CHANGE_SET_ENTRIES} can be saved at once`, "limit");
@@ -592,15 +606,15 @@ export class HomeStore {
         effective.push(step);
       }
       // Her special files: the result of the whole set is checked once.
-      const side: { watchIds?: WatchIds; scheduleIds?: ScheduleIds } = {};
-      for (const name of [SCHEDULE_FILE, WATCHES_FILE]) {
+      const side: { watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields } = {};
+      for (const name of [SCHEDULE_FILE, WATCHES_FILE, PROFILE_FILE]) {
         const target = this.home(name);
         const write = [...effective].reverse().find((step) => step.kind === "write" && step.path.virtual === target.virtual);
         const removed = effective.some((step) => step.kind === "delete" && (step.path.virtual === target.virtual || target.virtual.startsWith(`${step.path.virtual}/`)));
         if (!write && !removed) continue;
         const checked = await this.checkSpecial(target, write ? write.data : undefined, env);
         if (write && checked.data) write.data = checked.data;
-        Object.assign(side, checked.watchIds ? { watchIds: checked.watchIds } : {}, checked.scheduleIds ? { scheduleIds: checked.scheduleIds } : {});
+        Object.assign(side, checked.watchIds ? { watchIds: checked.watchIds } : {}, checked.scheduleIds ? { scheduleIds: checked.scheduleIds } : {}, checked.profile ? { profile: checked.profile } : {});
       }
       this.checkPlan(effective, await this.snapshot());
       inTime();
@@ -611,8 +625,9 @@ export class HomeStore {
         ...side
       };
       const display = (virtual: string) => parseVirtual(virtual, this.slug)?.display ?? virtual;
-      const applied: AppliedChanges = { changed: journal.writes.map((write) => display(write.path)), deleted: journal.deletes.map(display), created: journal.dirs.map(display) };
+      const applied: AppliedChanges & { profileChanged?: boolean } = { changed: journal.writes.map((write) => display(write.path)), deleted: journal.deletes.map(display), created: journal.dirs.map(display) };
       if (journal.writes.length + journal.deletes.length + journal.dirs.length === 0 && !side.watchIds && !side.scheduleIds) return applied;
+      const profileBefore = side.profile ? await readWaifu(this.storage, this.waifuId).catch(() => undefined) : undefined;
       const journalDir = this.storage.dataPath(lifePaths.pendingChanges(this.waifuId));
       const journalFile = path.join(journalDir, `${safeJournalName(o.journalId)}.json`);
       await mkdir(journalDir, { recursive: true, mode: 0o700 });
@@ -622,6 +637,7 @@ export class HomeStore {
       // The files are written without a flush each, then flushed together: the journal makes the
       // set complete after a crash either way.
       await this.applyJournal(journal, { durable: false });
+      if (side.profile) applied.profileChanged = !profileBefore || !sameProfile(profileBefore, side.profile);
       // Kept as a marker until her next change set: a crash before the call's done intent still
       // tells boot repair the changes were saved.
       await rename(journalFile, `${journalFile.slice(0, -".json".length)}${APPLIED_SUFFIX}`).catch(() => rm(journalFile, { force: true }));
@@ -738,6 +754,27 @@ export class HomeStore {
         const ids = await this.readWatchIds();
         await this.writeSide(lifePaths.watchIds(this.waifuId), { ...ids, fired: [...ids.fired.filter((id) => !wakeIds.includes(id)), ...wakeIds].slice(-MAX_FIRED) });
       }
+    });
+  }
+
+  /**
+   * `~/profile.json` from her config (spec 17.1): written when missing, unreadable or saying
+   * something else than her config (a dashboard edit); her own layout is kept while it agrees.
+   * Returns whether it wrote.
+   */
+  async writeProfileFromConfig(): Promise<boolean> {
+    return this.locked(async () => {
+      const waifu = await readWaifu(this.storage, this.waifuId);
+      const servers = await profileServers(this.storage);
+      const p = this.home(PROFILE_FILE);
+      const current = await this.files.readText(p).catch(() => undefined);
+      if (current !== undefined) {
+        const checked = checkProfileText(current, { name: waifu.name, servers });
+        // Her name is shown for reference: a rename rewrites the file too.
+        if (checked.ok && sameProfile(checked.fields, waifu) && current.includes(JSON.stringify(waifu.name))) return false;
+      }
+      await this.files.writeBytes(p, Buffer.from(profileFileText(waifu, servers), "utf8"));
+      return true;
     });
   }
 
@@ -869,7 +906,7 @@ export class HomeStore {
    * places. Copies under other names are hers to share.
    */
   async privateFiles(): Promise<Set<string>> {
-    const out = new Set([MEMORY_FILE, SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE].map((name) => pathKey(this.home(name).virtual)));
+    const out = new Set([MEMORY_FILE, SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE].map((name) => pathKey(this.home(name).virtual)));
     const memory = await this.files.canonical(this.home(MEMORY_FILE));
     const index = await this.files.readText(memory).catch(() => undefined);
     for (const target of markdownLinks(index ?? "")) {

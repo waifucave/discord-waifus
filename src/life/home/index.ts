@@ -2,6 +2,8 @@
 // environment from the running app (her clock, the people she knows), and `~/places.md`.
 
 import { readActiveChatParticipants } from "../../orchestration/stores/participants.js";
+import { readWaifu } from "../../orchestration/stores/config.js";
+import { DEFAULT_APP_CONFIG } from "../../shared/schemas/config.js";
 import { listDmStates } from "../../orchestration/dm/dmStore.js";
 import type { WaifuConfig } from "../../shared/schemas/domain.js";
 import type { StorageService } from "../../storage/storageService.js";
@@ -97,6 +99,15 @@ export async function placesFileText(deps: LifeDeps, waifuId: string): Promise<s
     ...dms,
     ""
   ].join("\n");
+}
+
+/**
+ * `~/profile.json` from her config after a dashboard, CLI or HTTP edit (spec §17.1); written only
+ * when it says something else. Works with or without the running cast.
+ */
+export async function rewriteProfileFile(storage: StorageService, waifuId: string): Promise<boolean> {
+  const waifu = await readWaifu(storage, waifuId);
+  return new HomeStore(storage, waifuId, herSlug(waifu), () => homeLimitsOf(DEFAULT_APP_CONFIG.life)).writeProfileFromConfig();
 }
 
 /** Rewrites `~/places.md` when it would change. */

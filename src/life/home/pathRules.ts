@@ -36,6 +36,8 @@ export const PLACES_FILE = "places.md";
 export const SCHEDULE_FILE = "schedule.json";
 export const WATCHES_FILE = "watches.json";
 export const MEMORY_FILE = "MEMORY.md";
+/** Her Discord profile (§17.1): checked on every write, then becomes her config. */
+export const PROFILE_FILE = "profile.json";
 
 /** Names Windows reserves for devices (`con.md` would open the console, not a file). */
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/iu;
@@ -144,12 +146,13 @@ export function pathKey(virtual: string): string {
   return collisionKey(virtual);
 }
 
-/** `~/schedule.json` or `~/watches.json`: checked on every write (§16.4, §16.5). */
-export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): "schedule" | "watches" | undefined {
+/** `~/schedule.json`, `~/watches.json` or `~/profile.json`: checked on every write (§16.4, §16.5, §17.1). */
+export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): "schedule" | "watches" | "profile" | undefined {
   if (p.root !== "home" || p.segments.length !== 1) return undefined;
   const key = collisionKey(p.segments[0]!);
   if (key === collisionKey(SCHEDULE_FILE)) return "schedule";
   if (key === collisionKey(WATCHES_FILE)) return "watches";
+  if (key === collisionKey(PROFILE_FILE)) return "profile";
   return undefined;
 }
 
@@ -157,7 +160,7 @@ export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): "schedul
 export function canonicalSpecialName(p: Pick<HerPath, "root" | "segments">): string | undefined {
   if (p.root !== "home" || p.segments.length !== 1) return undefined;
   const key = collisionKey(p.segments[0]!);
-  return [SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, MEMORY_FILE].find((name) => collisionKey(name) === key);
+  return [SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, MEMORY_FILE, PROFILE_FILE].find((name) => collisionKey(name) === key);
 }
 
 /** A virtual path string (`/home/aria/x`, `/tmp/x`) back to a checked path; undefined outside her folders. */

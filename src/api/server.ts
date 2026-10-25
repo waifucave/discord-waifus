@@ -10,6 +10,7 @@ import type { AssistantModelClient } from "./assistant/service.js";
 import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
 import { decisionModelCatalog } from "../life/detector/catalog.js";
 import { queueOwnerScrubs, withoutPrivateReview } from "../life/forget.js";
+import { rewriteProfileFile } from "../life/home/index.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
@@ -390,6 +391,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   const currentCast = () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
   // Living cast §17: her bot's profile follows her config and images (in the background).
   const syncDiscordProfile = (waifuId: string) => currentCast()?.syncDiscordProfile?.(waifuId);
+  // Her ~/profile.json follows her config (§17.1), with or without the running cast.
+  const rewriteProfile = async (waifuId: string) => {
+    await rewriteProfileFile(storage, waifuId).catch((error: unknown) => {
+      logger.warn("Could not rewrite profile.json", { waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
+  };
   const waifuDiscordProfile = async (waifuId: string) => {
     const cast = currentCast();
     const status = cast?.discordProfiles
@@ -687,6 +694,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (waifu.model) await assertModelAllowed(waifu.model);
     const saved = await storage.writeJson(`waifu:${id}`, relativePath, WaifuConfigSchema, waifu);
     await reconcileDmIntents();
+    await rewriteProfile(id);
+    syncDiscordProfile(id);
     return reply.status(201).send(saved);
   });
 
@@ -732,6 +741,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (pickedModel) await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
     // Intents are fixed at login (spec 9.1): re-log only bots whose DM intents changed.
     await reconcileDmIntents();
+    await rewriteProfile(waifuId);
     syncDiscordProfile(waifuId);
     return saved;
   });

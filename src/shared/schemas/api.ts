@@ -339,7 +339,7 @@ export const HerFileResponseSchema = z.object({
   /** `~/places.md` (kept up to date by the app) or a redacted watches.json: writes are refused. */
   readOnly: z.literal(true).optional(),
   /** `~/schedule.json` / `~/watches.json`: every write is checked (§16.4, §16.5). */
-  special: z.enum(["schedule", "watches"]).optional(),
+  special: z.enum(["schedule", "watches", "profile"]).optional(),
   private: z.literal(true).optional(),
   /**
    * `~/watches.json` with a watch bound to a private chat, read without `includePrivate`: the text

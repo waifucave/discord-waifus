@@ -41,6 +41,8 @@ export type LifeDeps = {
   /** Typing delays and pacing; tests pass an instant one. */
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   isPaused: () => boolean;
-  /** Notices for the owner (`/api/runtime`); absent in some tests. */
+  /** Her bot's Discord profile sync (spec §17): asked to run after she changes ~/profile.json. */
+  profileSync?: { syncWaifu(waifuId: string): Promise<void> };
+    /** Notices for the owner (`/api/runtime`); absent in some tests. */
   notices?: OwnerNotices;
 };
