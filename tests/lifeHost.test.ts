@@ -10,7 +10,9 @@ import { currentHarness } from "../src/life/compaction.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { hangingTurn, textTurn } from "./modelFakes.js";
-import { ARIA_BOT, closeWorlds, lifeWorld, script, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, closeWorlds, herEntries, homeOf, lifeWorld, script, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -55,10 +57,7 @@ describe("busy work is visible (I7)", () => {
 describe("maintenance in the background (M3)", () => {
   it("never blocks the scheduler tick; stop() aborts it and waits; it is not recorded as done", async () => {
     const w = await lifeWorld(roots, { scripts: [hangingTurn()] });
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [{ id: "r1", note: "call mom", dueAt: new Date(w.clock.ms - 1_000).toISOString(), createdAt: w.clock.now().toISOString() }]
-    }));
+    await homeOf(w).write("schedule.json", JSON.stringify([{ id: "r1", at: "2026-10-24 13:59", note: "call mom" }]));
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
     // 14:00 is past the 05:00 maintenance hour: it starts and hangs on its model call.
     await w.cast.scheduler.tick({ waitForMaintenance: false });
@@ -101,31 +100,28 @@ describe("reminders (M4) and quiet writes (M5)", () => {
   it("a reminder is routed before it is removed, under one wake id per occurrence", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const due = { id: "r1", note: "call mom", dueAt: new Date(w.clock.ms - 1_000).toISOString(), createdAt: w.clock.now().toISOString() };
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({ ...file, reminders: [due] }));
+    const due = { id: "r1", at: "2026-10-24 13:59", note: "call mom" };
+    await homeOf(w).write("schedule.json", JSON.stringify([due]));
     await w.cast.scheduler.tick({ waitForMaintenance: false });
-    // A crash before the removal: the reminder is back, the next tick routes the same wake again.
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({ ...file, reminders: [due] }));
+    // A crash before the removal: the reminder is back; the next tick never routes it twice.
+    await homeOf(w).write("schedule.json", JSON.stringify([due]));
     await w.cast.scheduler.tick({ waitForMaintenance: false });
     const wakes = (await readLifeFile(w.storage, "aria", "wakes")).immediate;
-    expect(wakes.map((wake) => wake.id)).toEqual([reminderWakeId(due)]);
-    expect((await readLifeFile(w.storage, "aria", "schedule")).reminders).toEqual([]);
+    expect(wakes.map((wake) => wake.id)).toEqual([reminderWakeId(due, "UTC")]);
+    expect(await herEntries(w, "schedule.json")).toEqual([]);
   });
 
   it("a tick or a message that changes nothing rewrites nothing (no new revision)", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [{ id: "r1", note: "later", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: w.clock.now().toISOString() }]
-    }));
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({ ...file }));
-    const schedule = await readLifeFile(w.storage, "aria", "schedule");
-    const watches = await readLifeFile(w.storage, "aria", "watches");
+    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "later" }]));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-24 16:00", once: true, note: "n", when: [{ words: ["cake"] }] }]));
+    const files = ["home/schedule.json", "home/watches.json", "life/schedule-ids.json", "life/watch-ids.json"];
+    const mtimes = async () => Promise.all(files.map(async (file) => (await stat(path.join(w.root, "user/waifus/aria", file))).mtimeMs));
+    const before = await mtimes();
     await w.cast.scheduler.tick({ waitForMaintenance: false });
     await w.cast.scheduler.tick({ waitForMaintenance: false });
-    expect((await readLifeFile(w.storage, "aria", "schedule")).revision).toBe(schedule.revision);
-    expect((await readLifeFile(w.storage, "aria", "watches")).revision).toBe(watches.revision);
+    expect(await mtimes()).toEqual(before);
   });
 });
 

@@ -24,7 +24,7 @@ const AT = "2026-10-24T14:00:00.000Z";
 function turn(id: string, result: string): LifeLogLine[] {
   return [
     { seq: 0, at: AT, kind: "notifications", turnId: id, message: { role: "user", content: `<notifications>wake ${id}</notifications>` } },
-    { seq: 0, at: AT, kind: "assistant", turnId: id, message: { role: "assistant", content: [{ type: "tool_use", id: `call_${id}`, name: "read_messages", input: { place: "bake-club/#general" } }] } },
+    { seq: 0, at: AT, kind: "assistant", turnId: id, message: { role: "assistant", content: [{ type: "tool_use", id: `call_${id}`, name: "ReadMessages", input: { place: "bake-club/#general" } }] } },
     { seq: 0, at: AT, kind: "tool_results", turnId: id, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `call_${id}`, content: result }] } },
     { seq: 0, at: AT, kind: "assistant", turnId: id, message: { role: "assistant", content: [{ type: "text", text: `done ${id}` }] } }
   ];

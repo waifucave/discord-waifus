@@ -1,6 +1,6 @@
 // Deterministic checks on text a waifu sends (Living cast spec §6.3), kept from the retired reply
 // path (verbosity.ts typing delay, outputValidator.ts / replyMarker.ts outbound checks). No LLM
-// reviewer. `send_message` (L2) is their caller.
+// reviewer. `SendMessage` (L2) is their caller.
 
 import { stripLeakedContextHeader } from "../discord/normalization.js";
 
@@ -29,7 +29,7 @@ export function stripLeadingTranscriptHeader(raw: string): string {
 
 /**
  * Check 1: strips a leading copied `[HH:MM #ref] Name:` header (her own name after it included),
- * the shape a model copies from `read_messages` output.
+ * the shape a model copies from `ReadMessages` output.
  */
 export function stripCopiedHeader(text: string, selfNames: readonly string[]): string {
   const withoutHeader = stripLeadingTranscriptHeader(text);

@@ -1,6 +1,6 @@
 // A forgotten DM stays forgotten across a restart (Living cast §7.5, review C1). A forget deletes the
 // DM state file and keeps the floor only in `limits/<waifu>.json`; boot must load floors from there,
-// and `read_messages` checks the floor itself, so the person's old DMs are never readable again
+// and `ReadMessages` checks the floor itself, so the person's old DMs are never readable again
 // when they write after the restart. Both the DM `/forget everything` and the owner's forget-user.
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -34,7 +34,7 @@ async function dm(w: LifeWorld, cast: LifeWorld["cast"], text: string): Promise<
 const reader: ScriptedTurn = (request) => {
   const last = JSON.stringify(request.messages.at(-1));
   if (last.includes(COMPACTION_INSTRUCTION.slice(0, 40))) return textTurn("A quiet DM.");
-  if (last.includes("<notifications>")) return toolTurn([{ name: "read_messages", input: { place: DM_KEY } }]);
+  if (last.includes("<notifications>")) return toolTurn([{ name: "ReadMessages", input: { place: DM_KEY } }]);
   return textTurn("(nothing to send)");
 };
 
@@ -89,7 +89,7 @@ describe("a forgotten DM after a restart", { timeout: 30_000 }, () => {
       again.intake.flushDms();
       await again.settle();
       await again.life("aria").runNow();
-      // The newest read_messages result in her last request is the one after the restart.
+      // The newest ReadMessages result in her last request is the one after the restart.
       const results = w.anthropic.calls.at(-1)!.request.messages.flatMap((message) =>
         Array.isArray(message.content) ? (message.content as Array<{ type: string }>).filter((block) => block.type === "tool_result") : []
       );

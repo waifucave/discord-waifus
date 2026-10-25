@@ -286,7 +286,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
   // ---- pages (Living cast §6.2) ----------------------------------------------------------------
 
   /**
-   * One page of a conversation's current messages for `read_messages`: the newest `limit` messages
+   * One page of a conversation's current messages for `ReadMessages`: the newest `limit` messages
    * older than `beforeId` (the newest overall without it), oldest first, and whether older ones
    * exist. Stateless: served from the buffer when the conversation is trusted and the buffer covers
    * the page, otherwise from REST; it never touches `fetchSince`'s late-message state or the buffer.

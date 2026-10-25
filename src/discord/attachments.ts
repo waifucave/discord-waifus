@@ -42,7 +42,23 @@ export interface ImageFetcher {
   ): Promise<ImageFetchResult>;
   /** Drop cached bytes for these image keys (a deleted message's images, spec 9.5). */
   purge?(keys: readonly string[]): Promise<void>;
+  /**
+   * Caches bytes under a key of our own (`file:<sha256>`, an image she opened with Read, Living cast
+   * §16.3.3), so a later build resolves it from the cache, never from her folder.
+   */
+  put?(key: string, value: { mimeType: string; data: Buffer }, o?: { conversationKey?: string }): Promise<void>;
+  /**
+   * Downloads one Discord attachment of any type (ReadMessages saves it in her /tmp, §16.3.1):
+   * Discord CDN only, size checked before and while reading; nothing is cached.
+   */
+  fetchFile?(ref: AttachmentFileRef, o: { maxBytes: number; signal?: AbortSignal; refreshUrl?: ImageUrlRefresher }): Promise<AttachmentFileResult>;
 }
+
+export type AttachmentFileRef = Pick<ImageRef, "key" | "url" | "bytes" | "contentType" | "attachmentId" | "filename" | "conversationKey">;
+export type AttachmentFileResult = { ok: true; data: Buffer; mimeType?: string } | { ok: false; reason: ImageFetchFailure };
+
+/** Keys of bytes put into the cache by the app itself: served from the cache only, never fetched. */
+export const LOCAL_IMAGE_KEY_PREFIX = "file:";
 
 export const ALLOWED_IMAGE_HOSTS: ReadonlySet<string> = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
 export const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
@@ -243,6 +259,13 @@ export class DiscordImageFetcher implements ImageFetcher {
     if (o.signal?.aborted) return { ok: false, reason: "aborted" };
     const cached = this.memoryGet(ref.key);
     if (cached) return { ok: true, ...cached, source: "memory" };
+    if (ref.key.startsWith(LOCAL_IMAGE_KEY_PREFIX)) {
+      // An image she opened from her folder: it lives in the cache or nowhere.
+      const disk = await this.readDisk(ref.key);
+      if (!disk) return { ok: false, reason: "http_error" };
+      this.memorySet(ref.key, disk);
+      return { ok: true, ...disk, source: "disk" };
+    }
     if (!hostAllowed(ref.url, this.allowedHosts)) return { ok: false, reason: "blocked_host" };
 
     let flight = this.flights.get(ref.key);
@@ -273,6 +296,48 @@ export class DiscordImageFetcher implements ImageFetcher {
       if (exists) found.push(key);
     }
     return found;
+  }
+
+  async put(key: string, value: { mimeType: string; data: Buffer }, o: { conversationKey?: string } = {}): Promise<void> {
+    this.memorySet(key, value);
+    await this.writeDisk(key, value).catch((error: unknown) => {
+      this.options.logger?.warn("Image disk cache write failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+    if (o.conversationKey) {
+      await recordConversationImages(this.options.dataRoot, o.conversationKey, [key]).catch((error: unknown) => {
+        this.options.logger?.warn("Conversation image index write failed", { message: error instanceof Error ? error.message : String(error) });
+      });
+    }
+  }
+
+  async fetchFile(ref: AttachmentFileRef, o: { maxBytes: number; signal?: AbortSignal; refreshUrl?: ImageUrlRefresher }): Promise<AttachmentFileResult> {
+    const signal = o.signal ?? new AbortController().signal;
+    if (signal.aborted) return { ok: false, reason: "aborted" };
+    if (!hostAllowed(ref.url, this.allowedHosts)) return { ok: false, reason: "blocked_host" };
+    if (ref.bytes !== undefined && ref.bytes > o.maxBytes) return { ok: false, reason: "too_large" };
+    let release: (() => void) | undefined;
+    try {
+      release = await this.semaphore.acquire(signal);
+    } catch {
+      return { ok: false, reason: "aborted" };
+    }
+    try {
+      let url = ref.url;
+      let result = await this.download(url, undefined, signal, { anyType: true, maxBytes: o.maxBytes });
+      if (!result.ok && "status" in result && (result.status === 403 || result.status === 404) && isExpiredSignedUrl(url, this.now())) {
+        const refresher = o.refreshUrl ?? this.options.refreshUrl;
+        const fresh = refresher ? await refresher(ref as ImageRef).catch(() => undefined) : undefined;
+        if (fresh && fresh !== url) {
+          if (!hostAllowed(fresh, this.allowedHosts)) return { ok: false, reason: "blocked_host" };
+          url = fresh;
+          result = await this.download(url, undefined, signal, { anyType: true, maxBytes: o.maxBytes });
+        }
+      }
+      if (!result.ok) return { ok: false, reason: result.reason };
+      return { ok: true, data: result.data, ...(result.mimeType ? { mimeType: result.mimeType } : {}) };
+    } finally {
+      release();
+    }
   }
 
   /** Replaces one owner's pinned image keys (a waifu's current epoch, Living cast §5.3). */
@@ -455,7 +520,8 @@ export class DiscordImageFetcher implements ImageFetcher {
   private async download(
     url: string,
     declared: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    o: { anyType?: boolean; maxBytes?: number } = {}
   ): Promise<
     | { ok: true; mimeType: string; data: Buffer }
     | { ok: false; reason: Exclude<ImageFetchFailure, "blocked_host">; status?: number }
@@ -483,18 +549,19 @@ export class DiscordImageFetcher implements ImageFetcher {
         return { ok: false, reason: "http_error", status: response.status };
       }
       const mimeType = normalizeImageMime(response.headers.get("content-type")) ?? declared;
-      if (!mimeType || !SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+      if (!o.anyType && (!mimeType || !SUPPORTED_IMAGE_MIME_TYPES.has(mimeType))) {
         await response.body?.cancel().catch(() => undefined);
         return { ok: false, reason: "unsupported_type" };
       }
+      const maxBytes = o.maxBytes ?? this.config.maxBytes;
       const length = Number(response.headers.get("content-length") ?? Number.NaN);
-      if (Number.isFinite(length) && length > this.config.maxBytes) {
+      if (Number.isFinite(length) && length > maxBytes) {
         await response.body?.cancel().catch(() => undefined);
         return { ok: false, reason: "too_large" };
       }
       try {
-        const data = await readCapped(response, this.config.maxBytes);
-        return { ok: true, mimeType, data };
+        const data = await readCapped(response, maxBytes);
+        return { ok: true, mimeType: mimeType ?? "application/octet-stream", data };
       } catch (error) {
         return { ok: false, reason: classify(error) };
       }

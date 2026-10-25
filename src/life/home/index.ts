@@ -1,0 +1,98 @@
+// Her machine as the life sees it (Living cast spec §16): her store from her config, the check
+// environment from the running app (her clock, the people she knows), and `~/places.md`.
+
+import { readActiveChatParticipants } from "../../orchestration/stores/participants.js";
+import { listDmStates } from "../../orchestration/dm/dmStore.js";
+import type { WaifuConfig } from "../../shared/schemas/domain.js";
+import type { StorageService } from "../../storage/storageService.js";
+import { dayTimeText } from "../clock.js";
+import type { LifeDeps } from "../deps.js";
+import { resolvePerson } from "../people.js";
+import { collectPlaces, placeLabel, placesWithHandles } from "../places.js";
+import { normalizeName } from "../text.js";
+import { HomeStore, homeLimitsOf, type CheckEnv } from "./homeStore.js";
+import { herSlug } from "./pathRules.js";
+import type { PersonResolution } from "./specialFiles.js";
+
+export { HomeStore, homeLimitsOf } from "./homeStore.js";
+
+/** Her store (her slug from her name as configured now). */
+export function homeStoreFor(deps: Pick<LifeDeps, "storage" | "config">, waifu: Pick<WaifuConfig, "id" | "name">): HomeStore {
+  return new HomeStore(deps.storage, waifu.id, herSlug(waifu), () => homeLimitsOf(deps.config().life));
+}
+
+/** Checks with the live app: `from` names resolve against everyone she can see. */
+export function checkEnvFor(deps: LifeDeps, waifuId: string): CheckEnv {
+  return {
+    now: deps.now(),
+    timeZone: deps.timeZone,
+    resolvePerson: async (name) => resolvePerson(deps, await collectPlaces(deps.storage, waifuId), name)
+  };
+}
+
+/**
+ * Checks without the live app (the API while Discord is offline): a `from` resolves to `<@id>` or to
+ * a person she has a private chat with; anyone else waits until the app runs.
+ */
+export function offlineCheckEnv(storage: StorageService, waifuId: string, o: { now: Date; timeZone: string }): CheckEnv {
+  return {
+    now: o.now,
+    timeZone: o.timeZone,
+    resolvePerson: async (name): Promise<PersonResolution> => {
+      const trimmed = name.trim();
+      const mention = /^<@!?(\d{5,25})>$/u.exec(trimmed) ?? /^(\d{15,25})$/u.exec(trimmed);
+      if (mention) return { ok: true, userId: mention[1]!, name: mention[1]! };
+      const wanted = normalizeName(trimmed.replace(/^@/u, ""));
+      const matches = (await listDmStates(storage).catch(() => [])).filter((state) => state.waifuId === waifuId && state.userDisplayName && normalizeName(state.userDisplayName) === wanted);
+      const ids = [...new Set(matches.map((state) => state.userId))];
+      if (ids.length === 1) return { ok: true, userId: ids[0]!, name: matches[0]!.userDisplayName! };
+      if (ids.length > 1) return { ok: false, error: `more than one person called ${trimmed}; use their place or <@id>` };
+      return { ok: false, error: `she doesn't know anyone called ${trimmed} (with Discord offline only her private chats can be named; or use <@id>)` };
+    }
+  };
+}
+
+const DAY_MS = 24 * 3_600_000;
+
+export const PLACES_FILE_NOTE = "(This file is kept up to date for you: you can read it, but changes to it are refused.)";
+
+/** `~/places.md` (§16.6): her rooms with who was around today and when, and her private chats. */
+export async function placesFileText(deps: LifeDeps, waifuId: string): Promise<string> {
+  const places = await placesWithHandles(deps.storage, waifuId);
+  const now = deps.now();
+  const rooms: string[] = [];
+  const dms: string[] = [];
+  for (const place of places) {
+    const buffered = deps.conversations.bufferedMessages(place.ref);
+    const newest = buffered[buffered.length - 1]?.createdAt;
+    if (place.kind === "dm") {
+      const last = [place.lastInboundAt, place.lastReplyAt, newest].filter((value): value is string => Boolean(value)).sort().pop();
+      dms.push(`- ${place.handle} (${place.userName ?? "someone"})${last ? ` · last message ${dayTimeText(new Date(last), deps.timeZone)}` : ""}`);
+      continue;
+    }
+    const participants = place.guildId && place.channelId ? await readActiveChatParticipants(deps.storage, place.guildId, place.channelId).catch(() => []) : [];
+    const seen = participants.filter((person) => now.getTime() - Date.parse(person.lastSeenAt) < DAY_MS).map((person) => person.displayName);
+    const last = [newest, ...participants.map((person) => person.lastSeenAt)].filter((value): value is string => Boolean(value)).sort().pop();
+    const parts = [`- ${place.handle} (${placeLabel(place)})`];
+    if (place.paused) parts.push("paused");
+    parts.push(seen.length > 0 ? `people today: ${[...new Set(seen)].slice(0, 12).join(", ")}` : "nobody seen today");
+    if (last) parts.push(`last activity ${dayTimeText(new Date(last), deps.timeZone)}`);
+    rooms.push(parts.join(" · "));
+  }
+  return [
+    "# Your places",
+    PLACES_FILE_NOTE,
+    "",
+    rooms.length > 0 ? "Rooms:" : "Rooms: none",
+    ...rooms,
+    "",
+    dms.length > 0 ? "Private chats:" : "Private chats: none",
+    ...dms,
+    ""
+  ].join("\n");
+}
+
+/** Rewrites `~/places.md` when it would change. */
+export async function refreshPlacesFile(deps: LifeDeps, waifu: Pick<WaifuConfig, "id" | "name">): Promise<boolean> {
+  return homeStoreFor(deps, waifu).writePlaces(await placesFileText(deps, waifu.id));
+}

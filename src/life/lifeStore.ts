@@ -16,18 +16,14 @@ import {
   LifeUsageSchema,
   PlaceHandlesSchema,
   ReadCursorsSchema,
-  ScheduleFileSchema,
   WakeQueueSchema,
-  WatchesFileSchema,
   type LifeIntent,
   type LifeLogLine,
   type LifeState,
   type LifeUsage,
   type PlaceHandles,
   type ReadCursors,
-  type ScheduleFile,
-  type WakeQueue,
-  type WatchesFile
+  type WakeQueue
 } from "../shared/schemas/life.js";
 import type { RevisionedRecord } from "../shared/schemas/common.js";
 import type { StorageService } from "../storage/storageService.js";
@@ -87,18 +83,6 @@ const files = {
     schema: WakeQueueSchema,
     empty: () => WakeQueueSchema.parse({ ...createRevisionedBase() })
   } satisfies FileSpec<WakeQueue>,
-  watches: {
-    path: lifePaths.watches,
-    lock: lifeLocks.watches,
-    schema: WatchesFileSchema,
-    empty: () => WatchesFileSchema.parse({ ...createRevisionedBase() })
-  } satisfies FileSpec<WatchesFile>,
-  schedule: {
-    path: lifePaths.schedule,
-    lock: lifeLocks.schedule,
-    schema: ScheduleFileSchema,
-    empty: () => ScheduleFileSchema.parse({ ...createRevisionedBase() })
-  } satisfies FileSpec<ScheduleFile>,
   usage: {
     path: lifePaths.usage,
     lock: lifeLocks.usage,

@@ -41,6 +41,9 @@ import type {
   DiscordDirectoryEventListener
 } from "./gatewayEvents.js";
 
+/** A file a waifu attaches to a message (bytes read from her folder, Living cast §16.3.2). */
+export type OutgoingFile = { name: string; data: Buffer };
+
 export type DiscordRuntimeStatus = {
   connected: boolean;
   houseConnected: boolean;
@@ -153,6 +156,8 @@ export interface DiscordGatewayFacade {
     userId: string;
     content: string;
     replyToMessageId?: string;
+    /** Files attached to the message (Living cast §16.3.2). */
+    files?: OutgoingFile[];
     /** Called with the final content just before it is sent. */
     onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }>;
@@ -209,6 +214,8 @@ export interface DiscordGatewayFacade {
     senderBotId?: string;
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
+    /** Files attached to the message (Living cast §16.3.2). */
+    files?: OutgoingFile[];
     /** Called with the final content (mentions and emoji resolved) just before it is sent. */
     onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }>;
@@ -849,6 +856,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     userId: string;
     content: string;
     replyToMessageId?: string;
+    files?: OutgoingFile[];
     onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }> {
     const { client, botId } = this.dmClient(input.waifuId);
@@ -857,8 +865,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const replyToMessageId = sanitizeReplyTarget(input.replyToMessageId);
     await input.onFinalContent?.(denormalized.content);
     const sent = await channel.send({
-      content: denormalized.content,
+      ...(denormalized.content ? { content: denormalized.content } : {}),
       allowedMentions: denormalized.allowedMentions,
+      ...(input.files?.length ? { files: input.files.map((file) => ({ attachment: file.data, name: file.name })) } : {}),
       reply: replyToMessageId ? { messageReference: replyToMessageId, failIfNotExists: false } : undefined
     });
     // Visible to the next read before this returns, like a guild send.
@@ -1271,6 +1280,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     senderBotId?: string;
     replyToMessageId?: string;
     allowedUserMentionIds: string[];
+    files?: OutgoingFile[];
     onFinalContent?: (content: string) => void | Promise<void>;
   }): Promise<{ messageId: string }> {
     const client = input.senderBotId ? this.clients.get(input.senderBotId) : this.houseClient();
@@ -1298,8 +1308,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
     await input.onFinalContent?.(denormalized.content);
     const sent = await channel.send({
-      content: denormalized.content,
+      ...(denormalized.content ? { content: denormalized.content } : {}),
       allowedMentions: denormalized.allowedMentions,
+      ...(input.files?.length ? { files: input.files.map((file) => ({ attachment: file.data, name: file.name })) } : {}),
       // The user may delete their message while the waifu is generating; send as a normal message
       // then instead of letting Discord reject the whole reply.
       reply: replyToMessageId ? { messageReference: replyToMessageId, failIfNotExists: false } : undefined

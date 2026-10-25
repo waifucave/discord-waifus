@@ -62,7 +62,7 @@ export class CastRuntime {
   readonly providerAlerts: ProviderAlerts;
   /** Event-maintained names for mentions, roles, channels, emojis (spec 9.4); `/api/runtime` reads its status. */
   readonly directory: GuildDirectory;
-  /** The conversation message cache (spec 9.4): `read_messages`' backend. */
+  /** The conversation message cache (spec 9.4): `ReadMessages`' backend. */
   readonly conversations: ConversationMessageCache;
   /** Every life on this host (Living cast spec §3). */
   readonly cast: LivingCast;

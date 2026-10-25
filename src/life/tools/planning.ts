@@ -1,28 +1,65 @@
-// `watch_for`, `list_watches`, `cancel_watch`, `schedule_wake`, `list_schedule`, `cancel_wake`
-// (Living cast spec §6.5, §6.6).
+// `WatchFor` and `ScheduleWake` (Living cast spec §16.4, §16.5, T2, T3): each appends one entry to
+// her own file (`~/watches.json`, `~/schedule.json`); she lists, changes and cancels them by reading
+// and editing the file. The write goes through the same checks as any other write of the file.
 
 import { z } from "zod";
-import type { Reminder, Watch, WatchBinding } from "../../shared/schemas/life.js";
 import { dayTimeText, parseLocalDateTime } from "../clock.js";
-import { readLifeFile, updateLifeFile } from "../lifeStore.js";
-import { resolvePerson } from "../people.js";
-import { collectPlaces, handleOf, resolvePlace } from "../places.js";
-import { activeWatches, MAX_ACTIVE_WATCHES } from "../watches.js";
-import { parseInput, toolError, UNKNOWN_PLACE, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
+import { checkEnvFor } from "../home/index.js";
+import { HomeError } from "../home/homeStore.js";
+import { SCHEDULE_FILE, WATCHES_FILE } from "../home/pathRules.js";
+import {
+  ceilMinute,
+  formatEntries,
+  localMinuteText,
+  MAX_BINDINGS,
+  MAX_NOTE_CHARS,
+  MAX_REMINDERS,
+  MAX_WATCHES,
+  MAX_WORDS,
+  parseStrictJson,
+  REMINDER_MAX_AHEAD_MS,
+  REMINDER_MIN_AHEAD_MS
+} from "../home/specialFiles.js";
+import { storeOf } from "./files.js";
+import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
-export const MAX_PENDING_REMINDERS = 20;
-const MIN_AHEAD_MS = 5 * 60_000;
-const MAX_AHEAD_MS = 30 * 24 * 3_600_000;
+/** Her file's entries as written (for appending one), or the reason it can't be added to. */
+async function currentEntries(ctx: ToolContext, name: string): Promise<{ ok: true; entries: Array<Record<string, unknown>> } | { ok: false; output: ToolOutput }> {
+  const store = storeOf(ctx);
+  const text = await store.files.readText(store.home(name)).catch(() => undefined);
+  if (!text?.trim()) return { ok: true, entries: [] };
+  try {
+    const value = parseStrictJson(text);
+    if (Array.isArray(value)) return { ok: true, entries: value as Array<Record<string, unknown>> };
+  } catch {
+    // reported below
+  }
+  return { ok: false, output: toolError(`~/${name} can't be read as a list right now; fix it first (Read it to see why)`) };
+}
 
-const quote = (text: string) => `"${text.replace(/"/g, "'")}"`;
+async function append(ctx: ToolContext, name: string, entry: Record<string, unknown>): Promise<{ ok: true; id: string } | { ok: false; output: ToolOutput }> {
+  const current = await currentEntries(ctx, name);
+  if (!current.ok) return current;
+  const before = new Set(current.entries.map((existing) => existing["id"]));
+  const store = storeOf(ctx);
+  try {
+    await store.writeText(store.home(name), formatEntries([...current.entries, entry]), checkEnvFor(ctx.deps, ctx.waifu.id));
+  } catch (error) {
+    if (error instanceof HomeError) return { ok: false, output: toolError(error.message) };
+    throw error;
+  }
+  const saved = await currentEntries(ctx, name);
+  const id = saved.ok ? saved.entries.map((existing) => existing["id"]).find((candidate) => typeof candidate === "string" && !before.has(candidate)) : undefined;
+  return { ok: true, id: typeof id === "string" ? id : "?" };
+}
 
-// ---- watches ------------------------------------------------------------------------------------
+// ---- WatchFor ----------------------------------------------------------------------------------------
 
 const BindingInput = z
   .object({
-    place: z.string().min(1).optional(),
+    place: z.string().min(1).max(200).optional(),
     from: z.string().min(1).max(100).optional(),
-    words: z.array(z.string().min(1).max(60)).min(1).max(10).optional(),
+    words: z.array(z.string().min(1).max(60)).min(1).max(MAX_WORDS).optional(),
     any_message: z.boolean().optional()
   })
   .refine((binding) => binding.place !== undefined || binding.from !== undefined || binding.words !== undefined || binding.any_message === true, {
@@ -30,105 +67,45 @@ const BindingInput = z
   });
 
 const WatchInput = z.object({
-  bindings: z.array(BindingInput).min(1).max(5),
-  note: z.string().max(200),
-  expires_in_minutes: z.number().int().min(5).max(10080),
+  when: z.array(BindingInput).max(MAX_BINDINGS).default([]),
+  note: z.string().max(MAX_NOTE_CHARS),
+  timeout_minutes: z.number().int().min(1).max(10_080),
   once: z.boolean().default(true)
 });
 
 async function watchFor(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(WatchInput, input);
   if (!parsed.ok) return parsed.output;
-  const { deps, waifu } = ctx;
+  const { deps } = ctx;
   const args = parsed.value;
-  const now = deps.now();
-  const places = await collectPlaces(deps.storage, waifu.id);
-  const bindings: WatchBinding[] = [];
-  for (const binding of args.bindings) {
-    const out: WatchBinding = {};
-    if (binding.place) {
-      const place = await resolvePlace(deps.storage, waifu.id, binding.place);
-      if (!place) return toolError(UNKNOWN_PLACE);
-      out.placeKey = place.placeKey;
-    }
-    if (binding.from) {
-      const person = await resolvePerson(deps, places, binding.from);
-      if (!person.ok) return toolError(person.error);
-      out.fromUserId = person.userId;
-      out.fromName = person.name;
-    }
-    if (binding.words) out.words = binding.words.map((word) => word.trim()).filter(Boolean);
-    if (binding.any_message) out.anyMessage = true;
-    bindings.push(out);
-  }
-  let created: Watch | undefined;
-  let full = false;
-  await updateLifeFile(deps.storage, waifu.id, "watches", (file) => {
-    const active = activeWatches(file, now);
-    if (active.length >= MAX_ACTIVE_WATCHES) {
-      full = true;
-      return active.length === file.watches.length ? file : { ...file, watches: active };
-    }
-    created = {
-      id: `w${file.nextId}`,
-      note: args.note,
-      createdAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + args.expires_in_minutes * 60_000).toISOString(),
-      once: args.once,
-      bindings,
-      fires: []
-    };
-    return { ...file, nextId: file.nextId + 1, watches: [...active, created] };
-  });
-  if (full || !created) return toolError(`you already have ${MAX_ACTIVE_WATCHES} watches; cancel one first`);
-  return { content: `watching ${created.id} until ${dayTimeText(new Date(created.expiresAt), deps.timeZone)}` };
+  const current = await currentEntries(ctx, WATCHES_FILE);
+  if (!current.ok) return current.output;
+  if (current.entries.length >= MAX_WATCHES) return toolError(`you already have ${MAX_WATCHES} watches; remove one from ~/watches.json first`);
+  const timeout = ceilMinute(new Date(deps.now().getTime() + args.timeout_minutes * 60_000));
+  const entry = {
+    timeout: localMinuteText(timeout, deps.timeZone),
+    once: args.once,
+    note: args.note,
+    when: args.when.map((binding) => ({
+      ...(binding.place !== undefined ? { place: binding.place } : {}),
+      ...(binding.from !== undefined ? { from: binding.from } : {}),
+      ...(binding.words !== undefined ? { words: binding.words.map((word) => word.trim()) } : {}),
+      ...(binding.any_message !== undefined ? { any_message: binding.any_message } : {})
+    }))
+  };
+  const saved = await append(ctx, WATCHES_FILE, entry);
+  if (!saved.ok) return saved.output;
+  const ends = parseLocalDateTime(entry.timeout, deps.timeZone) ?? timeout;
+  return { content: `watching ${saved.id} until ${dayTimeText(ends, deps.timeZone)} (in ~/${WATCHES_FILE})` };
 }
 
-async function bindingText(ctx: ToolContext, binding: WatchBinding): Promise<string> {
-  const parts: string[] = [];
-  if (binding.placeKey) parts.push(await handleOf(ctx.deps.storage, ctx.waifu.id, binding.placeKey));
-  if (binding.fromUserId) parts.push(`from ${binding.fromName ?? `<@${binding.fromUserId}>`}`);
-  if (binding.words?.length) parts.push(`words: ${binding.words.join(", ")}`);
-  if (binding.anyMessage) parts.push("any message");
-  return parts.join(" ");
-}
-
-async function listWatches(_input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const watches = activeWatches(await readLifeFile(ctx.deps.storage, ctx.waifu.id, "watches"), ctx.deps.now());
-  if (watches.length === 0) return { content: "(no watches)" };
-  const lines: string[] = [];
-  for (const watch of watches) {
-    const bindings = await Promise.all(watch.bindings.map((binding) => bindingText(ctx, binding)));
-    lines.push(
-      `${watch.id} · until ${dayTimeText(new Date(watch.expiresAt), ctx.deps.timeZone)}${watch.once ? " · once" : ""} · ${bindings.join(" | ")} · note: ${quote(watch.note)}`
-    );
-  }
-  return { content: lines.join("\n") };
-}
-
-const IdInput = z.object({ id: z.string().min(1).max(20) });
-
-async function cancelWatch(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const parsed = parseInput(IdInput, input);
-  if (!parsed.ok) return parsed.output;
-  const id = parsed.value.id.trim().toLowerCase();
-  let found = false;
-  await updateLifeFile(ctx.deps.storage, ctx.waifu.id, "watches", (file) => {
-    const watches = file.watches.filter((watch) => watch.id !== id);
-    found = watches.length !== file.watches.length;
-    return found ? { ...file, watches } : file;
-  });
-  if (!found) return toolError(`no watch ${id}; use list_watches`);
-  return { content: `cancelled ${id}` };
-}
-
-// ---- reminders ----------------------------------------------------------------------------------
+// ---- ScheduleWake --------------------------------------------------------------------------------------
 
 const ScheduleInput = z
   .object({
     at: z.string().min(1).max(40).optional(),
     in_minutes: z.number().int().min(1).max(60 * 24 * 31).optional(),
-    note: z.string().max(200),
+    note: z.string().max(MAX_NOTE_CHARS),
     repeat: z.enum(["daily", "weekly"]).optional()
   })
   .refine((value) => (value.at === undefined) !== (value.in_minutes === undefined), { message: "give exactly one of at or in_minutes" });
@@ -136,7 +113,7 @@ const ScheduleInput = z
 async function scheduleWake(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(ScheduleInput, input);
   if (!parsed.ok) return parsed.output;
-  const { deps, waifu } = ctx;
+  const { deps } = ctx;
   const args = parsed.value;
   const now = deps.now();
   let due: Date | undefined;
@@ -144,111 +121,64 @@ async function scheduleWake(input: unknown, ctx: ToolContext): Promise<ToolOutpu
     due = parseLocalDateTime(args.at, deps.timeZone);
     if (!due) return toolError("use a local time like 2026-10-25 18:00");
   } else {
-    due = new Date(now.getTime() + args.in_minutes! * 60_000);
+    due = ceilMinute(new Date(now.getTime() + args.in_minutes! * 60_000));
   }
   const ahead = due.getTime() - now.getTime();
-  if (ahead < MIN_AHEAD_MS) return toolError("reminders must be at least 5 minutes ahead");
-  if (ahead > MAX_AHEAD_MS) return toolError("reminders can be at most 30 days ahead");
-  let created: Reminder | undefined;
-  let full = false;
-  await updateLifeFile(deps.storage, waifu.id, "schedule", (file) => {
-    if (file.reminders.length >= MAX_PENDING_REMINDERS) {
-      full = true;
-      return file;
-    }
-    created = {
-      id: `r${file.nextId}`,
-      note: args.note,
-      dueAt: due!.toISOString(),
-      ...(args.repeat ? { repeat: args.repeat } : {}),
-      createdAt: now.toISOString()
-    };
-    return { ...file, nextId: file.nextId + 1, reminders: [...file.reminders, created] };
-  });
-  if (full || !created) return toolError(`you already have ${MAX_PENDING_REMINDERS} reminders; cancel one first`);
-  return { content: `set ${created.id} for ${dayTimeText(due, deps.timeZone)}${created.repeat ? `, then ${created.repeat}` : ""}` };
-}
-
-async function listSchedule(_input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const file = await readLifeFile(ctx.deps.storage, ctx.waifu.id, "schedule");
-  if (file.reminders.length === 0) return { content: "(no reminders)" };
-  const lines = [...file.reminders]
-    .sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))
-    .map((reminder) => `${reminder.id} · ${dayTimeText(new Date(reminder.dueAt), ctx.deps.timeZone)}${reminder.repeat ? ` · ${reminder.repeat}` : ""} · ${quote(reminder.note)}`);
-  return { content: lines.join("\n") };
-}
-
-async function cancelWake(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const parsed = parseInput(IdInput, input);
-  if (!parsed.ok) return parsed.output;
-  const id = parsed.value.id.trim().toLowerCase();
-  let found = false;
-  await updateLifeFile(ctx.deps.storage, ctx.waifu.id, "schedule", (file) => {
-    const reminders = file.reminders.filter((reminder) => reminder.id !== id);
-    found = reminders.length !== file.reminders.length;
-    return found ? { ...file, reminders } : file;
-  });
-  if (!found) return toolError(`no reminder ${id}; use list_schedule`);
-  return { content: `cancelled ${id}` };
+  // `in_minutes` is checked as given (the due time is rounded up to a whole minute).
+  if (args.in_minutes !== undefined ? args.in_minutes * 60_000 < REMINDER_MIN_AHEAD_MS : ahead < REMINDER_MIN_AHEAD_MS - 60_000) return toolError("reminders must be at least 5 minutes ahead");
+  if (ahead > REMINDER_MAX_AHEAD_MS) return toolError("reminders can be at most 30 days ahead");
+  const current = await currentEntries(ctx, SCHEDULE_FILE);
+  if (!current.ok) return current.output;
+  if (current.entries.length >= MAX_REMINDERS) return toolError(`you already have ${MAX_REMINDERS} reminders; remove one from ~/${SCHEDULE_FILE} first`);
+  const entry = { at: localMinuteText(due, deps.timeZone), ...(args.repeat ? { repeat: args.repeat } : {}), note: args.note };
+  const saved = await append(ctx, SCHEDULE_FILE, entry);
+  if (!saved.ok) return saved.output;
+  return { content: `set ${saved.id} for ${dayTimeText(due, deps.timeZone)}${args.repeat ? `, then ${args.repeat}` : ""} (in ~/${SCHEDULE_FILE})` };
 }
 
 export const planningTools: LifeTool[] = [
   {
-    name: "watch_for",
+    name: "WatchFor",
     description:
-      "Get notified when something happens: a message in a place, from a person, containing some words, or any message. A binding matches when every field it sets matches; any binding can fire the watch. It expires after the minutes you choose.",
+      "Get notified when something happens: a message in a place, from a person, with some words, or any message. A binding in when matches when every field it sets matches; any binding fires the watch. Every watch ends at its timeout and you are told when it does, so a watch with an empty when is a timer. Watches are saved in ~/watches.json; edit that file to change or cancel them.",
     inputSchema: {
       type: "object",
       properties: {
-        bindings: {
+        when: {
           type: "array",
-          minItems: 1,
-          maxItems: 5,
+          maxItems: MAX_BINDINGS,
+          description: "What to watch for (0–5 bindings; [] for a plain timer).",
           items: {
             type: "object",
             properties: {
               place: { type: "string", description: "A place handle." },
               from: { type: "string", description: "A person's name, or <@id>." },
-              words: { type: "array", items: { type: "string" }, maxItems: 10, description: "Any of these words (whole words, any case)." },
+              words: { type: "array", items: { type: "string" }, maxItems: MAX_WORDS, description: "Any of these words (whole words, any case)." },
               any_message: { type: "boolean" }
             },
             additionalProperties: false
           }
         },
-        note: { type: "string", maxLength: 200, description: "A note to yourself, shown when it fires." },
-        expires_in_minutes: { type: "integer", minimum: 5, maximum: 10080 },
+        note: { type: "string", maxLength: MAX_NOTE_CHARS, description: "A note to yourself, shown when it fires or times out." },
+        timeout_minutes: { type: "integer", minimum: 1, maximum: 10080, description: "When the watch ends (at most a week)." },
         once: { type: "boolean", description: "Stop after the first match (default true)." }
       },
-      required: ["bindings", "note", "expires_in_minutes"],
+      required: ["note", "timeout_minutes"],
       additionalProperties: false
     },
     sideEffect: true,
     run: watchFor
   },
   {
-    name: "list_watches",
-    description: "List your active watches.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    sideEffect: false,
-    run: listWatches
-  },
-  {
-    name: "cancel_watch",
-    description: "Cancel one of your watches by id (like w3).",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-    sideEffect: true,
-    run: cancelWatch
-  },
-  {
-    name: "schedule_wake",
+    name: "ScheduleWake",
     description:
-      "Set a reminder that wakes you later with your note. Give either `at` (local time like 2026-10-25 18:00) or `in_minutes`; 5 minutes to 30 days ahead. Optionally repeat daily or weekly.",
+      "Set a reminder that wakes you later with your note. Give either at (local time like 2026-10-25 18:00) or in_minutes; 5 minutes to 30 days ahead; optionally repeat daily or weekly. Reminders are saved in ~/schedule.json; edit that file to change or cancel them.",
     inputSchema: {
       type: "object",
       properties: {
         at: { type: "string", description: "Local date and time, like 2026-10-25 18:00." },
         in_minutes: { type: "integer", minimum: 5 },
-        note: { type: "string", maxLength: 200 },
+        note: { type: "string", maxLength: MAX_NOTE_CHARS },
         repeat: { type: "string", enum: ["daily", "weekly"] }
       },
       required: ["note"],
@@ -256,19 +186,5 @@ export const planningTools: LifeTool[] = [
     },
     sideEffect: true,
     run: scheduleWake
-  },
-  {
-    name: "list_schedule",
-    description: "List your pending reminders.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    sideEffect: false,
-    run: listSchedule
-  },
-  {
-    name: "cancel_wake",
-    description: "Cancel one of your reminders by id (like r4).",
-    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
-    sideEffect: true,
-    run: cancelWake
   }
 ];

@@ -1,6 +1,6 @@
 // Shared fakes for the Discord conversation tests (not a test file itself).
 
-import type { ImageFetcher, ImageFetchResult } from "../src/discord/attachments.js";
+import type { AttachmentFileRef, AttachmentFileResult, ImageFetcher, ImageFetchResult } from "../src/discord/attachments.js";
 import type { ImageRef, RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import type { ConversationMessageSource } from "../src/orchestration/context/types.js";
 import type { ConversationRef } from "../src/orchestration/context/keys.js";
@@ -64,13 +64,36 @@ export class FakeImageFetcher implements ImageFetcher {
   /** Byte size to serve for a key (zero-filled), instead of the tiny default body. */
   sizes = new Map<string, number>();
 
+  /** Bytes the app put in the cache itself (`file:<sha256>`, an image she opened with Read). */
+  readonly local = new Map<string, { mimeType: string; data: Buffer }>();
+  /** Downloads (`fetchFile`, ReadMessages): bytes to serve per attachment key, and every call made. */
+  readonly files = new Map<string, Buffer>();
+  readonly fileCalls: AttachmentFileRef[] = [];
+
   async get(ref: ImageRef): Promise<ImageFetchResult> {
     this.calls.push(ref);
     const reason = this.failKeys.get(ref.key);
     if (reason) return { ok: false, reason };
+    const local = this.local.get(ref.key);
+    if (local) return { ok: true, mimeType: local.mimeType, data: local.data, source: "memory" };
+    // A key of our own is served from the cache only, never fetched.
+    if (ref.key.startsWith("file:")) return { ok: false, reason: "http_error" };
     const size = this.sizes.get(ref.key);
     const data = size === undefined ? Buffer.from(`png:${ref.key}`) : Buffer.alloc(size);
     return { ok: true, mimeType: "image/png", data, source: "network" };
+  }
+
+  async put(key: string, value: { mimeType: string; data: Buffer }): Promise<void> {
+    this.local.set(key, value);
+  }
+
+  async fetchFile(ref: AttachmentFileRef, o: { maxBytes: number }): Promise<AttachmentFileResult> {
+    this.fileCalls.push(ref);
+    const reason = this.failKeys.get(ref.key);
+    if (reason) return { ok: false, reason };
+    const data = this.files.get(ref.key) ?? Buffer.from(`file:${ref.key}`);
+    if (data.length > o.maxBytes) return { ok: false, reason: "too_large" };
+    return { ok: true, data, ...(ref.contentType ? { mimeType: ref.contentType } : {}) };
   }
 }
 

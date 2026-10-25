@@ -1,4 +1,4 @@
-// Places and their handles (Living cast spec §5.5, §6.1, §6.9 list_places).
+// Places and their handles (Living cast spec §5.5, §6.1; places.md, §16.6).
 //
 // A place is a channel, thread or DM she can use, identified by its placeKey (the conversation key:
 // `g_<guild>_<channel>` / `dm_<user>_<waifu>`). Tools take a handle instead:

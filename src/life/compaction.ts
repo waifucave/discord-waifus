@@ -19,22 +19,23 @@ import { summarizeWithModel } from "../models/summarize.js";
 import { imageTextFor } from "../orchestration/context/images.js";
 import { estimateTokens } from "../orchestration/context/tokens.js";
 import { COMPACTION_FAILURE_BACKOFF_MS } from "../orchestration/context/compaction.js";
-import { listWaifus } from "../orchestration/stores/config.js";
+import { listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogLine, LifeModelRoute, LifeState } from "../shared/schemas/life.js";
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { buildBlockA, harnessHash } from "./lifeHarness.js";
 import { pruneOldEpochLogs, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
-import { Notes } from "./notes.js";
+import { homeStoreFor } from "./home/index.js";
+import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import { selfAuthorIds } from "./people.js";
 import { placesWithHandles, renderPlacesBlock } from "./places.js";
 import { buildLifeRequest, lifeBudget } from "./request.js";
-import { offeredToolNames } from "./tools/index.js";
+import { modelTools, offeredToolNames } from "./tools/index.js";
 
 export const KEPT_TURNS = 3;
 
-export type HarnessNow = { harness: string; tools: string[]; route: LifeModelRoute; hash: string };
+export type HarnessNow = { harness: string; tools: string[]; toolDescriptions: Record<string, string>; route: LifeModelRoute; hash: string };
 
 export function routeOf(model: CuratedModel, effort?: string): LifeModelRoute {
   return { providerId: model.providerId, modelId: model.modelId, ...(effort ? { effort } : {}) };
@@ -51,7 +52,10 @@ export async function currentHarness(deps: LifeDeps, waifu: WaifuConfig, model: 
   const harness = buildBlockA(waifu, { serverNicknames: nicknames, others }, deps.timeZone);
   const tools = offeredToolNames(deps);
   const route = routeOf(model, waifu.model?.effort);
-  return { harness, tools, route, hash: harnessHash(harness, tools, route) };
+  // The descriptions as configured now (Bash says whether python3 is there): kept in the epoch's
+  // snapshot, so a setting change takes effect at a turn boundary through a compaction (§5.2).
+  const toolDescriptions = Object.fromEntries(modelTools(tools, deps.config()).map((tool) => [tool.name, tool.description]));
+  return { harness, tools, toolDescriptions, route, hash: harnessHash(harness, tools.map((name) => `${name}:${toolDescriptions[name] ?? ""}`), route) };
 }
 
 /**
@@ -191,7 +195,8 @@ export async function startEpoch(
   }
 ): Promise<LifeState> {
   const now = deps.now();
-  const memoryIndex = await new Notes(deps.storage, waifuId).memoryIndexForPrompt();
+  const waifu = await readWaifu(deps.storage, waifuId).catch(() => ({ id: waifuId, name: waifuId }));
+  const memoryIndex = await memoryIndexForPrompt(homeStoreFor(deps, waifu));
   const places = renderPlacesBlock(await placesWithHandles(deps.storage, waifuId));
   let saved: LifeState | undefined;
   await updateLifeState(
@@ -216,7 +221,7 @@ export async function startEpoch(
         epochStartedAt: now.toISOString(),
         status: current.status,
         summary: o.summary,
-        systemSnapshot: { harnessHash: o.harness.hash, harness: o.harness.harness, memoryIndex, places, tools: o.harness.tools },
+        systemSnapshot: { harnessHash: o.harness.hash, harness: o.harness.harness, memoryIndex, places, tools: o.harness.tools, toolDescriptions: o.harness.toolDescriptions },
         modelRoute: o.harness.route,
         inlineImageCount: 0,
         inlineImageBytes: 0,

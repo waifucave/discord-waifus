@@ -1,7 +1,7 @@
-// Nightly maintenance (Living cast spec §7.3) and the notes-scrub session of a forget (§7.5 step 4):
-// a separate short session, not her life log — her model, her identity and persona, an
-// instruction, only the notes tools, purpose `maintenance`, at most 30 tool rounds. One report line
-// goes to `maintenance.jsonl`.
+// Nightly maintenance (Living cast spec §7.3, §16.8) and the notes-scrub session of a forget (§7.5
+// step 4): a separate short session, not her life log — her model, her identity and persona, an
+// instruction, only her file tools (Read, Write, Edit, Bash; no messaging, no web), purpose
+// `maintenance`, at most 30 tool rounds. One report line goes to `maintenance.jsonl`.
 
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { CuratedModel } from "../models/catalog.js";
@@ -9,26 +9,25 @@ import { ModelCallError } from "../models/errors.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
+import { homeStoreFor } from "./home/index.js";
 import { appendMaintenanceReport } from "./lifeStore.js";
-import { Notes } from "./notes.js";
-import { modelTools } from "./tools/index.js";
-import { NOTE_TOOL_NAMES, noteTools } from "./tools/notes.js";
+import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
 
 export const MAINTENANCE_MAX_ROUNDS = 30;
 
 export const MAINTENANCE_INSTRUCTION =
-  "[system] It's quiet; time to tidy your notes. Resolve contradictions (the newest fact wins), merge duplicates, fix broken links in MEMORY.md, prune stale trivia, and keep MEMORY.md short: one line per note, well under 200 lines. Use only your notes tools. When you're done, reply with one short line saying what you changed.";
+  "[system] It's quiet; time to tidy your home. Resolve contradictions in your notes (the newest fact wins), merge duplicates, merge or delete notes that are stale, fix broken links in MEMORY.md and keep it short: one line per note, well under 200 lines. Remove reminders and watches you no longer need from schedule.json and watches.json. /tmp cleans itself. When you're done, reply with one short line saying what you changed.";
 
 export function scrubInstruction(o: { userId: string; names: readonly string[] }): string {
   const who = o.names.length > 0 ? `${o.names.map((name) => `"${name}"`).join(", ")} (<@${o.userId}>)` : `<@${o.userId}>`;
-  return `[system] Someone asked to be forgotten: ${who}. Remove everything about them from your notes: delete notes that are about them, remove every line and sentence that mentions them from your other notes, and update MEMORY.md. Keep no trace of them, not even that they asked. Use only your notes tools. When you're done, reply with one short line saying what you changed.`;
+  return `[system] Someone asked to be forgotten: ${who}. Remove everything about them from your home: delete notes that are about them, remove every line and sentence that mentions them from your other files, and update MEMORY.md. Keep no trace of them, not even that they asked. When you're done, reply with one short line saying what you changed.`;
 }
 
 /** System block of a maintenance session: who she is, without the life harness. */
 export function maintenanceSystem(waifu: WaifuConfig): string {
   const parts = [
-    `<maintenance>\nYou are ${waifu.name}, looking after your own notes: real Markdown files only you write. MEMORY.md is your index, one short line per note with a link to the details. Nobody else sees this session.\n</maintenance>`
+    `<maintenance>\nYou are ${waifu.name}, looking after your own folder, your home: your notes are real files only you write. MEMORY.md is your index, one short line per note with a link to the details. Nobody else sees this session.\n</maintenance>`
   ];
   if (waifu.persona.trim()) parts.push(`<persona>\n${waifu.persona.trim()}\n</persona>`);
   return parts.join("\n\n");
@@ -42,25 +41,26 @@ export type MaintenanceOutcome = {
   error?: string;
 };
 
-/** One session over her notes; never throws for model failures (the outcome says so). */
+/** One session over her home; never throws for model failures (the outcome says so). */
 export async function runNotesSession(
   deps: LifeDeps,
   o: { waifu: WaifuConfig; model: CuratedModel; instruction: string; signal?: AbortSignal; kind: "maintenance" | "scrub" }
 ): Promise<MaintenanceOutcome> {
-  const notes = new Notes(deps.storage, o.waifu.id);
-  const before = new Map(await notes.readAll());
-  const listing = [...before.keys()];
+  const store = homeStoreFor(deps, o.waifu);
+  const before = new Map(await store.readAllText());
+  const listing = [...before.keys()].sort();
+  const toolNames = maintenanceToolNames(deps.config());
   const messages: ProviderMessageLike[] = [
     {
       role: "user",
       content: [
         { type: "text", text: o.instruction },
-        { type: "text", text: listing.length > 0 ? `Your notes: ${listing.join(", ")}` : "You have no notes yet." },
+        { type: "text", text: listing.length > 0 ? `Your files: ${listing.map((name) => `~/${name}`).join(", ")}` : "Your home is empty." },
         { type: "text", text: timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability }) }
       ]
     }
   ];
-  const tools = modelTools([...NOTE_TOOL_NAMES]);
+  const tools = modelTools(toolNames, deps.config());
   let rounds = 0;
   let summary = "";
   try {
@@ -81,7 +81,7 @@ export async function runNotesSession(
       if (result.toolCalls.length === 0 || result.finishReason === "refusal") break;
       const results: ContentBlockLike[] = [];
       for (const call of result.toolCalls) {
-        const tool = noteTools.find((candidate) => candidate.name === call.name);
+        const tool = toolNames.includes(call.name) ? lifeTool(call.name) : undefined;
         let output: ToolOutput;
         if (!tool) output = toolError(`there is no tool called ${call.name}`);
         else {
@@ -94,23 +94,25 @@ export async function runNotesSession(
               signal: o.signal ?? new AbortController().signal,
               toolCallId: call.id,
               selfAuthorIds: [],
-              toolNames: [...NOTE_TOOL_NAMES]
+              toolNames
             });
           } catch (error) {
             deps.logger.warn("Maintenance tool failed", { waifuId: o.waifu.id, tool: call.name, message: error instanceof Error ? error.message : String(error) });
             output = toolError("something went wrong");
           }
         }
-        results.push({ type: "tool_result", tool_use_id: call.id, content: output.content as string, ...(output.isError ? { is_error: true } : {}) });
+        // Images Read shows are text here: this session never resolves image blocks.
+        const content = typeof output.content === "string" ? output.content : output.content.map((block) => (block.type === "text" ? block.text : block.mode === "inline" ? "[image]" : block.mode.text)).join("\n");
+        results.push({ type: "tool_result", tool_use_id: call.id, content, ...(output.isError ? { is_error: true } : {}) });
       }
       messages.push({ role: "user", content: results });
     }
   } catch (error) {
     const kind = error instanceof ModelCallError ? error.kind : "other";
-    const after = await notes.readAll();
+    const after = await store.readAllText();
     return { rounds, changed: changedPaths(before, after), summary, ok: false, error: kind };
   }
-  const after = await notes.readAll();
+  const after = await store.readAllText();
   return { rounds, changed: changedPaths(before, after), summary: summary.slice(0, 500), ok: true };
 }
 

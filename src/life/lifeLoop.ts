@@ -12,12 +12,13 @@
 //       caps: life.maxToolRounds rounds or life.maxTurnMs → "[system] turn ended: <limit>"
 //     }
 //
-// Her text is private: only send_message and react reach people. One turn at a time per waifu
+// Her text is private: only SendMessage and React reach people. One turn at a time per waifu
 // (`life:<id>` lock, shared with compaction, maintenance and forget); turns of different waifus run
 // in parallel up to `life.maxConcurrentTurns`.
 
 import { isDmPlaceKey } from "./lifeView.js";
 import { withPlaceRecord } from "./placeRecorder.js";
+import { refreshPlacesFile } from "./home/index.js";
 import { createHash } from "node:crypto";
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
@@ -50,7 +51,7 @@ import { parseConversationKey } from "../orchestration/context/keys.js";
 export const COALESCE_MS = 2_000;
 export const FOLLOW_UP_DELAY_MS = 60_000;
 export const MEMORY_WARNING_RATIO = 0.85;
-export const UNSENT_REPLY_NOTE = "[system] Nothing you wrote above was sent. If you meant to reply, use send_message; otherwise just end.";
+export const UNSENT_REPLY_NOTE = "[system] Nothing you wrote above was sent. If you meant to reply, use SendMessage; otherwise just end.";
 export const FOLLOW_UP_NOTE = "[system] your last turn failed; the notifications above may still need you";
 export const MEMORY_SUMMARISED_NOTE = "[system] memory summarised";
 export const CUT_OFF_RESULT = "error: your message was cut off; try shorter";
@@ -435,6 +436,10 @@ export class Life {
       if (quiet.length > 0) await updateLifeFile(deps.storage, this.waifuId, "wakes", (queue) => ({ ...queue, quiet: [...quiet, ...queue.quiet] }));
       return "idle";
     }
+    // Her places file is current at every turn start (§16.6; unchanged content is not rewritten).
+    await refreshPlacesFile(deps, waifu).catch((error: unknown) => {
+      deps.logger.warn("Could not refresh places.md", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
     const turnId = newTurnId();
     const selfIds = await selfAuthorIds(deps.storage, waifu);
     const view = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), selfIds);
@@ -680,9 +685,12 @@ export class Life {
     const notices = state.pendingNotices;
     if (wakes.length === 0 && quiet.length === 0 && notices.length === 0) return [];
     // A folded wake can name a place that is new since the turn began (a first DM): the turn's
-    // cached place list is read again, so the notification, list_places and the tools all see it (N2).
+    // cached place list is read again, so the notification, places.md and the tools all see it (N2).
     const cached = await collectPlaces(deps.storage, this.waifuId);
-    if (wakes.some((wake) => wake.placeKey && !cached.some((place) => place.placeKey === wake.placeKey))) refreshPlaces(deps.storage, this.waifuId);
+    if (wakes.some((wake) => wake.placeKey && !cached.some((place) => place.placeKey === wake.placeKey))) {
+      refreshPlaces(deps.storage, this.waifuId);
+      await refreshPlacesFile(deps, run.waifu).catch(() => undefined);
+    }
     const view = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), run.selfIds);
     const block = renderNotifications({ wakes, quiet, notices }, view);
     run.wakes.push(...wakes);

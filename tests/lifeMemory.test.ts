@@ -1,13 +1,13 @@
-// Memory (Living cast spec §7.3, §7.5): nightly maintenance uses only the notes tools; pending
-// scrubs run with it; forget end to end — summary without the person, other state, notes scrub, new
-// epoch and verification (needsReview for shared names), the DM rate limit and `/forget conversation`.
+// Memory (Living cast spec §7.3, §7.5, §16.8, §16.9): nightly maintenance uses only her file tools;
+// pending scrubs run with it; forget end to end — summary without the person, other state (her
+// reminder and watch files too), notes scrub over every text file of her home, new epoch and
+// verification (needsReview for shared names), the DM rate limit and `/forget conversation`.
 // Scripted winter fakes, temp data root; no live calls.
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { MAINTENANCE_INSTRUCTION } from "../src/life/maintenance.js";
-import { Notes } from "../src/life/notes.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
 import { queueOwnerScrubs, waifusWithLife } from "../src/life/forget.js";
 import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
@@ -16,7 +16,7 @@ import { SearchUsageSchema } from "../src/shared/schemas/life.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -25,7 +25,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const NOTE_TOOLS = ["list_notes", "read_note", "write_note", "edit_note", "delete_note", "search_notes"];
+const FILE_TOOLS = ["Read", "Write", "Edit", "Bash"];
 
 /** Members of Bake Club: Kevin (also called Sam elsewhere) and another Sam. */
 async function seedMembers(w: LifeWorld): Promise<void> {
@@ -53,23 +53,23 @@ async function liveATurn(w: LifeWorld): Promise<void> {
   await w.cast.life("aria").runNow();
 }
 
-describe("nightly maintenance (§7.3)", () => {
-  it("is a separate session with only the notes tools, purpose maintenance, and one report line", async () => {
+describe("nightly maintenance (§7.3, §16.8)", () => {
+  it("is a separate session with only her file tools, purpose maintenance, and one report line", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "read_note", input: { path: "MEMORY.md" } }]),
-        toolTurn([{ name: "write_note", input: { path: "MEMORY.md", content: "# Memory\n- [Kevin](people/kevin.md) — chemistry student\n" } }]),
+        toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }]),
+        toolTurn([{ name: "Write", input: { file_path: "~/MEMORY.md", content: "# Memory\n- [Kevin](people/kevin.md) — chemistry student\n" } }]),
         textTurn("merged two Kevin lines")
       )
     });
-    const notes = new Notes(w.storage, "aria");
+    const notes = homeOf(w, "aria");
     await notes.write("MEMORY.md", "# Memory\n- Kevin studies chemistry\n- Kevin is a chemistry student\n");
     // No sleep window: maintenance is due at 05:00 local; the clock says 14:00.
     await w.cast.scheduler.tick();
     const calls = w.anthropic.calls;
     expect(calls).toHaveLength(3);
     for (const call of calls) {
-      expect(call.request.tools?.map((tool) => tool.name).sort()).toEqual([...NOTE_TOOLS].sort());
+      expect(call.request.tools?.map((tool) => tool.name).sort()).toEqual([...FILE_TOOLS].sort());
       expect(JSON.stringify(call.request.messages)).not.toContain("<notifications>");
     }
     expect(JSON.stringify(calls[0]!.request.messages[0])).toContain(MAINTENANCE_INSTRUCTION.slice(0, 40));
@@ -89,13 +89,13 @@ describe("forget (§7.5)", () => {
     const w = await lifeWorld(roots, {
       scripts: script(
         // Her turn about Kevin.
-        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
         textTurn("so happy for him"),
         // Step 2: the summary (the model slips; verification catches it).
         textTurn("We celebrated in Bake Club.\nKevin passed his exam."),
         // Step 4: the notes scrub session.
-        toolTurn([{ name: "delete_note", input: { path: "people/kevin.md" } }]),
+        toolTurn([{ name: "Bash", input: { command: "rm ~/people/kevin.md" } }]),
         textTurn("removed his note")
       )
     });
@@ -103,29 +103,27 @@ describe("forget (§7.5)", () => {
     await seedMembers(w);
     await liveATurn(w);
     expect(w.discord.sent.map((sent) => sent.content)).toEqual(["congrats Kevin!!"]);
-    const notes = new Notes(w.storage, "aria");
+    const notes = homeOf(w, "aria");
     await notes.write("people/kevin.md", "# Kevin\n- studies chemistry\n");
     await notes.write("MEMORY.md", "# Memory\n- [Kevin](people/kevin.md) — studies chemistry\n- [Me](me.md) — about me\n");
     await notes.write("me.md", `# Me\n- I love lemon tarts. Kevin taught me piping.\n- Sam is funny.\n- <@${KEVIN}> owes me a cake\n`);
     const now = w.clock.now().toISOString();
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      watches: [{ id: "w1", note: "his results", createdAt: now, expiresAt: new Date(w.clock.ms + 86_400_000).toISOString(), once: true, bindings: [{ fromUserId: KEVIN, fromName: "Kevin" }], fires: [] }]
-    }));
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [
-        { id: "r1", note: "ask Kevin how the party went", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: now },
-        { id: "r2", note: "buy lemons", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: now }
-      ]
-    }));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "his results", when: [{ from: "Kevin" }] }]));
+    await writeHerFile(
+      w,
+      "schedule.json",
+      JSON.stringify([
+        { at: "2026-10-24 16:00", note: "ask Kevin how the party went" },
+        { at: "2026-10-24 16:00", note: "buy lemons" }
+      ])
+    );
     await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", preview: "hey", at: now });
     await updateLifeState(w.storage, "aria", (state) => ({ ...state, pendingNotices: ["(Kevin deleted a message you read in bake-club/#general)"] }));
 
     const result = await w.cast.forgetPerson(KEVIN);
     // A bullet naming him goes whole (the piping line), so do id lines and the summary's sentence.
     expect(result.scrubbed).toEqual([
-      { waifuId: "aria", removedLines: 4, removedSentences: 0, removedNotes: 0, needsReview: [{ where: "notes/me.md", line: "- Sam is funny." }] }
+      { waifuId: "aria", removedLines: 4, removedSentences: 0, removedNotes: 0, removedFiles: 0, needsReview: [{ where: "~/me.md", line: "- Sam is funny." }] }
     ]);
     // Step 2: one summary call told to leave him out, with no kept turns, by every name (the shared one too).
     const summaryCall = w.anthropic.calls[3]!.request;
@@ -133,8 +131,8 @@ describe("forget (§7.5)", () => {
     expect(lastMessage).toContain("Leave out everything about these people, who asked to be forgotten: Kevin, kevbaker, Sam");
     // Step 4's instruction names him the same way.
     expect(JSON.stringify(w.anthropic.calls[4]!.request.messages[0])).toContain('\\"Kevin\\", \\"kevbaker\\", \\"Sam\\"');
-    // Step 4: the scrub session had only the notes tools.
-    expect(w.anthropic.calls[4]!.request.tools?.map((tool) => tool.name).sort()).toEqual([...NOTE_TOOLS].sort());
+    // Step 4: the scrub session had only her file tools.
+    expect(w.anthropic.calls[4]!.request.tools?.map((tool) => tool.name).sort()).toEqual([...FILE_TOOLS].sort());
     // Step 5: a new epoch with every old log deleted, a summary and notes without him.
     const state = await readLifeState(w.storage, "aria");
     expect(state.epoch).toBe(2);
@@ -149,8 +147,8 @@ describe("forget (§7.5)", () => {
     // text (review F3: her own entry is not his); others stay.
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toEqual([]);
     expect(state.pendingNotices).toEqual([]);
-    expect((await readLifeFile(w.storage, "aria", "watches")).watches).toEqual([]);
-    expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => [reminder.id, reminder.note])).toEqual([
+    expect(await herEntries(w, "watches.json")).toEqual([]);
+    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([
       ["r1", "(removed)"],
       ["r2", "buy lemons"]
     ]);
@@ -159,7 +157,7 @@ describe("forget (§7.5)", () => {
     expect(report).toMatchObject({ source: "owner", removedLines: 4, removedSentences: 0, needsReview: 1 });
     // The review line is kept for the owner (no id in it).
     const review = JSON.parse(await readFile(path.join(w.root, "user/waifus/aria/life/needs-review.json"), "utf8")) as { items: unknown[] };
-    expect(review.items).toEqual([{ at: w.clock.now().toISOString(), source: "owner", where: "notes/me.md", line: "- Sam is funny." }]);
+    expect(review.items).toEqual([{ at: w.clock.now().toISOString(), source: "owner", where: "~/me.md", line: "- Sam is funny." }]);
     const raw = await readFile(path.join(w.root, "user/waifus/aria/life/maintenance.jsonl"), "utf8");
     expect(raw).not.toContain("Kevin");
     expect(raw).not.toContain(KEVIN);
@@ -170,8 +168,8 @@ describe("forget (§7.5)", () => {
   it("an owner forget with no cast runtime is queued and runs when her life next starts, before any turn", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
         textTurn("so happy for him"),
         textTurn("We celebrated in Bake Club."),
         textTurn("nothing about him in my notes"),
@@ -252,7 +250,7 @@ describe("forget (§7.5)", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await w.cast.life("aria").runNow();
-    const notes = new Notes(w.storage, "aria");
+    const notes = homeOf(w, "aria");
     await notes.write("people/kevin.md", "# Kevin\n- says hi\n");
     await w.cast.forgetInLife({ waifuId: "aria", userId: KEVIN, source: "dm", scope: "conversation" });
     const state = await readLifeState(w.storage, "aria");
@@ -297,7 +295,7 @@ describe("forget (§7.5)", () => {
     const dmKey = `dm_${KEVIN}_aria`;
     await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/user-4321": dmKey }, primary: { [dmKey]: "dm/user-4321" } }));
     expect(await w.cast.forgetIdentity("aria", KEVIN)).toEqual({ userId: KEVIN, names: [], sharedNames: [] });
-    const notes = new Notes(w.storage, "aria");
+    const notes = homeOf(w, "aria");
     await notes.write("people/mina.md", "# Mina\n- Mina is a user of the bake club app.\n- Loves lemon tarts.\n");
     await notes.write("me.md", "# Me\n- jose taught me flan.\n- I love flan.\n");
     await updateLifeFile(w.storage, "aria", "handles", (file) => ({ ...file, handles: { "dm/jose": dmKey }, primary: { [dmKey]: "dm/jose" } }));
@@ -321,16 +319,16 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("done")) });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
     await seedMembers(w);
-    await new Notes(w.storage, "aria").write("MEMORY.md", "# Memory\n");
+    await homeOf(w, "aria").write("MEMORY.md", "# Memory\n");
     const now = w.clock.now().toISOString();
-    const expiresAt = new Date(w.clock.ms + 86_400_000).toISOString();
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      watches: [
-        { id: "w1", note: "", createdAt: now, expiresAt, once: false, bindings: [{ placeKey: ROOM_KEY, words: ["kevin's exam"] }], fires: [] },
-        { id: "w2", note: "", createdAt: now, expiresAt, once: false, bindings: [{ placeKey: ROOM_KEY, words: ["brownies"] }], fires: [] }
-      ]
-    }));
+    await writeHerFile(
+      w,
+      "watches.json",
+      JSON.stringify([
+        { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["kevin's exam"] }] },
+        { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["brownies"] }] }
+      ])
+    );
     await updateLifeFile(w.storage, "aria", "reads", (file) => ({ ...file, cursors: { [`dm_${KEVIN}_aria`]: { lastReadMessageId: "900000000000000001", at: now }, [ROOM_KEY]: { lastReadMessageId: "900000000000000002", at: now } } }));
     await updateLifeState(w.storage, "aria", (state) => ({ ...state, scrubbedAt: { "300000000000000111": new Date(w.clock.ms - 7 * 3_600_000).toISOString() } }));
     await w.storage.writeJson("search-usage", "user/search/usage.json", SearchUsageSchema, SearchUsageSchema.parse({
@@ -341,7 +339,7 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
       ]
     }));
     await w.cast.forgetPerson(KEVIN);
-    expect((await readLifeFile(w.storage, "aria", "watches")).watches.map((watch) => watch.id)).toEqual(["w2"]);
+    expect((await herEntries(w, "watches.json")).map((watch) => watch["id"])).toEqual(["w2"]);
     expect(Object.keys((await readLifeFile(w.storage, "aria", "reads")).cursors)).toEqual([ROOM_KEY]);
     const usage = JSON.parse(await readFile(path.join(w.root, "user/search/usage.json"), "utf8")) as { recent: Array<{ query: string }> };
     expect(usage.recent.map((entry) => entry.query)).toEqual(["lemon tart recipe"]);
@@ -361,7 +359,7 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("Summary."), textTurn("nothing else")) });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
     await seedMembers(w);
-    const notes = new Notes(w.storage, "aria");
+    const notes = homeOf(w, "aria");
     await notes.write("people/kevin-0003.md", `# Kev\n<!-- user:${KEVIN} -->\n\n- Allergic to peanuts.\n- Studies chemistry.\n`);
     await notes.write("people/kevin.md", "# Kevin\n\n- Is going through a divorce.\n");
     await notes.write("people/sam.md", "# Sam\n\n- Likes jazz.\n");
@@ -378,8 +376,8 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     expect(await notes.read("misc.md")).toBe("# Misc\n\n- the exam is on Friday\n");
     expect(result.scrubbed[0]!.needsReview).toEqual(
       expect.arrayContaining([
-        { where: "notes/people/sam.md", line: '(a note headed "Sam" may be about them)' },
-        { where: "notes/misc.md", line: "(a heading naming them was removed; check the rest of this note)" }
+        { where: "~/people/sam.md", line: '(a note headed "Sam" may be about them)' },
+        { where: "~/misc.md", line: "(a heading naming them was removed; check the rest of this note)" }
       ])
     );
   });
@@ -387,7 +385,7 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
   it("a failed notes scrub keeps the scrub queued; it runs again (and clears) at maintenance", async () => {
     const w = await lifeWorld(roots, { scripts: script(errorTurn({ code: "server", message: "overloaded", status: 500, retryable: false })) });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    await new Notes(w.storage, "aria").write("me.md", "# Me\n- likes tea\n");
+    await homeOf(w, "aria").write("me.md", "# Me\n- likes tea\n");
     const result = await w.cast.forgetPerson(KEVIN);
     expect(result.scrubbed[0]).toMatchObject({ queued: true });
     expect((await readPendingScrubs(w.storage, "aria")).map((scrub) => scrub.source)).toEqual(["owner_forget"]);

@@ -11,19 +11,23 @@
 //      is told every name (steps 2 and 4). Matching is whole-word with Latin diacritics, stroke
 //      letters and ligatures folded both ways (José / jose, Søren / soren);
 //   1. DM data (the caller: `dmForget` / `forgetUser`; the owner's forget also records
-//      `user/people/forgotten.json`);
+//      `user/people/forgotten.json`), and here her files from them (§16.9): every file in her home
+//      and /tmp whose hash the provenance index records for the person (their DM downloads, their
+//      attachments in rooms, and copies she moved or made), and `/tmp/dm/<handle>/` of their DM;
 //   2. summary without the person: her turn is aborted, the compaction summary is written with no
 //      kept turns and every name listed for omission (empty on failure); the new epoch waits
 //      (`pendingEpochStart`) while the per-waifu lock is held;
 //   3. other state: their wakes and pending notices, watches from the person or bound to their DM
-//      or to words naming them, her DM read cursor and handle, maintenance.jsonl and review lines,
+//      or to words naming them (in her `~/watches.json`), reminder notes naming them (in her
+//      `~/schedule.json`), her DM read cursor and handle, maintenance.jsonl and review lines,
 //      the host's recent web queries naming them, and her slice of the Living cast archive.
 //      Someone else's wake that names them keeps its place and loses the quote; her reminder or
 //      watch note naming them becomes `(removed)`;
 //   4. notes scrub: a maintenance session told to remove everything about the person (a failed
 //      session keeps the scrub queued, so it runs again; without a model it is skipped, with one
 //      review line, and the scrub completes);
-//   5. start the epoch (MEMORY.md re-read, places re-listed, every old epoch log deleted) and verify:
+//   5. start the epoch (MEMORY.md re-read, places re-listed, every old epoch log deleted) and verify
+//      every text file of her home, not only `.md` (§16.9):
 //      a note marked as the person's own (`<!-- user:<id> -->`), or a `people/` note whose heading is
 //      a name only they have, is deleted whole (with its MEMORY.md links); a `people/` note headed by
 //      a shared name is listed for review. Then notes, summary and the new system snapshot are
@@ -49,6 +53,7 @@ import type { Logger } from "../backend/logger.js";
 import { listWaifus } from "../orchestration/stores/config.js";
 import { readDmFloor, readDmState } from "../orchestration/dm/dmStore.js";
 import { queuePendingScrub, scrubForgetRecordCopies, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
+import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeState } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
@@ -72,8 +77,11 @@ import {
 import { lifeModelOf } from "./lifeLoop.js";
 import { DM_REDACTED, isDmPlaceKey, isDmPlaceRef } from "./lifeView.js";
 import { runNotesSession, scrubInstruction } from "./maintenance.js";
-import { markedUserIds, MEMORY_INDEX, Notes } from "./notes.js";
-import { lifeDir } from "./paths.js";
+import { markedUserIds, MEMORY_INDEX } from "./home/memoryIndex.js";
+import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
+import type { HomeStore } from "./home/homeStore.js";
+import { PLACES_FILE, SCHEDULE_FILE, WATCHES_FILE } from "./home/pathRules.js";
+import { homeDir, lifeDir, legacyNotesDir } from "./paths.js";
 import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
 import { foldName, hasNoWordBoundaries, isGenericName, isWeakName, namesSomeone } from "./text.js";
@@ -115,6 +123,8 @@ export type ForgetScrubResult = {
   removedSentences: number;
   /** Notes deleted whole (her notes about the person). */
   removedNotes?: number;
+  /** Files of hers deleted by hash (their downloads and exact copies, §16.9). */
+  removedFiles?: number;
   needsReview: ReviewLine[];
   /** Steps 2–5 were queued as a pending scrub (the DM rate limit, or a failure). */
   queued?: boolean;
@@ -152,8 +162,8 @@ export function mergeIdentity(a: ForgetIdentity, b: Partial<Pick<ForgetIdentity,
 export async function waifusWithLife(storage: StorageService): Promise<WaifuConfig[]> {
   const out: WaifuConfig[] = [];
   for (const waifu of await listWaifus(storage).catch(() => [] as WaifuConfig[])) {
-    const hasLife = await stat(storage.dataPath(lifeDir(waifu.id))).then((info) => info.isDirectory(), () => false);
-    if (hasLife || (await new Notes(storage, waifu.id).exists())) out.push(waifu);
+    const isDir = (relative: string) => stat(storage.dataPath(relative)).then((info) => info.isDirectory(), () => false);
+    if ((await isDir(lifeDir(waifu.id))) || (await isDir(homeDir(waifu.id))) || (await isDir(legacyNotesDir(waifu.id)))) out.push(waifu);
   }
   return out;
 }
@@ -203,7 +213,8 @@ async function storedNames(storage: StorageService, waifu: WaifuConfig, userId: 
   const add = adder(sets);
   const dmState = await readDmState(storage, userId, waifu.id).catch(() => undefined);
   add("mine", dmState?.userDisplayName);
-  for (const watch of (await readLifeFile(storage, waifu.id, "watches").catch(() => ({ watches: [] as never[] }))).watches) {
+  const home = homeStoreFor({ storage, config: () => DEFAULT_APP_CONFIG }, waifu);
+  for (const watch of Object.values((await home.readWatchIds().catch(() => undefined))?.watches ?? {})) {
     for (const binding of watch.bindings) if (binding.fromUserId === userId) add("mine", binding.fromName);
   }
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId });
@@ -215,7 +226,7 @@ async function storedNames(storage: StorageService, waifu: WaifuConfig, userId: 
   }
   // A note marked as someone else's (`<!-- user:<other id> -->`) is headed by their name: two
   // people called Kevin share the name, so forgetting one never removes text by it.
-  for (const [notePath, text] of await new Notes(storage, waifu.id).readAll().catch(() => new Map<string, string>())) {
+  for (const [notePath, text] of await home.readAllText().catch(() => new Map<string, string>())) {
     if (notePath === MEMORY_INDEX) continue;
     const marked = markedUserIds(text);
     if (marked.length > 0 && !marked.includes(userId)) add("others", headingOf(text));
@@ -308,13 +319,10 @@ export async function summaryWithoutPerson(deps: LifeDeps, waifu: WaifuConfig, i
 export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { dmOnly?: boolean; review?: (item: ReviewLine) => void } = {}): Promise<number> {
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
   const floor = await readDmFloor(deps.storage, identity.userId, waifu.id).catch(() => undefined);
+  const home = homeStoreFor(deps, waifu);
   if (o.dmOnly) {
     let removed = await scrubWakeQueue(deps.storage, waifu.id, { userId: "", placeKeys: new Set([dmKey]), mentions: () => false });
-    await updateLifeFile(deps.storage, waifu.id, "watches", (file) => {
-      const watches = file.watches.filter((watch) => !watch.bindings.some((binding) => binding.placeKey === dmKey));
-      removed += file.watches.length - watches.length;
-      return { ...file, watches };
-    });
+    removed += await dropWatches(home, deps.timeZone, (bindings) => bindings.some((binding) => binding.placeKey === dmKey));
     await setReadCursor(deps.storage, waifu.id, dmKey, floor, deps.now());
     return removed;
   }
@@ -331,42 +339,45 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     // `scrubbedAt` loses what is past the DM forget window here too (an owner forget adds nothing).
     return { ...current, pendingNotices, scrubbedAt: recentScrubs(current.scrubbedAt, deps.now()) };
   });
-  await updateLifeFile(deps.storage, waifu.id, "watches", (file) => {
-    // A watch goes when its word names the person ("kevin's exam" for Kevin). A word that is only a
-    // part of one of their names ("bake sale" in "Kevin from the Bake Sale") may be anyone's: listed.
-    const namesThem = (word: string) => names.some((name) => namesSomeone(word, name));
-    const partOfName = (word: string) => names.some((name) => namesSomeone(name, word));
-    const watches = file.watches
-      .filter((watch) => !watch.bindings.some((binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey || (binding.words ?? []).some(namesThem)))
-      .map((watch) => {
-        // A watch bound to a DM is private (D14): its review lines are too.
-        const dm = watch.bindings.some((binding) => isDmPlaceKey(binding.placeKey));
-        for (const binding of watch.bindings) {
-          for (const word of binding.words ?? []) if (o.review && partOfName(word)) o.review({ where: "watches", line: word.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
-        }
-        if (mentions(watch.note)) {
-          removed += 1;
-          return { ...watch, note: REMOVED_TEXT };
-        }
-        review("watches")(watch.note, dm);
-        for (const binding of watch.bindings) for (const word of binding.words ?? []) if (!partOfName(word)) review("watches")(word, dm);
-        return watch;
-      });
-    removed += file.watches.length - watches.length;
-    return { ...file, watches };
+  // Her watch file (§16.9 keeps step 3's rules): a watch goes when it is from the person, bound to
+  // their DM or its word names them ("kevin's exam" for Kevin). A word that is only a part of one of
+  // their names ("bake sale" in "Kevin from the Bake Sale") may be anyone's: listed.
+  const namesThem = (word: string) => names.some((name) => namesSomeone(word, name));
+  const partOfName = (word: string) => names.some((name) => namesSomeone(name, word));
+  await home.rewriteWatches(deps.timeZone, (entries, side) => {
+    const watches = { ...side.watches };
+    const kept = entries.flatMap((watch) => {
+      const bindings = side.watches[watch.id]?.bindings ?? [];
+      const words = watch.when.flatMap((binding) => binding.words ?? []);
+      if (bindings.some((binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey) || words.some(namesThem)) {
+        removed += 1;
+        delete watches[watch.id];
+        return [];
+      }
+      // A watch bound to a DM is private (D14): its review lines are too.
+      const dm = bindings.some((binding) => isDmPlaceKey(binding.placeKey));
+      for (const word of words) if (o.review && partOfName(word)) o.review({ where: "watches", line: word.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
+      for (const word of words) if (!partOfName(word)) review("watches")(word, dm);
+      if (mentions(watch.note)) {
+        removed += 1;
+        return [{ ...watch, note: REMOVED_TEXT }];
+      }
+      review("watches")(watch.note, dm);
+      return [watch];
+    });
+    return { entries: kept, ids: { ...side, watches } };
   });
   // A reminder is hers: it stays and loses the text that names the person.
-  await updateLifeFile(deps.storage, waifu.id, "schedule", (file) => {
-    const reminders = file.reminders.map((reminder) => {
+  await home.rewriteSchedule(deps.timeZone, (entries) =>
+    entries.map((reminder) => {
       if (mentions(reminder.note)) {
         removed += 1;
         return { ...reminder, note: REMOVED_TEXT };
       }
       review("reminders")(reminder.note);
       return reminder;
-    });
-    return { ...file, reminders };
-  });
+    })
+  );
   removed += await scrubNeedsReview(deps.storage, waifu.id, mentions);
   // Her DM cursor goes whole: the conversation is gone, and the floor holds on the read path.
   await setReadCursor(deps.storage, waifu.id, dmKey, undefined, deps.now());
@@ -383,6 +394,57 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   }
   // The kept copies of her unreadable pending-scrubs file lose the person too.
   removed += await scrubForgetRecordCopies(deps.storage, { userId: identity.userId, carries: mentions, waifuId: waifu.id }).catch(() => 0);
+  return removed;
+}
+
+/** Removes her watches whose resolved bindings match (`/forget conversation`: the ones bound to the DM). */
+async function dropWatches(home: HomeStore, timeZone: string, drop: (bindings: Array<{ placeKey?: string; fromUserId?: string }>) => boolean): Promise<number> {
+  let removed = 0;
+  await home.rewriteWatches(timeZone, (entries, side) => {
+    const watches = { ...side.watches };
+    const kept = entries.filter((watch) => {
+      if (!drop(side.watches[watch.id]?.bindings ?? [])) return true;
+      delete watches[watch.id];
+      removed += 1;
+      return false;
+    });
+    return { entries: kept, ids: { ...side, watches } };
+  });
+  return removed;
+}
+
+/**
+ * Step 1's files (§16.9): every file in her home and /tmp whose hash the provenance index records
+ * for the person (their DM's downloads, their attachments in rooms, and copies she moved or made
+ * with `cp`), with those index entries; and `/tmp/dm/<handle>/` of their DM, whole. `dmOnly`
+ * (`/forget conversation`): only what came from the DM. Returns how many files went.
+ */
+export async function scrubPersonFiles(deps: LifeDeps, waifu: WaifuConfig, identity: Pick<ForgetIdentity, "userId">, o: { dmOnly?: boolean } = {}): Promise<number> {
+  const home = homeStoreFor(deps, waifu);
+  const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
+  const theirs = (entry: { placeKey: string; authorId: string }) => entry.placeKey === dmKey || (!o.dmOnly && entry.authorId === identity.userId);
+  const index = await home.readIndex();
+  const hashes = new Set(index.entries.filter(theirs).map((entry) => entry.sha256));
+  let removed = 0;
+  // Their DM's folder of downloads goes whole (named by her DM handle, before the handle is dropped).
+  const handles = await readLifeFile(deps.storage, waifu.id, "handles").catch(() => ({ handles: {} as Record<string, string> }));
+  for (const [handle, key] of Object.entries(handles.handles)) {
+    if (key !== dmKey || !handle.startsWith("dm/")) continue;
+    const folder = home.resolve(`/tmp/dm/${handle.slice(3)}`, { allowRoot: false });
+    if (folder.ok && (await home.files.inspect(folder.path)).kind === "dir") {
+      removed += (await home.files.walk("tmp")).filter((entry) => entry.kind === "file" && entry.path.virtual.startsWith(`${folder.path.virtual}/`)).length;
+      await home.withLock(() => home.files.remove(folder.path, { recursive: true })).catch(() => undefined);
+    }
+  }
+  if (hashes.size > 0) {
+    for (const entry of await home.allFiles()) {
+      const sha = await home.hashOf(entry.path).catch(() => undefined);
+      if (!sha || !hashes.has(sha)) continue;
+      await home.withLock(() => home.files.remove(entry.path)).catch(() => undefined);
+      removed += 1;
+    }
+  }
+  await home.dropProvenance((entry) => theirs(entry) || hashes.has(entry.sha256));
   return removed;
 }
 
@@ -452,7 +514,7 @@ function headingOf(text: string): string | undefined {
 }
 
 /** Notes about the person deleted whole: marked as theirs, or a `people/` note headed by a name only they have. */
-async function deletePersonNotes(notes: Notes, all: Map<string, string>, identity: ForgetIdentity, out: Verify): Promise<string[]> {
+async function deletePersonNotes(home: HomeStore, all: Map<string, string>, identity: ForgetIdentity, out: Verify): Promise<string[]> {
   const deleted: string[] = [];
   for (const [notePath, text] of all) {
     if (notePath === MEMORY_INDEX) continue;
@@ -463,13 +525,13 @@ async function deletePersonNotes(notes: Notes, all: Map<string, string>, identit
       marked.includes(identity.userId) ||
       (marked.length === 0 && notePath.startsWith("people/") && folded !== undefined && identity.names.some((name) => foldName(name) === folded));
     if (theirs) {
-      await notes.delete(notePath);
+      await home.withLock(() => home.files.remove(home.path("home", notePath.split("/"))));
       deleted.push(notePath);
       out.removedNotes += 1;
       continue;
     }
     if (marked.length === 0 && notePath.startsWith("people/") && folded !== undefined && identity.sharedNames.some((name) => foldName(name) === folded)) {
-      review(out, { where: `notes/${notePath}`, line: `(a note headed "${heading!.slice(0, 80)}" may be about them)` });
+      review(out, { where: `~/${notePath}`, line: `(a note headed "${heading!.slice(0, 80)}" may be about them)` });
     }
   }
   for (const notePath of deleted) all.delete(notePath);
@@ -481,7 +543,7 @@ async function deletePersonNotes(notes: Notes, all: Map<string, string>, identit
     if (kept.length !== lines.length) {
       out.removedLines += lines.length - kept.length;
       all.set(MEMORY_INDEX, kept.join("\n"));
-      await notes.write(MEMORY_INDEX, kept.join("\n"));
+      await writeHomeText(home, MEMORY_INDEX, kept.join("\n"));
     }
   }
   return deleted;
@@ -507,9 +569,11 @@ export async function startEpochNow(deps: LifeDeps, waifu: WaifuConfig, reason: 
 /** Step 5: start the epoch and verify notes, summary and the snapshot. */
 export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity): Promise<Verify> {
   const out: Verify = { removedLines: 0, removedSentences: 0, removedNotes: 0, needsReview: [] };
-  const notes = new Notes(deps.storage, waifu.id);
-  const all = await notes.readAll();
-  let notesChanged = (await deletePersonNotes(notes, all, identity, out)).length > 0;
+  const home = homeStoreFor(deps, waifu);
+  // Every text file of her home (§16.9), except the ones step 3 handled by their own rules (her
+  // reminders and watches) and places.md (the app's).
+  const all = new Map([...(await home.readAllText())].filter(([notePath]) => ![SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE].includes(notePath)));
+  let notesChanged = (await deletePersonNotes(home, all, identity, out)).length > 0;
   // Notes marked as someone else's: a name match there (or in the index line linking one) is
   // listed for review, never removed (two people may share the name).
   const othersNotes = [...all].flatMap(([notePath, text]) => {
@@ -518,9 +582,9 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   });
   const linksOthersNote = (line: string) => othersNotes.some((notePath) => line.includes(`](${notePath})`));
   for (const [notePath, text] of all) {
-    const scrubbed = scrubText(text, identity, `notes/${notePath}`, out, notePath === MEMORY_INDEX ? { protectedLine: linksOthersNote } : { reviewOnly: othersNotes.includes(notePath) });
+    const scrubbed = scrubText(text, identity, `~/${notePath}`, out, notePath === MEMORY_INDEX ? { protectedLine: linksOthersNote } : { reviewOnly: othersNotes.includes(notePath) });
     if (scrubbed !== text) {
-      await notes.write(notePath, scrubbed);
+      await writeHomeText(home, notePath, scrubbed);
       notesChanged = true;
     }
   }
@@ -540,6 +604,11 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
     }
   }
   return out;
+}
+
+/** Writes one of her text files back after a scrub (it only shrinks: no limit can be hit). */
+async function writeHomeText(home: HomeStore, notePath: string, text: string): Promise<void> {
+  await home.withLock(() => home.files.writeBytes(home.path("home", notePath.split("/")), Buffer.from(text, "utf8")));
 }
 
 export const NEEDS_REVIEW_FILE = "needs-review.json";
@@ -662,6 +731,7 @@ export const NOTES_SCRUB_SKIPPED = "(no notes session ran: she has no model; the
  * scrub completes, so it is not retried at every start.
  */
 export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string }): Promise<ScrubPersonOutcome> {
+  const removedFiles = await scrubPersonFiles(deps, waifu, identity);
   await summaryWithoutPerson(deps, waifu, identity, o.signal);
   const stateReview: ReviewLine[] = [];
   await scrubOtherState(deps, waifu, identity, { review: (item) => stateReview.push(item) });
@@ -673,6 +743,8 @@ export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: 
     if (!session.ok) deps.logger.warn("Forget notes scrub failed; it stays queued and runs again", { category: "life", waifuId: waifu.id, error: session.error });
   }
   const verify = await startEpochAndVerify(deps, waifu, identity);
+  // Her places file no longer lists their DM.
+  await refreshPlacesFile(deps, waifu).catch(() => undefined);
   if (!model) verify.needsReview.unshift({ where: "notes", line: NOTES_SCRUB_SKIPPED });
   for (const item of stateReview) if (verify.needsReview.length < MAX_REVIEW_LINES) verify.needsReview.push(item);
   const now = deps.now();
@@ -685,11 +757,12 @@ export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: 
     removedLines: verify.removedLines,
     removedSentences: verify.removedSentences,
     removedNotes: verify.removedNotes,
+    removedFiles,
     needsReview: verify.needsReview.length,
     ...(!model ? { notesScrub: "skipped" } : complete ? {} : { notesScrub: "pending" })
   });
   deps.logger.info("Life forget scrub done", { category: "life", waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, needsReview: verify.needsReview.length, complete });
-  return { waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, needsReview: verify.needsReview, complete, ...(complete ? {} : { queued: true }) };
+  return { waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, removedFiles, needsReview: verify.needsReview, complete, ...(complete ? {} : { queued: true }) };
 }
 
 /** `scrubbedAt` keeps only the DM rate window (6 hours): an older entry is a trace of the person and nothing more. */

@@ -1,13 +1,15 @@
-// Sleep, the morning batch, reminders and maintenance timing (Living cast spec §4.5, §4.7, §5.7,
-// §6.6, §7.3). The scheduler is ticked by hand; lives never run here.
+// Sleep, the morning batch, reminders, watch timeouts and maintenance timing (Living cast spec §4.5,
+// §4.7, §5.7, §6.6, §7.3, §16.4, §16.5). Reminders and watches live in her own files. The scheduler
+// is ticked by hand; lives never run here.
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readLifeFile, updateLifeFile } from "../src/life/lifeStore.js";
+import { readLifeFile } from "../src/life/lifeStore.js";
+import { renderNotifications } from "../src/life/notifications.js";
 import { maintenanceDue, nextOccurrence } from "../src/life/scheduler.js";
 import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, ROOM, ROOM_KEY, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, ROOM, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -39,15 +41,8 @@ async function say(w: LifeWorld, text: string, o: Parameters<LifeWorld["discord"
 describe("sleep and the morning batch (§4.5, §4.7)", () => {
   it("defers mentions, DMs, reminders and watch matches while she sleeps, then releases one morning batch", async () => {
     const w = await sleepyWorld();
-    const now = w.clock.now();
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [{ id: "r1", note: "check the bake sale flyer", dueAt: new Date(now.getTime() + 10 * 60_000).toISOString(), createdAt: now.toISOString() }]
-    }));
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      watches: [{ id: "w1", note: "Mina wanted brownie tips", createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 86_400_000).toISOString(), once: true, bindings: [{ placeKey: ROOM_KEY, words: ["brownie"] }], fires: [] }]
-    }));
+    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 14:10", note: "check the bake sale flyer" }]));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
     await say(w, `<@${ARIA_BOT}> you up?`, { mentions: { [ARIA_BOT]: "Aria" } });
     await say(w, "best brownie recipe anyone?");
     const dm = w.discord.post(dmOf("aria"), "goodnight aria");
@@ -122,42 +117,75 @@ describe("sleep and the morning batch (§4.5, §4.7)", () => {
   });
 });
 
-describe("reminders (§6.6, §5.7)", () => {
+describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
   it("late reminders fire once on the first tick; repeating ones move to their next future time", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    const twoDaysAgo = new Date(w.clock.ms - 2 * 86_400_000 + 3_600_000).toISOString();
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [
-        { id: "r1", note: "one-off", dueAt: twoDaysAgo, createdAt: twoDaysAgo },
-        { id: "r2", note: "water the plants", dueAt: twoDaysAgo, repeat: "daily", createdAt: twoDaysAgo },
-        { id: "r3", note: "later", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: twoDaysAgo }
-      ]
-    }));
+    // Written on disk while the app was down (no checks): two of them are two days late.
+    await homeOf(w).write(
+      "schedule.json",
+      JSON.stringify([
+        { id: "r1", at: "2026-10-22 15:00", note: "one-off" },
+        { id: "r2", at: "2026-10-22 15:00", repeat: "daily", note: "water the plants" },
+        { id: "r3", at: "2026-10-24 15:00", note: "later" }
+      ])
+    );
     await w.cast.scheduler.tick();
     await w.cast.scheduler.tick();
     const queue = await readLifeFile(w.storage, "aria", "wakes");
     expect(queue.immediate.map((wake) => wake.note)).toEqual(["one-off", "water the plants"]);
-    expect(queue.immediate[1]).toMatchObject({ reason: "reminder", setAt: twoDaysAgo });
-    const schedule = await readLifeFile(w.storage, "aria", "schedule");
-    expect(schedule.reminders.map((reminder) => [reminder.id, reminder.dueAt])).toEqual([
-      ["r2", "2026-10-24T15:00:00.000Z"],
-      ["r3", "2026-10-24T15:00:00.000Z"]
+    expect(queue.immediate[1]).toMatchObject({ reason: "reminder", at: "2026-10-22T15:00:00.000Z" });
+    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["at"]])).toEqual([
+      ["r2", "2026-10-24 15:00"],
+      ["r3", "2026-10-24 15:00"]
     ]);
-    expect(nextOccurrence({ id: "x", note: "", dueAt: "2026-10-20T09:00:00.000Z", repeat: "weekly", createdAt: "2026-10-01T00:00:00.000Z" }, new Date("2026-10-24T14:00:00.000Z"))).toBe("2026-10-27T09:00:00.000Z");
+    expect(nextOccurrence({ at: "2026-10-20 09:00", repeat: "weekly" }, new Date("2026-10-24T14:00:00.000Z"), "UTC")).toBe("2026-10-27 09:00");
+    expect(nextOccurrence({ at: "2026-10-20 09:00" }, new Date("2026-10-24T14:00:00.000Z"), "UTC")).toBeUndefined();
   });
 
-  it("expired watches are removed silently on a tick", async () => {
+  it("editing a reminder's time in her file moves it", async () => {
     const w = await lifeWorld(roots);
-    const now = w.clock.now().toISOString();
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      watches: [{ id: "w1", note: "n", createdAt: now, expiresAt: new Date(w.clock.ms + 60_000).toISOString(), once: true, bindings: [{ anyMessage: true }], fires: [] }]
-    }));
-    w.clock.advance(2 * 60_000);
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 18:00", note: "call the bakery" }]));
+    const text = (await homeOf(w).read("schedule.json"))!;
+    await writeHerFile(w, "schedule.json", text.replace("2026-10-24 18:00", "2026-10-24 14:10"));
+    w.clock.ms = Date.parse("2026-10-24T14:11:00.000Z");
     await w.cast.scheduler.tick();
-    expect((await readLifeFile(w.storage, "aria", "watches")).watches).toEqual([]);
+    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toMatchObject([{ reason: "reminder", note: "call the bakery", at: "2026-10-24T14:10:00.000Z" }]);
+    expect(await herEntries(w, "schedule.json")).toEqual([]);
+    // Nothing is left for the old time.
+    w.clock.ms = Date.parse("2026-10-24T18:01:00.000Z");
+    await w.cast.scheduler.tick();
+    expect((await readLifeFile(w.storage, "aria", "wakes")).immediate).toHaveLength(1);
+  });
+
+  it("a watch that times out is removed and she is told, also a timer with an empty `when`; a once watch that matched never times out", async () => {
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    await writeHerFile(
+      w,
+      "watches.json",
+      JSON.stringify([
+        { timeout: "2026-10-24 14:05", once: true, note: "tea's ready", when: [] },
+        { timeout: "2026-10-24 14:30", once: true, note: "Kevin's answer", when: [{ place: "bake-club/#general", words: ["exam"] }] },
+        { timeout: "2026-10-25 14:00", once: true, note: "later", when: [{ words: ["cake"] }] }
+      ])
+    );
+    w.clock.ms = Date.parse("2026-10-24T14:06:00.000Z");
+    await w.cast.scheduler.tick();
+    let queue = await readLifeFile(w.storage, "aria", "wakes");
+    expect(queue.immediate).toMatchObject([{ reason: "watch_timeout", watchId: "w1", note: "tea's ready", at: "2026-10-24T14:05:00.000Z" }]);
+    expect((await herEntries(w, "watches.json")).map((watch) => watch["id"])).toEqual(["w2", "w3"]);
+    expect(renderNotifications({ wakes: queue.immediate, quiet: [], notices: [] }, { timeZone: "UTC" } as never)).toContain('- watch timed out · your note: "tea\'s ready"');
+    // w2 matches first (a once watch goes at its first match): no timeout later.
+    const message = w.discord.post(ROOM, "the exam went fine");
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: message });
+    await w.cast.settle();
+    expect((await herEntries(w, "watches.json")).map((watch) => watch["id"])).toEqual(["w3"]);
+    w.clock.ms = Date.parse("2026-10-24T14:31:00.000Z");
+    await w.cast.scheduler.tick();
+    queue = await readLifeFile(w.storage, "aria", "wakes");
+    expect(queue.immediate.map((wake) => wake.reason)).toEqual(["watch_timeout", "watch"]);
   });
 });
 

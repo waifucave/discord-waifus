@@ -60,7 +60,7 @@ export const DmLimitStateSchema = RevisionedRecordSchema.extend({
   floorMessageId: z.string().min(1).optional(),
   /** Living cast §4.5: the start (ISO) of the sleep window the sleep notice was last sent for. */
   sleepNoticeSentFor: IsoDateStringSchema.optional(),
-  /** Automatic notices (limit, sleep) she sent: `read_messages` renders them as `[auto] …`. */
+  /** Automatic notices (limit, sleep) she sent: `ReadMessages` renders them as `[auto] …`. */
   autoMessageIds: z.array(z.string().min(1)).max(50).default([])
 });
 export type DmLimitState = z.infer<typeof DmLimitStateSchema>;

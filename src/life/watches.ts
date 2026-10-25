@@ -1,19 +1,22 @@
-// Watches (Living cast spec §6.5): matching a message against her `watch_for` bindings.
+// Watches (Living cast spec §16.5, matching rules from §6.5): her `~/watches.json`, with how each
+// binding's place and person resolved kept beside it in `life/watch-ids.json`.
 //
 // A binding matches when every field it sets matches: place, author id, any of its words
 // (case-insensitive, whole word, Unicode-folded) or `any_message`. A binding with only `from` matches
-// that person anywhere she can read. Her own messages never match. `once` watches go at the first
-// match; others fire at most once per 10 minutes and `life.maxWatchFiresPerDay` times a day, until
-// they expire. Expired watches are removed silently.
+// that person anywhere she can read. Her own messages never match; an empty `when` never matches (a
+// timer). `once` watches (the default) go at their first match; others fire at most once per 10
+// minutes and `life.maxWatchFiresPerDay` times a day until their timeout. A watch whose timeout has
+// passed no longer matches: the scheduler removes it and tells her it timed out.
 
-import type { Watch, WatchBinding, WatchesFile } from "../shared/schemas/life.js";
-import type { StorageService } from "../storage/storageService.js";
-import { updateLifeFile } from "./lifeStore.js";
+import { parseLocalDateTime } from "./clock.js";
+import type { HomeStore } from "./home/homeStore.js";
+import type { ResolvedBinding, WatchEntry } from "./home/specialFiles.js";
 import { wordBoundaryIncludes } from "./text.js";
 
-export const MAX_ACTIVE_WATCHES = 10;
+export { MAX_WATCHES as MAX_ACTIVE_WATCHES } from "./home/specialFiles.js";
 export const WATCH_MIN_SPACING_MS = 10 * 60_000;
 const DAY_MS = 24 * 3_600_000;
+const MAX_FIRED = 100;
 
 export type WatchCandidate = {
   placeKey: string;
@@ -25,7 +28,7 @@ export type WatchCandidate = {
 };
 
 /** What matched: the word, "any message", or the person's name. */
-export function bindingMatch(binding: WatchBinding, message: WatchCandidate): string | undefined {
+export function bindingMatch(binding: ResolvedBinding, message: WatchCandidate): string | undefined {
   if (binding.placeKey && binding.placeKey !== message.placeKey) return undefined;
   if (binding.fromUserId && binding.fromUserId !== message.authorId) return undefined;
   if (binding.words && binding.words.length > 0) {
@@ -38,30 +41,31 @@ export function bindingMatch(binding: WatchBinding, message: WatchCandidate): st
   return binding.placeKey ? "any message" : undefined;
 }
 
-export function activeWatches(file: WatchesFile, now: Date): Watch[] {
-  return file.watches.filter((watch) => Date.parse(watch.expiresAt) > now.getTime());
+/** The key of a `once` watch's match in the fired list (a file the app could not rewrite never fires it twice). */
+export function onceKey(watch: Pick<WatchEntry, "id" | "timeout">): string {
+  return `once-${watch.id}-${watch.timeout}`;
 }
 
-/** Watches that fire for this message (state updated: once-watches removed, fires recorded). */
-export async function fireWatches(
-  storage: StorageService,
-  waifuId: string,
-  message: WatchCandidate,
-  o: { now: Date; maxFiresPerDay: number }
-): Promise<Array<{ watch: Watch; matched: string; binding: WatchBinding }>> {
+export type FiredWatch = { watch: WatchEntry; matched: string; binding: ResolvedBinding };
+
+/** Watches that fire for this message (her file and side file updated: once-watches removed, fires recorded). */
+export async function fireWatches(store: HomeStore, message: WatchCandidate, o: { now: Date; timeZone: string; maxFiresPerDay: number }): Promise<FiredWatch[]> {
   if (message.own) return [];
-  const fired: Array<{ watch: Watch; matched: string; binding: WatchBinding }> = [];
-  await updateLifeFile(storage, waifuId, "watches", (file) => {
-    const nowMs = o.now.getTime();
-    const kept: Watch[] = [];
-    let changed = false;
-    for (const watch of file.watches) {
-      if (Date.parse(watch.expiresAt) <= nowMs) {
-        changed = true;
+  const fired: FiredWatch[] = [];
+  const nowMs = o.now.getTime();
+  await store.rewriteWatches(o.timeZone, (entries, ids) => {
+    const kept: WatchEntry[] = [];
+    const watches = { ...ids.watches };
+    const firedKeys = [...ids.fired];
+    for (const watch of entries) {
+      const ends = parseLocalDateTime(watch.timeout, o.timeZone)?.getTime() ?? 0;
+      const side = ids.watches[watch.id];
+      if (ends <= nowMs || !side || firedKeys.includes(onceKey(watch))) {
+        kept.push(watch);
         continue;
       }
-      let hit: { matched: string; binding: WatchBinding } | undefined;
-      for (const binding of watch.bindings) {
+      let hit: { matched: string; binding: ResolvedBinding } | undefined;
+      for (const binding of side.bindings) {
         const matched = bindingMatch(binding, message);
         if (matched) {
           hit = { matched, binding };
@@ -74,32 +78,21 @@ export async function fireWatches(
       }
       if (watch.once) {
         fired.push({ watch, ...hit });
-        changed = true;
+        delete watches[watch.id];
+        firedKeys.push(onceKey(watch));
         continue;
       }
-      const fires = watch.fires.filter((at) => nowMs - Date.parse(at) < DAY_MS);
+      const fires = side.fires.filter((at) => nowMs - Date.parse(at) < DAY_MS);
       const last = fires.length > 0 ? Date.parse(fires[fires.length - 1]!) : undefined;
       if ((last !== undefined && nowMs - last < WATCH_MIN_SPACING_MS) || fires.length >= o.maxFiresPerDay) {
         kept.push(watch);
         continue;
       }
-      const updated = { ...watch, fires: [...fires, o.now.toISOString()] };
-      fired.push({ watch: updated, ...hit });
-      kept.push(updated);
-      changed = true;
+      watches[watch.id] = { ...side, fires: [...fires, o.now.toISOString()] };
+      fired.push({ watch, ...hit });
+      kept.push(watch);
     }
-    return changed ? { ...file, watches: kept } : file;
+    return { entries: kept, ids: { ...ids, watches, fired: firedKeys.slice(-MAX_FIRED) } };
   });
   return fired;
-}
-
-/** Drops expired watches (the scheduler's sweep). Returns how many went. */
-export async function pruneExpiredWatches(storage: StorageService, waifuId: string, now: Date): Promise<number> {
-  let removed = 0;
-  await updateLifeFile(storage, waifuId, "watches", (file) => {
-    const kept = activeWatches(file, now);
-    removed = file.watches.length - kept.length;
-    return removed > 0 ? { ...file, watches: kept } : file;
-  });
-  return removed;
 }

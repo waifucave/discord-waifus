@@ -8,7 +8,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NOTES_SCRUB_SKIPPED, recordNeedsReview, scrubOtherState, scrubText, type ReviewLine } from "../src/life/forget.js";
 import { readLifeFile, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
-import { Notes } from "../src/life/notes.js";
 import { isWeakName, namesSomeone, personMatcher } from "../src/life/text.js";
 import { EventStream } from "../src/api/eventStream.js";
 import { forgetCapturedTraffic, recentQueries, recordProviderQuery } from "../src/shared/queryLog.js";
@@ -17,7 +16,7 @@ import { updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser } from "../src/orchestration/dm/forgetUser.js";
 import { pruneForgetRecordCopies, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { textTurn } from "./modelFakes.js";
-import { closeWorlds, KEVIN, lifeWorld, MINA_USER, ROOM_KEY, script } from "./lifeFixtures.js";
+import { closeWorlds, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM_KEY, script, writeHerFile } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -34,7 +33,7 @@ describe("two people share a name (F2, F13)", () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("nothing about him in my notes")) });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
     await updateDmState(w.storage, { userId: KEVIN, waifuId: "aria", botId: "aria-bot" }, (state) => ({ ...state, userDisplayName: "Kevin" }));
-    const notes = new Notes(w.storage, "aria");
+    const notes = homeOf(w, "aria");
     const theirs = `# Kevin\n<!-- user:${KEVIN_2} -->\n\n- The other Kevin plays jazz piano.\n- Has a dog named Biscuit.\n`;
     await notes.write("people/kevin-0003.md", `# Kevin\n<!-- user:${KEVIN} -->\n\n- Studies chemistry.\n`);
     await notes.write("people/kevin-9999.md", theirs);
@@ -49,7 +48,7 @@ describe("two people share a name (F2, F13)", () => {
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Kevin](people/kevin-9999.md) — The other Kevin plays jazz piano.\n");
     // Which Kevin brought scones is the owner's call.
     expect(await notes.read("misc.md")).toBe("# Misc\n- Kevin brought scones.\n");
-    expect(result.scrubbed[0]!.needsReview).toEqual(expect.arrayContaining([{ where: "notes/misc.md", line: "- Kevin brought scones." }]));
+    expect(result.scrubbed[0]!.needsReview).toEqual(expect.arrayContaining([{ where: "~/misc.md", line: "- Kevin brought scones." }]));
   });
 
   it("a unique name inside a note marked as someone else's, or its index line, is listed for review, never removed", () => {
@@ -70,19 +69,20 @@ describe("step 3 with weak and unique names (F3)", () => {
     const w = await lifeWorld(roots);
     const now = w.clock.now().toISOString();
     await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", preview: "ok so are we baking saturday @Aria?", messageId: "900000000000000111", at: now });
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [
-        { id: "r1", note: "check the sourdough starter is ok", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: now },
-        { id: "r2", note: "buy flour", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: now }
-      ]
-    }));
+    await writeHerFile(
+      w,
+      "schedule.json",
+      JSON.stringify([
+        { at: "2026-10-24 15:00", note: "check the sourdough starter is ok" },
+        { at: "2026-10-24 15:00", note: "buy flour" }
+      ])
+    );
     const review: ReviewLine[] = [];
     const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
     const waifu = { id: "aria", name: "Aria", displayName: "Aria" } as Parameters<typeof scrubOtherState>[1];
     await scrubOtherState(deps, waifu, { userId: "300000000000000099", names: [], sharedNames: ["ok"] }, { review: (item) => review.push(item) });
     expect((await readLifeFile(w.storage, "aria", "wakes")).immediate.map((wake) => wake.preview)).toEqual(["ok so are we baking saturday @Aria?"]);
-    expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => reminder.note)).toEqual(["check the sourdough starter is ok", "buy flour"]);
+    expect((await herEntries(w, "schedule.json")).map((reminder) => reminder["note"])).toEqual(["check the sourdough starter is ok", "buy flour"]);
     expect(review).toEqual([
       { where: "wakes", line: "ok so are we baking saturday @Aria?" },
       { where: "reminders", line: "check the sourdough starter is ok" }
@@ -93,10 +93,7 @@ describe("step 3 with weak and unique names (F3)", () => {
     const w = await lifeWorld(roots);
     const now = w.clock.now().toISOString();
     await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", preview: "did Quillon pass the exam @Aria?", messageId: "900000000000000111", at: now });
-    await updateLifeFile(w.storage, "aria", "schedule", (file) => ({
-      ...file,
-      reminders: [{ id: "r1", note: "ask Quillon about the exam", dueAt: new Date(w.clock.ms + 3_600_000).toISOString(), createdAt: now }]
-    }));
+    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "ask Quillon about the exam" }]));
     const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
     const waifu = { id: "aria", name: "Aria", displayName: "Aria" } as Parameters<typeof scrubOtherState>[1];
     await scrubOtherState(deps, waifu, { userId: KEVIN, names: ["Quillon"], sharedNames: [] });
@@ -104,7 +101,7 @@ describe("step 3 with weak and unique names (F3)", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]).toMatchObject({ fromUserId: MINA_USER, messageId: "900000000000000111" });
     expect(wakes[0]!.preview).toBeUndefined();
-    expect((await readLifeFile(w.storage, "aria", "schedule")).reminders.map((reminder) => [reminder.id, reminder.note])).toEqual([["r1", "(removed)"]]);
+    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([["r1", "(removed)"]]);
   });
 });
 
@@ -136,18 +133,13 @@ describe("the traffic matcher and watch words (third review, minor 1 and 4)", ()
 
   it("a watch goes only when its word names the person; a word inside one of their names is listed", async () => {
     const w = await lifeWorld(roots);
-    const now = w.clock.now();
-    const watch = (id: string, word: string, note: string) => ({ id, note, createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 3_600_000).toISOString(), once: false, bindings: [{ words: [word] }], fires: [] });
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      nextId: 5,
-      watches: [watch("w1", "sourdough", "Mina's sourdough question"), watch("w2", "bake sale", "the bake sale plan"), watch("w3", "kevin", "an exam"), watch("w4", "kevin from the bake sale", "him")]
-    }));
+    const watch = (word: string, note: string) => ({ timeout: "2026-10-24 15:00", once: false, note, when: [{ words: [word] }] });
+    await writeHerFile(w, "watches.json", JSON.stringify([watch("sourdough", "Mina's sourdough question"), watch("bake sale", "the bake sale plan"), watch("kevin", "an exam"), watch("kevin from the bake sale", "him")]));
     const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
     const waifu = { id: "aria", name: "Aria", displayName: "Aria" } as Parameters<typeof scrubOtherState>[1];
     const review: ReviewLine[] = [];
     await scrubOtherState(deps, waifu, { userId: KEVIN, names: ["Kevin from the Bake Sale"], sharedNames: [] }, { review: (item) => review.push(item) });
-    expect((await readLifeFile(w.storage, "aria", "watches")).watches.map((entry) => entry.id)).toEqual(["w1", "w2", "w3"]);
+    expect((await herEntries(w, "watches.json")).map((entry) => entry["id"])).toEqual(["w1", "w2", "w3"]);
     expect(review).toEqual(expect.arrayContaining([{ where: "watches", line: "bake sale" }, { where: "watches", line: "kevin" }]));
   });
 });
@@ -261,7 +253,7 @@ describe("review lines and records (F7, F9)", () => {
   it("a waifu without a model finishes the owner's scrub: the notes session is recorded as skipped, once", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", model: undefined }] });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
-    await new Notes(w.storage, "aria").write("me.md", "# Me\n- Kevin taught me to fold croissants.\n");
+    await homeOf(w, "aria").write("me.md", "# Me\n- Kevin taught me to fold croissants.\n");
     const first = await w.cast.forgetPerson(KEVIN);
     expect(first.scrubbed[0]).not.toHaveProperty("queued");
     expect(first.scrubbed[0]!.needsReview[0]).toEqual({ where: "notes", line: NOTES_SCRUB_SKIPPED });

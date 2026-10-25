@@ -27,8 +27,8 @@ describe("life loop", () => {
   it("wake → read → send: notifications, a read, a sent message, private text never sent", async () => {
     const world = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }], { text: "let me look" }),
-        toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "yes! i'll bring brownies" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }], { text: "let me look" }),
+        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "yes! i'll bring brownies" } }]),
         textTurn("that went well (private)")
       )
     });
@@ -75,13 +75,13 @@ describe("life loop", () => {
 
   it("tool errors come back with is_error", async () => {
     const world = await lifeWorld(roots, {
-      scripts: script(toolTurn([{ name: "read_messages", input: { place: "nowhere/#nothing" } }]), textTurn("oh well"))
+      scripts: script(toolTurn([{ name: "ReadMessages", input: { place: "nowhere/#nothing" } }]), textTurn("oh well"))
     });
     await enqueueWake(world.storage, "aria", { id: newWakeId(), reason: "reminder", note: "x", at: world.clock.now().toISOString() });
     await world.cast.life("aria").runNow();
     const second = world.anthropic.calls[1]!.request.messages;
     const results = JSON.stringify(second[second.length - 1]);
-    expect(results).toContain("error: unknown place; use list_places");
+    expect(results).toContain("error: unknown place; see ~/places.md");
     expect(results).toContain("\"is_error\":true");
   });
 
@@ -89,7 +89,7 @@ describe("life loop", () => {
     let world!: LifeWorld;
     world = await lifeWorld(roots, {
       scripts: [
-        () => toolTurn([{ name: "list_places", input: {} }]),
+        () => toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]),
         (request) => {
           void request;
           return textTurn("done");
@@ -100,7 +100,7 @@ describe("life loop", () => {
     // A wake that arrives during the first call.
     world.anthropic.scripts[0] = () => {
       void enqueueWake(world.storage, "aria", { id: newWakeId(), reason: "reminder", note: "second", at: world.clock.now().toISOString() });
-      return toolTurn([{ name: "list_places", input: {} }]);
+      return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
     };
     await world.cast.life("aria").runNow();
     const lastRequest = world.anthropic.calls[world.anthropic.calls.length - 1]!.request.messages;
@@ -111,7 +111,7 @@ describe("life loop", () => {
   it("stops at the tool-round cap with a system line", async () => {
     const world = await lifeWorld(roots, {
       config: (config) => ({ ...config, life: { ...config.life, maxToolRounds: 2 } }),
-      scripts: script(toolTurn([{ name: "list_places", input: {} }]))
+      scripts: script(toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]))
     });
     await enqueueWake(world.storage, "aria", { id: newWakeId(), reason: "reminder", note: "loop", at: world.clock.now().toISOString() });
     await world.cast.life("aria").runNow();
@@ -134,9 +134,9 @@ describe("life loop", () => {
     const world = await lifeWorld(roots, {
       scripts: script(
         // A DM place spelled the way resolvePlace accepts it, and a web search in the same (DM) turn.
-        toolTurn([{ name: "read_messages", input: { place: " <DM/Kevin> " } }, { name: "read_messages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: " <DM/Kevin> " } }, { name: "ReadMessages", input: { place: "bake-club/#general" } }]),
         textTurn("he needs a hug"),
-        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
         textTurn("cake time")
       )
     });
@@ -177,14 +177,14 @@ describe("life loop", () => {
       options: { webBackend: backend as never },
       scripts: script(
         // Turn 1 (a DM wake): a search.
-        toolTurn([{ name: "web_search", input: { query: "how to comfort a friend after a failed exam" } }]),
+        toolTurn([{ name: "WebSearch", input: { query: "how to comfort a friend after a failed exam" } }]),
         textTurn("ok"),
         // Turn 2 (a room mention): a search, then a DM read: the turn becomes a DM turn.
-        toolTurn([{ name: "web_search", input: { query: "lemon cake" } }]),
-        toolTurn([{ name: "read_messages", input: { place: "dm/kevin" } }]),
+        toolTurn([{ name: "WebSearch", input: { query: "lemon cake" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: "dm/kevin" } }]),
         textTurn("ok"),
         // Turn 3 (a room mention): a search only.
-        toolTurn([{ name: "web_search", input: { query: "sprinkles" } }]),
+        toolTurn([{ name: "WebSearch", input: { query: "sprinkles" } }]),
         textTurn("ok")
       )
     });

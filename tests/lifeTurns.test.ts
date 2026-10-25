@@ -67,7 +67,7 @@ describe("turn endings", () => {
         // The first turn's only round: the late wake arrives while it runs (once).
         () => {
           void mentionWake(w, "w-late");
-          return toolTurn([{ name: "list_places", input: {} }]);
+          return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
         },
         // The next turn's first call: the capped turn ended with the late wake still queued.
         (request) =>
@@ -105,9 +105,9 @@ describe("turn endings", () => {
             await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: NOVA, userDisplayName: "Nova", channelId: "500000000000000001", messageId: "900000000000000123", createdAt: w.clock.now().toISOString() });
             w.cast.intake.flushDms();
             await w.cast.intake.settle();
-            yield* toolTurn([{ name: "list_places", input: {} }]);
+            yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
           })(),
-        () => toolTurn([{ name: "read_messages", input: { place: "dm/nova" }, id: "call_read" }, { name: "send_message", input: { place: "dm/nova", text: "hi Nova!" }, id: "call_send" }, { name: "list_places", input: {}, id: "call_list" }]),
+        () => toolTurn([{ name: "ReadMessages", input: { place: "dm/nova" }, id: "call_read" }, { name: "SendMessage", input: { place: "dm/nova", text: "hi Nova!" }, id: "call_send" }, { name: "Read", input: { file_path: "~/places.md" }, id: "call_list" }]),
         () => textTurn("done")
       ]
     });
@@ -141,7 +141,7 @@ describe("turn endings", () => {
       scripts: [
         () => {
           void mentionWake(w, "w-direct");
-          return toolTurn([{ name: "list_places", input: {} }]);
+          return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
         },
         () => textTurn("I'd say yes"),
         () => textTurn("never mind")
@@ -193,7 +193,7 @@ describe("turn endings", () => {
 
   it("a refusal in the middle of tool calls closes them with error results (M8)", async () => {
     const refusal: ProviderEvent[] = [
-      ...toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "x" }, id: "call_r" }]).filter((event) => event.type !== "done"),
+      ...toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "x" }, id: "call_r" }]).filter((event) => event.type !== "done"),
       { type: "done", stopReason: "refusal" } as ProviderEvent
     ];
     const w = await lifeWorld(roots, { scripts: script(refusal) });
@@ -306,7 +306,7 @@ describe("turn endings", () => {
 
   it("a length stop: a cut-off tool call gets an error result and the turn goes on; cut-off text ends the turn", async () => {
     const cutOff: ProviderEvent[] = [
-      ...toolTurn([{ name: "send_message", input: { place: "bake-club/#general", text: "a very long answ" }, id: "call_cut" }]).filter((event) => event.type !== "done"),
+      ...toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "a very long answ" }, id: "call_cut" }]).filter((event) => event.type !== "done"),
       { type: "done", stopReason: "max_tokens" } as ProviderEvent
     ];
     const textCut: ProviderEvent[] = [...textTurn("I was going to say").filter((event) => event.type !== "done"), { type: "done", stopReason: "max_tokens" } as ProviderEvent];
@@ -331,7 +331,7 @@ describe("turn endings", () => {
       scripts: [
         () => {
           w.clock.advance(31_000);
-          return toolTurn([{ name: "list_places", input: {} }]);
+          return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
         },
         () => textTurn("should not run")
       ]
@@ -369,7 +369,7 @@ describe("turn endings", () => {
   it("a turn stops when her daily budget runs out during it", async () => {
     const w = await lifeWorld(roots, {
       waifus: [{ id: "aria", name: "Aria", botId: "aria-bot", life: { dailyBudgetUsd: 0.0001 } }],
-      scripts: [() => toolTurn([{ name: "list_places", input: {} }]), () => textTurn("should not run")]
+      scripts: [() => toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]), () => textTurn("should not run")]
     });
     vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
     await reminder(w, "first");

@@ -32,6 +32,7 @@ import {
   recentScrubs,
   scrubOtherState,
   scrubPerson,
+  scrubPersonFiles,
   startEpochNow,
   summaryWithoutPerson,
   waifusWithLife,
@@ -44,7 +45,8 @@ import { lifeStateExists, readLifeFile, readLifeLog, readLifeState, updateLifeSt
 import { runMaintenance } from "./maintenance.js";
 import { OwnerNotices } from "./ownerNotices.js";
 import { IntakeMarks } from "./intakeMarks.js";
-import { Notes, MEMORY_INDEX } from "./notes.js";
+import { homeStoreFor } from "./home/index.js";
+import { MEMORY_INDEX } from "./home/memoryIndex.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces } from "./places.js";
 import { printLifeLines, printSystemPromptText } from "./lifeView.js";
@@ -543,8 +545,12 @@ export class LivingCast {
     // A DM user's forget runs at most once per 6 hours (either scope); inside the window it is only queued.
     const rateLimited = o.source === "dm" && insideDmScrubWindow(await readLifeState(deps.storage, o.waifuId), o.userId, now);
     const scrub = await queuePendingScrub(deps.storage, o.waifuId, o.userId, now, { source, names: identity.names, sharedNames: identity.sharedNames, logger: deps.logger });
-    // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10).
+    // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10),
+    // and her files from them (§16.9 step 1; `conversation`: only what came from the DM).
     await this.dropDmMark(o.waifuId, o.userId);
+    await scrubPersonFiles(deps, waifu, identity, { dmOnly: o.scope === "conversation" }).catch((error: unknown) => {
+      deps.logger.warn("Forget could not delete her files from the person", { waifuId: o.waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
     return { waifu, identity, scrub, scope: o.scope, source: o.source, rateLimited };
   }
 
@@ -743,7 +749,10 @@ export class LivingCast {
   }
 
   async printNotes(waifuId: string): Promise<string> {
-    return (await new Notes(this.deps.storage, waifuId).read(MEMORY_INDEX)) ?? "(no MEMORY.md yet)";
+    const waifu = await readWaifu(this.deps.storage, waifuId);
+    const store = homeStoreFor(this.deps, waifu);
+    const index = store.resolve(`~/${MEMORY_INDEX}`);
+    return (index.ok ? await store.files.readText(index.path).catch(() => undefined) : undefined) ?? "(no MEMORY.md yet)";
   }
 
   /** The last 20 life-log lines; unless `private`, DM content is left out by the §14.4 rule (§10.4, D14). */

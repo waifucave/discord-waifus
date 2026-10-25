@@ -5,7 +5,7 @@
 //      (a role her bot member holds), `everyone` (@everyone/@here, humans only), `name` (her name,
 //      display name or server nickname, ≥ 3 characters, as a whole word; humans only; off with
 //      `wakeOnName: false`);
-//   2. watches: every waifu with a matching `watch_for` binding;
+//   2. watches: every waifu with a matching `WatchFor` binding;
 //   3. detector: when the author is human and no message in the current burst produced a direct
 //      reason for anyone, the burst (channel debounce `serverMs`/`serverMaxWaitMs`) goes to the
 //      addressee detector.
@@ -43,6 +43,7 @@ import type { ForgottenPerson } from "../orchestration/dm/forgotten.js";
 import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
 import { fireWatches } from "./watches.js";
+import { homeStoreFor } from "./home/index.js";
 import { newWakeId } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import path from "node:path";
@@ -307,7 +308,7 @@ export class Intake {
           directWakes.push({ waifu, wake: { id: newWakeId(), reason: ordered[0]!, ...(ordered.length > 1 ? { reasons: ordered } : {}), ...base }, shared });
         }
       }
-      const fired = await fireWatches(deps.storage, waifu.id, { placeKey, authorId: raw.authorId, text, own }, { now, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay });
+      const fired = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay });
       for (const { watch, matched } of fired) {
         await this.o.router.route(waifu.id, { id: newWakeId(), reason: "watch", watchId: watch.id, matched, note: watch.note, ...base }, { guildId: input.guildId });
       }

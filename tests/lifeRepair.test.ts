@@ -58,7 +58,7 @@ async function tail(w: LifeWorld): Promise<LifeLogLine> {
 describe("crash repair (§5.7)", () => {
   it("a crash between a tool call and its result: the call is closed as interrupted, the turn ends", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
-    await crashAfter(w, { id: "call_x", name: "list_places", input: {} });
+    await crashAfter(w, { id: "call_x", name: "Read", input: { file_path: "~/places.md" } });
     const restarted = w.restart();
     vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
     await restarted.start();
@@ -74,7 +74,7 @@ describe("crash repair (§5.7)", () => {
   it("a crash after a Discord send but before its result: recovered from the conversation, never sent twice", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     const input = { place: "bake-club/#general", text: "brownies are out of the oven!" };
-    await crashAfter(w, { id: "call_send", name: "send_message", input }, { intent: true });
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
     // The send reached Discord before the crash.
     w.discord.post(ROOM, input.text, { authorId: ARIA_BOT, authorName: "Aria", bot: true });
     const restarted = w.restart();
@@ -91,10 +91,10 @@ describe("crash repair (§5.7)", () => {
   it("finds a send Discord's side rewrote (by the digest of the final content), even past the newest 50 messages", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     const input = { place: "bake-club/#general", text: "brownies are out :tada:" };
-    await crashAfter(w, { id: "call_send", name: "send_message", input }, { intent: true });
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
     // The facade resolved the emoji and recorded the final content's digest just before the call.
     const final = "brownies are out 🎉";
-    await appendIntent(w.storage, "aria", { turnId: "t-crash", toolCallId: "call_send", tool: "send_message", argsDigest: digest(input), at: w.clock.now().toISOString(), contentDigest: contentDigest(final) });
+    await appendIntent(w.storage, "aria", { turnId: "t-crash", toolCallId: "call_send", tool: "SendMessage", argsDigest: digest(input), at: w.clock.now().toISOString(), contentDigest: contentDigest(final) });
     w.discord.post(ROOM, final, { authorId: ARIA_BOT, authorName: "Aria", bot: true });
     // A busy room: 60 more messages before the restart.
     for (let index = 0; index < 60; index += 1) w.discord.post(ROOM, `chatter ${index}`);
@@ -109,7 +109,7 @@ describe("crash repair (§5.7)", () => {
   it("a conversation it cannot read leaves the send unknown, never 'not sent'", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     const input = { place: "bake-club/#general", text: "did this go out?" };
-    await crashAfter(w, { id: "call_send", name: "send_message", input }, { intent: true });
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
     w.discord.fetchContextSince = async () => {
       throw new Error("503 Service Unavailable");
     };
@@ -122,7 +122,7 @@ describe("crash repair (§5.7)", () => {
 
   it("the interrupted turn's wakes go back to the queue (review I4)", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
-    await crashAfter(w, { id: "call_x", name: "list_places", input: {} });
+    await crashAfter(w, { id: "call_x", name: "Read", input: { file_path: "~/places.md" } });
     const wake = { id: "w-lost", reason: "mention" as const, placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: "900000000000000001", at: w.clock.now().toISOString() };
     await updateLifeState(w.storage, "aria", (current) => ({ ...current, currentTurn: { ...current.currentTurn!, wakeIds: [wake.id], wakes: [wake] } }));
     const restarted = w.restart();
@@ -133,7 +133,7 @@ describe("crash repair (§5.7)", () => {
 
   it("a crash before the send reached Discord: interrupted, not sent (and not retried by repair)", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
-    await crashAfter(w, { id: "call_send", name: "send_message", input: { place: "bake-club/#general", text: "never arrived" } }, { intent: true });
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input: { place: "bake-club/#general", text: "never arrived" } }, { intent: true });
     const restarted = w.restart();
     vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
     await restarted.start();
@@ -360,7 +360,7 @@ async function mkdirLife(w: LifeWorld, waifuId: string): Promise<void> {
 
 describe("boot catch-up (§5.7)", () => {
   it("takes what arrived during downtime within the window, newer than her read cursor; queued wakes restart her", async () => {
-    const w = await lifeWorld(roots, { scripts: script(toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]), textTurn("hi!"), textTurn("(nothing to send)")) });
+    const w = await lifeWorld(roots, { scripts: script(toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]), textTurn("hi!"), textTurn("(nothing to send)")) });
     await mention(w, "hello!");
     await w.cast.life("aria").runNow();
     await w.cast.stop();

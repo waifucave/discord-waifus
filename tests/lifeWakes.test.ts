@@ -22,6 +22,7 @@ import {
   MINA_USER,
   ROOM,
   ROOM_KEY,
+  writeHerFile,
   type LifeWorld
 } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
@@ -144,20 +145,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
 
   it("watches fire with her note, never on her own messages", async () => {
     const w = await world();
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      watches: [
-        {
-          id: "w1",
-          note: "Mina wanted brownie tips",
-          createdAt: w.clock.now().toISOString(),
-          expiresAt: new Date(w.clock.ms + 86_400_000).toISOString(),
-          once: false,
-          bindings: [{ placeKey: ROOM_KEY, words: ["brownie"] }],
-          fires: []
-        }
-      ]
-    }));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
     await say(w, "anyone have a good brownie recipe?");
     const wake = (await queued(w, "aria")).immediate[0];
     expect(wake).toMatchObject({ reason: "watch", watchId: "w1", matched: "brownie", note: "Mina wanted brownie tips", fromName: "Kevin" });
@@ -256,20 +244,7 @@ describe("addressee detector (§4.3)", () => {
 
   it("one wake per message: the detector skips a waifu her watch already woke for the burst; others can still be picked (D-c)", async () => {
     const w = await world();
-    await updateLifeFile(w.storage, "aria", "watches", (file) => ({
-      ...file,
-      watches: [
-        {
-          id: "w1",
-          note: "brownies",
-          createdAt: w.clock.now().toISOString(),
-          expiresAt: new Date(w.clock.ms + 86_400_000).toISOString(),
-          once: false,
-          bindings: [{ placeKey: ROOM_KEY, words: ["brownie"] }],
-          fires: []
-        }
-      ]
-    }));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "brownies", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
     // The detector picks her: she already has the watch wake, so nothing more.
     w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
     await say(w, "brownie emergency, help");

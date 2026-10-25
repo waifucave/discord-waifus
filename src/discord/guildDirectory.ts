@@ -342,7 +342,7 @@ export class GuildDirectory implements CacheDirectoryHooks {
   }
 
   /**
-   * Known members of a guild (people she may name in `watch_for`, Living cast §6.5; names for the
+   * Known members of a guild (people she may name in `WatchFor`, Living cast §6.5; names for the
    * forget scrub, §7.5). Files are loaded first.
    */
   async members(guildId: string): Promise<GuildMemberCacheEntry[]> {

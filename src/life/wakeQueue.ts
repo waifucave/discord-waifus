@@ -93,7 +93,7 @@ export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "bu
     items: [...queue.deferred.items]
   };
   // A `morning` batch deferred again (her budget ran out before she read it) is carried whole.
-  const keepsNote = wake.reason === "reminder" || wake.reason === "watch" || wake.reason === "owner" || wake.reason === "followup" || wake.reason === "morning";
+  const keepsNote = wake.reason === "reminder" || wake.reason === "watch" || wake.reason === "watch_timeout" || wake.reason === "owner" || wake.reason === "followup" || wake.reason === "morning";
   if (keepsNote) deferred.items.push(wake);
   if (wake.placeKey && (wake.reason !== "reminder" && wake.reason !== "followup")) {
     const place = { ...(deferred.places[wake.placeKey] ?? emptyPlace()) };

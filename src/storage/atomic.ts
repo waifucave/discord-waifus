@@ -20,6 +20,18 @@ export async function atomicWriteText(
   content: string,
   options: AtomicWriteOptions = {}
 ): Promise<void> {
+  await atomicWriteFile(filePath, content, options);
+}
+
+/** Temp names atomic writes use (`.<name>.<pid>.<ms>.<hex>.tmp`): listings of user folders skip them. */
+export const ATOMIC_TEMP_NAME = /^\..+\.\d+\.\d+\.[0-9a-f]*\.tmp$/u;
+
+/** Text or bytes, written to a temp file in the same folder and renamed over the target. */
+export async function atomicWriteFile(
+  filePath: string,
+  content: string | Uint8Array,
+  options: AtomicWriteOptions = {}
+): Promise<void> {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
   await mkdir(dir, { recursive: true });
@@ -37,7 +49,8 @@ export async function atomicWriteText(
         catch (error) { await discardOwnedEmptyMetadataFile(tmpPath, handle); throw error; }
       }
       protectedTemp = true;
-      await handle.writeFile(content, "utf8");
+      if (typeof content === "string") await handle.writeFile(content, "utf8");
+      else await handle.writeFile(content);
       await handle.sync();
     } finally {
       await handle.close();

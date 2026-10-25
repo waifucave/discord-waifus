@@ -1,9 +1,11 @@
-// Life tools (Living cast spec §6): shared types and helpers. Tool names are snake_case; results
-// are short text; errors start with `error:` and are sent with `is_error`.
+// Life tools (Living cast spec §16.3): shared types and helpers. Tool names are PascalCase like
+// Claude Code's (`ReadMessages`, `Bash`), parameters snake_case (`file_path`); results are short
+// text; errors start with `error:` and are sent with `is_error`.
 
 import type { ContentBlockLike } from "@yanlinglabs/winter-provider-runtime";
 import type { z } from "zod";
 import type { CuratedModel } from "../../models/catalog.js";
+import type { AppConfig } from "../../shared/schemas/config.js";
 import type { WaifuConfig } from "../../shared/schemas/domain.js";
 import type { LifeImageBlock } from "../../shared/schemas/life.js";
 import type { LifeDeps } from "../deps.js";
@@ -15,7 +17,7 @@ export type ToolOutput = {
   isError?: boolean;
   /** Discord message ids the result shows (§5.6: kept turns omit results of deleted messages). */
   messageIds?: string[];
-  /** What a side effect produced (send_message: the Discord message id), for the intent's done line. */
+  /** What a side effect produced (SendMessage: the Discord message id), for the intent's done line. */
   resultRef?: string;
 };
 
@@ -28,7 +30,7 @@ export type TurnScratch = {
   sends?: number;
   /** DM users she already sent to this turn: they may keep getting messages past the rate limit. */
   dmUsersSent: Set<string>;
-  /** web_fetch calls this turn (`life.webFetch.maxPerTurn`). */
+  /** WebFetch calls this turn (`life.webFetch.maxPerTurn`). */
   fetches: number;
   /**
    * A DM turn (D14, spec §14.4): its wakes include a DM, or a call resolved to a DM place. Its web
@@ -57,6 +59,8 @@ export type ToolContext = {
 export type LifeTool = {
   name: string;
   description: string;
+  /** The description under the current configuration (Bash with or without python3). */
+  describe?: (config: AppConfig) => string;
   inputSchema: Record<string, unknown>;
   /** Writes an intent before it runs and a done line after (§5.7). */
   sideEffect: boolean;
@@ -76,6 +80,6 @@ export function parseInput<T>(schema: z.ZodType<T>, input: unknown): { ok: true;
   return { ok: false, output: toolError(`${where}${issue?.message ?? "invalid input"}`) };
 }
 
-export const UNKNOWN_PLACE = "error: unknown place; use list_places";
+export const UNKNOWN_PLACE = "error: unknown place; see ~/places.md";
 export const MESSAGE_TOO_OLD = "error: message too old";
 export const CANNOT_POST = "error: you can't post there";

@@ -18,6 +18,7 @@ export const REASON_LABELS: Record<WakeReason, string> = {
   role: "role mention",
   everyone: "@everyone",
   watch: "watch",
+  watch_timeout: "watch timed out",
   dm: "dm",
   detector: "maybe for you",
   reminder: "reminder",
@@ -80,7 +81,11 @@ function placeLine(group: Wake[], view: NotificationView): string {
 function soloLine(wake: Wake, view: NotificationView): string[] {
   switch (wake.reason) {
     case "reminder":
-      return [`- reminder · ${quote(wake.note ?? "")}${wake.setAt ? ` (you set this ${weekdayTimeText(new Date(wake.setAt), view.timeZone)})` : ""}`];
+      // §16.4: `reminder (Sat 14:20): "<note>"`, the time it was due.
+      return [`- reminder (${weekdayTimeText(new Date(wake.at), view.timeZone)}): ${quote(wake.note ?? "")}`];
+    case "watch_timeout":
+      // §16.5: a watch always ends at its timeout, so an empty one is a timer.
+      return [`- ${REASON_LABELS.watch_timeout} · your note: ${quote(wake.note ?? "")}`];
     case "owner":
       return [`- ${REASON_LABELS.owner}${wake.note ? ` · ${quote(wake.note)}` : ""}`];
     case "morning":
@@ -173,6 +178,8 @@ export function morningBatch(
       if (item.fromName) parts.push(`from ${plainName(item.fromName)}`);
       if (item.note) parts.push(`your note: ${quote(item.note)}`);
       lines.push(`  · ${parts.join(" · ")}`);
+    } else if (item.reason === "watch_timeout") {
+      lines.push(`  · watch timed out (${weekdayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
     } else if (item.reason === "followup") {
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
     } else if (item.reason === "morning" && item.batch) {

@@ -26,9 +26,9 @@ export function lifeTurn(place: () => string, o: { answer?: string } = {}) {
     if (isCompaction(body)) return { text: "Earlier: a lively afternoon in Bake Club; Kevin passed his exam." };
     const last = body.messages[body.messages.length - 1]!;
     const results = blocksOf(last).filter((block) => block.type === "tool_result");
-    if (results.length === 0) return { thinking: "Someone needs me; let me read.", toolCalls: [{ name: "read_messages", input: { place: place(), limit: 15 } }] };
+    if (results.length === 0) return { thinking: "Someone needs me; let me read.", toolCalls: [{ name: "ReadMessages", input: { place: place(), limit: 15 } }] };
     if (JSON.stringify(results).includes("sent #")) return { thinking: "That's said.", text: "(done)" };
-    return { thinking: "I'll answer them.", toolCalls: [{ name: "send_message", input: { place: place(), text: o.answer ?? "on it!" } }] };
+    return { thinking: "I'll answer them.", toolCalls: [{ name: "SendMessage", input: { place: place(), text: o.answer ?? "on it!" } }] };
   };
 }
 

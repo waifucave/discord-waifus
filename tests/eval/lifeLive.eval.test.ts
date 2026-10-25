@@ -113,12 +113,12 @@ async function wake(w: LifeWorld, scenario: Scenario): Promise<WakeResult> {
   const state = await readLifeState(w.storage, "aria");
   const lines = (await readLifeLog(w.storage, "aria", state.epoch)).slice(state.epoch === epochBefore ? before : 0);
   const calls = turnCalls(lines);
-  const firstSend = calls.indexOf("send_message");
+  const firstSend = calls.indexOf("SendMessage");
   return {
     kind: scenario.kind,
     answered: w.discord.sent.length > sentBefore,
-    readFirst: firstSend >= 0 && calls.slice(0, firstSend).includes("read_messages"),
-    wroteNote: calls.includes("write_note") || calls.includes("edit_note"),
+    readFirst: firstSend >= 0 && calls.slice(0, firstSend).includes("ReadMessages"),
+    wroteNote: calls.includes("Write") || calls.includes("Edit"),
     unsentCheck: lines.some((line) => line.kind === "system_note" && JSON.stringify(line.message).includes(UNSENT_REPLY_NOTE.slice(0, 30)))
   };
 }

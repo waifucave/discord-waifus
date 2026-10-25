@@ -1,4 +1,4 @@
-// web_search and web_fetch with their budgets (Living cast spec §6.8, §6.9).
+// WebSearch and WebFetch with their budgets (Living cast spec §6.8, §6.9).
 //
 // - Search: Exa through winter-web (src/life/web/), host-wide `search.maxPerSecond` (a rolling
 //   window of call starts, paced rather than refused; winter's own pacer additionally spaces keyless
@@ -254,7 +254,7 @@ export class WebTools {
       return { content: `${header}\n\n${answer}` };
     } catch (error) {
       const kind = error instanceof ModelCallError ? error.kind : "other";
-      this.o.logger.warn("Life web_fetch digest failed", { waifuId: o.waifuId, kind });
+      this.o.logger.warn("Life WebFetch digest failed", { waifuId: o.waifuId, kind });
       return toolError(kind === "aborted" ? "the page reading was interrupted" : "the page was fetched but could not be read right now");
     }
   }

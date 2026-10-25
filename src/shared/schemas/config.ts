@@ -146,7 +146,7 @@ const ModelsConfigSchema = z
   .default(() => ({ allowed: [...DEFAULT_MODELS_CONFIG.allowed], maxOutputUsdPerMTok: DEFAULT_MODELS_CONFIG.maxOutputUsdPerMTok }));
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
-// web_fetch (spec §6.9): the digest model ("" = the cheapest offered route with a key; a
+// WebFetch (spec §6.9): the digest model ("" = the cheapest offered route with a key; a
 // contributor route only when named here), caps, the fetch bounds and the page cache.
 const WEB_FETCH_FIELDS = {
   model: z.union([z.literal(""), z.string().regex(MODEL_ROUTE_RE, "Use a winter route key such as openai/gpt-6-luna.")]),
@@ -181,6 +181,46 @@ const WebFetchConfigSchema = z
   })
   .default({ ...DEFAULT_WEB_FETCH_CONFIG });
 export type WebFetchConfig = z.infer<typeof WebFetchConfigSchema>;
+
+// Her own machine (spec §16.10): her folders' limits, downloads, attachments she sends and the
+// simulated Bash.
+const HOME_FIELDS = {
+  maxBytes: z.number().int().min(1024 * 1024).max(1024 * 1024 * 1024),
+  maxFiles: z.number().int().min(10).max(20_000)
+};
+const TMP_FIELDS = {
+  maxBytes: z.number().int().min(1024 * 1024).max(2 * 1024 * 1024 * 1024),
+  retentionDays: z.number().int().min(1).max(90)
+};
+const ATTACHMENT_FIELDS = { maxBytes: z.number().int().min(64 * 1024).max(50 * 1024 * 1024) };
+const SEND_FIELDS = { maxFiles: z.number().int().min(0).max(10) };
+const BASH_FIELDS = {
+  enabled: z.boolean(),
+  python: z.boolean(),
+  maxTimeoutMs: z.number().int().min(1_000).max(300_000),
+  maxOutputChars: z.number().int().min(1_000).max(100_000)
+};
+export const DEFAULT_HOME_CONFIG = { maxBytes: 50 * 1024 * 1024, maxFiles: 2_000 };
+export const DEFAULT_TMP_CONFIG = { maxBytes: 200 * 1024 * 1024, retentionDays: 7 };
+export const DEFAULT_ATTACHMENTS_CONFIG = { maxBytes: 10 * 1024 * 1024 };
+export const DEFAULT_SEND_CONFIG = { maxFiles: 4 };
+export const DEFAULT_BASH_CONFIG = { enabled: true, python: true, maxTimeoutMs: 60_000, maxOutputChars: 16_000 };
+const HomeConfigSchema = z
+  .object({ maxBytes: HOME_FIELDS.maxBytes.default(DEFAULT_HOME_CONFIG.maxBytes), maxFiles: HOME_FIELDS.maxFiles.default(DEFAULT_HOME_CONFIG.maxFiles) })
+  .default({ ...DEFAULT_HOME_CONFIG });
+const TmpConfigSchema = z
+  .object({ maxBytes: TMP_FIELDS.maxBytes.default(DEFAULT_TMP_CONFIG.maxBytes), retentionDays: TMP_FIELDS.retentionDays.default(DEFAULT_TMP_CONFIG.retentionDays) })
+  .default({ ...DEFAULT_TMP_CONFIG });
+const AttachmentsConfigSchema = z.object({ maxBytes: ATTACHMENT_FIELDS.maxBytes.default(DEFAULT_ATTACHMENTS_CONFIG.maxBytes) }).default({ ...DEFAULT_ATTACHMENTS_CONFIG });
+const SendConfigSchema = z.object({ maxFiles: SEND_FIELDS.maxFiles.default(DEFAULT_SEND_CONFIG.maxFiles) }).default({ ...DEFAULT_SEND_CONFIG });
+const BashConfigSchema = z
+  .object({
+    enabled: BASH_FIELDS.enabled.default(DEFAULT_BASH_CONFIG.enabled),
+    python: BASH_FIELDS.python.default(DEFAULT_BASH_CONFIG.python),
+    maxTimeoutMs: BASH_FIELDS.maxTimeoutMs.default(DEFAULT_BASH_CONFIG.maxTimeoutMs),
+    maxOutputChars: BASH_FIELDS.maxOutputChars.default(DEFAULT_BASH_CONFIG.maxOutputChars)
+  })
+  .default({ ...DEFAULT_BASH_CONFIG });
 
 // Living cast (spec §11.3): the life loop's limits. `maxContextTokens` stays below the lowest
 // long-context price tier in the curated list.
@@ -229,12 +269,25 @@ export const LifeConfigSchema = z
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.default(DEFAULT_LIFE_CONFIG.maxWatchFiresPerDay),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
-    webFetch: WebFetchConfigSchema
+    webFetch: WebFetchConfigSchema,
+    home: HomeConfigSchema,
+    tmp: TmpConfigSchema,
+    attachments: AttachmentsConfigSchema,
+    send: SendConfigSchema,
+    bash: BashConfigSchema
   })
-  .default({ ...DEFAULT_LIFE_CONFIG, webFetch: { ...DEFAULT_WEB_FETCH_CONFIG } });
+  .default({
+    ...DEFAULT_LIFE_CONFIG,
+    webFetch: { ...DEFAULT_WEB_FETCH_CONFIG },
+    home: { ...DEFAULT_HOME_CONFIG },
+    tmp: { ...DEFAULT_TMP_CONFIG },
+    attachments: { ...DEFAULT_ATTACHMENTS_CONFIG },
+    send: { ...DEFAULT_SEND_CONFIG },
+    bash: { ...DEFAULT_BASH_CONFIG }
+  });
 export type LifeConfig = z.infer<typeof LifeConfigSchema>;
 
-// web_search (spec §6.8): Exa's hosted MCP server, keyless by default; an Exa key saved as the `exa`
+// WebSearch (spec §6.8): Exa's hosted MCP server, keyless by default; an Exa key saved as the `exa`
 // provider credential is the fallback. Host-wide and per-waifu caps; 0 disables search.
 const SEARCH_FIELDS = {
   maxPerSecond: z.number().int().min(0).max(10),
@@ -362,6 +415,16 @@ export const UpdateAppConfigBodySchema = z.object({
       timeoutMs: WEB_FETCH_FIELDS.timeoutMs.optional(),
       maxRedirects: WEB_FETCH_FIELDS.maxRedirects.optional(),
       cacheMinutes: WEB_FETCH_FIELDS.cacheMinutes.optional()
+    }).strict().optional(),
+    home: z.object({ maxBytes: HOME_FIELDS.maxBytes.optional(), maxFiles: HOME_FIELDS.maxFiles.optional() }).strict().optional(),
+    tmp: z.object({ maxBytes: TMP_FIELDS.maxBytes.optional(), retentionDays: TMP_FIELDS.retentionDays.optional() }).strict().optional(),
+    attachments: z.object({ maxBytes: ATTACHMENT_FIELDS.maxBytes.optional() }).strict().optional(),
+    send: z.object({ maxFiles: SEND_FIELDS.maxFiles.optional() }).strict().optional(),
+    bash: z.object({
+      enabled: BASH_FIELDS.enabled.optional(),
+      python: BASH_FIELDS.python.optional(),
+      maxTimeoutMs: BASH_FIELDS.maxTimeoutMs.optional(),
+      maxOutputChars: BASH_FIELDS.maxOutputChars.optional()
     }).strict().optional()
   }).strict().optional(),
   search: z.object({

@@ -1,11 +1,15 @@
-// The scheduler (Living cast spec §4.5, §6.5, §6.6, §7.3, §5.7): her reminders, watch expiry, the
-// `morning` batch when her sleep (or budget pause) ends, nightly maintenance and pending scrubs.
+// The scheduler (Living cast spec §4.5, §7.3, §5.7, §16.4–§16.6, §16.9): her reminders and watch
+// timeouts (from her own files), the `morning` batch when her sleep (or budget pause) ends, nightly
+// maintenance and pending scrubs, `~/places.md` and `/tmp` expiry.
 //
 // One periodic tick (default every 15 s) checks every enabled waifu:
-// - due reminders fire once (through the router, so one due while she sleeps is deferred to her
-//   morning); repeating ones move to their next future occurrence. Late reminders after downtime
-//   fire once on the first tick.
-// - expired watches are removed silently.
+// - due reminders in `~/schedule.json` fire once (through the router, so one due while she sleeps
+//   is deferred to her morning); repeating ones move to their next local occurrence. Late reminders
+//   after downtime fire once on the first tick.
+// - a watch whose timeout passed is removed from `~/watches.json` and she is told it timed out (a
+//   `watch_timeout` wake, so an empty watch works as a timer).
+// - `~/places.md` is rewritten when it would change, at most once a minute; `/tmp` files older than
+//   `life.tmp.retentionDays` go at the first tick and hourly after.
 // - deferred wakes become one `morning` notification once she is awake (or, for the budget pause,
 //   once her new local day starts under budget).
 // - maintenance: 30 minutes into her sleep window, or at `life.maintenanceHourLocal` without one;
@@ -13,16 +17,17 @@
 
 import { listWaifus } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
-import type { Reminder, Wake, WakeQueue } from "../shared/schemas/life.js";
+import type { Wake, WakeQueue } from "../shared/schemas/life.js";
 import type { DailyCost } from "./budget.js";
-import { availabilityAt, instantOfLocal, localParts, sleepWindowContaining } from "./clock.js";
+import { availabilityAt, instantOfLocal, localParts, parseLocalDateTime, sleepWindowContaining } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
-import { readLifeFile, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
+import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
+import { checkEnvFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
+import type { ReminderEntry, WatchEntry } from "./home/specialFiles.js";
 import { morningBatch, type MorningPlace } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
-import { pruneExpiredWatches } from "./watches.js";
 import { deferForBudget, hasDeferred, newWakeId, takeDeferred } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
@@ -30,7 +35,10 @@ import { selfAuthorIds } from "./people.js";
 
 export const DEFAULT_TICK_MS = 15_000;
 export const MAINTENANCE_DELAY_INTO_SLEEP_MS = 30 * 60_000;
-const DAY_MS = 24 * 3_600_000;
+/** `~/places.md` is rewritten at most this often (§16.6; also at every turn start). */
+export const PLACES_REFRESH_MS = 60_000;
+/** `/tmp` expiry runs at the first tick and then this often (§16.9). */
+export const TMP_SWEEP_MS = 3_600_000;
 
 export type SchedulerHooks = {
   poke(waifuId: string): void;
@@ -46,18 +54,34 @@ export type SchedulerHooks = {
  */
 const RUNNING_MAINTENANCE = new Map<string, Promise<void>>();
 
-/** One wake id per reminder occurrence (its id and due time). */
-export function reminderWakeId(reminder: Pick<Reminder, "id" | "dueAt">): string {
-  return `w-reminder-${reminder.id}-${Date.parse(reminder.dueAt).toString(36)}`;
+/** One wake id per reminder occurrence (its id and local due time). */
+export function reminderWakeId(reminder: Pick<ReminderEntry, "id" | "at">, timeZone: string): string {
+  const due = parseLocalDateTime(reminder.at, timeZone)?.getTime() ?? 0;
+  return `w-reminder-${reminder.id}-${due.toString(36)}`;
 }
 
-/** The next future occurrence of a repeating reminder. */
-export function nextOccurrence(reminder: Reminder, now: Date): string | undefined {
+/** One wake id per watch timeout (its id and local timeout). */
+export function watchTimeoutWakeId(watch: Pick<WatchEntry, "id" | "timeout">, timeZone: string): string {
+  const ends = parseLocalDateTime(watch.timeout, timeZone)?.getTime() ?? 0;
+  return `w-timeout-${watch.id}-${ends.toString(36)}`;
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** The next local occurrence of a repeating reminder after `now` (same local time, next day or week). */
+export function nextOccurrence(reminder: Pick<ReminderEntry, "at" | "repeat">, now: Date, timeZone: string): string | undefined {
   if (!reminder.repeat) return undefined;
-  const step = reminder.repeat === "daily" ? DAY_MS : 7 * DAY_MS;
-  let due = Date.parse(reminder.dueAt);
-  while (due <= now.getTime()) due += step;
-  return new Date(due).toISOString();
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/u.exec(reminder.at);
+  if (!match) return undefined;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const step = reminder.repeat === "daily" ? 1 : 7;
+  for (let n = 1; n <= 400; n += 1) {
+    const date = new Date(Date.UTC(year, month - 1, day + n * step));
+    const text = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${match[4]}:${match[5]}`;
+    const at = parseLocalDateTime(text, timeZone);
+    if (at && at.getTime() > now.getTime()) return text;
+  }
+  return undefined;
 }
 
 /** When her maintenance is due next after `lastAt` (the start of the window it belongs to). */
@@ -77,6 +101,9 @@ export function maintenanceDue(waifu: WaifuConfig, now: Date, timeZone: string, 
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking: Promise<void> | undefined;
+  /** Per waifu: when `~/places.md` and `/tmp` were last looked after (in memory: a restart does both again). */
+  private readonly placesAt = new Map<string, number>();
+  private readonly tmpAt = new Map<string, number>();
   /** Maintenance runs in the background (a tick never waits for one): abortable, awaited by stop(). */
   private readonly maintenanceRuns = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
@@ -138,9 +165,10 @@ export class Scheduler {
     for (const waifu of waifus) {
       try {
         await this.reminders(waifu);
-        await pruneExpiredWatches(deps.storage, waifu.id, deps.now());
+        await this.watchTimeouts(waifu);
         await this.morning(waifu);
         await this.maintenance(waifu);
+        await this.housekeeping(waifu);
       } catch (error) {
         deps.logger.warn("Life scheduler tick failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
       }
@@ -149,28 +177,80 @@ export class Scheduler {
 
   /**
    * Due reminders are routed first, under a wake id made from the reminder and its due time, and
-   * only then removed (or moved to their next occurrence): a crash in between routes the same wake
-   * again, which the queue does not add twice (review M4).
+   * only then removed from her file (or moved to their next occurrence): a crash in between routes
+   * the same wake again, which the queue does not add twice (review M4). The fired list keeps a file
+   * the app cannot rewrite (she broke it by hand outside the app) from firing it at every tick.
    */
   private async reminders(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
     const now = deps.now();
-    const file = await readLifeFile(deps.storage, waifu.id, "schedule");
-    const due = file.reminders.filter((reminder) => Date.parse(reminder.dueAt) <= now.getTime());
+    const store = homeStoreFor(deps, waifu);
+    const entries = await store.readSchedule(deps.timeZone);
+    const fired = new Set((await store.readScheduleIds()).fired);
+    const due = entries.filter((entry) => (parseLocalDateTime(entry.at, deps.timeZone)?.getTime() ?? Infinity) <= now.getTime());
     if (due.length === 0) return;
-    for (const reminder of due) {
-      const wake: Wake = { id: reminderWakeId(reminder), reason: "reminder", note: reminder.note, setAt: reminder.createdAt, at: reminder.dueAt };
+    // An occurrence already routed (a crash before its removal) is removed now, never routed again.
+    const fresh = due.filter((reminder) => !fired.has(reminderWakeId(reminder, deps.timeZone)));
+    for (const reminder of fresh) {
+      const at = parseLocalDateTime(reminder.at, deps.timeZone)!;
+      const wake: Wake = { id: reminderWakeId(reminder, deps.timeZone), reason: "reminder", note: reminder.note, at: at.toISOString() };
       await this.o.router.route(waifu.id, wake);
     }
-    const fired = new Set(due.map((reminder) => `${reminder.id}\0${reminder.dueAt}`));
-    await updateLifeFile(deps.storage, waifu.id, "schedule", (current) => ({
-      ...current,
-      reminders: current.reminders.flatMap((reminder): Reminder[] => {
-        if (!fired.has(`${reminder.id}\0${reminder.dueAt}`)) return [reminder];
-        const next = nextOccurrence(reminder, now);
-        return next ? [{ ...reminder, dueAt: next }] : [];
+    if (fresh.length > 0) await store.markFired("schedule", fresh.map((reminder) => reminderWakeId(reminder, deps.timeZone)));
+    const done = new Set(due.map((reminder) => `${reminder.id}\0${reminder.at}`));
+    await store.rewriteSchedule(deps.timeZone, (current) =>
+      current.flatMap((reminder): ReminderEntry[] => {
+        if (!done.has(`${reminder.id}\0${reminder.at}`)) return [reminder];
+        const next = nextOccurrence(reminder, now, deps.timeZone);
+        return next ? [{ ...reminder, at: next }] : [];
       })
-    }));
+    );
+  }
+
+  /** A watch whose timeout passed (§16.5): routed as `watch_timeout`, then removed from her file. */
+  private async watchTimeouts(waifu: WaifuConfig): Promise<void> {
+    const deps = this.o.deps;
+    const now = deps.now();
+    const store = homeStoreFor(deps, waifu);
+    const { entries, ids } = await store.readWatches(deps.timeZone);
+    const fired = new Set(ids.fired);
+    const due = entries.filter((entry) => (parseLocalDateTime(entry.timeout, deps.timeZone)?.getTime() ?? Infinity) <= now.getTime());
+    if (due.length === 0) return;
+    const fresh = due.filter((watch) => !fired.has(watchTimeoutWakeId(watch, deps.timeZone)));
+    for (const watch of fresh) {
+      const at = parseLocalDateTime(watch.timeout, deps.timeZone)!;
+      await this.o.router.route(waifu.id, { id: watchTimeoutWakeId(watch, deps.timeZone), reason: "watch_timeout", watchId: watch.id, note: watch.note, at: at.toISOString() });
+    }
+    if (fresh.length > 0) await store.markFired("watches", fresh.map((watch) => watchTimeoutWakeId(watch, deps.timeZone)));
+    const gone = new Set(due.map((watch) => `${watch.id}\0${watch.timeout}`));
+    await store.rewriteWatches(deps.timeZone, (current, side) => {
+      const watches = { ...side.watches };
+      const kept = current.filter((watch) => {
+        if (!gone.has(`${watch.id}\0${watch.timeout}`)) return true;
+        delete watches[watch.id];
+        return false;
+      });
+      return { entries: kept, ids: { ...side, watches } };
+    });
+  }
+
+  /**
+   * `~/places.md` (at most once a minute), `/tmp` expiry (first tick, then hourly), and her watch
+   * file's resolutions when someone changed it outside the app.
+   */
+  private async housekeeping(waifu: WaifuConfig): Promise<void> {
+    const deps = this.o.deps;
+    const nowMs = deps.now().getTime();
+    if (nowMs - (this.placesAt.get(waifu.id) ?? -Infinity) >= PLACES_REFRESH_MS) {
+      this.placesAt.set(waifu.id, nowMs);
+      await refreshPlacesFile(deps, waifu);
+      await homeStoreFor(deps, waifu).resyncWatches(checkEnvFor(deps, waifu.id));
+    }
+    if (nowMs - (this.tmpAt.get(waifu.id) ?? -Infinity) >= TMP_SWEEP_MS) {
+      this.tmpAt.set(waifu.id, nowMs);
+      const removed = await homeStoreFor(deps, waifu).expireTmp(deps.now(), deps.config().life.tmp.retentionDays);
+      if (removed > 0) deps.logger.info("Life /tmp files expired", { category: "life", waifuId: waifu.id, removed });
+    }
   }
 
   /** Deferred wakes → one `morning` wake when she is awake (and, for a budget pause, under budget again). */

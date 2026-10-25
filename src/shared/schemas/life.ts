@@ -25,11 +25,13 @@ export const SystemSnapshotSchema = z.object({
   /** The `<places>` text at epoch start. */
   places: z.string(),
   /** The tool names offered this epoch, in order. */
-  tools: z.array(z.string()).default([])
+  tools: z.array(z.string()).default([]),
+  /** Their descriptions this epoch (sent unchanged for the whole epoch). */
+  toolDescriptions: z.record(z.string(), z.string()).optional()
 });
 export type SystemSnapshot = z.infer<typeof SystemSnapshotSchema>;
 
-export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "dm", "detector", "reminder", "morning", "owner", "followup"]);
+export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "morning", "owner", "followup"]);
 export type WakeReason = z.infer<typeof WakeReasonSchema>;
 
 /** One queued wake (§4.6 `immediate`). Merged entries for one place carry every reason. */
@@ -94,7 +96,7 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   inlineImageBytes: z.number().int().nonnegative(),
   /** Image keys shown in this epoch (an image renders inline only at its first occurrence, §6.2). */
   shownImageKeys: z.array(z.string()).default([]),
-  /** Message ids returned by `read_messages` this epoch (kept turns' ids carry over). */
+  /** Message ids returned by `ReadMessages` this epoch (kept turns' ids carry over). */
   readMessageIds: z.array(z.string()),
   /** Folded into the next turn's notifications; never start a turn (§10.3). */
   pendingNotices: z.array(z.string()),
@@ -139,8 +141,11 @@ export type LifeState = z.infer<typeof LifeStateSchema>;
  */
 export const LifeImageBlockSchema = z.object({
   type: z.literal("life_image"),
-  placeKey: z.string().min(1),
-  messageId: z.string().min(1),
+  /** A Discord image (logs from before §16): where it was shown. */
+  placeKey: z.string().min(1).optional(),
+  messageId: z.string().min(1).optional(),
+  /** A file she opened with Read (§16.3.3): its path then; the bytes are cached under `file:<sha256>`. */
+  file: z.string().min(1).optional(),
   attachment: ImageRefSchema,
   mode: z.union([z.literal("inline"), z.object({ text: z.string() })])
 });
@@ -188,7 +193,7 @@ export const LifeIntentSchema = z.object({
   /** done lines: what the tool returned (send: the Discord message id). */
   resultRef: z.string().optional(),
   /**
-   * send_message, written just before the Discord call: a digest of the final outgoing content
+   * SendMessage, written just before the Discord call: a digest of the final outgoing content
    * (after mentions and emoji were resolved), so boot repair recognises the message (§5.7).
    */
   contentDigest: z.string().optional()
@@ -243,51 +248,67 @@ export const WakeQueueSchema = RevisionedRecordSchema.extend({
 });
 export type WakeQueue = z.infer<typeof WakeQueueSchema>;
 
-// ---- watches.json (§6.5) -----------------------------------------------------------------------------
+// ---- her reminder and watch files: what the app keeps beside them (§16.4, §16.5) -------------------
+//
+// The files themselves are hers (`home/schedule.json`, `home/watches.json`, plain JSON arrays she
+// edits; src/life/home/specialFiles.ts checks them). These side files, outside her folder, keep what
+// she must not edit: id counters, how each watch's `place` and `from` resolved, repeat-watch fire
+// times, and the occurrences already fired (so a file the app cannot rewrite never fires twice).
 
-export const WatchBindingSchema = z.object({
+export const ResolvedWatchBindingSchema = z.object({
   placeKey: z.string().min(1).optional(),
   fromUserId: z.string().min(1).optional(),
   fromName: z.string().optional(),
   words: z.array(z.string().min(1)).max(10).optional(),
   anyMessage: z.boolean().optional()
 });
-export type WatchBinding = z.infer<typeof WatchBindingSchema>;
+export type ResolvedWatchBinding = z.infer<typeof ResolvedWatchBindingSchema>;
 
-export const WatchSchema = z.object({
-  id: z.string().min(1),
-  note: z.string().max(200),
-  createdAt: IsoDateStringSchema,
-  expiresAt: IsoDateStringSchema,
-  once: z.boolean(),
-  bindings: z.array(WatchBindingSchema).min(1).max(5),
-  /** Fire times in the last day (the daily cap) and the last fire (the 10-minute spacing). */
-  fires: z.array(IsoDateStringSchema).default([])
-});
-export type Watch = z.infer<typeof WatchSchema>;
-
-export const WatchesFileSchema = RevisionedRecordSchema.extend({
+export const WatchIdsSchema = z.object({
   nextId: z.number().int().positive().default(1),
-  watches: z.array(WatchSchema).default([])
+  /** sha256 of the watches.json text these resolutions belong to. */
+  sourceHash: z.string().default(""),
+  watches: z
+    .record(
+      z.string(),
+      z.object({
+        bindings: z.array(ResolvedWatchBindingSchema).default([]),
+        /** Fire times in the last day (the daily cap) and the last fire (the 10-minute spacing). */
+        fires: z.array(IsoDateStringSchema).default([])
+      })
+    )
+    .default({}),
+  /** Wake ids of timeouts already routed (newest 100). */
+  fired: z.array(z.string()).default([])
 });
-export type WatchesFile = z.infer<typeof WatchesFileSchema>;
+export type WatchIds = z.infer<typeof WatchIdsSchema>;
 
-// ---- schedule.json (§6.6) ----------------------------------------------------------------------------
-
-export const ReminderSchema = z.object({
-  id: z.string().min(1),
-  note: z.string().max(200),
-  dueAt: IsoDateStringSchema,
-  repeat: z.enum(["daily", "weekly"]).optional(),
-  createdAt: IsoDateStringSchema
-});
-export type Reminder = z.infer<typeof ReminderSchema>;
-
-export const ScheduleFileSchema = RevisionedRecordSchema.extend({
+export const ScheduleIdsSchema = z.object({
   nextId: z.number().int().positive().default(1),
-  reminders: z.array(ReminderSchema).default([])
+  /** Wake ids of occurrences already routed (newest 100). */
+  fired: z.array(z.string()).default([])
 });
-export type ScheduleFile = z.infer<typeof ScheduleFileSchema>;
+export type ScheduleIds = z.infer<typeof ScheduleIdsSchema>;
+
+// ---- files-index.json: where her downloads came from (§16.2 provenance) ------------------------------
+
+export const ProvenanceEntrySchema = z.object({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/u),
+  placeKey: z.string().min(1),
+  messageId: z.string().min(1),
+  authorId: z.string().min(1),
+  attachmentId: z.string().min(1),
+  downloadedAt: IsoDateStringSchema,
+  /** Where ReadMessages saved it (`/tmp/...`), for the download dedupe. */
+  path: z.string().min(1),
+  size: z.number().int().nonnegative()
+});
+export type ProvenanceEntry = z.infer<typeof ProvenanceEntrySchema>;
+
+export const FilesIndexSchema = z.object({
+  entries: z.array(ProvenanceEntrySchema).default([])
+});
+export type FilesIndex = z.infer<typeof FilesIndexSchema>;
 
 // ---- user/search/usage.json (host-wide web caps and recent queries, §6.8–§6.9, §14) --------------------
 

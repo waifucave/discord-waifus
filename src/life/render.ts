@@ -1,6 +1,6 @@
 // Message line formatting for lives (Living cast spec §15 keep table: moved from the retired
 // context engine's transcript renderer, `entryHeader` / `entryLine`, and rewritten over the
-// conversation cache's messages). `read_messages`, previews and the detector state build on it
+// conversation cache's messages). `ReadMessages`, previews and the detector state build on it
 // in L2.
 //
 //   `[14:02 #k3] Kevin: text`            a message with its ref

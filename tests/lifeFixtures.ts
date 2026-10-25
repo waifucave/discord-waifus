@@ -2,6 +2,9 @@
 // and DMs in memory, a data root with a server, a cast channel and waifus, a ModelClient over winter
 // fakes, and a LivingCast wired to all of it. No live Discord, model or web calls.
 
+import { deflateSync } from "node:zlib";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { ProviderEvent } from "@yanlinglabs/winter-provider-runtime";
 import { fakeToolCallTurn } from "@yanlinglabs/winter-provider-runtime/testing";
 import type { DiscordGatewayFacade } from "../src/discord/client.js";
@@ -23,6 +26,8 @@ import {
 import { StorageService } from "../src/storage/storageService.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { LivingCast, type LivingCastOptions } from "../src/life/livingCast.js";
+import { checkEnvFor, homeStoreFor } from "../src/life/home/index.js";
+import { readWaifu } from "../src/orchestration/stores/config.js";
 import { NoopUsageLedger, type UsageLedger, type UsageLedgerLine } from "../src/orchestration/usageLedger.js";
 import { ANTHROPIC_MESSAGES, CHAT_COMPLETIONS, OPENAI_RESPONSES, fakeAdapter, fakeWinter, type FakeAdapter, type ScriptedTurn } from "./modelFakes.js";
 import { quietLogger } from "./contextFixtures.js";
@@ -63,7 +68,7 @@ type PostOptions = {
 /** Guild channels and DMs in memory. Sends land as real messages; nothing leaves the process. */
 export class FakeDiscord implements DiscordGatewayFacade {
   readonly store = new Map<string, RawDiscordMessage[]>();
-  readonly sent: Array<{ placeKey: string; content: string; senderBotId?: string; replyToMessageId?: string; messageId: string }> = [];
+  readonly sent: Array<{ placeKey: string; content: string; senderBotId?: string; replyToMessageId?: string; messageId: string; files?: Array<{ name: string; size: number }> }> = [];
   readonly typing: string[] = [];
   readonly reactions: Array<{ placeKey: string; messageId: string; emoji: string; botId: string }> = [];
   botRoles: Record<string, string[]> = {};
@@ -146,25 +151,36 @@ export class FakeDiscord implements DiscordGatewayFacade {
   /** What Discord's side does to outgoing content (the real facade resolves `<@Name>`, `:emoji:`). */
   rewrite: (content: string) => string = (content) => content;
 
-  async sendWaifuMessage(input: { guildId: string; channelId: string; content: string; senderBotId?: string; replyToMessageId?: string; onFinalContent?: (content: string) => void | Promise<void> }) {
+  /** Attachments a send carried, as Discord would show them (a CDN url per file). */
+  private sentAttachments(files: ReadonlyArray<{ name: string; data: Uint8Array }> | undefined): { attachments: RawDiscordMessage["attachments"]; summary: Array<{ name: string; size: number }> } {
+    const list = files ?? [];
+    return {
+      attachments: list.map((file, index) => ({ id: `${this.nextId()}${index}`, filename: file.name, size: file.data.byteLength, url: `https://cdn.discordapp.com/attachments/x/${index}/${encodeURIComponent(file.name)}` })) as RawDiscordMessage["attachments"],
+      summary: list.map((file) => ({ name: file.name, size: file.data.byteLength }))
+    };
+  }
+
+  async sendWaifuMessage(input: { guildId: string; channelId: string; content: string; senderBotId?: string; replyToMessageId?: string; files?: Array<{ name: string; data: Uint8Array }>; onFinalContent?: (content: string) => void | Promise<void> }) {
     const error = this.sendErrors.shift();
     if (error) throw error;
     const content = this.rewrite(input.content);
     await input.onFinalContent?.(content);
     const conversation: ConversationRef = { kind: "guild", guildId: input.guildId, channelId: input.channelId };
-    const message = this.post(conversation, content, { ...this.botAuthor(input.senderBotId), bot: true, ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}) });
-    this.sent.push({ placeKey: conversationKey(conversation), content, ...(input.senderBotId ? { senderBotId: input.senderBotId } : {}), ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), messageId: message.id });
+    const files = this.sentAttachments(input.files);
+    const message = this.post(conversation, content, { ...this.botAuthor(input.senderBotId), bot: true, ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}), ...(files.attachments.length ? { attachments: files.attachments } : {}) });
+    this.sent.push({ placeKey: conversationKey(conversation), content, ...(input.senderBotId ? { senderBotId: input.senderBotId } : {}), ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), messageId: message.id, ...(files.summary.length ? { files: files.summary } : {}) });
     return { messageId: message.id };
   }
 
-  async sendDirectMessage(input: { waifuId: string; userId: string; content: string; replyToMessageId?: string; onFinalContent?: (content: string) => void | Promise<void> }) {
+  async sendDirectMessage(input: { waifuId: string; userId: string; content: string; replyToMessageId?: string; files?: Array<{ name: string; data: Uint8Array }>; onFinalContent?: (content: string) => void | Promise<void> }) {
     const error = this.sendErrors.shift();
     if (error) throw error;
     const content = this.rewrite(input.content);
     await input.onFinalContent?.(content);
     const conversation: ConversationRef = { kind: "dm", waifuId: input.waifuId, userId: input.userId };
-    const message = this.post(conversation, content, { ...this.botAuthor(input.waifuId === "mina" ? "mina-bot" : "aria-bot"), bot: true });
-    this.sent.push({ placeKey: conversationKey(conversation), content, messageId: message.id });
+    const files = this.sentAttachments(input.files);
+    const message = this.post(conversation, content, { ...this.botAuthor(input.waifuId === "mina" ? "mina-bot" : "aria-bot"), bot: true, ...(files.attachments.length ? { attachments: files.attachments } : {}) });
+    this.sent.push({ placeKey: conversationKey(conversation), content, messageId: message.id, ...(files.summary.length ? { files: files.summary } : {}) });
     return { messageId: message.id };
   }
 
@@ -363,4 +379,92 @@ export function toolTurn(calls: Array<{ name: string; input: unknown; id?: strin
 
 export function script(...turns: ProviderEvent[][]): ScriptedTurn[] {
   return turns.map((events) => () => events);
+}
+
+/** A real PNG of `width`×`height` (one solid colour), for Read and Bash image tests. */
+export function tinyPng(width = 4, height = 4, rgb: [number, number, number] = [200, 80, 40]): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (data: Buffer) => {
+    let c = 0xffffffff;
+    for (const byte of data) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([length, body, sum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: width }, () => rgb).flat())]);
+  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A small valid PDF with one line of text per page. */
+export function tinyPdf(pages: readonly string[]): Buffer {
+  const objects: string[] = [];
+  const pageIds = pages.map((_, index) => 4 + index * 2);
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`;
+  objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  pages.forEach((text, index) => {
+    const pageId = pageIds[index]!;
+    const stream = `BT /F1 18 Tf 40 700 Td (${text.replace(/[()\\]/gu, "")}) Tj ET`;
+    objects[pageId] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${pageId + 1} 0 R >>`;
+    objects[pageId + 1] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  });
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (let id = 1; id < objects.length; id += 1) {
+    offsets[id] = Buffer.byteLength(out);
+    out += `${id} 0 obj\n${objects[id]}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(out);
+  out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id += 1) out += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
+/** One of her files on disk (`home` or `tmp`), or undefined. */
+export async function herFile(w: Pick<LifeWorld, "root">, waifuId: string, relative: string): Promise<string | undefined> {
+  return readFile(path.join(w.root, "user", "waifus", waifuId, ...relative.split("/")), "utf8").catch(() => undefined);
+}
+
+/** Her home folder for a test: plain files written and read on disk (no checks), like the owner would. */
+export function homeOf(w: Pick<LifeWorld, "root">, waifuId = "aria") {
+  const host = (relative: string) => path.join(w.root, "user", "waifus", waifuId, "home", ...relative.split("/"));
+  return {
+    async write(relative: string, content: string): Promise<void> {
+      await mkdir(path.dirname(host(relative)), { recursive: true });
+      await writeFile(host(relative), content);
+    },
+    read: (relative: string): Promise<string | undefined> => readFile(host(relative), "utf8").catch(() => undefined)
+  };
+}
+
+/** Writes one of her files through her store with every check (her reminders and watches resolve too). */
+export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relative: string, content: string, waifuId = "aria"): Promise<void> {
+  const waifu = await readWaifu(w.storage, waifuId);
+  const store = homeStoreFor(w.cast.deps, waifu);
+  const target = store.resolve(`~/${relative}`);
+  if (!target.ok) throw new Error(target.error);
+  await store.writeText(target.path, content, checkEnvFor(w.cast.deps, waifuId));
+}
+
+/** Her reminder or watch file, parsed. */
+export async function herEntries(w: Pick<LifeWorld, "root">, name: "schedule.json" | "watches.json", waifuId = "aria"): Promise<Array<Record<string, unknown>>> {
+  const text = await homeOf(w, waifuId).read(name);
+  return text?.trim() ? (JSON.parse(text) as Array<Record<string, unknown>>) : [];
 }

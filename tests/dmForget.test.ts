@@ -22,7 +22,7 @@ import {
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
 import { forgetUser, pendingForgetJobs, resumeForgetJobs } from "../src/orchestration/dm/forgetUser.js";
-import { Notes } from "../src/life/notes.js";
+import { homeOf } from "./lifeFixtures.js";
 import { AuditStore } from "../src/storage/auditStore.js";
 import type { StorageService } from "../src/storage/storageService.js";
 import { DmDiscord, USER, dmRoot, dmRuntime, seedDmWorld } from "./dmFixtures.js";
@@ -300,7 +300,7 @@ describe("/api/dms", () => {
     expect(noConfirm.statusCode).toBe(400);
     const dry = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { confirm: true, scope: "all", dryRun: true } });
     expect(dry.json()).toMatchObject({ dryRun: true, scope: "all", deleted: { dmContexts: 1, dmStates: 1 } });
-    await new Notes(storage, "aria").write("MEMORY.md", "# Memory\n");
+    await homeOf({ root: storage.dataRoot }, "aria").write("MEMORY.md", "# Memory\n");
     const done = await app.inject({ method: "POST", url: `/api/dms/aria/${USER}/forget`, payload: { confirm: true, scope: "all" } });
     expect(done.statusCode, done.body).toBe(200);
     expect(done.json()).toMatchObject({ dryRun: false, deleted: { dmStates: 1 } });
@@ -335,7 +335,7 @@ describe("POST /api/people/:userId/forget (Living cast §14.1, DM part)", () => 
     expect(dry.json()).toMatchObject({ discordUserId: USER, dryRun: true, dmContexts: 1, dmStates: 1, dmLimits: 1 });
     expect(await readDmState(storage, USER, "aria")).toBeDefined();
     // She has notes: with no cast runtime running, her life scrub is queued for her next start.
-    await new Notes(storage, "aria").write("MEMORY.md", "# Memory\n");
+    await homeOf({ root: storage.dataRoot }, "aria").write("MEMORY.md", "# Memory\n");
     expect(await readPendingScrubs(storage, "aria")).toEqual([]);
     const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
     expect(done.statusCode, done.body).toBe(200);

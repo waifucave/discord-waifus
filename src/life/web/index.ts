@@ -1,4 +1,4 @@
-// The web backend behind `web_search` and `web_fetch` (Living cast spec §6.8, §6.9): a thin adapter
+// The web backend behind `WebSearch` and `WebFetch` (Living cast spec §6.8, §6.9): a thin adapter
 // over `@yanlinglabs/winter-web` (pinned exactly, with the other winter packages).
 //
 // - Search: winter-web's Exa client (Exa's hosted MCP server, keyless tier first, the `exa` provider

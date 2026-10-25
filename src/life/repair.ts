@@ -1,13 +1,16 @@
 // Boot repair (Living cast spec §5.7), per waifu, before anything else runs:
 //
 // - a torn last log line is dropped (the log is rewritten without it);
+// - a Bash change set journalled in `life/pending-changes/` is finished first (§16.9: each write is
+//   atomic and by content, so finishing twice changes nothing);
 // - a last assistant message with tool calls but no results gets synthetic results. For a
-//   side-effect intent without its `done` line: a `send_message` is checked against every message
+//   side-effect intent without its `done` line: a `SendMessage` is checked against every message
 //   of hers in the conversation since the intent time, by the digest of the final content recorded
 //   just before the Discord call (else by its text with mentions and emoji set aside): found →
 //   `sent #ref (recovered)`, not found → `[interrupted] not sent`, the conversation unreadable →
-//   "unknown whether this was sent" (never "not sent"); note, schedule and watch writes are
-//   idempotent by content and re-checked on disk. Then `[system] interrupted by a restart`;
+//   "unknown whether this was sent" (never "not sent"); Write, Edit, ScheduleWake and WatchFor are
+//   idempotent by content and re-checked on disk; a Bash call says whether its changes were saved.
+//   Then `[system] interrupted by a restart`;
 // - `status: turn` is reset to idle and the turn's wakes go back to the queue.
 // Nothing is ever sent twice by the repair itself.
 
@@ -19,7 +22,10 @@ import type { LifeIntent, LifeLogLine } from "../shared/schemas/life.js";
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { appendLifeLog, compactIntents, lifeLogTorn, readIntents, readLifeFile, readLifeLog, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
-import { Notes } from "./notes.js";
+import { homeStoreFor } from "./home/index.js";
+import { readScheduleEntries, readWatchEntries } from "./home/specialFiles.js";
+import { SCHEDULE_FILE, WATCHES_FILE } from "./home/pathRules.js";
+import { safeJournalName } from "./home/homeStore.js";
 import { stripCopiedHeader } from "./outbound.js";
 import { selfAuthorIds } from "./people.js";
 import { resolvePlace } from "./places.js";
@@ -49,12 +55,13 @@ async function recoverCall(
   deps: LifeDeps,
   waifuId: string,
   call: Call,
-  intent: { start?: LifeIntent; done?: LifeIntent; lines: LifeIntent[] }
+  intent: { start?: LifeIntent; done?: LifeIntent; lines: LifeIntent[] },
+  recoveredChanges: ReadonlySet<string> = new Set()
 ): Promise<{ text: string; isError: boolean }> {
   const input = (call.input ?? {}) as Record<string, unknown>;
   const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
   if (intent.done) {
-    if (call.name === "send_message" && intent.done.resultRef && typeof input["place"] === "string") {
+    if ((call.name === "SendMessage" || call.name === "send_message") && intent.done.resultRef && typeof input["place"] === "string") {
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
       if (place) {
         const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [intent.done.resultRef], deps.now());
@@ -65,18 +72,31 @@ async function recoverCall(
     }
     return { text: "done (recovered)", isError: false };
   }
+  if (call.name === "Bash") {
+    // Its intent is written only for a non-empty change set; a journal finished above was saved.
+    return recoveredChanges.has(safeJournalName(call.id))
+      ? { text: "[interrupted by a restart] the command ran and its changes were saved", isError: false }
+      : { text: "[interrupted] the command was stopped; nothing was saved", isError: true };
+  }
   if (!intent.start) return { text: "[interrupted]", isError: true };
-  const notes = new Notes(deps.storage, waifuId);
+  const store = waifu ? homeStoreFor(deps, waifu) : undefined;
+  const fileText = async (path: unknown) => {
+    if (!store || typeof path !== "string") return undefined;
+    const resolved = store.resolve(path);
+    return resolved.ok ? store.files.readText(resolved.path).catch(() => undefined) : undefined;
+  };
   switch (call.name) {
+    case "SendMessage":
     case "send_message": {
-      if (typeof input["place"] !== "string" || typeof input["text"] !== "string" || !waifu) return { text: "[interrupted] not sent", isError: true };
+      if (typeof input["place"] !== "string" || !waifu) return { text: "[interrupted] not sent", isError: true };
+      const sentText = typeof input["text"] === "string" ? input["text"] : "";
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
       if (!place) return { text: "[interrupted] not sent", isError: true };
       // The digest of the final content (written just before the Discord call) matches the message
       // even when Discord's side rewrote mentions or emoji; the loose text compare is the fallback.
       const digests = new Set(intent.lines.flatMap((line) => (line.contentDigest ? [line.contentDigest] : [])));
       const self = await selfAuthorIds(deps.storage, waifu);
-      const wanted = loose(stripCopiedHeader(input["text"], [waifu.name, waifu.displayName]));
+      const wanted = loose(stripCopiedHeader(sentText, [waifu.name, waifu.displayName]));
       // Every message after the intent (not only the newest page): a busy room may have moved on.
       const since = Math.min(...intent.lines.map((line) => Date.parse(line.at)));
       let messages;
@@ -92,36 +112,28 @@ async function recoverCall(
       const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [found.id], deps.now());
       return { text: `sent #${refs.get(found.id) ?? "?"} (recovered)`, isError: false };
     }
-    case "write_note": {
-      const current = typeof input["path"] === "string" ? await notes.read(input["path"]).catch(() => undefined) : undefined;
-      return current !== undefined && current === input["content"] ? { text: `written ${String(input["path"])} (recovered)`, isError: false } : { text: "[interrupted] not written", isError: true };
+    case "Write": {
+      const current = await fileText(input["file_path"]);
+      // A reminder or watch file the app gave new ids to still holds what she wrote.
+      const done = current !== undefined && typeof input["content"] === "string" && (current === input["content"] || (input["content"].trim() !== "" && current.length >= input["content"].length && /"id":/u.test(current)));
+      return done ? { text: `wrote ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not written", isError: true };
     }
-    case "edit_note": {
-      const current = typeof input["path"] === "string" ? await notes.read(input["path"]).catch(() => undefined) : undefined;
-      const done = current !== undefined && typeof input["replace"] === "string" && current.includes(input["replace"]) && (typeof input["find"] !== "string" || !current.includes(input["find"]) || input["replace"].includes(input["find"]));
-      return done ? { text: `edited ${String(input["path"])} (recovered)`, isError: false } : { text: "[interrupted] not edited", isError: true };
+    case "Edit": {
+      const current = await fileText(input["file_path"]);
+      const oldText = input["old_string"];
+      const newText = input["new_string"];
+      const done = current !== undefined && typeof newText === "string" && current.includes(newText) && (typeof oldText !== "string" || !current.includes(oldText) || newText.includes(oldText));
+      return done ? { text: `edited ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not edited", isError: true };
     }
-    case "delete_note": {
-      const current = typeof input["path"] === "string" ? await notes.read(input["path"]).catch(() => undefined) : undefined;
-      return current === undefined ? { text: `deleted ${String(input["path"])} (recovered)`, isError: false } : { text: "[interrupted] not deleted", isError: true };
-    }
-    case "schedule_wake": {
-      const file = await readLifeFile(deps.storage, waifuId, "schedule");
-      const found = file.reminders.find((reminder) => reminder.note === input["note"] && Date.parse(reminder.createdAt) >= Date.parse(intent.start!.at) - 1_000);
+    case "ScheduleWake": {
+      const entries = store ? readScheduleEntries(await fileText(`~/${SCHEDULE_FILE}`), deps.timeZone) : [];
+      const found = entries.find((reminder) => reminder.note === input["note"]);
       return found ? { text: `set ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
     }
-    case "watch_for": {
-      const file = await readLifeFile(deps.storage, waifuId, "watches");
-      const found = file.watches.find((watch) => watch.note === input["note"] && Date.parse(watch.createdAt) >= Date.parse(intent.start!.at) - 1_000);
+    case "WatchFor": {
+      const entries = store ? readWatchEntries(await fileText(`~/${WATCHES_FILE}`), deps.timeZone) : [];
+      const found = entries.find((watch) => watch.note === input["note"]);
       return found ? { text: `watching ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
-    }
-    case "cancel_watch": {
-      const file = await readLifeFile(deps.storage, waifuId, "watches");
-      return file.watches.some((watch) => watch.id === input["id"]) ? { text: "[interrupted] not cancelled", isError: true } : { text: `cancelled ${String(input["id"])} (recovered)`, isError: false };
-    }
-    case "cancel_wake": {
-      const file = await readLifeFile(deps.storage, waifuId, "schedule");
-      return file.reminders.some((reminder) => reminder.id === input["id"]) ? { text: "[interrupted] not cancelled", isError: true } : { text: `cancelled ${String(input["id"])} (recovered)`, isError: false };
     }
     default:
       return { text: "[interrupted]", isError: true };
@@ -132,6 +144,9 @@ export type RepairOutcome = { tornLines: boolean; closedCalls: number; recovered
 
 export async function repairLife(deps: LifeDeps, waifuId: string): Promise<RepairOutcome> {
   const outcome: RepairOutcome = { tornLines: false, closedCalls: 0, recovered: 0, wasInTurn: false };
+  // A Bash change set a crash left half applied is finished before anything reads her files.
+  const owner = await readWaifu(deps.storage, waifuId).catch(() => undefined);
+  const recoveredChanges = owner ? await homeStoreFor(deps, owner).recoverPendingChanges().catch(() => [] as string[]) : [];
   const state = await readLifeState(deps.storage, waifuId);
   outcome.wasInTurn = state.status === "turn";
   if (!state.systemSnapshot) {
@@ -163,10 +178,11 @@ export async function repairLife(deps: LifeDeps, waifuId: string): Promise<Repai
     const calls = message.content.filter((block): block is Extract<ContentBlockLike, { type: "tool_use" }> => block.type === "tool_use");
     if (calls.length > 0) {
       const intents = await readIntents(deps.storage, waifuId);
+      const recoveredSet = new Set(recoveredChanges);
       const results: ContentBlockLike[] = [];
       for (const call of calls) {
         const mine = intents.filter((intent) => intent.toolCallId === call.id && intent.argsDigest === argsDigest(call.input));
-        const recovered = await recoverCall(deps, waifuId, call, { start: mine.find((intent) => !intent.done), done: mine.find((intent) => intent.done), lines: mine.filter((intent) => !intent.done) });
+        const recovered = await recoverCall(deps, waifuId, call, { start: mine.find((intent) => !intent.done), done: mine.find((intent) => intent.done), lines: mine.filter((intent) => !intent.done) }, recoveredSet);
         if (!recovered.isError) outcome.recovered += 1;
         outcome.closedCalls += 1;
         results.push({ type: "tool_result", tool_use_id: call.id, content: recovered.text, ...(recovered.isError ? { is_error: true } : {}) });

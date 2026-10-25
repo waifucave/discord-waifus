@@ -1,4 +1,4 @@
-// On-disk locations of a waifu's life (Living cast spec §5.1, §7.1). Data-root-relative paths (the
+// On-disk locations of a waifu's life (Living cast spec §5.1, §16.2). Data-root-relative paths (the
 // form StorageService takes); every helper validates the waifu id first, so a request id can never
 // steer a path outside `user/waifus/<id>/`.
 
@@ -22,7 +22,18 @@ export function lifeDir(waifuId: string): string {
   return path.join(waifuDir(waifuId), "life");
 }
 
-export function notesDir(waifuId: string): string {
+/** Her home folder (`/home/<slug>` to her, §16.2). */
+export function homeDir(waifuId: string): string {
+  return path.join(waifuDir(waifuId), "home");
+}
+
+/** Her `/tmp` (downloads and scratch files, expiring after `life.tmp.retentionDays`). */
+export function tmpDir(waifuId: string): string {
+  return path.join(waifuDir(waifuId), "tmp");
+}
+
+/** Where her notes lived before §16 (the L2-era layout; only the migration reads it). */
+export function legacyNotesDir(waifuId: string): string {
   return path.join(waifuDir(waifuId), "notes");
 }
 
@@ -37,8 +48,14 @@ export const lifePaths = {
   reads: (waifuId: string) => path.join(lifeDir(waifuId), "reads.json"),
   handles: (waifuId: string) => path.join(lifeDir(waifuId), "handles.json"),
   wakes: (waifuId: string) => path.join(lifeDir(waifuId), "wakes.json"),
-  watches: (waifuId: string) => path.join(lifeDir(waifuId), "watches.json"),
-  schedule: (waifuId: string) => path.join(lifeDir(waifuId), "schedule.json"),
+  /** How her watches resolved, their fires, and the id counter (§16.5; not in her folder). */
+  watchIds: (waifuId: string) => path.join(lifeDir(waifuId), "watch-ids.json"),
+  /** Her reminder id counter and the occurrences already fired (§16.4). */
+  scheduleIds: (waifuId: string) => path.join(lifeDir(waifuId), "schedule-ids.json"),
+  /** Where her downloads came from (§16.2 provenance). */
+  filesIndex: (waifuId: string) => path.join(lifeDir(waifuId), "files-index.json"),
+  /** Bash change sets being applied (§16.9): `<toolCallId>.json`. */
+  pendingChanges: (waifuId: string) => path.join(lifeDir(waifuId), "pending-changes"),
   maintenance: (waifuId: string) => path.join(lifeDir(waifuId), "maintenance.jsonl"),
   pendingScrubs: (waifuId: string) => path.join(lifeDir(waifuId), "pending-scrubs.json"),
   usage: (waifuId: string) => path.join(lifeDir(waifuId), "usage.json")
@@ -53,9 +70,8 @@ export const lifeLocks = {
   reads: (waifuId: string) => `life-reads:${waifuId}`,
   handles: (waifuId: string) => `life-handles:${waifuId}`,
   wakes: (waifuId: string) => `life-wakes:${waifuId}`,
-  watches: (waifuId: string) => `life-watches:${waifuId}`,
-  schedule: (waifuId: string) => `life-schedule:${waifuId}`,
   maintenance: (waifuId: string) => `life-maintenance:${waifuId}`,
-  notes: (waifuId: string) => `notes:${waifuId}`,
+  /** Every write to her two folders and their side files (watch-ids, schedule-ids, files-index). */
+  home: (waifuId: string) => `home:${waifuId}`,
   usage: (waifuId: string) => `life-usage:${waifuId}`
 };

@@ -64,7 +64,12 @@ export function mergeAppConfigPatch(
     life: {
       ...current.life,
       ...patch.life,
-      webFetch: { ...current.life.webFetch, ...patch.life?.webFetch }
+      webFetch: { ...current.life.webFetch, ...patch.life?.webFetch },
+      home: { ...current.life.home, ...patch.life?.home },
+      tmp: { ...current.life.tmp, ...patch.life?.tmp },
+      attachments: { ...current.life.attachments, ...patch.life?.attachments },
+      send: { ...current.life.send, ...patch.life?.send },
+      bash: { ...current.life.bash, ...patch.life?.bash }
     },
     search: { ...current.search, ...patch.search },
     detector: { ...current.detector, ...patch.detector },

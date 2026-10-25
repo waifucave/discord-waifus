@@ -1,8 +1,10 @@
-// Images in a life (Living cast spec §5.3, §6.2, §12): an image shows inline only at its first
-// occurrence in the epoch, within the per-result, per-epoch count and byte caps; a re-read renders it
-// as text; a pinned image that can no longer be fetched forces a compaction; and a forget purges the
-// cached bytes the life fetched through the real renderer and image fetcher.
-import { readdir } from "node:fs/promises";
+// Images in a life (Living cast spec §5.3, §12, §16.3.3): ReadMessages saves pictures in her /tmp
+// and never inlines them; she looks with Read. An image shows inline only at its first occurrence
+// in the epoch, within the per-epoch count and byte caps, on a route with image input; otherwise
+// (or over the caps) it is its OCR text. The bytes are cached under their hash, so replay never
+// depends on the file; a pinned image that can no longer be fetched forces a compaction; and a
+// forget purges the cached bytes of a DM picture she read, through the real fetcher.
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DiscordImageFetcher } from "../src/discord/attachments.js";
@@ -15,7 +17,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import { FakeImageFetcher, quietLogger } from "./contextFixtures.js";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, ROOM, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -51,58 +53,115 @@ async function ctxFor(w: LifeWorld): Promise<ToolContext> {
 }
 
 const kinds = (content: unknown) => (Array.isArray(content) ? content.map((block: { type: string }) => block.type) : ["text"]);
+const modes = (content: unknown) => (Array.isArray(content) ? content.filter((block: { type: string }) => block.type === "life_image").map((block: { mode: unknown }) => block.mode) : []);
 const textOf = (content: unknown) =>
   typeof content === "string" ? content : (content as Array<{ type: string; text?: string }>).filter((block) => block.type === "text").map((block) => block.text).join("\n");
 
-describe("images in read_messages (§6.2)", () => {
-  it("inline at first occurrence within the caps; every later occurrence is text", async () => {
+/** Pictures in her /tmp, each a different PNG. */
+async function pictures(w: LifeWorld, count: number, size = 4): Promise<string[]> {
+  const dir = path.join(w.root, "user/waifus/aria/tmp/pics");
+  await mkdir(dir, { recursive: true });
+  const paths: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    await writeFile(path.join(dir, `p${size}-${index}.png`), tinyPng(size + index, size));
+    paths.push(`/tmp/pics/p${size}-${index}.png`);
+  }
+  return paths;
+}
+
+describe("ReadMessages never inlines images (§16.3.1)", () => {
+  it("a picture in a conversation is a path line; she looks with Read", async () => {
+    const fetcher = new FakeImageFetcher();
+    fetcher.files.set("att:9001", tinyPng());
+    const w = await lifeWorld(roots, { options: { images: fetcher } });
+    w.discord.post(ROOM, "cake!", { attachments: [image("9001")] });
+    const ctx = await ctxFor(w);
+    const read = await lifeTool("ReadMessages")!.run({ place: "bake-club/#general" }, ctx);
+    expect(kinds(read.content)).toEqual(["text"]);
+    const line = /\[image: (\/tmp\/bake-club\/general\/[0-9a-z]+-cake-9001\.png)\]/u.exec(textOf(read.content));
+    expect(line).not.toBeNull();
+    const look = await lifeTool("Read")!.run({ file_path: line![1] }, ctx);
+    expect(kinds(look.content)).toEqual(["text", "life_image"]);
+    expect(textOf(look.content)).toMatch(/^\/tmp\/bake-club\/general\/[0-9a-z]+-cake-9001\.png: image \(\d+ B\)$/u);
+    expect(modes(look.content)).toEqual(["inline"]);
+  });
+});
+
+describe("Read of an image (§16.3.3)", () => {
+  it("inline at first occurrence within the epoch's count cap; every later look is text", async () => {
     const fetcher = new FakeImageFetcher();
     const w = await lifeWorld(roots, {
-      options: { images: fetcher },
-      config: (config) => ({ ...config, life: { ...config.life, maxInlineImagesPerEpoch: 5 } })
+      options: { images: fetcher, ocr: { cachedText: async () => "a lemon tart" } },
+      config: (config) => ({ ...config, life: { ...config.life, maxInlineImagesPerEpoch: 2 } })
     });
     const ctx = await ctxFor(w);
     expect(ctx.route.imageInput).toBe(true);
-    for (let index = 1; index <= 6; index += 1) w.discord.post(ROOM, `cake ${index}`, { attachments: [image(String(9000 + index))] });
-    const first = await lifeTool("read_messages")!.run({ place: "bake-club/#general" }, ctx);
-    // At most 4 inline per result.
-    expect(kinds(first.content).filter((kind) => kind === "life_image")).toHaveLength(4);
-    expect(textOf(first.content).match(/\[image\]/gu)).toHaveLength(2);
-    // Re-read: every image was shown this epoch, so all are text now.
-    const again = await lifeTool("read_messages")!.run({ place: "bake-club/#general" }, ctx);
-    expect(kinds(again.content).filter((kind) => kind === "life_image")).toHaveLength(0);
-    expect(textOf(again.content).match(/\[image\]/gu)).toHaveLength(6);
-    // The epoch's count cap (5): one more new image inline, then text.
-    w.discord.post(ROOM, "two more", { attachments: [image("9101"), image("9102")] });
-    const third = await lifeTool("read_messages")!.run({ place: "bake-club/#general", limit: 1 }, ctx);
-    expect(kinds(third.content).filter((kind) => kind === "life_image")).toHaveLength(1);
+    const [a, b, c] = await pictures(w, 3);
+    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual(["inline"]);
+    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual([{ text: "[image: a lemon tart]" }]);
+    expect(modes((await lifeTool("Read")!.run({ file_path: b }, ctx)).content)).toEqual(["inline"]);
+    // The epoch's count cap (2): the third image is its OCR text.
+    expect(modes((await lifeTool("Read")!.run({ file_path: c }, ctx)).content)).toEqual([{ text: "[image: a lemon tart]" }]);
     const state = await readLifeState(w.storage, "aria");
-    expect(state.inlineImageCount).toBe(5);
+    expect(state.inlineImageCount).toBe(2);
+    expect(state.shownImageKeys).toHaveLength(3);
+    // The bytes are in the image cache under their hash.
+    expect([...fetcher.local.keys()].every((key) => /^file:[0-9a-f]{64}$/u.test(key))).toBe(true);
+    expect(fetcher.local.size).toBe(3);
   });
 
-  it("the epoch's byte cap turns the next image into text", async () => {
+  it("the epoch's byte cap turns the next image into text; a route without image input always gets text", async () => {
     const fetcher = new FakeImageFetcher();
-    fetcher.sizes.set("att:9201", 3_000_000);
-    fetcher.sizes.set("att:9202", 3_000_000);
+    const w = await lifeWorld(roots, {
+      options: { images: fetcher, ocr: { cachedText: async () => undefined } },
+      config: (config) => ({ ...config, life: { ...config.life, maxInlineImageBytesPerEpoch: 100 } })
+    });
+    const ctx = await ctxFor(w);
+    const [a, b] = await pictures(w, 2, 6);
+    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual(["inline"]);
+    expect(modes((await lifeTool("Read")!.run({ file_path: b }, ctx)).content)).toEqual([{ text: "[image: no text found]" }]);
+    const textOnly: ToolContext = { ...ctx, route: { ...ctx.route, imageInput: false } };
+    const [fresh] = await pictures(w, 1, 9);
+    expect(modes((await lifeTool("Read")!.run({ file_path: fresh }, textOnly)).content)).toEqual([{ text: "[image: no text found]" }]);
+  });
+
+  it("replay never depends on the file: after it expired, her next request still carries the picture", async () => {
+    const fetcher = new FakeImageFetcher();
     const w = await lifeWorld(roots, {
       options: { images: fetcher },
-      config: (config) => ({ ...config, life: { ...config.life, maxInlineImageBytesPerEpoch: 4_000_000 } })
+      scripts: script(
+        toolTurn([{ name: "Read", input: { file_path: "/tmp/pics/p4-0.png" } }]),
+        textTurn("cute"),
+        textTurn("(nothing to send)"),
+        textTurn("still cute"),
+        textTurn("(nothing to send)")
+      )
     });
-    w.discord.post(ROOM, "big one", { attachments: [image("9201", 3_000_000)] });
-    w.discord.post(ROOM, "another big one", { attachments: [image("9202", 3_000_000)] });
-    const result = await lifeTool("read_messages")!.run({ place: "bake-club/#general" }, await ctxFor(w));
-    expect(kinds(result.content).filter((kind) => kind === "life_image")).toHaveLength(1);
-    expect(textOf(result.content)).toContain("[image]");
+    await pictures(w, 1);
+    const wake = async (text: string) => {
+      const posted = w.discord.post(ROOM, `<@${ARIA_BOT}> ${text}`, { mentions: { [ARIA_BOT]: "Aria" } });
+      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: posted });
+      await w.cast.settle();
+      await w.cast.life("aria").runNow();
+    };
+    await wake("look at your picture");
+    await rm(path.join(w.root, "user/waifus/aria/tmp/pics/p4-0.png"));
+    await wake("still there?");
+    expect((await readLifeState(w.storage, "aria")).epoch).toBe(1);
+    const last = w.anthropic.calls[w.anthropic.calls.length - 1]!.request;
+    expect(JSON.stringify(last.messages)).toContain('"type":"image"');
   });
 });
 
 describe("pinned images (§5.3)", () => {
   it("a pinned image that can no longer be fetched ends the epoch: the turn continues after a compaction; the kept image keeps its OCR text", async () => {
     const fetcher = new FakeImageFetcher();
+    fetcher.files.set("att:9301", tinyPng(5, 5));
     const w = await lifeWorld(roots, {
-      options: { images: fetcher, ocr: { cachedText: async (ref) => (ref.key === "att:9301" ? "a chocolate cake with candles" : undefined) } },
+      options: { images: fetcher, ocr: { cachedText: async (ref) => (ref.key.startsWith("file:") ? "a chocolate cake with candles" : undefined) } },
       scripts: script(
-        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
+        toolTurn([{ name: "Read", input: { file_path: "/tmp/bake-club/general/a0-cake-9301.png" } }]),
         textTurn("cute cake"),
         // The unsent-reply check of that direct wake.
         textTurn("(nothing to send)"),
@@ -117,9 +176,10 @@ describe("pinned images (§5.3)", () => {
     await w.cast.life("aria").runNow();
     const before = await readLifeState(w.storage, "aria");
     expect(before.inlineImageCount).toBe(1);
-    // The image's bytes are gone from the cache and from Discord.
+    // The image's bytes are gone from the cache (and the file may expire from her /tmp).
     const key = before.shownImageKeys[0]!;
-    fetcher.failKeys.set(key, "http_error");
+    expect(key).toMatch(/^file:/u);
+    fetcher.local.delete(key);
     const again = w.discord.post(ROOM, `<@${ARIA_BOT}> did you see it?`, { mentions: { [ARIA_BOT]: "Aria" } });
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: again.id, castWaifuIds: ["aria"], authorIsWaifu: false, raw: again });
     await w.cast.settle();
@@ -127,10 +187,10 @@ describe("pinned images (§5.3)", () => {
     const after = await readLifeState(w.storage, "aria");
     expect(after.epoch).toBe(2);
     expect(after.summary).toBe("Earlier: Kevin showed me a cake picture.");
-    const summaryCall = w.anthropic.calls[3]!.request;
+    const summaryCall = w.anthropic.calls[4]!.request;
     expect(JSON.stringify(summaryCall.messages[summaryCall.messages.length - 1])).toContain("Time to summarise");
     // The kept turn's image is text in the new epoch: no image block is sent any more.
-    const lastCall = w.anthropic.calls[4]!.request;
+    const lastCall = w.anthropic.calls[5]!.request;
     expect(JSON.stringify(lastCall.messages)).not.toContain("\"type\":\"image\"");
     const log = await readLifeLog(w.storage, "aria", 2);
     // Kept as a text-mode image block (its inline budget starts at zero in the new epoch).
@@ -142,9 +202,9 @@ describe("pinned images (§5.3)", () => {
   });
 });
 
-describe("forget purges what the life fetched (real renderer and fetcher)", () => {
-  it("a DM image read by her is indexed under the conversation and purged by a DM forget", async () => {
-    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+describe("forget purges what the life cached (real fetcher)", () => {
+  it("a DM picture she downloaded and read is indexed under the conversation and purged by a DM forget", async () => {
+    const png = tinyPng(3, 3);
     const fetcher = new DiscordImageFetcher({
       dataRoot: "",
       logger: quietLogger() as never,
@@ -154,13 +214,17 @@ describe("forget purges what the life fetched (real renderer and fetcher)", () =
     // The fetcher writes under this world's data root.
     (fetcher as unknown as { options: { dataRoot: string } }).options.dataRoot = w.root;
     (w.cast.deps as { images?: unknown }).images = fetcher;
-    const message = w.discord.post(dmOf("aria"), "my cake!", { attachments: [{ ...image("9401"), url: `https://cdn.discordapp.com/attachments/1/9401/cake-9401.png` }] });
+    const message = w.discord.post(dmOf("aria"), "my cake!", { attachments: [{ ...image("9401"), size: png.length, url: `https://cdn.discordapp.com/attachments/1/9401/cake-9401.png` }] });
     await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     w.cast.intake.close();
-    const read = await lifeTool("read_messages")!.run({ place: "dm/kevin" }, await ctxFor(w));
-    expect(kinds(read.content)).toContain("life_image");
+    const ctx = await ctxFor(w);
+    const read = await lifeTool("ReadMessages")!.run({ place: "dm/kevin" }, ctx);
+    const saved = /\[image: (\/tmp\/dm\/kevin\/[0-9a-z]+-cake-9401\.png)\]/u.exec(textOf(read.content))![1]!;
+    const look = await lifeTool("Read")!.run({ file_path: saved }, ctx);
+    expect(kinds(look.content)).toContain("life_image");
     const conversation = path.join(w.root, "user/conversations", `dm_${KEVIN}_aria`);
-    expect(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(conversation, "images.json"), "utf8")).keys).toEqual(["att:9401"]);
+    const indexed = JSON.parse(await readFile(path.join(conversation, "images.json"), "utf8")) as { keys: string[] };
+    expect(indexed.keys).toEqual([expect.stringMatching(/^file:[0-9a-f]{64}$/u)]);
     const cacheDir = path.join(w.root, "app/cache/images");
     expect((await readdir(cacheDir, { recursive: true })).some((entry) => String(entry).length > 0)).toBe(true);
     const result = await dmForget(w.storage, { userId: KEVIN, waifuId: "aria", scope: "conversation" });

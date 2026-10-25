@@ -7,7 +7,7 @@ import type { ImageRef, RawDiscordMessage } from "../../shared/schemas/discordMe
 import { formatDiscordTimestamp } from "./timeFormat.js";
 import type { GuildDirectoryView, MessageRenderer } from "./types.js";
 
-type RawAttachment = RawDiscordMessage["attachments"][number];
+export type RawAttachment = RawDiscordMessage["attachments"][number];
 type RawEmbed = RawDiscordMessage["embeds"][number];
 
 // Discord message types (https://discord.com/developers/docs/resources/message#message-object-message-types).
@@ -92,13 +92,13 @@ export function renderDiscordTokens(
     );
 }
 
-function isImageAttachment(a: RawAttachment): boolean {
+export function isImageAttachment(a: RawAttachment): boolean {
   const mime = normalizeImageMime(a.contentType);
   if (mime) return mime.startsWith("image/");
   return mimeFromFilename(a.filename) !== undefined;
 }
 
-function imageRef(a: RawAttachment, conversationKey: string | undefined): ImageRef {
+export function imageRef(a: RawAttachment, conversationKey: string | undefined): ImageRef {
   return {
     ...(conversationKey ? { conversationKey } : {}),
     key: attachmentKey(a.url, a.id),
@@ -167,7 +167,14 @@ export function renderDiscordMessage(
   m: RawDiscordMessage,
   dir: GuildDirectoryView,
   tz: string,
-  o: { conversationKey?: string } = {}
+  o: {
+    conversationKey?: string;
+    /**
+     * An attachment's line chosen by the caller (ReadMessages shows where it saved the file, Living
+     * cast §16.3.1); undefined keeps the default rendering. A line given here is never an image ref.
+     */
+    attachmentText?: (attachment: RawAttachment) => string | undefined;
+  } = {}
 ): { body: string; images: ImageRef[]; kind: "default" | "system" } | null {
   const conversational =
     m.type === DISCORD_MESSAGE_TYPE.default ||
@@ -185,7 +192,9 @@ export function renderDiscordMessage(
   if (content) lines.push(content);
   const images: ImageRef[] = [];
   for (const attachment of m.attachments) {
-    if (isImageAttachment(attachment)) images.push(imageRef(attachment, o.conversationKey));
+    const custom = o.attachmentText?.(attachment);
+    if (custom !== undefined) lines.push(custom);
+    else if (isImageAttachment(attachment)) images.push(imageRef(attachment, o.conversationKey));
     else lines.push(renderAttachmentLine(attachment));
   }
   for (const embed of m.embeds) {
@@ -198,7 +207,9 @@ export function renderDiscordMessage(
     const forwarded = clip(renderDiscordTokens(snapshot.content, m, dir, tz), FORWARD_CONTENT_MAX);
     lines.push(forwarded ? `[forwarded] ${forwarded}` : "[forwarded]");
     for (const attachment of snapshot.attachments) {
-      if (isImageAttachment(attachment)) images.push(imageRef(attachment, o.conversationKey));
+      const custom = o.attachmentText?.(attachment);
+      if (custom !== undefined) lines.push(custom);
+      else if (isImageAttachment(attachment)) images.push(imageRef(attachment, o.conversationKey));
       else lines.push(renderAttachmentLine(attachment));
     }
   }

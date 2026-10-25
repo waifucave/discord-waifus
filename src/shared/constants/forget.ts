@@ -17,7 +17,8 @@ export const FORGET_LIMITS = [
   "Usage-ledger lines and app logs stay (they hold ids only, never text).",
   "Cached guild images, and any DM image no image index recorded, stay until the disk cache expires them (discord.images.diskCacheTtlHours, 168 hours by default).",
   "Anything outside this host, and the web page cache (life.webFetch.cacheMinutes, 15 minutes by default), are not touched.",
-  "Name matching is best effort: a name someone else also has is only listed for review, never removed."
+  "Name matching is best effort: a name someone else also has is only listed for review, never removed.",
+  "Files she downloaded from them, and exact copies, are deleted; files she made from someone's attachment (for example a cropped copy) can't be traced back to them."
 ] as const;
 
 export const FORGET_LIMITS_TEXT = `Forget is a best-effort scrub. ${FORGET_LIMITS.join(" ")}`;

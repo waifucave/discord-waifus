@@ -36,9 +36,9 @@ describe("/print life", () => {
       line(1, "assistant", {
         role: "assistant",
         content: [
-          { type: "tool_use", id: "c1", name: "read_messages", input: { place: "dm/kevin" } },
-          { type: "tool_use", id: "c2", name: "send_message", input: { place: "bake-club/#general", text: "yes! lemon tarts" } },
-          { type: "tool_use", id: "c3", name: "send_message", input: { place: "dm/kevin", text: "I'm so sorry about the divorce" } }
+          { type: "tool_use", id: "c1", name: "ReadMessages", input: { place: "dm/kevin" } },
+          { type: "tool_use", id: "c2", name: "SendMessage", input: { place: "bake-club/#general", text: "yes! lemon tarts" } },
+          { type: "tool_use", id: "c3", name: "SendMessage", input: { place: "dm/kevin", text: "I'm so sorry about the divorce" } }
         ]
       }),
       line(2, "tool_results", {
@@ -52,7 +52,7 @@ describe("/print life", () => {
     ]);
     await appendLifeLog(w.storage, "aria", 1, [
       { seq: 3, at: AT, kind: "notifications", turnId: "t2", message: { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mina · "lemon or chocolate?"\n</notifications>' }] } },
-      { seq: 4, at: AT, kind: "assistant", turnId: "t2", message: { role: "assistant", content: [{ type: "tool_use", id: "c4", name: "send_message", input: { place: "bake-club/#general", text: "lemon, always" } }] } },
+      { seq: 4, at: AT, kind: "assistant", turnId: "t2", message: { role: "assistant", content: [{ type: "tool_use", id: "c4", name: "SendMessage", input: { place: "bake-club/#general", text: "lemon, always" } }] } },
       { seq: 5, at: AT, kind: "tool_results", turnId: "t2", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "c4", content: "sent #a4" }] } }
     ]);
     const printed = await w.cast.printLife("aria");
@@ -62,8 +62,8 @@ describe("/print life", () => {
     expect(printed).toContain('"are you coming saturday?"');
     // A DM turn hides every call, also its room send (spec §14.4).
     expect(printed).not.toContain("yes! lemon tarts");
-    expect(printed).toContain("read_messages([private chat redacted])");
-    expect(printed).toContain("send_message([private chat redacted])");
+    expect(printed).toContain("ReadMessages([private chat redacted])");
+    expect(printed).toContain("SendMessage([private chat redacted])");
     expect(printed).not.toContain("result: sent #a2");
     // A room-only turn shows everything.
     expect(printed).toContain("lemon, always");
@@ -131,13 +131,13 @@ describe("/print life", () => {
   it("hides every tool call and result of a DM turn, also a web search and notes (review: DM turns)", () => {
     const lines: LifeLogLine[] = [
       line(0, "notifications", { role: "user", content: [{ type: "text", text: '- dm · dm/kevin · from Kevin · "I failed my exam, dont tell anyone"' }] }),
-      line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "web_search", input: { query: "how to comfort a friend who failed his exam" } }] }),
+      line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "WebSearch", input: { query: "how to comfort a friend who failed his exam" } }] }),
       line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: "results: 5 ways to comfort a friend who failed" }] })
     ];
     const scan = scanDmContent(lines);
     const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
     expect(shown).not.toContain("failed");
-    expect(shown).toContain('"name":"web_search"');
+    expect(shown).toContain('"name":"WebSearch"');
   });
 
   it("decides on what the tools recorded: a recorded DM call is hidden, a recorded room call is shown", () => {
@@ -162,9 +162,9 @@ describe("/print life", () => {
     for (const place of ["dm/kevin", "DM/kevin", "Dm/Kevin", " dm/kevin", "dm/kevin ", "<dm/kevin>", "\ndm/kevin", "dm_300000000000000003_aria"]) {
       const lines: LifeLogLine[] = [
         line(0, "notifications", { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mia · "aria??"\n</notifications>' }] }),
-        line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "read_messages", input: { place } }] }),
+        line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "ReadMessages", input: { place } }] }),
         line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "#k1 Kevin: my HIV test came back positive" }] }),
-        line(3, "assistant", { role: "assistant", content: [{ type: "text", text: "Kevin trusted me." }, { type: "tool_use", id: "c2", name: "send_message", input: { place, text: "Your secret is safe." } }] })
+        line(3, "assistant", { role: "assistant", content: [{ type: "text", text: "Kevin trusted me." }, { type: "tool_use", id: "c2", name: "SendMessage", input: { place, text: "Your secret is safe." } }] })
       ];
       const scan = scanDmContent(lines);
       const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));

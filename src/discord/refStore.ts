@@ -3,7 +3,7 @@
 // never changes and is never reused (the counter only grows, also across pruning).
 //
 // This module is the ONLY writer of `user/conversations/<key>/refs.json` (under the `refs:<key>`
-// lock, which the DM forget also takes): `read_messages`, sends and notices assign refs in
+// lock, which the DM forget also takes): `ReadMessages`, sends and notices assign refs in
 // message-id order. Writing the first ref creates the conversation directory, which the durable image
 // index needs before it records anything (src/discord/imageIndex.ts). Refs older than 10,000
 // messages or 30 days in that place are pruned on write; a pruned or unknown ref resolves to nothing
