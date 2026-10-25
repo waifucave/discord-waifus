@@ -75,7 +75,7 @@ async function mainEraRoot(): Promise<string> {
   for (const [id, name] of [["aria", "Aria"], ["mina", "Mina"], ["noted", "Noted"]]) {
     await writeJson(root, `user/waifus/${id}/waifu.json`, { schemaVersion: 2, revision: 1, updatedAt: T, id, name, displayName: name, persona: "kind" });
   }
-  // A waifu that already has notes keeps them untouched.
+  // A waifu that already has (L2-era) notes keeps them: living-cast-home-v1 makes them her home.
   await mkdir(path.join(root, "user/waifus/noted/notes"), { recursive: true });
   await writeFile(path.join(root, "user/waifus/noted/notes/MEMORY.md"), "# Memory\n- hand written\n");
 
@@ -222,7 +222,7 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     const migrated = await snapshot(root);
 
     // memories → notes (§7.4).
-    const notes = (file: string) => migrated.get(`user/waifus/aria/notes/${file}`);
+    const notes = (file: string) => migrated.get(`user/waifus/aria/home/${file}`);
     // A person's own file carries their id marker, so a later forget deletes it whole (§7.5 step 5).
     expect(notes("people/kevin-0003.md")).toBe(
       `# Kevin\n<!-- user:${KEVIN} -->\n\n- Kevin is allergic to peanuts.\n- Kevin studies chemistry.\n- Kevin and Mina run the bake sale.\n- Loves rainy days.\n`
@@ -248,11 +248,11 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     const everything = [...migrated.entries()].filter(([file]) => !file.endsWith("forgotten.json") && !file.endsWith("pending-scrubs.json")).map(([, text]) => text).join("\n");
     for (const secret of ["Forgotten person's secret.", "Said in a forgotten DM.", "Scrubbed user's hobby."]) expect(everything).not.toContain(secret);
     // Her pending scrub only concerns her: Mina's record about Sam is kept.
-    expect(migrated.get("user/waifus/mina/notes/people/sam.md")).toBe(`# Sam\n<!-- user:${SCRUBBED} -->\n\n- Mina's view of Sam.\n`);
+    expect(migrated.get("user/waifus/mina/home/people/sam.md")).toBe(`# Sam\n<!-- user:${SCRUBBED} -->\n\n- Mina's view of Sam.\n`);
     // Archived, expired and already-noted waifus' records are not carried over.
     expect(everything).not.toContain("- Old news.");
     expect(everything).not.toContain("- Short-lived.");
-    expect(migrated.get("user/waifus/noted/notes/MEMORY.md")).toBe("# Memory\n- hand written\n");
+    expect(migrated.get("user/waifus/noted/home/MEMORY.md")).toBe("# Memory\n- hand written\n");
     expect(migrated.has("user/memories.json")).toBe(false);
     expect(migrated.has("user/memory/dream-cursor.json")).toBe(false);
     expect(migrated.has("user/.archive/living-cast/memory/dream-cursor.json")).toBe(true);
@@ -337,10 +337,10 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     await writeFile(path.join(root, "user/people/forgotten.json"), "{ broken");
     await expect(runMigrations(root, { appVersion: APP_VERSION })).rejects.toThrow(/forgotten\.json is unreadable/u);
     expect(await exists(root, "user/memories.json")).toBe(true);
-    expect(await exists(root, "user/waifus/aria/notes")).toBe(false);
+    expect(await exists(root, "user/waifus/aria/home")).toBe(false);
     await writeJson(root, "user/people/forgotten.json", { forgotten: [{ userId: FORGOTTEN, at: T }] });
     await runMigrations(root, { appVersion: APP_VERSION });
-    expect(await readFile(path.join(root, "user/waifus/aria/notes/MEMORY.md"), "utf8")).toContain("people/kevin-0003.md");
+    expect(await readFile(path.join(root, "user/waifus/aria/home/MEMORY.md"), "utf8")).toContain("people/kevin-0003.md");
   });
 
   it("an incomplete step is reported and not recorded; the runner records it once it completes", async () => {
@@ -402,11 +402,11 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     await migrateLivingCastMemoriesToNotes(root, { now: () => NOW });
     // Simulate the crash before the store was removed.
     await writeJson(root, "user/memories.json", await readJson(root, "user/.archive/living-cast/memories.json"));
-    const before = await readFile(path.join(root, "user/waifus/aria/notes/MEMORY.md"), "utf8");
+    const before = await readFile(path.join(root, "user/waifus/aria/home/MEMORY.md"), "utf8");
     await migrateLivingCastMemoriesToNotes(root, { now: () => NOW });
-    expect(await readFile(path.join(root, "user/waifus/aria/notes/MEMORY.md"), "utf8")).toBe(before);
+    expect(await readFile(path.join(root, "user/waifus/aria/home/MEMORY.md"), "utf8")).toBe(before);
     expect(await exists(root, "user/memories.json")).toBe(false);
-    expect(await exists(root, "user/waifus/aria/notes.migrating")).toBe(false);
+    expect(await exists(root, "user/waifus/aria/home.migrating")).toBe(false);
   });
 });
 

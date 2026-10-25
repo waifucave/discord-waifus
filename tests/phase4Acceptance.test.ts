@@ -149,9 +149,9 @@ describe("migrations re-run", () => {
       expect(memory).not.toHaveProperty("guildId");
     }
     expect(migrated.has("user/memories.json")).toBe(false);
-    expect(migrated.get("user/waifus/yuki/notes/MEMORY.md")).toMatch(/^# Memory\n- \[Kev\]\(people\/kev\.md\) — Kevin is allergic to peanuts\.\n/u);
+    expect(migrated.get("user/waifus/yuki/home/MEMORY.md")).toMatch(/^# Memory\n- \[Kev\]\(people\/kev\.md\) — Kevin is allergic to peanuts\.\n/u);
     // (The cross-guild dedupe kept the guild-b copy, where the member is called "Kev".)
-    expect(migrated.get("user/waifus/yuki/notes/misc.md")).toBe("# Misc\n\n- The bake sale is on Saturday.\n");
+    expect(migrated.get("user/waifus/yuki/home/misc.md")).toBe("# Misc\n\n- The bake sale is on Saturday.\n");
     // living-cast-archive-director-v1 and living-cast-server-fields-v1.
     expect(migrated.has("user/orchestrator/config.json")).toBe(false);
     expect(migrated.has("user/.archive/living-cast/orchestrator/config.json")).toBe(true);

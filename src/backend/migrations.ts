@@ -28,6 +28,7 @@ import { migrateServerContextWindowsExplicit } from "./migrationSteps/serverCont
 import { migrateWaifuDropPromptLayout } from "./migrationSteps/waifuDropPromptLayout.js";
 import { migrateLivingCastModels } from "./migrationSteps/livingCastModels.js";
 import { checkStoredModelEfforts } from "./migrationSteps/modelEffortCheck.js";
+import { migrateLivingCastHome } from "./migrationSteps/livingCastHome.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
 import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
@@ -174,6 +175,9 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "living-cast-dm-state-v1", frequency: "once", run: (dataRoot) => migrateLivingCastDmState(dataRoot) },
   { id: "living-cast-server-fields-v1", frequency: "once", run: migrateLivingCastServerFields },
   { id: "living-cast-app-config-v1", frequency: "once", run: migrateLivingCastAppConfig },
+  // Living cast L4 (spec §16.13): a development host's L2-era notes, reminders and watches become
+  // her home folder and files, and a life still on the L2 tools starts a new epoch.
+  { id: "living-cast-home-v1", frequency: "once", run: (dataRoot) => migrateLivingCastHome(dataRoot) },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's
@@ -1141,6 +1145,10 @@ async function collectJsonFilesRecursive(dir: string): Promise<string[]> {
     if (entry.isDirectory()) {
       // `user/.archive/` holds verbatim copies of pre-migration documents: never re-stamped.
       if (entry.name === ".archive") continue;
+      // A waifu's own folders (`user/waifus/<id>/home`, `/tmp`, Living cast §16.2) hold her files,
+      // not app records: a JSON file of hers is never stamped, and one that does not parse never
+      // stops a boot.
+      if ((entry.name === "home" || entry.name === "tmp") && path.basename(path.dirname(dir)) === "waifus") continue;
       files.push(...(await collectJsonFilesRecursive(entryPath)));
     } else if (entry.isFile() && entry.name.endsWith(".json")) {
       files.push(entryPath);

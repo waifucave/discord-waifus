@@ -1,6 +1,7 @@
 // Step `living-cast-memories-to-notes-v1` (Living cast spec §7.4): the retired memory store becomes
-// each waifu's notes. Deterministic, no model calls, and only for waifus that have no `notes/`
-// directory yet.
+// each waifu's notes, in her home folder `home/` (§16.13: Living cast is unreleased, so the step
+// writes there instead of the L2-era `notes/`). Deterministic, no model calls, and only for waifus
+// that have neither `home/` nor an L2-era `notes/` (which `living-cast-home-v1` moves).
 //
 // - Active, unexpired records about a person go to `people/<name-slug>.md`, keyed by Discord user id
 //   when known (another waifu by her id, else the name); two people whose names slug alike get
@@ -22,7 +23,7 @@
 //   cursor; forgotten people's observations and keys left out first) and the omitted lines move to
 //   `user/.archive/living-cast/`.
 //
-// Crash safety: each waifu's notes are written to `notes.migrating/` and renamed into place, the
+// Crash safety: each waifu's notes are written to `home.migrating/` and renamed into place, the
 // archive copy is written before `user/memories.json` is removed (last), so a re-run after a crash
 // finishes the job and a finished run leaves nothing for the next one to change.
 
@@ -31,7 +32,7 @@ import path from "node:path";
 import { atomicWriteJson, atomicWriteText } from "../../storage/atomic.js";
 import { readForgottenPeople, readPendingScrubs } from "../../orchestration/dm/forgotten.js";
 import { scrubJsonForPerson } from "../../life/archiveScrub.js";
-import { MAX_NOTE_BYTES, MAX_NOTE_FILES, MAX_NOTES_TOTAL_BYTES, MEMORY_INDEX, personMarker } from "../../life/notes.js";
+import { MEMORY_INDEX, personMarker } from "../../life/home/memoryIndex.js";
 import { slugify } from "../../life/places.js";
 import { archivePath, moveToArchive } from "./livingCastArchive.js";
 import { isObject, nonEmptyString, readJsonFile } from "./memorySupport.js";
@@ -41,6 +42,10 @@ const MEMORY_DIR = path.join("user", "memory");
 const INDEX_MAX_LINES = 150;
 const INDEX_SUMMARY_CHARS = 60;
 const WAIFU_ID = /^[A-Za-z0-9._:-]+$/;
+// The L2 notes limits this step was written for (frozen: well inside her home's limits).
+const MAX_NOTE_BYTES = 16 * 1024;
+const MAX_NOTE_FILES = 200;
+const MAX_NOTES_TOTAL_BYTES = 1024 * 1024;
 
 type Subject = { discordUserId?: string; waifuId?: string; name: string };
 type MemoryEntry = {
@@ -324,10 +329,10 @@ async function dmDisplayNames(dataRoot: string, waifuId: string): Promise<Map<st
   return names;
 }
 
-/** Writes one waifu's notes into `notes.migrating/`, then renames it to `notes/`. */
+/** Writes one waifu's notes into `home.migrating/`, then renames it to `home/`. */
 async function writeNotes(dataRoot: string, waifuId: string, files: NoteFile[]): Promise<void> {
   const waifuDir = path.join(dataRoot, "user", "waifus", waifuId);
-  const staging = path.join(waifuDir, "notes.migrating");
+  const staging = path.join(waifuDir, "home.migrating");
   await rm(staging, { recursive: true, force: true });
   await mkdir(staging, { recursive: true, mode: 0o700 });
   for (const file of files) {
@@ -336,7 +341,7 @@ async function writeNotes(dataRoot: string, waifuId: string, files: NoteFile[]):
     await atomicWriteText(target, render(file));
   }
   await atomicWriteText(path.join(staging, MEMORY_INDEX), renderIndex(files));
-  await rename(staging, path.join(waifuDir, "notes"));
+  await rename(staging, path.join(waifuDir, "home"));
 }
 
 /**
@@ -396,7 +401,8 @@ export async function migrateLivingCastMemoriesToNotes(dataRoot: string, o: { no
 
     const omittedByWaifu: Record<string, Omitted[]> = {};
     for (const waifuId of ids) {
-      if (await exists(path.join(dataRoot, "user", "waifus", waifuId, "notes"))) continue;
+      const waifuDir = path.join(dataRoot, "user", "waifus", waifuId);
+      if ((await exists(path.join(waifuDir, "home"))) || (await exists(path.join(waifuDir, "notes")))) continue;
       const records = store.memories
         .filter((raw) => !leftOut(raw) && !expired(raw, now))
         .map(parseRecord)

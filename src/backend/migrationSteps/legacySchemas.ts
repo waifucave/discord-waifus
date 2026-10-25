@@ -86,3 +86,43 @@ export const PendingObservationsFileSchema = RevisionedRecordSchema.extend({
   observations: z.array(PendingObservationSchema)
 });
 export type PendingObservationsFile = z.infer<typeof PendingObservationsFileSchema>;
+
+// Living cast L2's app-kept watch and reminder files (`life/watches.json`, `life/schedule.json`),
+// read only by `living-cast-home-v1`, which turns them into her own files (spec §16.13).
+export const L2WatchBindingSchema = z.object({
+  placeKey: z.string().min(1).optional(),
+  fromUserId: z.string().min(1).optional(),
+  fromName: z.string().optional(),
+  words: z.array(z.string().min(1)).max(10).optional(),
+  anyMessage: z.boolean().optional()
+});
+export const L2WatchesFileSchema = z.object({
+  nextId: z.number().int().positive().default(1),
+  watches: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        note: z.string().max(200),
+        createdAt: IsoDateStringSchema,
+        expiresAt: IsoDateStringSchema,
+        once: z.boolean(),
+        bindings: z.array(L2WatchBindingSchema).min(1).max(5),
+        fires: z.array(IsoDateStringSchema).default([])
+      })
+    )
+    .default([])
+});
+export const L2ScheduleFileSchema = z.object({
+  nextId: z.number().int().positive().default(1),
+  reminders: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        note: z.string().max(200),
+        dueAt: IsoDateStringSchema,
+        repeat: z.enum(["daily", "weekly"]).optional(),
+        createdAt: IsoDateStringSchema
+      })
+    )
+    .default([])
+});
