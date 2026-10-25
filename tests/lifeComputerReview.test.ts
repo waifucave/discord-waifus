@@ -135,6 +135,55 @@ describe("names as the disk compares them (review S1, S2)", () => {
   });
 });
 
+describe("forget across a crash (review S7)", () => {
+  it("a copy a running Bash saves after the forget's first file step is deleted by the queued scrub after a restart", async () => {
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("aria"), "poke").mockImplementation(() => undefined);
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "aria"));
+    await store.saveDownload(store.path("tmp", ["dm", "kevin", "a1-recipe.txt"]), Buffer.from("Kevin's secret recipe\n"), {
+      placeKey: DM_KEY,
+      messageId: "1",
+      authorId: KEVIN,
+      attachmentId: "1",
+      downloadedAt: w.clock.now().toISOString()
+    });
+    // Her command copies the file into its in-memory folder, waits, then saves a copy in her home.
+    let served!: () => void;
+    const firstRead = new Promise<void>((resolve) => (served = resolve));
+    const { HerFiles } = await import("../src/life/home/herFiles.js");
+    const readBytes = HerFiles.prototype.readBytes;
+    const spy = vi.spyOn(HerFiles.prototype, "readBytes").mockImplementation(async function (this: InstanceType<typeof HerFiles>, ...args: Parameters<typeof readBytes>) {
+      const data = await readBytes.apply(this, args);
+      if (args[0].segments.at(-1) === "a1-recipe.txt") served();
+      return data;
+    });
+    const ctx = await ctxFor(w);
+    const bash = run("Bash", { command: "cp /tmp/dm/kevin/a1-recipe.txt /tmp/stage.txt; sleep 3; cp /tmp/stage.txt ~/kept.txt" }, ctx);
+    await firstRead;
+    spy.mockRestore();
+    // The forget is prepared (step 1 removes the file and its provenance) while the command runs.
+    const prepared = await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "owner", scope: "everything" });
+    expect(prepared).toBeDefined();
+    expect(await herFile(w, "aria", "tmp/dm/kevin/a1-recipe.txt")).toBeUndefined();
+    const scrubsFile = path.join(w.root, "user/waifus/aria/life/pending-scrubs.json");
+    const queued = JSON.parse(await readFile(scrubsFile, "utf8")) as { scrubs: Array<{ userId: string; fileHashes?: string[] }> };
+    expect(queued.scrubs.find((scrub) => scrub.userId === KEVIN)?.fileHashes).toHaveLength(1);
+    expect((await bash).isError).toBeFalsy();
+    expect(await herFile(w, "aria", "home/kept.txt")).toBe("Kevin's secret recipe\n");
+    // A crash before the scrub ran under her life lock: the in-memory hashes are gone.
+    await closeWorlds();
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    await restarted.settle();
+    expect(await herFile(w, "aria", "home/kept.txt")).toBeUndefined();
+    expect(await herFile(w, "aria", "tmp/stage.txt")).toBeUndefined();
+    // The scrub ran and is cleared, its hashes with it.
+    const after = JSON.parse(await readFile(scrubsFile, "utf8")) as { scrubs: Array<{ userId: string; fileHashes?: string[] }> };
+    expect(after.scrubs.some((scrub) => scrub.fileHashes !== undefined)).toBe(false);
+  }, 60_000);
+});
+
 describe("DM files touched by Bash or Write are DM calls (review S5)", () => {
   it("records a listing, a read by glob, a move and a Write over a DM file", async () => {
     const w = await lifeWorld(roots);

@@ -40,7 +40,16 @@ export type ForgottenPerson = { userId: string; at: string };
  * (run now, or at nightly maintenance inside the 6-hour window, §7.3).
  */
 export type PendingScrubSource = "dm_forget_conversation" | "dm_forget_everything" | "owner_forget";
-export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[] };
+/**
+ * `fileHashes`: hashes of her files from the person that the forget's first file step removed
+ * (their provenance entries went with them). Kept until the file step has run again under her life
+ * lock, so a copy a running Bash command saved in between is still found after a crash.
+ */
+export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[]; fileHashes?: string[] };
+
+/** At most this many file hashes ride along in one pending scrub (the provenance index's own cap). */
+export const MAX_PENDING_FILE_HASHES = 10_000;
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
 
 const SOURCE_RANK: Record<PendingScrubSource, number> = { dm_forget_conversation: 0, dm_forget_everything: 1, owner_forget: 2 };
 
@@ -168,12 +177,14 @@ function completeScrub(now: Date) {
     const source = typeof entry.source === "string" && entry.source in SOURCE_RANK ? (entry.source as PendingScrubSource) : "owner_forget";
     const names = stringList(entry.names);
     const sharedNames = stringList(entry.sharedNames);
+    const fileHashes = stringList(entry.fileHashes)?.filter((hash) => SHA256_HEX.test(hash));
     return {
       userId: entry.userId,
       at: typeof entry.at === "string" && Number.isFinite(Date.parse(entry.at)) ? entry.at : now.toISOString(),
       source,
       ...(names ? { names } : {}),
-      ...(sharedNames ? { sharedNames } : {})
+      ...(sharedNames ? { sharedNames } : {}),
+      ...(fileHashes && fileHashes.length > 0 ? { fileHashes } : {})
     };
   };
 }
@@ -203,7 +214,7 @@ export async function queuePendingScrub(
   waifuId: string,
   userId: string,
   at: Date,
-  o: { logger?: ForgetRecordLogger; source?: PendingScrubSource; names?: string[]; sharedNames?: string[] } = {}
+  o: { logger?: ForgetRecordLogger; source?: PendingScrubSource; names?: string[]; sharedNames?: string[]; fileHashes?: readonly string[] } = {}
 ): Promise<PendingScrub> {
   const file = pendingScrubsPath(storage.dataRoot, waifuId);
   let stored!: PendingScrub;
@@ -214,11 +225,31 @@ export async function queuePendingScrub(
     const source = previous && SOURCE_RANK[previous.source] > SOURCE_RANK[wanted] ? previous.source : wanted;
     const names = mergeNames(previous?.names, o.names);
     const sharedNames = mergeNames(previous?.sharedNames, o.sharedNames);
+    const fileHashes = mergeNames(previous?.fileHashes, o.fileHashes ? [...o.fileHashes] : undefined)?.slice(-MAX_PENDING_FILE_HASHES);
     const later = previous && previous.at > at.toISOString() ? previous.at : at.toISOString();
-    stored = { userId, at: later, source, ...(names ? { names } : {}), ...(sharedNames ? { sharedNames } : {}) };
+    stored = { userId, at: later, source, ...(names ? { names } : {}), ...(sharedNames ? { sharedNames } : {}), ...(fileHashes ? { fileHashes } : {}) };
     await atomicWriteJson(file, { scrubs: [...existing.filter((entry) => entry.userId !== userId), stored] });
   });
   return stored;
+}
+
+/**
+ * Drops the file hashes of that user's pending scrub once the forget's file step has run under her
+ * life lock (the scrub itself stays queued if the rest has not run yet).
+ */
+export async function dropPendingScrubHashes(storage: StorageService, waifuId: string, userId: string, o: { logger?: ForgetRecordLogger; now?: Date } = {}): Promise<void> {
+  const file = pendingScrubsPath(storage.dataRoot, waifuId);
+  const now = o.now ?? new Date();
+  await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
+    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, now, completeScrub(now));
+    if (!existing.some((entry) => entry.userId === userId && entry.fileHashes !== undefined)) return;
+    const scrubs = existing.map((entry) => {
+      if (entry.userId !== userId) return entry;
+      const { fileHashes: _dropped, ...rest } = entry;
+      return rest;
+    });
+    await atomicWriteJson(file, { scrubs });
+  });
 }
 
 /** Drops the scrubs that ran (same user and time); entries queued meanwhile stay. */

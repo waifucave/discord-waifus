@@ -423,6 +423,13 @@ async function dropWatches(home: HomeStore, timeZone: string, drop: (bindings: A
  * the files, so a copy a running Bash command saves after this step is found only by them when the
  * step runs again under her life lock (spec §16.9).
  */
+/** The hashes the provenance index records for the person (what step 1 is about to remove). */
+export async function personFileHashes(deps: LifeDeps, waifu: WaifuConfig, userId: string, o: { dmOnly?: boolean } = {}): Promise<string[]> {
+  const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId });
+  const index = await homeStoreFor(deps, waifu).readIndex();
+  return [...new Set(index.entries.filter((entry) => entry.placeKey === dmKey || (!o.dmOnly && entry.authorId === userId)).map((entry) => entry.sha256))];
+}
+
 export async function scrubPersonFiles(deps: LifeDeps, waifu: WaifuConfig, identity: Pick<ForgetIdentity, "userId">, o: { dmOnly?: boolean; tombstones?: Set<string> } = {}): Promise<number> {
   const home = homeStoreFor(deps, waifu);
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
@@ -735,8 +742,8 @@ export const NOTES_SCRUB_SKIPPED = "(no notes session ran: she has no model; the
  * there is no notes session to wait for: it is recorded as skipped (one review line) and the
  * scrub completes, so it is not retried at every start.
  */
-export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string }): Promise<ScrubPersonOutcome> {
-  const removedFiles = await scrubPersonFiles(deps, waifu, identity);
+export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string; tombstones?: Set<string> }): Promise<ScrubPersonOutcome> {
+  const removedFiles = await scrubPersonFiles(deps, waifu, identity, o.tombstones ? { tombstones: o.tombstones } : {});
   await summaryWithoutPerson(deps, waifu, identity, o.signal);
   const stateReview: ReviewLine[] = [];
   await scrubOtherState(deps, waifu, identity, { review: (item) => stateReview.push(item) });

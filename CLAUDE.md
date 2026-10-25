@@ -212,7 +212,8 @@ PUT shim in `src/api/server.ts`.
   every waifu with a life or a home, `src/life/forget.ts`; her files from the person go by content
   hash, §16.9). DM bots register a BotDM-only `/forget`.
   Forget records (`dm/forgotten.ts`): every forget first collects the person's names and queues
-  the life scrub in `pending-scrubs.json` (with the names, before any DM data goes): the owner's
+  the life scrub in `pending-scrubs.json` (with the names and the hashes of her files from them,
+  before any DM data goes; the hashes go once the file step ran under her life lock): the owner's
   forget-user an `owner_forget` entry per life (runs now, or when that life next starts if Discord
   is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
   or at nightly maintenance inside the 6-hour window, spec §7.3); an entry is cleared only when

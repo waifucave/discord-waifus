@@ -13,7 +13,7 @@ import type { ModelClient } from "../models/client.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
 import { listDmLimitWaifuIds, listDmStates, listDmUserIds, readDmFloor } from "../orchestration/dm/dmStore.js";
-import { queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
+import { dropPendingScrubHashes, queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
 import { isKnownWaifuAuthor, listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { UsageLedger } from "../orchestration/usageLedger.js";
 import type { AppConfig } from "../shared/schemas/config.js";
@@ -32,6 +32,7 @@ import {
   recentScrubs,
   scrubOtherState,
   scrubPerson,
+  personFileHashes,
   scrubPersonFiles,
   startEpochNow,
   summaryWithoutPerson,
@@ -314,12 +315,17 @@ export class LivingCast {
         const identity = mergeIdentity(await collectIdentity(this.deps, waifu, scrub.userId), scrub);
         // A boot-time owner scrub or a queued DM forget: her DM's intake mark names the person (F10).
         await this.dropDmMark(waifu.id, scrub.userId);
+        // The hashes step 1 removed before a crash or a wait: a copy saved since is found by them.
+        const tombstones = new Set(scrub.fileHashes ?? []);
         if (scrub.source === "dm_forget_conversation") {
+          await scrubPersonFiles(this.deps, waifu, identity, { dmOnly: true, tombstones });
+          await this.dropScrubHashes(waifu.id, scrub);
           await this.forgetConversation(waifu, identity);
           done.push(scrub);
           continue;
         }
-        const outcome = await scrubPerson(this.deps, waifu, identity, { source });
+        const outcome = await scrubPerson(this.deps, waifu, identity, { source, tombstones });
+        await this.dropScrubHashes(waifu.id, scrub);
         results.push(outcome);
         if (outcome.complete) done.push(scrub);
       } catch (error) {
@@ -330,6 +336,14 @@ export class LivingCast {
       this.deps.logger.warn("Pending scrubs could not be cleared", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) })
     );
     return results;
+  }
+
+  /** The file step ran under her life lock: the pending scrub's file hashes are not needed any more. */
+  private async dropScrubHashes(waifuId: string, scrub: Pick<PendingScrub, "userId" | "fileHashes">): Promise<void> {
+    if (!scrub.fileHashes) return;
+    await dropPendingScrubHashes(this.deps.storage, waifuId, scrub.userId, { logger: this.deps.logger, now: this.deps.now() }).catch((error: unknown) =>
+      this.deps.logger.warn("Pending scrub file hashes could not be dropped", { waifuId, message: error instanceof Error ? error.message : String(error) })
+    );
   }
 
   /** DM forget floors are loaded for every DM conversation at boot (and on every forget, §6.2). */
@@ -546,12 +560,16 @@ export class LivingCast {
     const now = deps.now();
     // A DM user's forget runs at most once per 6 hours (either scope); inside the window it is only queued.
     const rateLimited = o.source === "dm" && insideDmScrubWindow(await readLifeState(deps.storage, o.waifuId), o.userId, now);
-    const scrub = await queuePendingScrub(deps.storage, o.waifuId, o.userId, now, { source, names: identity.names, sharedNames: identity.sharedNames, logger: deps.logger });
+    // The hashes step 1 is about to remove are queued with the scrub first: the provenance entries
+    // go with the files, and a copy a running Bash saves meanwhile must still be found after a crash.
+    const dmOnly = o.scope === "conversation";
+    const fileHashes = await personFileHashes(deps, waifu, o.userId, { dmOnly }).catch(() => [] as string[]);
+    const scrub = await queuePendingScrub(deps.storage, o.waifuId, o.userId, now, { source, names: identity.names, sharedNames: identity.sharedNames, fileHashes, logger: deps.logger });
     // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10),
     // and her files from them (§16.9 step 1; `conversation`: only what came from the DM).
     await this.dropDmMark(o.waifuId, o.userId);
-    const tombstones = new Set<string>();
-    await scrubPersonFiles(deps, waifu, identity, { dmOnly: o.scope === "conversation", tombstones }).catch((error: unknown) => {
+    const tombstones = new Set<string>(fileHashes);
+    await scrubPersonFiles(deps, waifu, identity, { dmOnly, tombstones }).catch((error: unknown) => {
       deps.logger.warn("Forget could not delete her files from the person", { waifuId: o.waifuId, message: error instanceof Error ? error.message : String(error) });
     });
     return { waifu, identity, scrub, scope: o.scope, source: o.source, rateLimited, tombstones };
@@ -574,11 +592,18 @@ export class LivingCast {
     const none: ForgetScrubResult = { waifuId: waifu.id, removedLines: 0, removedSentences: 0, needsReview: [] };
     // Step 1 again once her running turn is over: a Bash command that was running may have saved a
     // copy of a file step 1 removed (its provenance is gone; the tombstones still know its hash).
+    // Once it ran under her lock, the hashes queued with the scrub are dropped (a failed run keeps them).
     const filesAgain = () =>
-      scrubPersonFiles(deps, waifu, identity, { dmOnly: prepared.scope === "conversation", tombstones: prepared.tombstones }).catch((error: unknown) => {
-        deps.logger.warn("Forget could not delete her files from the person", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
-        return 0;
-      });
+      scrubPersonFiles(deps, waifu, identity, { dmOnly: prepared.scope === "conversation", tombstones: prepared.tombstones }).then(
+        async (removed) => {
+          await this.dropScrubHashes(waifu.id, { userId: identity.userId, fileHashes: [...prepared.tombstones] });
+          return removed;
+        },
+        (error: unknown) => {
+          deps.logger.warn("Forget could not delete her files from the person", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+          return 0;
+        }
+      );
     // Rate limited, or the cast is stopping: the scrub stays queued (it runs at her next start). The
     // file step still runs again after her current turn (never aborted for a rate-limited request).
     if (prepared.rateLimited && !this.stopped) void this.track(this.mutex.run(lifeLocks.life(waifu.id), filesAgain));

@@ -1983,8 +1983,11 @@ refuses a file that does not read whole and may name a DM.
 **Forget (§16.9).** Step 1 runs when the forget is prepared (also when the rest waits for the DM
 rate limit) and again under her life lock once her running turn is aborted (or, rate limited, once
 it ends): a Bash command running during step 1 may save a copy after it, whose provenance entry is
-already gone, so the forgotten hashes are kept as tombstones for that second run. Then inside the
-scrub: the person's provenance entries (their DM, and for an
+already gone, so the forgotten hashes are kept as tombstones for that second run. They are queued
+in the pending scrub (`fileHashes` in `pending-scrubs.json`, written before step 1 removes
+anything) and dropped once the file step has run under her life lock; after a crash, the queued
+scrub's file step uses them (a `/forget conversation` scrub runs its DM-only file step too). Then
+inside the scrub: the person's provenance entries (their DM, and for an
 owner forget or `/forget everything` their attachments anywhere), every file in her folders with
 one of those hashes, and `/tmp/dm/<handle>/` of their DM. Results report `removedFiles`. The forget
 limits text adds the cropped-copy sentence.
