@@ -86,13 +86,22 @@ function offsetMinutes(date: Date, timeZone: string): number {
   return Math.round((asUtc - Math.floor(date.getTime() / 1000) * 1000) / 60_000);
 }
 
-/** The instant of a local wall time (year, month 1-12, day, hour, minute) in `timeZone`. */
+/**
+ * The instant of a local wall time (year, month 1-12, day, hour, minute) in `timeZone`. A wall time
+ * that occurs twice (DST ends) is its first occurrence. One that does not exist (DST starts) is read
+ * with the offset before the gap, so it moves forward by the gap: a midnight skipped to 01:00 is
+ * 01:00, and a local day always starts on that day.
+ */
 export function instantOfLocal(timeZone: string, year: number, month: number, day: number, hour: number, minute: number): Date {
-  const guess = Date.UTC(year, month - 1, day, hour, minute);
-  let instant = guess - offsetMinutes(new Date(guess), timeZone) * 60_000;
-  // A second pass settles DST edges (the offset at the guess may differ from the offset at the result).
-  instant = guess - offsetMinutes(new Date(instant), timeZone) * 60_000;
-  return new Date(instant);
+  const wall = Date.UTC(year, month - 1, day, hour, minute);
+  // The zone's offsets a day either side: a DST change in between is one of them.
+  const before = offsetMinutes(new Date(wall - 86_400_000), timeZone);
+  const after = offsetMinutes(new Date(wall + 86_400_000), timeZone);
+  const existing = [...new Set([before, after])]
+    .map((offset) => wall - offset * 60_000)
+    .filter((instant) => offsetMinutes(new Date(instant), timeZone) * 60_000 === wall - instant)
+    .sort((a, b) => a - b);
+  return new Date(existing[0] ?? wall - before * 60_000);
 }
 
 /** Local midnight that starts the day after `date`. */

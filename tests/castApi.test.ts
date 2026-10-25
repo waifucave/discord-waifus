@@ -20,6 +20,7 @@ import {
 import { StorageService } from "../src/storage/storageService.js";
 import { ASSISTANT_USAGE_MAX_GROUPS, usageForAssistant } from "../src/api/assistant/tools.js";
 import { MAX_USAGE_GROUPS } from "../src/orchestration/usageReport.js";
+import { instantOfLocal, localDayKey } from "../src/life/clock.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -114,6 +115,26 @@ describe("GET /api/usage", () => {
     const year = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2025-10-25&to=2026-10-24&tz=UTC" })).json());
     expect(year.totals.calls).toBe(1500);
     expect(year.groupsCapped).toBeUndefined();
+  });
+
+  it("starts a local day on that day when DST skips its midnight (review: DST, repro r6)", async () => {
+    // America/Santiago, 2026-09-06: 00:00 local jumps to 01:00.
+    const start = instantOfLocal("America/Santiago", 2026, 9, 6, 0, 0);
+    expect(start.toISOString()).toBe("2026-09-06T04:00:00.000Z");
+    expect(localDayKey(start, "America/Santiago")).toBe("2026-09-06");
+    expect(localDayKey(new Date(start.getTime() - 1), "America/Santiago")).toBe("2026-09-05");
+    // An ordinary wall time, and one that occurs twice (DST ends: its first occurrence).
+    expect(instantOfLocal("Europe/Berlin", 2026, 7, 1, 12, 0).toISOString()).toBe("2026-07-01T10:00:00.000Z");
+    expect(instantOfLocal("Europe/Berlin", 2026, 10, 25, 2, 30).toISOString()).toBe("2026-10-25T00:30:00.000Z");
+    // 02:30 does not exist that night: it reads as 03:30 (moved forward by the gap).
+    expect(instantOfLocal("Europe/Berlin", 2026, 3, 29, 2, 30).toISOString()).toBe("2026-03-29T01:30:00.000Z");
+    const { root, app } = await setup();
+    // 23:30 local on Sep 5 is 03:30Z on Sep 6: it belongs to Sep 5.
+    await writeLedger(root, "2026-09-06", [ledgerLine("2026-09-06T03:30:00.000Z")]);
+    const sep5 = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2026-09-05&to=2026-09-05&tz=America/Santiago" })).json());
+    expect(sep5.groups.map((group) => [group.key[0], group.calls])).toEqual([["2026-09-05", 1]]);
+    const sep6 = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2026-09-06&to=2026-09-06&tz=America/Santiago" })).json());
+    expect(sep6.totals.calls).toBe(0);
   });
 
   it("get_usage gives the assistant the costliest groups only", () => {
