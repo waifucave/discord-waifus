@@ -142,7 +142,7 @@ export const planningTools: LifeTool[] = [
   {
     name: "WatchFor",
     description:
-      "Get notified when something happens: a message in a place, from a person, with some words, or any message. A binding in when matches when every field it sets matches; any binding fires the watch. Every watch ends at its timeout and you are told when it does, so a watch with an empty when is a timer. Watches are saved in ~/watches.json; edit that file to change or cancel them.",
+      "Be woken when something you're waiting for happens: an answer from someone you asked, a message in a place, some words, or any message. Use it whenever you ask something or expect news. A binding in when matches when every field it sets matches; any binding fires the watch. Every watch ends at its timeout and you are told when it does: a good moment to follow up if nothing came, and a watch with an empty when is a timer. Watches are saved in ~/watches.json; edit that file to change or cancel them.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,7 +174,7 @@ export const planningTools: LifeTool[] = [
   {
     name: "ScheduleWake",
     description:
-      "Set a reminder that wakes you later with your note. Give either at (local time like 2026-10-25 18:00) or in_minutes; 5 minutes to 30 days ahead; optionally repeat daily or weekly. Reminders are saved in ~/schedule.json; edit that file to change or cancel them.",
+      "Wake yourself later with a note: to ask how someone's exam, trip or game went, to check back in a room you like, or for anything you mean to do later. Give either at (local time like 2026-10-25 18:00) or in_minutes; 5 minutes to 30 days ahead; optionally repeat daily or weekly. Reminders are saved in ~/schedule.json; edit that file to change or cancel them.",
     inputSchema: {
       type: "object",
       properties: {
