@@ -449,3 +449,32 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var
   .remote-inline-form > .field { grid-column: auto; }
   .remote-diagnostics-grid, .remote-prohibited-grid { grid-template-columns: 1fr; }
 }
+
+/* Life screen and registry forms (Living cast §14.3): grid templates live here so narrow screens
+   can collapse them; a registry form's padding cells only fill the last row of the wide layout. */
+.life-mosaic { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: minmax(200px, 1fr); }
+.life-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.life-actions { grid-template-columns: minmax(0, 1fr) 140px 140px 140px; }
+.fgrid.pair-action { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 140px; }
+.fgrid.cols-1 { grid-template-columns: minmax(0, 1fr); }
+.fgrid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fgrid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.fgrid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 980px) {
+  .life-mosaic, .life-stats, .fgrid.cols-3, .fgrid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .life-actions { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 1fr)); }
+  .life-actions > .fcell { grid-column: 1 / -1; }
+  .fgrid.cols-2 > .pad, .fgrid.cols-3 > .pad, .fgrid.cols-4 > .pad { display: none; }
+  .fgrid.cols-3 > .fcell:not(.pad):nth-last-child(1 of :not(.pad)):nth-child(odd of :not(.pad)),
+  .fgrid.cols-4 > .fcell:not(.pad):nth-last-child(1 of :not(.pad)):nth-child(odd of :not(.pad)) { grid-column: 1 / -1; }
+}
+@media (max-width: 680px) {
+  .life-mosaic, .life-stats, .life-actions, .fgrid.pair-action, .fgrid.cols-2, .fgrid.cols-3, .fgrid.cols-4 { grid-template-columns: minmax(0, 1fr); }
+  .fgrid.pair-action > button { min-height: 52px; }
+  .life-actions > .btn, .life-actions > button { min-height: 52px; }
+  .modal-footer button { height: 52px; }
+  .headrow { grid-template-columns: 64px minmax(0, 1fr) minmax(0, 120px); }
+  .headrow .actioncell { padding: 0 10px; font-size: 14px; text-align: center; }
+  .tabcells { grid-auto-columns: minmax(max-content, 1fr); overflow-x: auto; }
+  .tabcells .tabcell { padding: 0 14px; }
+}

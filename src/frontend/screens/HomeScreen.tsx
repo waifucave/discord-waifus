@@ -4,7 +4,7 @@ import { api } from "../api/client";
 import type { LifeStatus, LogsResponse, OwnerNotices, ProvidersResponse, RuntimeState, ServersResponse, UsageResponse, WaifusResponse } from "../api/types";
 import type { ViewId } from "../nav";
 import { FootRow } from "./scaffold";
-import { castEvents, stateLabel, usd, when } from "./lifeView";
+import { castEvents, settledAll, stateLabel, usd, when } from "./lifeView";
 
 const NOTICE_PREVIEW = 4;
 const POLL_MS = 10_000;
@@ -73,7 +73,7 @@ export function HomeScreen({
   const today = todaysCost(usage.data);
   const cast = waifus.data?.waifus ?? [];
   const ids = cast.map((waifu) => waifu.id).join(",");
-  const lives = useApi<LifeStatus[]>((s) => Promise.all(cast.map((waifu) => api.life(waifu.id, false, s))), [ids]);
+  const lives = useApi<LifeStatus[]>((s) => settledAll(cast.map((waifu) => api.life(waifu.id, false, s))), [ids]);
   useInterval(() => {
     runtime.reload();
     lives.reload();

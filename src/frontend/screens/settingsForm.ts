@@ -28,8 +28,9 @@ export function nestedPatch(changes: Record<string, unknown>): Record<string, un
   return out;
 }
 
-/** The text an input shows for a stored value. */
+/** The text an input shows for a stored value (never a secret's: those inputs are write-only). */
 export function formText(key: HelpKey, value: unknown): string {
+  if (key.flags.includes("secret")) return "";
   if (value === undefined || value === null) return "";
   if (key.type === "string-list") return Array.isArray(value) ? value.join("\n") : "";
   if (key.type === "json") return JSON.stringify(value, null, 2);
@@ -41,7 +42,8 @@ export type Parsed = { ok: true; value: unknown } | { ok: false; error: string }
 /** An input's text as the key's value, checked against its type and bounds. */
 export function parseField(key: HelpKey, raw: string): Parsed {
   const text = raw.trim();
-  const nullable = key.nullable;
+  // A key that `unset` clears with null (an optional folder) takes an empty field as "none".
+  const nullable = key.nullable || key.flags.includes("nullUnset");
   if (text === "" && key.type !== "string" && key.type !== "string-list") {
     return nullable ? { ok: true, value: null } : { ok: false, error: "A value is needed." };
   }
@@ -83,6 +85,11 @@ export function formChanges(keys: readonly HelpKey[], config: unknown, drafts: R
   for (const key of keys) {
     const raw = drafts[key.path];
     if (raw === undefined) continue;
+    // A secret is write-only: the form never holds its value, so only a typed one is a change.
+    if (key.flags.includes("secret")) {
+      if (raw !== "") changes[key.path] = raw;
+      continue;
+    }
     const parsed = parseField(key, raw);
     if (!parsed.ok) {
       errors[key.path] = parsed.error;

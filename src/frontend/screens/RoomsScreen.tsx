@@ -67,7 +67,7 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const detector = useApi<DetectorConfigResponse>((s) => api.detectorConfig(s), []);
   const history = useApi<{ guildId: string; entries: DetectorHistoryEntry[] }>((s) => api.detectorHistory(guildId, s), [guildId]);
-  const [detectorDraft, setDetectorDraft] = useState<string | undefined>(undefined);
+  const [detectorDraft, setDetectorDraft] = useState<DetectorChoice | undefined>(undefined);
   const [message, setMessage] = useState<string | undefined>(undefined);
 
   const cast = waifus.data?.waifus ?? [];
@@ -106,8 +106,8 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
     }
   };
   const serverPaused = server.data?.paused ?? false;
-  const override = server.data?.detector?.target;
-  const detectorMode = detectorDraft ?? (override === undefined ? "__inherit__" : override);
+  const detectorNow = detectorDraft ?? detectorChoiceOf(server.data?.detector?.target);
+  const detectorSave = detectorDraft ? detectorPatch(detectorDraft) : undefined;
 
   return (
     <div className="screen">
@@ -132,22 +132,36 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
           <label className="field-label">Addressee detector here</label>
           <div style={{ display: "flex", gap: 8 }}>
             <select
+              id="rooms-detector-mode"
               className="select"
-              value={detectorMode === "__inherit__" || detectorMode === "" ? detectorMode : "__custom__"}
-              onChange={(e) => setDetectorDraft(e.target.value === "__custom__" ? detector.data?.target || "laya:english" : e.target.value)}
+              aria-label="Addressee detector here"
+              value={detectorNow.mode}
+              onChange={(e) => {
+                const mode = e.target.value as DetectorChoice["mode"];
+                setDetectorDraft({ mode, target: mode === "custom" ? detectorNow.target || detector.data?.target || "laya:english" : "" });
+              }}
             >
-              <option value="__inherit__">Inherit ({detector.data?.target || "none"})</option>
-              <option value="">Off in this server</option>
-              <option value="__custom__">Another target…</option>
+              <option value="inherit">Inherit ({detector.data?.target || "none"})</option>
+              <option value="off">Off in this server</option>
+              <option value="custom">Another target…</option>
             </select>
-            {detectorMode !== "__inherit__" && detectorMode !== "" && (
-              <input className="input" value={detectorMode} onChange={(e) => setDetectorDraft(e.target.value)} placeholder="openrouter:… or laya:english" />
+            {detectorNow.mode === "custom" && (
+              <input
+                className="input"
+                aria-label="Detector target"
+                value={detectorNow.target}
+                onChange={(e) => setDetectorDraft({ mode: "custom", target: e.target.value })}
+                placeholder="openrouter:… or laya:english"
+              />
             )}
             {detectorDraft !== undefined && (
               <button
                 className="btn sm"
+                disabled={!detectorSave}
+                title={detectorSave ? undefined : "Name a target, or pick Inherit or Off"}
                 onClick={async () => {
-                  await saveServerField({ detector: detectorDraft === "__inherit__" ? null : { target: detectorDraft } });
+                  if (!detectorSave) return;
+                  await saveServerField({ detector: detectorSave.detector });
                   setDetectorDraft(undefined);
                   history.reload();
                 }}
@@ -217,4 +231,20 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
       <FootRow />
     </div>
   );
+}
+
+/** The detector override as the form edits it: an empty custom target stays custom (never "off"). */
+export type DetectorChoice = { mode: "inherit" | "off" | "custom"; target: string };
+
+export function detectorChoiceOf(override: string | null | undefined): DetectorChoice {
+  if (override === undefined || override === null) return { mode: "inherit", target: "" };
+  return override === "" ? { mode: "off", target: "" } : { mode: "custom", target: override };
+}
+
+/** The server patch for a choice; undefined while a custom target is empty (nothing to save yet). */
+export function detectorPatch(choice: DetectorChoice): { detector: { target: string } | null } | undefined {
+  if (choice.mode === "inherit") return { detector: null };
+  if (choice.mode === "off") return { detector: { target: "" } };
+  const target = choice.target.trim();
+  return target ? { detector: { target } } : undefined;
 }

@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { ForgetUserResult } from "../api/types";
 import { FORGET_LIMITS } from "../../shared/constants/forget";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { Notice } from "./Notice";
 
 const SNOWFLAKE = /^\d{17,20}$/u;
@@ -29,8 +30,13 @@ export function forgetSummary(result: ForgetUserResult): string[] {
   return lines;
 }
 
-/** The owner's forget of one Discord user (Living cast §7.5), with the scrub's limits stated first. */
-export function ForgetPersonPanel() {
+/**
+ * The owner's forget of one Discord user (Living cast §7.5), with the scrub's limits stated first.
+ * `onForgotten` lets the page refresh what the forget changed (its review lines, her status).
+ */
+export function ForgetPersonPanel({ onForgotten }: { onForgotten?: () => void } = {}) {
+  const inputId = useId();
+  const opener = useRef<HTMLButtonElement>(null);
   const [userId, setUserId] = useState("");
   const [preview, setPreview] = useState<ForgetUserResult | undefined>(undefined);
   const [result, setResult] = useState<ForgetUserResult | undefined>(undefined);
@@ -51,6 +57,7 @@ export function ForgetPersonPanel() {
         setResult(answer);
         setConfirming(false);
         setPreview(undefined);
+        onForgotten?.();
       }
     } catch (err) {
       setError((err as Error).message);
@@ -71,8 +78,12 @@ export function ForgetPersonPanel() {
           <li key={line}>{line}</li>
         ))}
       </ul>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <label className="field-label" htmlFor={inputId}>
+        Discord user id
+      </label>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
         <input
+          id={inputId}
           className="input"
           style={{ maxWidth: 280 }}
           placeholder="Discord user id (17–20 digits)"
@@ -82,7 +93,7 @@ export function ForgetPersonPanel() {
             setResult(undefined);
           }}
         />
-        <button className="btn" disabled={!valid || busy} onClick={() => void run(true)}>
+        <button ref={opener} className="btn" disabled={!valid || busy} onClick={() => void run(true)}>
           {busy && !confirming ? "Checking…" : "Forget…"}
         </button>
       </div>
@@ -101,31 +112,25 @@ export function ForgetPersonPanel() {
         </div>
       )}
       {confirming && preview && (
-        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setConfirming(false)}>
-          <div className="modal" style={{ width: 560 }}>
-            <div className="modal-header">
-              <span className="t-title">Forget {preview.discordUserId} everywhere?</span>
-            </div>
-            <div className="modal-body">
-              {forgetSummary(preview).map((line) => (
-                <p className="t-small" key={line} style={{ margin: "0 0 6px" }}>
-                  {line}
-                </p>
-              ))}
-              <p className="t-small t-mute" style={{ marginTop: 10 }}>
-                Then every waifu&apos;s life and notes are scrubbed. This cannot be undone.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="cell clickable" style={{ background: "var(--paper)" }} onClick={() => setConfirming(false)}>
-                Keep
-              </button>
-              <button className="cell clickable" style={{ background: "var(--danger)" }} disabled={busy} onClick={() => void run(false)}>
-                {busy ? "Forgetting…" : "Forget"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title={`Forget ${preview.discordUserId} everywhere?`}
+          cancelLabel="Keep"
+          confirmLabel={busy ? "Forgetting…" : "Forget"}
+          busy={busy}
+          width={560}
+          returnFocus={() => opener.current}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => void run(false)}
+        >
+          {forgetSummary(preview).map((line) => (
+            <p className="t-small" key={line} style={{ margin: "0 0 6px" }}>
+              {line}
+            </p>
+          ))}
+          <p className="t-small t-mute" style={{ marginTop: 10 }}>
+            Then every waifu&apos;s life and notes are scrubbed. This cannot be undone.
+          </p>
+        </ConfirmDialog>
       )}
     </div>
   );

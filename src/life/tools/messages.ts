@@ -324,7 +324,8 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   deps.notices?.clear(`no-bot:${waifu.id}`);
   const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [messageId], now);
   await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
-  deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, messageId });
+  // A room's handle lets the dashboard name the place; a DM's handle would name the person.
+  deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });
   const ref = refs.get(messageId);
   return { content: ref ? `sent #${ref}` : "sent", resultRef: messageId, messageIds: [messageId] };
 }
@@ -367,7 +368,7 @@ export async function reactTool(input: unknown, ctx: ToolContext): Promise<ToolO
     deps.logger.warn("Life reaction failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
     return toolError("the reaction could not be added");
   }
-  deps.logger.info("Life reaction added", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, messageId });
+  deps.logger.info("Life reaction added", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });
   return { content: "reacted", resultRef: messageId };
 }
 

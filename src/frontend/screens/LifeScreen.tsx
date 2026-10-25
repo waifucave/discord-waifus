@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useApi, useInterval } from "../api/useApi";
 import type { LifeLog, LifeLogLineView, LifeStatus, NeedsReviewResponse, SearchUsage, WaifuConfig, WaifusResponse } from "../api/types";
@@ -6,8 +6,9 @@ import { characterHue, type ViewId } from "../nav";
 import { useClientContext } from "../state/clientContext";
 import { FootRow, HeadRow } from "./scaffold";
 import { Notice } from "../components/Notice";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ForgetPersonPanel } from "../components/ForgetPersonPanel";
-import { blockRow, groupByTurn, lineLabel, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
+import { blockRow, groupByTurn, lineLabel, matchingReveal, mergeTimeline, settledAll, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
 
 const LOG_PAGE = 100;
 const POLL_MS = 5000;
@@ -19,7 +20,8 @@ export function LifeScreen({
   waifuId?: string;
   onNavigate: (view: ViewId, tab?: string, id?: string) => void;
 }) {
-  if (waifuId) return <LifeDetail waifuId={waifuId} onNavigate={onNavigate} />;
+  // Keyed: a reveal, a draft note or older pages never carry over to another waifu.
+  if (waifuId) return <LifeDetail key={waifuId} waifuId={waifuId} onNavigate={onNavigate} />;
   return <LifeMosaic onNavigate={onNavigate} />;
 }
 
@@ -28,7 +30,7 @@ export function LifeScreen({
 function useLives(cast: WaifuConfig[]) {
   const ids = cast.map((waifu) => waifu.id).join(",");
   return useApi<LifeStatus[]>(
-    async (signal) => Promise.all(cast.map((waifu) => api.life(waifu.id, false, signal))),
+    async (signal) => settledAll(cast.map((waifu) => api.life(waifu.id, false, signal))),
     [ids]
   );
 }
@@ -49,7 +51,7 @@ function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
           </div>
         )}
         {cast.length > 0 && (
-          <div className="mosaic" style={{ flex: 1, gridTemplateColumns: "repeat(3, 1fr)", gridAutoRows: "minmax(200px, 1fr)" }}>
+          <div className="mosaic life-mosaic" style={{ flex: 1 }}>
             {cast.map((waifu, index) => {
               const life = byId.get(waifu.id);
               const state = life ? stateLabel(life) : undefined;
@@ -72,7 +74,7 @@ function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                   <span className="meta">
                     {life
                       ? `${waiting} waiting · today ${usd(life.today.costUsd)}${life.today.budgetUsd !== null ? ` of ${usd(life.today.budgetUsd)}` : ""} · last turn ${when(life.lastTurnEndedAt)}`
-                      : lives.error
+                      : lives.error || lives.data
                         ? "status unavailable"
                         : "…"}
                     {life && life.counts.needsReview > 0 && <span className="chip butter" style={{ marginLeft: 8 }}>review</span>}
@@ -98,52 +100,73 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
   const status = useApi<LifeStatus>((s) => api.life(waifuId, includePrivate, s), [waifuId, includePrivate]);
   const [epoch, setEpoch] = useState<number | undefined>(undefined);
   const log = useApi<LifeLog>((s) => api.lifeLog(waifuId, { limit: LOG_PAGE, includePrivate, ...(epoch !== undefined ? { epoch } : {}) }, s), [waifuId, includePrivate, epoch]);
-  const [older, setOlder] = useState<LifeLogLineView[]>([]);
-  const [olderMore, setOlderMore] = useState<boolean | undefined>(undefined);
+  // Older pages, for the epoch they came from: merged with the live page by seq.
+  const [older, setOlder] = useState<{ epoch: number; lines: LifeLogLineView[]; hasMore: boolean } | undefined>(undefined);
   const review = useApi<NeedsReviewResponse>((s) => api.needsReview(waifuId, includePrivate, s), [waifuId, includePrivate]);
   const search = useApi<SearchUsage>((s) => api.searchUsage(includePrivate, s), [includePrivate]);
   const [message, setMessage] = useState<{ tone: "ok" | "err" | "warn"; text: string } | undefined>(undefined);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<string | undefined>(undefined);
   const [confirmReset, setConfirmReset] = useState(false);
+  const noteId = useId();
+  const resetButton = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    setOlder([]);
-    setOlderMore(undefined);
-  }, [waifuId, includePrivate, epoch]);
   // Live: the current epoch refreshes every few seconds; an older epoch stays put.
   useInterval(() => {
     status.reload();
     if (epoch === undefined) log.reload();
   }, POLL_MS);
 
+  // Only what answers the toggle as it is now (D14), and nothing a failed fetch left behind.
+  const lifeData = matchingReveal(status.data, includePrivate);
+  const logData = log.error ? undefined : matchingReveal(log.data, includePrivate);
+  const shownLog = logData && (epoch === undefined || logData.epoch === epoch) ? logData : undefined;
+  const reviewData = review.error ? undefined : matchingReveal(review.data, includePrivate);
+  const searchData = search.error ? undefined : matchingReveal(search.data, includePrivate);
+  // Counts and state carry nothing private; her summary is shown only from a matching response.
   const life = status.data;
   const name = life?.displayName ?? waifuId;
-  const lines = [...older, ...(log.data?.lines ?? [])];
-  const hasMore = olderMore ?? log.data?.hasMore ?? false;
-  const myQueries = (search.data?.recent ?? []).filter((entry) => entry.waifuId === waifuId);
+  const olderLines = older && shownLog && older.epoch === shownLog.epoch ? older.lines : [];
+  const timeline = mergeTimeline(olderLines, shownLog?.lines ?? []);
+  const lines = timeline.lines;
+  const hasMore = (olderLines.length > 0 ? older?.hasMore : shownLog?.hasMore) ?? false;
+  const myQueries = (searchData?.recent ?? []).filter((entry) => entry.waifuId === waifuId);
+
+  // Older pages go when the toggle or the epoch changes, or when the live page no longer reaches them.
+  useEffect(() => setOlder(undefined), [includePrivate, epoch]);
+  useEffect(() => {
+    if (timeline.gap) setOlder(undefined);
+  }, [timeline.gap]);
+
+  const refreshAll = () => {
+    setOlder(undefined);
+    status.reload();
+    log.reload();
+    review.reload();
+    search.reload();
+  };
 
   const act = async (label: string, fn: () => Promise<string>) => {
     setBusy(label);
     setMessage(undefined);
     try {
       setMessage({ tone: "ok", text: await fn() });
-      status.reload();
-      log.reload();
     } catch (err) {
       setMessage({ tone: "err", text: (err as Error).message });
     } finally {
       setBusy(undefined);
+      refreshAll();
     }
   };
 
   const loadOlder = async () => {
     const first = lines[0];
-    if (!first) return;
+    if (!first || !shownLog) return;
+    const from = shownLog.epoch;
     try {
-      const page = await api.lifeLog(waifuId, { before: first.seq, limit: LOG_PAGE, includePrivate, ...(epoch !== undefined ? { epoch } : {}) });
-      setOlder((current) => [...page.lines, ...current]);
-      setOlderMore(page.hasMore);
+      const page = await api.lifeLog(waifuId, { before: first.seq, limit: LOG_PAGE, includePrivate, epoch: from });
+      if (page.includePrivate !== includePrivate) return;
+      setOlder((current) => ({ epoch: from, lines: mergeTimeline(page.lines, current && current.epoch === from ? current.lines : []).lines, hasMore: page.hasMore }));
     } catch (err) {
       setMessage({ tone: "err", text: (err as Error).message });
     }
@@ -163,9 +186,12 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         }
       />
       <div className="content">
-        {status.error && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
-            <Notice tone="err">{status.error.message}</Notice>
+        {[status.error, log.error, review.error, search.error].some(Boolean) && (
+          <div className="cell" style={{ padding: 16, flex: "none", display: "flex", flexDirection: "column", gap: 8 }}>
+            {status.error && <Notice tone="err">Status: {status.error.message}</Notice>}
+            {log.error && <Notice tone="err">Timeline: {log.error.message}</Notice>}
+            {review.error && <Notice tone="err">Needs review: {review.error.message}</Notice>}
+            {search.error && <Notice tone="err">Web searches: {search.error.message}</Notice>}
           </div>
         )}
         {message && (
@@ -175,7 +201,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         )}
 
         {life && (
-          <div className="mosaic" style={{ gridTemplateColumns: "repeat(4, 1fr)", flex: "none" }}>
+          <div className="mosaic life-stats" style={{ flex: "none" }}>
             <StatCell label="Now" value={state?.word ?? ""} detail={state?.detail || (life.currentTurn ? `turn of ${life.currentTurn.wakes} wake(s), round ${life.currentTurn.rounds}` : `last turn ${when(life.lastTurnEndedAt)}`)} />
             <StatCell
               label="Waiting"
@@ -196,10 +222,12 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         )}
 
         {life && (
-          <div className="fgrid" style={{ gridTemplateColumns: "1fr 140px 140px 140px", flex: "none" }}>
+          <div className="fgrid life-actions" style={{ flex: "none" }}>
             <div className="fcell">
-              <label className="field-label">Wake her (an owner wake skips sleep and budget)</label>
-              <input className="input" maxLength={500} placeholder="A note she sees (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+              <label className="field-label" htmlFor={noteId}>
+                Wake her (an owner wake skips sleep and budget)
+              </label>
+              <input id={noteId} className="input" maxLength={500} placeholder="A note she sees (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
             <button
               className="cell clickable btn"
@@ -231,7 +259,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             >
               {busy === "compact" ? "Compacting…" : "Compact"}
             </button>
-            <button className="cell clickable btn" data-hue style={{ ["--hover-hue" as string]: "var(--danger)" }} disabled={busy !== undefined || !life.runtime.running} onClick={() => setConfirmReset(true)}>
+            <button ref={resetButton} className="cell clickable btn" data-hue style={{ ["--hover-hue" as string]: "var(--danger)" }} disabled={busy !== undefined || !life.runtime.running} onClick={() => setConfirmReset(true)}>
               Reset…
             </button>
           </div>
@@ -239,10 +267,10 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
 
         <div className="cell" style={{ padding: "14px 26px", flex: "none", display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
           <span className="t-title">Timeline</span>
-          {log.data && log.data.epochs.length > 1 && (
-            <select className="select" style={{ maxWidth: 180 }} value={epoch ?? ""} onChange={(e) => setEpoch(e.target.value ? Number(e.target.value) : undefined)}>
+          {(epoch !== undefined || (logData && logData.epochs.length > 1)) && (
+            <select className="select" aria-label="Epoch" style={{ maxWidth: 180 }} value={epoch ?? ""} onChange={(e) => setEpoch(e.target.value ? Number(e.target.value) : undefined)}>
               <option value="">Current epoch</option>
-              {log.data.epochs
+              {(logData?.epochs ?? (epoch !== undefined ? [epoch] : []))
                 .filter((value) => value !== life?.epoch)
                 .map((value) => (
                   <option key={value} value={value}>
@@ -260,17 +288,17 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
               ? "Private chats stay hidden over Remote Access: open the dashboard on the host to reveal them."
               : includePrivate
                 ? "Showing everything, including DMs and her summary."
-                : `${log.data?.redactedBlocks ?? 0} block(s) from private chats hidden on this page.`}
+                : `${shownLog?.redactedBlocks ?? 0} block(s) from private chats hidden on this page.`}
           </span>
         </div>
 
-        {life && (life.summary.text || life.summary.hidden) && (
+        {lifeData && (lifeData.summary.text || lifeData.summary.hidden) && (
           <div className="cell" style={{ padding: "12px 26px", flex: "none" }}>
             <div className="t-micro" style={{ marginBottom: 4 }}>Her life so far (summary)</div>
-            {life.summary.hidden ? (
+            {lifeData.summary.hidden ? (
               <span className="t-small t-mute">Hidden: it may hold things from private chats.</span>
             ) : (
-              <div className="t-small" style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{life.summary.text}</div>
+              <div className="t-small" style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{lifeData.summary.text}</div>
             )}
           </div>
         )}
@@ -280,7 +308,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             <span className="t-micro">Load older lines</span>
           </button>
         )}
-        {log.data && lines.length === 0 && (
+        {shownLog && lines.length === 0 && (
           <div className="cell" style={{ padding: 30, flex: "none", textAlign: "center" }}>
             <span className="t-mute t-small">Nothing in this epoch yet.</span>
           </div>
@@ -291,13 +319,18 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
 
         <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
           <div className="t-title" style={{ marginBottom: 8 }}>Needs review</div>
-          {(review.data?.items ?? []).length === 0 ? (
+          {!reviewData ? (
+            <span className="t-small t-mute">{review.error ? "Could not load the review lines." : "Loading…"}</span>
+          ) : reviewData.items.length === 0 ? (
             <span className="t-small t-mute">Nothing to review. After a forget, lines naming someone who shares a name with another person are listed here.</span>
           ) : (
-            (review.data?.items ?? []).map((item) => (
+            reviewData.items.map((item) => (
               <div key={item.id} style={{ display: "flex", gap: 12, alignItems: "baseline", padding: "6px 0", borderTop: "1px solid var(--line-soft, #e6e6e6)" }}>
                 <span className="t-micro" style={{ flex: "none" }}>{item.where}</span>
-                <span className="t-small" style={{ flex: 1 }}>{item.line}</span>
+                <span className="t-small" style={{ flex: 1, overflowWrap: "anywhere" }}>
+                  {item.private && !includePrivate ? <span className="t-mute">From a private chat: reveal it on the host to read it.</span> : item.line}
+                  {item.private && <span className="chip sky" style={{ marginLeft: 8 }}>private chat</span>}
+                </span>
                 <button
                   className="btn ghost sm"
                   onClick={async () => {
@@ -325,50 +358,39 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             myQueries.map((entry, index) => (
               <div key={`${entry.at}-${index}`} className="t-small" style={{ padding: "3px 0" }}>
                 <span className="t-micro" style={{ marginRight: 10 }}>{when(entry.at)} · {entry.kind}</span>
-                {entry.query}
+                {entry.dm && !includePrivate ? <span className="t-mute">From a private chat: hidden</span> : entry.query}
+                {entry.dm && <span className="chip sky" style={{ marginLeft: 8 }}>private chat</span>}
                 {!entry.ok && <span className="chip butter" style={{ marginLeft: 8 }}>failed</span>}
               </div>
             ))
           )}
         </div>
 
-        <ForgetPersonPanel />
+        <ForgetPersonPanel onForgotten={refreshAll} />
         <div className="cell growcell" />
       </div>
       <FootRow />
 
       {confirmReset && (
-        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setConfirmReset(false)}>
-          <div className="modal" style={{ width: 520 }}>
-            <div className="modal-header">
-              <span className="t-title">Reset {name}&apos;s life?</span>
-            </div>
-            <div className="modal-body">
-              <p className="t-small">
-                She starts a fresh epoch with no summary of what happened before. Her notes, plans and queued wakes stay; the old
-                log is kept for 7 days.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button className="cell clickable" style={{ background: "var(--paper)" }} onClick={() => setConfirmReset(false)}>
-                Keep
-              </button>
-              <button
-                className="cell clickable"
-                style={{ background: "var(--danger)" }}
-                onClick={() => {
-                  setConfirmReset(false);
-                  void act("reset", async () => {
-                    const result = await api.resetLife(waifuId);
-                    return result.deferred ? `Reset: epoch ${result.epoch} starts at her next turn.` : `Reset: epoch ${result.epoch} started.`;
-                  });
-                }}
-              >
-                Reset
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title={`Reset ${name}'s life?`}
+          cancelLabel="Keep"
+          confirmLabel="Reset"
+          returnFocus={() => resetButton.current}
+          onCancel={() => setConfirmReset(false)}
+          onConfirm={() => {
+            setConfirmReset(false);
+            void act("reset", async () => {
+              const result = await api.resetLife(waifuId);
+              return result.deferred ? `Reset: epoch ${result.epoch} starts at her next turn.` : `Reset: epoch ${result.epoch} started.`;
+            });
+          }}
+        >
+          <p className="t-small">
+            She starts a fresh epoch with no summary of what happened before. Her notes, plans and queued wakes stay; the old log
+            is kept for 7 days.
+          </p>
+        </ConfirmDialog>
       )}
     </div>
   );

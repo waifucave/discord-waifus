@@ -6,9 +6,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ForgetPersonPanel, forgetSummary } from "../src/frontend/components/ForgetPersonPanel.js";
 import { TurnCell } from "../src/frontend/screens/LifeScreen.js";
-import { blockRow, castEvents, groupByTurn, PRIVATE_HIDDEN, stateLabel } from "../src/frontend/screens/lifeView.js";
+import { blockRow, castEvents, groupByTurn, matchingReveal, mergeTimeline, PRIVATE_HIDDEN, settledAll, stateLabel } from "../src/frontend/screens/lifeView.js";
+import { ConfirmDialog } from "../src/frontend/components/ConfirmDialog.js";
+import { detectorChoiceOf, detectorPatch } from "../src/frontend/screens/RoomsScreen.js";
 import { waifuPatch, waifuProblems } from "../src/frontend/screens/castEdit.js";
-import { formChanges, nestedPatch, parseField } from "../src/frontend/screens/settingsForm.js";
+import { formChanges, formText, nestedPatch, parseField } from "../src/frontend/screens/settingsForm.js";
 import { homeNotices, todaysCost } from "../src/frontend/screens/HomeScreen.js";
 import { entrySummary } from "../src/frontend/screens/ActivityScreen.js";
 import type { HelpKey, LifeLogLineView, LifeStatus, WaifuConfig } from "../src/frontend/api/types.js";
@@ -56,12 +58,14 @@ describe("Life timeline", () => {
     const events = castEvents({
       entries: [
         { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "aria", placeKey: "dm_300000000000000003_aria", messageId: "1" } },
-        { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "aria", placeKey: "g_1_2", messageId: "2" } },
+        { time: AT, level: "info", message: "Life message sent", context: { category: "life", waifuId: "aria", placeKey: "g_1_2", place: "bake-club/#general", messageId: "2" } },
+        { time: AT, level: "info", message: "Life reaction added", context: { category: "life", waifuId: "aria", placeKey: "g_1_3", messageId: "3" } },
         { time: AT, level: "info", message: "Life turn started", context: { category: "life", waifuId: "mina", turnId: "t", wakes: 2, reasons: ["mention", "dm"] } },
         { time: AT, level: "info", message: "Something else", context: { category: "life", waifuId: "mina" } }
       ]
     });
-    expect(events.map((event) => event.text)).toEqual(["sent a message in a DM", "sent a message in g_1_2", "woke (mention, dm)"]);
+    // A room by her handle; an older line without one never shows a raw key (review: Home feed).
+    expect(events.map((event) => event.text)).toEqual(["sent a message in a DM", "sent a message in bake-club/#general", "reacted in a channel", "woke (mention, dm)"]);
     expect(JSON.stringify(events)).not.toContain("300000000000000003");
   });
 });
@@ -134,6 +138,9 @@ describe("registry-driven settings forms", () => {
     expect(parseField(key({ type: "string-list" }), "a/b\nc/d, e/f")).toEqual({ ok: true, value: ["a/b", "c/d", "e/f"] });
     expect(parseField(key({ type: "string", nullable: true }), "")).toEqual({ ok: true, value: null });
     expect(parseField(key({ type: "string", nullable: false }), "")).toEqual({ ok: true, value: "" });
+    // frontend.staticDir: unset clears it with null, so an emptied field clears it (review).
+    expect(parseField(key({ type: "string", nullable: false, flags: ["nullUnset"] }), "")).toEqual({ ok: true, value: null });
+    expect(parseField(key({ type: "number", min: 0, minExclusive: true }), "0")).toMatchObject({ ok: false, error: "More than 0." });
   });
 
   it("only changed keys become a nested patch", () => {
@@ -181,3 +188,55 @@ describe("forget person", () => {
 
 // Keep the LifeStatus import used (types only).
 export type _LifeStatus = LifeStatus;
+
+describe("review: dashboard fixes", () => {
+  const line = (seq: number): LifeLogLineView => ({ seq, at: AT, kind: "assistant", blocks: [{ type: "text", text: `line ${seq}` }], dm: false });
+
+  it("shows a response only while it answers the reveal toggle as it is now", () => {
+    const revealed = { includePrivate: true, summary: "secret" };
+    expect(matchingReveal(revealed, true)).toBe(revealed);
+    // Un-revealing: the private page is never shown again, also when the refetch fails.
+    expect(matchingReveal(revealed, false)).toBeUndefined();
+    expect(matchingReveal(undefined, false)).toBeUndefined();
+  });
+
+  it("merges older pages with the live page by seq; a live page that no longer reaches them is a gap", () => {
+    const older = [line(0), line(1), line(2)];
+    expect(mergeTimeline(older, [line(2), line(3)])).toEqual({ lines: [line(0), line(1), line(2), line(3)], gap: false });
+    expect(mergeTimeline(older, [line(3), line(4)]).gap).toBe(false);
+    expect(mergeTimeline(older, [line(9), line(10)])).toEqual({ lines: [line(9), line(10)], gap: true });
+    expect(mergeTimeline([], [line(5)]).lines).toEqual([line(5)]);
+  });
+
+  it("one failing life never blanks the others", async () => {
+    await expect(settledAll([Promise.resolve(1), Promise.reject(new Error("x")), Promise.resolve(3)])).resolves.toEqual([1, 3]);
+  });
+
+  it("a cleared custom detector target stays custom (never Off) and cannot be saved empty", () => {
+    expect(detectorChoiceOf(undefined)).toEqual({ mode: "inherit", target: "" });
+    expect(detectorChoiceOf("")).toEqual({ mode: "off", target: "" });
+    expect(detectorChoiceOf("laya:english")).toEqual({ mode: "custom", target: "laya:english" });
+    expect(detectorPatch({ mode: "custom", target: "  " })).toBeUndefined();
+    expect(detectorPatch({ mode: "custom", target: " laya:english " })).toEqual({ detector: { target: "laya:english" } });
+    expect(detectorPatch({ mode: "off", target: "" })).toEqual({ detector: { target: "" } });
+    expect(detectorPatch({ mode: "inherit", target: "" })).toEqual({ detector: null });
+  });
+
+  it("a secret is write-only in the forms: never shown, sent only when typed", () => {
+    const secret: HelpKey = { id: "provider.apiKey", group: "provider", path: "apiKey", type: "string", typeLabel: "string", nullable: false, help: "Key.", flags: ["secret"], applies: "live", cli: [] };
+    expect(formText(secret, "sk-stored")).toBe("");
+    expect(formChanges([secret], { apiKey: "sk-stored" }, { apiKey: "" }).changes).toEqual({});
+    expect(formChanges([secret], { apiKey: "sk-stored" }, { apiKey: "sk-new" }).changes).toEqual({ apiKey: "sk-new" });
+  });
+
+  it("confirmation dialogs are dialogs with a title and the safe choice first", () => {
+    const html = renderToStaticMarkup(createElement(ConfirmDialog, { title: "Reset Aria's life?", cancelLabel: "Keep", confirmLabel: "Reset", onCancel: () => undefined, onConfirm: () => undefined, children: "text" }));
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toMatch(/aria-labelledby="([^"]+)"[\s\S]*id="\1"/u);
+    expect(html.indexOf("Keep")).toBeLessThan(html.indexOf("Reset<"));
+    // The forget panel's id field has a label.
+    expect(renderToStaticMarkup(createElement(ForgetPersonPanel))).toMatch(/<label[^>]*for="([^"]+)"[\s\S]*<input[^>]*id="\1"/u);
+  });
+});
+

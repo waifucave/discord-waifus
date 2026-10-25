@@ -95,11 +95,45 @@ export function when(iso: string | null | undefined): string {
   return sameDay ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-/** A place key as people read it; a DM never shows who it is with. */
-export function placeLabel(placeKey: string | undefined): string {
-  if (!placeKey) return "";
-  if (placeKey.startsWith("dm_") || placeKey.startsWith("dm/")) return "a DM";
-  return placeKey;
+/**
+ * A place as people read it: her handle for a room (`bake-club/#general`, logged with the event),
+ * "a DM" for a private chat (never who it is with), "a channel" when only a raw key is known.
+ */
+export function placeLabel(placeKey: string | undefined, handle?: string): string {
+  if (!placeKey && !handle) return "";
+  if (placeKey?.startsWith("dm_") || placeKey?.startsWith("dm/") || handle?.toLowerCase().startsWith("dm/")) return "a DM";
+  if (handle) return handle;
+  return placeKey && /^(g|t)_/u.test(placeKey) ? "a channel" : (placeKey ?? "");
+}
+
+/**
+ * A response that answers the reveal toggle as it is now: a page fetched with private content is
+ * never shown once the toggle is off (and a stale one stays hidden if the refetch fails).
+ */
+export function matchingReveal<T extends { includePrivate: boolean }>(data: T | undefined, includePrivate: boolean): T | undefined {
+  return data && data.includePrivate === includePrivate ? data : undefined;
+}
+
+/**
+ * Older pages and the live page as one timeline by `seq`, with no line twice. `gap`: the live page
+ * no longer reaches the older lines (more lines arrived than one page holds), so the older ones
+ * should be dropped rather than shown with a hole.
+ */
+export function mergeTimeline(older: readonly LifeLogLineView[], page: readonly LifeLogLineView[]): { lines: LifeLogLineView[]; gap: boolean } {
+  if (older.length === 0) return { lines: [...page], gap: false };
+  const firstLive = page[0]?.seq;
+  const lastOlder = older[older.length - 1]!.seq;
+  if (firstLive !== undefined && firstLive > lastOlder + 1) return { lines: [...page], gap: true };
+  const bySeq = new Map<number, LifeLogLineView>();
+  for (const line of older) bySeq.set(line.seq, line);
+  for (const line of page) bySeq.set(line.seq, line);
+  return { lines: [...bySeq.values()].sort((a, b) => a.seq - b.seq), gap: false };
+}
+
+/** Every waifu's status that answered: one failing life never blanks the others. */
+export async function settledAll<T>(work: ReadonlyArray<Promise<T>>): Promise<T[]> {
+  const results = await Promise.allSettled(work);
+  return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
 }
 
 export type CastEvent = { at: string; waifuId: string; kind: "sent" | "woke" | "reacted" | "turn"; text: string };
@@ -111,7 +145,7 @@ export function castEvents(logs: LogsResponse | undefined, limit = 12): CastEven
     const context = (entry.context && typeof entry.context === "object" ? entry.context : {}) as Record<string, unknown>;
     if (context["category"] !== "life" || typeof context["waifuId"] !== "string") continue;
     const waifuId = context["waifuId"];
-    const place = placeLabel(typeof context["placeKey"] === "string" ? context["placeKey"] : undefined);
+    const place = placeLabel(typeof context["placeKey"] === "string" ? context["placeKey"] : undefined, typeof context["place"] === "string" ? context["place"] : undefined);
     if (entry.message === "Life message sent") out.push({ at: entry.time, waifuId, kind: "sent", text: `sent a message${place ? ` in ${place}` : ""}` });
     else if (entry.message === "Life reaction added") out.push({ at: entry.time, waifuId, kind: "reacted", text: `reacted${place ? ` in ${place}` : ""}` });
     else if (entry.message === "Life turn started") {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
 import type { AppConfig, HelpKey, HelpTopic } from "../api/types";
@@ -33,6 +33,7 @@ export function RegistryForm({
   columns?: number;
 }) {
   const help = useApi<HelpTopic>((s) => api.help(topic, s), [topic]);
+  const formId = useId();
   const remote = useClientContext().mode === "remote";
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -78,27 +79,39 @@ export function RegistryForm({
           <Notice tone={message.tone}>{message.text}</Notice>
         </div>
       )}
-      <div className="fgrid" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+      <div className={`fgrid cols-${columns}`}>
         {keys.map((key) => {
           const stored = getPath(config, key.path);
           const text = drafts[key.path] ?? formText(key, stored);
           const locked = remote && key.flags.includes("localOnlyWrite");
           const set = (value: string) => setDrafts((current) => ({ ...current, [key.path]: value }));
           const label = key.path.split(".").slice(-1)[0];
+          const secret = key.flags.includes("secret");
+          const inputId = `${formId}-${key.path}`;
+          const hintId = `${inputId}-hint`;
+          const error = errors[key.path];
           return (
             <div className="fcell" key={key.path} title={key.cli[1] ?? key.cli[0]}>
-              <label className="field-label">
+              <label className="field-label" htmlFor={inputId}>
                 {label}
                 {key.unit ? ` (${key.unit})` : ""}
                 {key.path in changes ? " •" : ""}
               </label>
               {key.type === "boolean" ? (
                 <label className="checkbox-chip">
-                  <input type="checkbox" disabled={locked} checked={text === "true"} onChange={(e) => set(e.target.checked ? "true" : "false")} />
+                  <input
+                    id={inputId}
+                    type="checkbox"
+                    aria-label={key.path}
+                    aria-describedby={hintId}
+                    disabled={locked}
+                    checked={text === "true"}
+                    onChange={(e) => set(e.target.checked ? "true" : "false")}
+                  />
                   {text === "true" ? "On" : "Off"}
                 </label>
               ) : key.type === "enum" ? (
-                <select className="select" disabled={locked} value={text} onChange={(e) => set(e.target.value)}>
+                <select id={inputId} aria-describedby={hintId} className="select" disabled={locked} value={text} onChange={(e) => set(e.target.value)}>
                   {(key.enum ?? []).map((option) => (
                     <option key={option} value={option}>
                       {option}
@@ -106,31 +119,50 @@ export function RegistryForm({
                   ))}
                 </select>
               ) : key.type === "string-list" || key.type === "json" ? (
-                <textarea className="textarea" rows={Math.min(8, Math.max(3, text.split("\n").length))} disabled={locked} value={text} onChange={(e) => set(e.target.value)} />
+                <textarea
+                  id={inputId}
+                  aria-describedby={hintId}
+                  className="textarea"
+                  rows={Math.min(8, Math.max(3, text.split("\n").length))}
+                  disabled={locked}
+                  value={text}
+                  onChange={(e) => set(e.target.value)}
+                />
               ) : (
                 <input
+                  id={inputId}
+                  aria-describedby={hintId}
+                  aria-invalid={error ? true : undefined}
                   className="input"
                   disabled={locked}
-                  type={key.type === "integer" || key.type === "number" ? "number" : "text"}
+                  type={secret ? "password" : key.type === "integer" || key.type === "number" ? "number" : "text"}
+                  autoComplete={secret ? "new-password" : undefined}
                   min={key.min}
                   max={key.max}
                   step={key.type === "integer" ? 1 : "any"}
-                  placeholder={key.nullable ? "none" : key.default !== undefined ? String(key.default) : ""}
+                  // An emptied field must look empty: the default is in the hint, never a placeholder.
+                  placeholder={secret ? "(write-only: type a new value to replace it)" : key.nullable || key.flags.includes("nullUnset") ? "none" : ""}
                   value={text}
                   onChange={(e) => set(e.target.value)}
                 />
               )}
-              <span className="field-hint" style={errors[key.path] ? { color: "var(--danger)" } : undefined}>
-                {errors[key.path] ?? key.help}
-                {!errors[key.path] && key.default !== undefined && key.type !== "string-list" ? ` Default ${JSON.stringify(key.default)}.` : ""}
-                {locked ? " Change it on the host itself." : key.applies === "restart" ? " Applies at the next start." : ""}
-              </span>
+              {error ? (
+                <span id={hintId} className="field-error" role="alert">
+                  {error}
+                </span>
+              ) : (
+                <span id={hintId} className="field-hint">
+                  {key.help}
+                  {key.default !== undefined && key.type !== "string-list" && !secret ? ` Default ${JSON.stringify(key.default)}.` : ""}
+                  {locked ? " Change it on the host itself." : key.applies === "restart" ? " Applies at the next start." : ""}
+                </span>
+              )}
             </div>
           );
         })}
         {/* fill the last row so no ink shows through */}
         {Array.from({ length: (columns - (keys.length % columns)) % columns }, (_, index) => (
-          <div className="fcell" key={`pad-${index}`} />
+          <div className="fcell pad" key={`pad-${index}`} aria-hidden="true" />
         ))}
       </div>
     </div>

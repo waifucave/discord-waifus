@@ -601,7 +601,7 @@ function DetectorTab() {
           Off: a first message in 10 minutes or a question wakes one waifu at random. A server can override this in Rooms.
         </span>
       </div>
-      <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr 140px", flex: "none" }}>
+      <div className="fgrid pair-action" style={{ flex: "none" }}>
         <div className="fcell">
           <label className="field-label">Detector</label>
           <select className="select" value={known || value === "" ? value : "__custom__"} onChange={(e) => setDraft(e.target.value === "__custom__" ? value : e.target.value)}>
