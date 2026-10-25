@@ -10,6 +10,7 @@ import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { homeStoreFor } from "./home/index.js";
+import { PLACES_FILE } from "./home/pathRules.js";
 import { appendMaintenanceReport } from "./lifeStore.js";
 import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
@@ -128,9 +129,10 @@ export async function runNotesSession(
   return { rounds, changed: changedPaths(before, after), summary: summary.slice(0, 500), ok: true };
 }
 
+/** What she changed: places.md is the app's to rewrite (she can't), so a refresh during the session isn't hers. */
 function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
-  return [...paths].filter((path) => before.get(path) !== after.get(path)).sort();
+  return [...paths].filter((path) => path !== PLACES_FILE && before.get(path) !== after.get(path)).sort();
 }
 
 /** The nightly session plus its report line. */

@@ -232,11 +232,12 @@ describe("Bash's memory watchdog (review C1)", () => {
   it("stops a command whose memory grows past life.bash.maxMemoryMb; nothing is saved", async () => {
     const w = await lifeWorld(roots, { config: (config) => ({ ...config, life: { ...config.life, bash: { ...config.life.bash, maxMemoryMb: 128 } } }) });
     const ctx = await ctxFor(w);
+    // sqlite3 is not one of her commands. Checked first: the watchdog measures the whole process,
+    // and memory the stopped command below used can take a moment to be given back.
+    expect(text(await run("Bash", { command: "sqlite3 :memory: 'select 1'" }, ctx))).toMatch(/sqlite3: command not (found|available)/u);
     const result = await run("Bash", { command: `echo before > ~/kept.md; python3 -c "\nimport time\nb = b'x' * (400 * 1024 * 1024)\ntime.sleep(20)\n"`, timeout_ms: 60_000 }, ctx);
     expect(text(result)).toBe("error: the command used too much memory and was stopped; nothing was saved");
     expect(await herFile(w, "ella", "home/kept.md")).toBeUndefined();
-    // sqlite3 is not one of her commands.
-    expect(text(await run("Bash", { command: "sqlite3 :memory: 'select 1'" }, ctx))).toMatch(/sqlite3: command not (found|available)/u);
   }, 90_000);
 });
 

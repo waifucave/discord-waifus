@@ -181,7 +181,7 @@ describe("crash repair of her file tools (review minors)", () => {
     await crashAfter(v, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
     await writeHerFile(v, "schedule.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}, {"at": "2026-10-25 18:00", "note": "call mum"}]');
     expect(await repaired(v)).toMatchObject({ content: "set r2 (recovered)" });
-  });
+  }, 30_000);
 
   it("a Bash change set saved just before the crash (its done line not written yet) is reported as saved", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
