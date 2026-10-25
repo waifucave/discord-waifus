@@ -2,7 +2,7 @@ import { access, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureDataLayout } from "../src/config/layout.js";
-import { PREBUILT_WAIFUS } from "../src/config/prebuiltWaifus.js";
+import { PREBUILT_BIO_MAX_CHARS, PREBUILT_WAIFUS } from "../src/config/prebuiltWaifus.js";
 import { DATA_ROOT_ENV, getDataRoot } from "../src/config/paths.js";
 import { loadAppConfig } from "../src/config/appConfig.js";
 import { redactSecrets } from "../src/backend/redaction.js";
@@ -254,6 +254,45 @@ describe("data root and config", () => {
     await rm(path.join(root, "user", "waifus", first.id), { recursive: true, force: true });
     await ensureDataLayout(root);
     await expect(access(firstPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("seeds the whole default cast with her Discord bio and username (Living cast §17)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+
+    const marker = JSON.parse(await readFile(path.join(root, "user", "waifus", ".prebuilt-seed.json"), "utf8"));
+    expect(marker.waifuIds).toEqual(PREBUILT_WAIFUS.map((waifu) => waifu.id));
+    for (const waifu of PREBUILT_WAIFUS) {
+      const seeded = JSON.parse(await readFile(path.join(root, "user", "waifus", waifu.id, "waifu.json"), "utf8"));
+      expect(seeded.persona).toBe(waifu.persona);
+      expect(seeded.verbosity).toBe(waifu.verbosity);
+      expect(seeded.bio).toBe(waifu.bio);
+      expect(seeded.username).toBe(waifu.username);
+    }
+  });
+
+  it("ships twenty distinct default waifus with valid bios and Discord usernames", () => {
+    expect(PREBUILT_WAIFUS).toHaveLength(20);
+    const ids = PREBUILT_WAIFUS.map((waifu) => waifu.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const initials = PREBUILT_WAIFUS.map((waifu) => waifu.name[0]);
+    expect(new Set(initials).size).toBe(initials.length);
+    for (const waifu of PREBUILT_WAIFUS) {
+      expect(waifu.id).toBe(waifu.name.toLowerCase());
+      expect(waifu.name).toMatch(/^[A-Z][a-z]{2,}$/);
+      const words = waifu.persona.split(/\s+/).length;
+      expect(words, waifu.id).toBeGreaterThanOrEqual(120);
+      expect(words, waifu.id).toBeLessThanOrEqual(220);
+      expect(waifu.bio && [...waifu.bio].length, waifu.id).toBeLessThanOrEqual(PREBUILT_BIO_MAX_CHARS);
+      expect(waifu.bio?.trim(), waifu.id).toBeTruthy();
+      const username = waifu.username ?? "";
+      expect([...username].length, waifu.id).toBeGreaterThanOrEqual(2);
+      expect([...username].length, waifu.id).toBeLessThanOrEqual(32);
+      expect(username).toBe(username.trim());
+      expect(username).not.toMatch(/[@#:]|```|discord|clyde|everyone|here/i);
+      expect(WaifuConfigSchema.parse({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: "2026-10-25T00:00:00.000Z", ...waifu }).availability).toEqual(waifu.availability);
+    }
   });
 
   it("redacts known secret fields and token-like strings", () => {

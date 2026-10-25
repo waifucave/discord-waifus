@@ -1262,6 +1262,46 @@ them):
 >   tools, `/api/llm/*`, and the slash commands `/run`, `/stop`, `/review`, `/memories`,
 >   `/console`, `/clear`, `/debug`.
 
+### 11.5 Default cast
+
+A new data root is seeded once with twenty editable waifus (`src/config/prebuiltWaifus.ts`, written
+by `seedPrebuiltWaifusOnce` in `src/config/layout.ts`; owner revision 2026-10-25, replacing the
+earlier four Lumi, Nox, Mira and Riko). The marker `user/waifus/.prebuilt-seed.json` stops any
+later seeding: an existing install keeps whatever it was seeded with, edited or deleted, and an
+upgrade never adds, replaces or removes a waifu. A seeded waifu has no model and no bot until the
+owner gives her one.
+
+| Name | In one line | Verbosity | Sleep |
+|---|---|---|---|
+| Alma | hype friend who remembers birthdays and turns a dead chat into a plan | expressive | 00:30–08:30 |
+| Bex | competitive gamer who keeps score of everything | terse | 02:00–10:00 |
+| Cleo | history PhD student who argues for sport | chatty | 00:00–08:00 |
+| Dinah | café cook who asks whether you've eaten | chatty | 22:30–06:30 |
+| Elodie | library assistant matching people to books | chatty | 23:30–07:30 |
+| Faye | dawn birdwatcher, goofy about her life list | chatty | 21:30–05:30 |
+| Gigi | pet-shop gremlin with an animal fact for everything | expressive | 03:00–11:00 |
+| Hana | shy illustrator who opens up in DMs | terse | 00:00–08:00 |
+| Ines | unhurried gardener and houseplant doctor | chatty | 23:00–07:00 |
+| Juno | physics student who knows what's in tonight's sky | chatty | 01:00–09:00 |
+| Kiyo | dry coder and keyboard tinkerer | terse | 02:30–10:30 |
+| Lumi | soft-spoken night owl who collects folklore | chatty | 05:00–13:00 |
+| Maren | indie bassist who answers moods with songs | chatty | 01:30–09:30 |
+| Nell | night-shift nurse, brisk and kind | terse | 08:30–16:00 |
+| Odette | poised pianist with a polite, sharp wit | chatty | 23:00–07:30 |
+| Pippa | community-theater kid who casts the chat in her bits | expressive | 01:00–09:00 |
+| Romy | runner and climber who follows up on goals | terse | 22:00–06:00 |
+| Sadie | thrifter and reality-TV commentator | expressive | 01:00–09:30 |
+| Tamsin | blunt, kind potter | terse | 00:30–08:30 |
+| Vera | deadpan accountant who does the math | terse | 23:30–07:00 |
+
+Each has a persona in the third person (who she is, how she talks in rooms and DMs, what she
+follows up on, how she treats quiet people, what she won't do), a verbosity, a sleep window and up to
+two busy blocks, spread across the day so the cast never goes quiet at once. Names have distinct
+first letters and none is a common word, so `wakeOnName` stays on. Each entry also carries a `bio`
+(Discord "About Me", ≤190 characters) and a styled Discord `username` (2–32 characters, Discord's
+username rules); the seeder writes both into `waifu.json` (her `bio` and `username`, synced to her
+own bot, §17), and `name` stays the plain name used in prompts, name wakes and the detector.
+
 ## 12. Testing and acceptance
 
 - **Fakes**: a Node fake `ProviderAdapter` implementing `streamTurn` with scripted events (winter's

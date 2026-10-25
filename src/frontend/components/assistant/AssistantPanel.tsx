@@ -344,8 +344,8 @@ export function AssistantPanel({
       <div className="cell nbody" ref={scrollRef}>
         {chat.items.length === 0 && !chat.error && (
           <div className="hint">
-            Ask about your setup, or tell me to change it — "create a character named Momo", "which channels is Riko
-            in?", "switch Riko to a cheaper model". Changes apply immediately.
+            Ask about your setup, or tell me to change it — "create a character named Momo", "which channels is Juno
+            in?", "switch Juno to a cheaper model". Changes apply immediately.
           </div>
         )}
         {chat.items.map((item, index) => {
