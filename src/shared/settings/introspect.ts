@@ -128,7 +128,7 @@ export function mergePatches(a: Record<string, unknown>, b: Record<string, unkno
   return out;
 }
 
-function describeLeaf(schema: unknown): Pick<KeyInfo, "type" | "enum" | "min" | "max" | "maxLength" | "nullable"> {
+function describeLeaf(schema: unknown): Pick<KeyInfo, "type" | "enum" | "min" | "minExclusive" | "max" | "maxLength" | "nullable"> {
   const { node, nullable } = settle(schema);
   const d = def(node);
   const bag = (node as Node)._zod.bag ?? {};
@@ -136,10 +136,17 @@ function describeLeaf(schema: unknown): Pick<KeyInfo, "type" | "enum" | "min" | 
     case "boolean":
       return { type: "boolean", nullable };
     case "number": {
+      const exclusive = typeof bag["minimum"] !== "number" && typeof bag["exclusiveMinimum"] === "number";
       const min = typeof bag["minimum"] === "number" ? (bag["minimum"] as number) : typeof bag["exclusiveMinimum"] === "number" ? (bag["exclusiveMinimum"] as number) : undefined;
       const max = typeof bag["maximum"] === "number" ? (bag["maximum"] as number) : undefined;
       const integer = bag["format"] === "safeint" || bag["format"] === "int32";
-      return { type: integer ? "integer" : "number", nullable, ...(min !== undefined && Number.isFinite(min) && Math.abs(min) < 1e15 ? { min } : {}), ...(max !== undefined && Number.isFinite(max) && Math.abs(max) < 1e15 ? { max } : {}) };
+      const hasMin = min !== undefined && Number.isFinite(min) && Math.abs(min) < 1e15;
+      return {
+        type: integer ? "integer" : "number",
+        nullable,
+        ...(hasMin ? { min, ...(exclusive ? { minExclusive: true as const } : {}) } : {}),
+        ...(max !== undefined && Number.isFinite(max) && Math.abs(max) < 1e15 ? { max } : {})
+      };
     }
     case "string":
       return { type: "string", nullable, ...(typeof bag["maxLength"] === "number" ? { maxLength: bag["maxLength"] as number } : {}) };
@@ -258,6 +265,7 @@ export function coerceValue(info: KeyInfo, raw: string): Coerced {
         const value = Number(text);
         if (!text || !Number.isFinite(value)) return { ok: false, error: `${info.id} is a number` };
         if (info.type === "integer" && !Number.isInteger(value)) return { ok: false, error: `${info.id} is a whole number` };
+        if (info.min !== undefined && info.minExclusive && value <= info.min) return { ok: false, error: `${info.id} is more than ${info.min}` };
         if (info.min !== undefined && value < info.min) return { ok: false, error: `${info.id} is at least ${info.min}` };
         if (info.max !== undefined && value > info.max) return { ok: false, error: `${info.id} is at most ${info.max}` };
         return { ok: true, value };
@@ -284,7 +292,12 @@ export function coerceValue(info: KeyInfo, raw: string): Coerced {
 
 /** A short type label for help (`integer 1–30`, `enum terse|chatty|expressive`). */
 export function typeLabel(info: KeyInfo): string {
-  const range = info.min !== undefined || info.max !== undefined ? ` ${info.min ?? ""}–${info.max ?? ""}` : "";
+  const range =
+    info.min !== undefined && info.minExclusive && info.max === undefined
+      ? ` >${info.min}`
+      : info.min !== undefined || info.max !== undefined
+        ? ` ${info.minExclusive ? ">" : ""}${info.min ?? ""}–${info.max ?? ""}`
+        : "";
   const base =
     info.type === "enum"
       ? `one of ${info.enum?.join(" | ")}`

@@ -74,6 +74,8 @@ export type KeyInfo = {
   type: "boolean" | "integer" | "number" | "string" | "enum" | "string-list" | "json";
   enum?: string[];
   min?: number;
+  /** `min` itself is not allowed (a positive amount: more than 0). */
+  minExclusive?: true;
   max?: number;
   maxLength?: number;
   nullable: boolean;

@@ -45,7 +45,7 @@ export function keyHelpJson(group: SettingGroup, info: KeyInfo) {
     type: info.type,
     typeLabel: typeLabel(info),
     ...(info.enum ? { enum: info.enum } : {}),
-    ...(info.min !== undefined ? { min: info.min } : {}),
+    ...(info.min !== undefined ? { min: info.min, ...(info.minExclusive ? { minExclusive: true } : {}) } : {}),
     ...(info.max !== undefined ? { max: info.max } : {}),
     ...(info.maxLength !== undefined ? { maxLength: info.maxLength } : {}),
     nullable: info.nullable || info.flags.nullIsValue === true,

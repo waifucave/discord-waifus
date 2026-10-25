@@ -375,6 +375,8 @@ export type HelpKey = {
   typeLabel: string;
   enum?: string[];
   min?: number;
+  /** `min` itself is not allowed (more than it). */
+  minExclusive?: true;
   max?: number;
   maxLength?: number;
   nullable: boolean;

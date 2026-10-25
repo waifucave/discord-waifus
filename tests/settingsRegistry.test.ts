@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { ROUTE_POLICY_MANIFEST } from "../src/api/routePolicyManifest.js";
 import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
-import { allKeyInfos, coerceValue, findKey, groupKeyInfos, schemaAt, schemaLeaves, getPath } from "../src/shared/settings/introspect.js";
+import { allKeyInfos, coerceValue, findKey, groupKeyInfos, schemaAt, schemaLeaves, getPath, typeLabel } from "../src/shared/settings/introspect.js";
 import { RESOURCE_TOPICS, SETTING_GROUPS } from "../src/shared/settings/registry.js";
 
 const manifest = new Set(ROUTE_POLICY_MANIFEST.map((route) => `${route.method} ${route.path}`));
@@ -48,6 +48,26 @@ describe("settings registry", () => {
     for (const info of groupKeyInfos(SETTING_GROUPS.find((group) => group.id === "app")!)) {
       expect(info.default, info.id).toEqual(getPath(DEFAULT_APP_CONFIG, info.path));
     }
+  });
+
+  it("a numeric key's bounds are the schema's: the CLI accepts exactly what the schema accepts at each edge (review r2)", () => {
+    const exclusive: string[] = [];
+    for (const info of allKeyInfos()) {
+      if (info.type !== "integer" && info.type !== "number") continue;
+      const group = SETTING_GROUPS.find((candidate) => candidate.id === info.group)!;
+      const leaf = schemaAt(group.schema, info.path) as { safeParse: (value: unknown) => { success: boolean } };
+      if (info.min !== undefined) {
+        expect(leaf.safeParse(info.min).success, `${info.id} min`).toBe(!info.minExclusive);
+        expect(coerceValue(info, String(info.min)).ok, `${info.id} min`).toBe(!info.minExclusive);
+        if (info.minExclusive) exclusive.push(info.id);
+      }
+      if (info.max !== undefined) {
+        expect(leaf.safeParse(info.max).success, `${info.id} max`).toBe(true);
+        expect(coerceValue(info, String(info.max)).ok, `${info.id} max`).toBe(true);
+      }
+    }
+    expect(exclusive).toEqual(expect.arrayContaining(["app.models.maxOutputUsdPerMTok", "waifu.life.dailyBudgetUsd"]));
+    expect(typeLabel(findKey("waifu.life.dailyBudgetUsd")!)).toBe("number >0–10000 or null [USD]");
   });
 
   it("covers the Living cast keys (§11.3) with their bounds", () => {

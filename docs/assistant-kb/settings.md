@@ -45,7 +45,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `discord.debounce.dmMaxWaitMs` | integer 0–300000 [ms] | `180000` | A DM wakes her after at most this long, however often the person keeps writing. |
 | `discord.dm.resumeWindowMinutes` | integer 0–1440 [minutes] | `60` | At start, messages that arrived while the host was down wake her only when they are at most this old (older ones stay readable). |
 | `models.allowed` | list of strings | `["meta/muse-spark-1.3-contributor","openrouter/meta/muse-spark-1.3-contributor","anthropic/claude-haiku-5-5","openrouter/anthropic/claude-haiku-5.5","anthropic/claude-sonnet-5-5","openrouter/anthropic/claude-sonnet-5.5","deepseek/deepseek-flash","openrouter/deepseek/deepseek-v4.1-flash","openai/gpt-6-luna","openrouter/openai/gpt-6-luna","openai/gpt-6.1-sol","openrouter/openai/gpt-6.1-sol"]` | The curated model routes waifus and the assistant may use (winter route keys such as anthropic/claude-sonnet-5-5). Routes the installed catalog lacks are hidden. |
-| `models.maxOutputUsdPerMTok` | number 0–10 [USD] | `10` | Routes above this output price per million tokens are hidden (at most 10). |
+| `models.maxOutputUsdPerMTok` | number >0–10 [USD] | `10` | Routes above this output price per million tokens are hidden (at most 10). |
 | `life.maxConcurrentTurns` | integer 1–16 | `4` | How many lives may run a turn at the same time on this host. |
 | `life.maxToolRounds` | integer 1–30 | `12` | A turn ends after this many model calls. |
 | `life.maxTurnMs` | integer 30000–600000 [ms] | `180000` | A turn ends after this long. |
@@ -104,7 +104,7 @@ Target `waifu:<waifuId>` (e.g. `waifu:aria`) · stored in `user/waifus/<waifuId>
 | `customInstructions` | string | `""` | Extra instructions added to her prompt (at most 4000 characters). |
 | `scheduleInPrompt` | boolean | `true` | Tell her about her schedule (sleep and busy blocks) in her prompt. |
 | `wakeOnName` | boolean | `true` | Her name, display name or server nickname in a message wakes her (turn off for names that are common words). |
-| `life.dailyBudgetUsd` | number 0–10000 or null [USD] | `null` | Her spending limit per local day in USD; when reached, wakes wait for the next day (the owner's wakes still go through). null = no budget. |
+| `life.dailyBudgetUsd` | number >0–10000 or null [USD] | `null` | Her spending limit per local day in USD; when reached, wakes wait for the next day (the owner's wakes still go through). null = no budget. |
 | `dm.allowDms` | boolean | `false` | Accept DMs on her own bot (she must be the only enabled waifu on it and have a model). |
 | `dm.rateLimit` | JSON or null | `{"maxReplies":30,"windowMinutes":60}` | Replies per person per window: {maxReplies, windowMinutes}; null = unlimited. |
 | `dm.notifyWhenLimited` | boolean | `true` | Send the limit notice once when a person reaches the limit. |

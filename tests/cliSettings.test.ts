@@ -10,6 +10,7 @@ import type { HostRequest, HostTransport } from "../src/cli/hostClient.js";
 import { ADAPTERS } from "../src/cli/settingsCommands.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { coerceValue, groupKeyInfos } from "../src/shared/settings/introspect.js";
+import type { KeyInfo } from "../src/shared/settings/types.js";
 import { SETTING_GROUPS } from "../src/shared/settings/registry.js";
 import { cli, injectTransport, makeCliApp } from "./cliFixtures.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -36,6 +37,39 @@ afterEach(async () => {
 
 const makeApp = () => makeCliApp(roots, apps);
 
+/** Keys whose example is their default and whose type gives no other value to try. */
+const NON_DEFAULT: Record<string, string> = {
+  "app.http.host": "127.0.0.2",
+  "app.detector.target": "laya:english",
+  "waifu.availability.sleep.start": "22:15",
+  "waifu.availability.sleep.end": "06:45",
+  "waifu.dm.rateLimit": '{"maxReplies":12,"windowMinutes":30}'
+};
+
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * A value for the key that is not its default (review: 65 of 92 examples were the default, so a
+ * write the route dropped would still read back "right"): the example when it differs, else one the
+ * key's type and bounds allow.
+ */
+function nonDefaultText(info: KeyInfo): string | undefined {
+  const differs = (text: string | undefined) => {
+    if (text === undefined) return false;
+    const value = coerceValue(info, text);
+    return value.ok && !sameJson(value.value, info.default);
+  };
+  const candidates: Array<string | undefined> = [NON_DEFAULT[info.id], info.example];
+  if (info.type === "boolean") candidates.push(String(!(info.default ?? false)));
+  if (info.type === "enum") candidates.push(...(info.enum ?? []));
+  if (info.type === "integer" || info.type === "number") {
+    const step = info.type === "integer" ? 1 : 0.5;
+    const base = typeof info.default === "number" ? info.default : 0;
+    for (const value of [info.max, info.min !== undefined ? info.min + step : undefined, info.min, base + step]) if (value !== undefined) candidates.push(String(value));
+  }
+  return candidates.find(differs);
+}
+
 /** Remote Access is helper-owned; a small in-memory stand-in with the real route's shapes. */
 function remoteAccessTransport(inner: HostTransport): HostTransport {
   let config = { schemaVersion: 1, revision: "3", updatedAt: "2026-10-24T00:00:00.000Z", enabled: false, displayName: "Host" };
@@ -55,7 +89,7 @@ async function seed(app: FastifyInstance): Promise<void> {
 }
 
 describe("waifus set/get round-trip over the real API", () => {
-  it("every writable key of every group is settable and readable through the CLI and HTTP", async () => {
+  it("every writable key of every group is settable and readable through the CLI and HTTP, with a value other than its default", async () => {
     const { app, root } = await makeApp();
     await seed(app);
     const host = remoteAccessTransport(injectTransport(app));
@@ -68,15 +102,20 @@ describe("waifus set/get round-trip over the real API", () => {
       expect(ADAPTERS[group.id], group.id).toBeDefined();
       for (const info of groupKeyInfos(group)) {
         if (info.flags.readOnly || info.flags.secret) continue;
-        const expected = coerceValue(info, info.example!);
+        const text = nonDefaultText(info);
+        if (text === undefined) {
+          failures.push(`${info.id}: no value other than its default to write (add one to NON_DEFAULT)`);
+          continue;
+        }
+        const expected = coerceValue(info, text);
         if (!expected.ok) {
-          failures.push(`${info.id}: example does not coerce`);
+          failures.push(`${info.id}: ${text} does not coerce`);
           continue;
         }
         const env = group.id === "provider" ? { KEY: "sk-ant-test-0123456789abcdef" } : undefined;
         const set = group.id === "provider"
-          ? await cli(root, host, ["set", target!, "apiKey", `${info.path}=${info.example}`, "--from-env", "KEY"], { env: env! })
-          : await cli(root, host, ["set", target!, info.path, info.example!]);
+          ? await cli(root, host, ["set", target!, "apiKey", `${info.path}=${text}`, "--from-env", "KEY"], { env: env! })
+          : await cli(root, host, ["set", target!, info.path, text]);
         if (set.code !== 0) {
           failures.push(`${info.id}: set exited ${set.code}: ${set.err || set.out}`);
           continue;

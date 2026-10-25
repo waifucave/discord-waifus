@@ -53,6 +53,7 @@ export function parseField(key: HelpKey, raw: string): Parsed {
       const value = Number(text);
       if (!Number.isFinite(value)) return { ok: false, error: "A number." };
       if (key.type === "integer" && !Number.isInteger(value)) return { ok: false, error: "A whole number." };
+      if (key.min !== undefined && key.minExclusive && value <= key.min) return { ok: false, error: `More than ${key.min}.` };
       if (key.min !== undefined && value < key.min) return { ok: false, error: `At least ${key.min}.` };
       if (key.max !== undefined && value > key.max) return { ok: false, error: `At most ${key.max}.` };
       return { ok: true, value };
