@@ -83,3 +83,89 @@ VM, cheap enough to give every session its own, and simply discarded afterwards.
 - GPU absence was checked with `nvidia-smi` and `lspci`; other accelerator types were not
   probed.
 - No benchmarks (CPU, disk or network throughput) were run.
+
+## Default folder tree
+
+What the session user sees on a fresh environment, excluding the cloned repository
+(`/home/user/discord-waifus`). Trailing `/` marks directories, `@` symlinks, `*` executables.
+`/root` is not expanded because it holds credential and tool-config directories, and `/tmp`
+holds session-specific harness logs and sockets, so neither is part of this report.
+
+```
+/
+├── bin -> usr/bin
+├── bin.usr-is-merged/
+├── boot/                  (empty)
+├── container_info.json    (container name only)
+├── dev/
+├── etc/
+├── home/
+│   ├── claude/            (empty)
+│   ├── ubuntu/            (empty, not readable by root's default user)
+│   └── user/
+│       └── discord-waifus/    (the cloned repo; omitted here)
+├── lib -> usr/lib
+├── lib.usr-is-merged/
+├── lib64 -> usr/lib64
+├── lost+found/
+├── media/                 (empty)
+├── mnt/
+│   ├── attach/            (empty)
+│   ├── sandboxing/
+│   │   └── model_tools_env/
+│   ├── skills/
+│   │   ├── examples/
+│   │   └── public/
+│   └── user-data/
+│       ├── outputs/
+│       ├── uploads/
+│       └── working/
+├── nix/
+│   ├── receipt.json
+│   ├── store/
+│   └── var/
+├── old_root/              (empty)
+├── opt/
+│   ├── apache-maven-3.9.11/
+│   ├── claude-code/       (read-only mount of /dev/vdc)
+│   │   └── bin/
+│   ├── cu-desktop/        (computer-use desktop support)
+│   │   ├── computer-mcp/  lib/  skill/  theme/  www/
+│   │   └── cu-desktop*
+│   ├── env-runner/
+│   │   └── environment-manager*
+│   ├── google-cloud-sdk/
+│   ├── gradle -> gradle-8.14.3
+│   ├── gradle-8.14.3/
+│   ├── maven -> apache-maven-3.9.11
+│   ├── node-tools/        (package.json + node_modules/)
+│   ├── node20/  node21/  node22/
+│   ├── nvm/
+│   ├── pw-browsers/       (preinstalled Playwright browsers)
+│   │   ├── chromium -> chromium-1243
+│   │   ├── chromium-1243/
+│   │   ├── chromium_headless_shell-1243/
+│   │   └── ffmpeg-1011/
+│   ├── rbenv/
+│   ├── rclone/            (read-only mount of /dev/vdb, root-only)
+│   ├── rclone-attach/     (root-only)
+│   └── ruby-3.1.6/  ruby-3.2.6/  ruby-3.3.6/
+├── proc/
+├── root/                  (not expanded)
+├── run/
+├── sbin -> usr/sbin
+├── srv/                   (empty)
+├── sys/
+├── tmp/                   (not expanded)
+├── usr/
+│   ├── bin/  games/  include/  lib/  lib64/  libexec/
+│   └── local/  sbin/  share/  src/
+└── var/
+    ├── backups/  cache/  lib/  local/  lock -> ../run/lock
+    └── log/  mail/  opt/  run -> ../run  spool/  tmp/
+```
+
+Notable preinstalled toolchains: Node 20/21/22 (with nvm), Ruby 3.1/3.2/3.3 (rbenv), Maven
+and Gradle (JVM), the Google Cloud SDK, Nix, and Playwright with Chromium. Python and other
+tools live under `/usr`. `/mnt/user-data/{outputs,uploads,working}` and `/mnt/skills` are the
+conventional places for session inputs, outputs and skill definitions.
