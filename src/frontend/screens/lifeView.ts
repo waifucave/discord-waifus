@@ -131,10 +131,21 @@ export function mergeTimeline(older: readonly LifeLogLineView[], page: readonly 
   return { lines: [...bySeq.values()].sort((a, b) => a.seq - b.seq), gap: false };
 }
 
-/** Every waifu's status that answered: one failing life never blanks the others. */
-export async function settledAll<T>(work: ReadonlyArray<Promise<T>>): Promise<T[]> {
+/**
+ * Every waifu's status that answered: one failing life never blanks the others, and one that
+ * failed to refresh keeps its last answer (`previous[i]` for `work[i]`). When every request fails
+ * (the host restarting, Remote Access reconnecting) the refresh fails as a whole, so the screen
+ * keeps what it showed instead of an empty cast.
+ */
+export async function settledAll<T>(work: ReadonlyArray<Promise<T>>, previous: ReadonlyArray<T | undefined> = []): Promise<T[]> {
   const results = await Promise.allSettled(work);
-  return results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (firstFailure && results.every((result) => result.status === "rejected")) throw firstFailure.reason;
+  return results.flatMap((result, index): T[] => {
+    if (result.status === "fulfilled") return [result.value as T];
+    const kept = previous[index];
+    return kept === undefined ? [] : [kept];
+  });
 }
 
 export type CastEvent = { at: string; waifuId: string; kind: "sent" | "woke" | "reacted" | "turn"; text: string };

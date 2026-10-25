@@ -215,6 +215,16 @@ describe("review: dashboard fixes", () => {
     await expect(settledAll([Promise.resolve(1), Promise.reject(new Error("x")), Promise.resolve(3)])).resolves.toEqual([1, 3]);
   });
 
+  it("a refresh that fails keeps the last answer, and one where every life fails keeps the whole cast", async () => {
+    // A brief Remote Access reconnect fails every request at once: that used to answer an empty
+    // list, and Home's "Who is up" lost the whole cast until the next poll.
+    await expect(settledAll([Promise.resolve(1), Promise.reject(new Error("x")), Promise.resolve(3)], [10, 20, 30])).resolves.toEqual([1, 20, 3]);
+    const offline = new Error("NetworkError");
+    await expect(settledAll([Promise.reject(offline), Promise.reject(new Error("y"))], [10, 20])).rejects.toBe(offline);
+    await expect(settledAll([Promise.reject(offline)])).rejects.toBe(offline);
+    await expect(settledAll([])).resolves.toEqual([]);
+  });
+
   it("a cleared custom detector target stays custom (never Off) and cannot be saved empty", () => {
     expect(detectorChoiceOf(undefined)).toEqual({ mode: "inherit", target: "" });
     expect(detectorChoiceOf("")).toEqual({ mode: "off", target: "" });

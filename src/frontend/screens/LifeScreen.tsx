@@ -28,13 +28,25 @@ export function LifeScreen({
 
 /* ================= every life at a glance ================= */
 
-function useLives(cast: WaifuConfig[]) {
+/** Every waifu's status, polled by the caller; a refresh that fails keeps the last answers (`settledAll`). */
+export function useLives(cast: readonly WaifuConfig[]) {
   const ids = cast.map((waifu) => waifu.id).join(",");
+  const last = useRef(new Map<string, LifeStatus>());
   return useApi<LifeStatus[]>(
-    async (signal) => settledAll(cast.map((waifu) => api.life(waifu.id, false, signal))),
+    async (signal) => {
+      const lives = await settledAll(
+        cast.map((waifu) => api.life(waifu.id, false, signal)),
+        cast.map((waifu) => last.current.get(waifu.id))
+      );
+      last.current = new Map(lives.map((life) => [life.waifuId, life]));
+      return lives;
+    },
     [ids]
   );
 }
+
+/** The header's note while a poll is failing and the screen still shows its last answers. */
+export const STALE_NOTE = "last update failed, retrying";
 
 function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
@@ -44,7 +56,7 @@ function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
   const byId = new Map((lives.data ?? []).map((life) => [life.waifuId, life]));
   return (
     <div className="screen">
-      <HeadRow onBack={() => onNavigate("home")} title="Life" sub="what each waifu is doing, live" />
+      <HeadRow onBack={() => onNavigate("home")} title="Life" sub={lives.error && lives.data ? `what each waifu is doing · ${STALE_NOTE}` : "what each waifu is doing, live"} />
       <div className="content">
         {cast.length === 0 && (
           <div className="cell growcell" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
