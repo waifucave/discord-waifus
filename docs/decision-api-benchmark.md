@@ -2,23 +2,29 @@
 
 Status (Living cast, 2026-10-24): the director and its One shot mode are gone. The decision APIs
 now serve one production question, the **addressee detector** (spec
-`docs/specs/2026-10-24-living-cast-design.md` §4.3): who is the newest human message for? The
+`docs/specs/2026-10-24-living-cast-design.md` §4.3): who is the newest message for, and would a
+cast member chime in? The
 `--suite=addressee` run below measures it. Everything after that section is the earlier
 director-era record, kept for its measurements; its "One shot", "orchestrator" and directive
 wording describes code that no longer exists.
 
 ## Addressee detector suite (Living cast)
 
-`scripts/decision-benchmark/addressee.ts` holds 40 hand-labelled synthetic cases over a
+`scripts/decision-benchmark/addressee.ts` holds 60 hand-labelled synthetic cases over a
 three-member cast, in the spec's groups: addressed by name (including a nickname and a name
 shouted on its own line), reply to a waifu (a human answering her last line without naming her),
 human to human (including an instruction-injection line), open question (`anyone`), whole cast
 (`all`: "what can you 3 do", "you three"), follow-up (an unnamed reply or question to the waifu
 who just spoke with that person, including one marked as a Discord reply), link dump (links,
-a bot command, emoji only, a bare laugh after a joke), multilingual (Portuguese, Japanese, Spanish, French, German) and
-ambiguous (several answers accepted). Each request is built by the production
+a bot command, emoji only, a bare laugh after a joke), multilingual (Portuguese, Japanese, Spanish, French, German),
+ambiguous (several answers accepted), stale human (aimed at someone whose last message is 30+
+minutes old: `anyone`), active human (a live exchange between people: `human`), joins in (for
+another person, with the expected `chime_in` answer: the fitting cast member when she is awake,
+`nobody` when she is asleep or busy or nothing invites comment) and waifu author (the newest
+message is a cast member's; she is left out of the cast). Each request is built by the production
 `detectorQuestion` and answered by the production `AddresseeDetector`, so the state, the
-`waifu_<i>`/`human`/`anyone`/`all`/`none` choices, the transport, the answer validation and the Laya
+`waifu_<i>`/`human`/`anyone`/`all`/`none` choices, the `chime_in` question (cast members' availability
+is in the state; only awake ones are offered), the transport, the answer validation and the Laya
 worker are exactly what a life's intake uses. Expected answers, case ids and groups never enter a
 request (`tests/decisionAddressee.test.ts`).
 
@@ -26,15 +32,20 @@ request (`tests/decisionAddressee.test.ts`).
 npm run benchmark:decisions -- --suite=addressee                       # preview, no inference
 npm run benchmark:decisions -- --live --suite=addressee --targets=openrouter:cloudflare/clef,openai:gpt-6-luna
 npm run benchmark:decisions -- --live --suite=addressee --runs=3 --all-openrouter
+npm run benchmark:decisions -- --live --suite=addressee --targets=openrouter:typesafe/jev-1.14 --cases=S01,S02,C01
 ```
 
 Reported per target: exact-choice accuracy (failed calls count as wrong), accuracy of answered
 calls, multi-class Brier score and ECE over the single-answer cases, p50/p95 latency, cost from
-the usage the API reports, accuracy per group, the error codes and the missed cases. `chat:`
+the usage the API reports, accuracy per group, the error codes and the missed cases, and for
+`chime_in` the labelled cases answered right plus any pick of a cast member who is not awake (must
+be 0). `--cases=` runs only the named cases. `chat:`
 targets are not detector targets and are skipped; `laya:` targets need host-local
 `DC_WAIFUS_LAYA_PYTHON` (as in production) and get one unscored warm-up. No private replay
-dataset exists for this suite yet. No live run has been recorded for it; synthetic results would
-not be a guarantee of real-room routing either.
+dataset exists for this suite yet. Recorded live runs (2026-10-25, `openrouter:typesafe/jev-1.14`):
+40/40 on the first 40 cases before the stale-address, chime-in and waifu-author changes, and 60/60
+after them with chime-in 13/13 and no pick of a sleeping or busy member (Brier on the first 40
+went from 0.009 to 0.030). Synthetic results are not a guarantee of real-room routing.
 
 ### One shot integration verification (2026-10-13)
 

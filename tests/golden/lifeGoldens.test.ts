@@ -225,8 +225,8 @@ describe("Living cast goldens", () => {
       now,
       timeZone: "UTC",
       cast: [
-        { waifuId: "ella", names: ["Ella"], persona: ELLA.persona },
-        { waifuId: "mina", names: ["Mina", "Minamina"], persona: "Mina is dry, direct and secretly sentimental." }
+        { waifuId: "ella", names: ["Ella"], persona: ELLA.persona, availability: "awake" },
+        { waifuId: "mina", names: ["Mina", "Minamina"], persona: "Mina is dry, direct and secretly sentimental.", availability: "asleep" }
       ],
       messages: [
         { id: "1300000000000000001", authorKind: "user", name: "Kevin", at: "2026-10-23T22:10:00.000Z", text: "night all" },
@@ -235,8 +235,12 @@ describe("Living cast goldens", () => {
         { id: "1300000000000000004", authorKind: "user", name: "Sam", at: "2026-10-24T13:59:30.000Z", text: "anyway what should i bake for saturday?" }
       ]
     });
-    const criteria = Object.entries(question.questions["addressee"]!.criteria).map(([choice, text]) => `- ${choice}: ${text}`).join("\n");
-    await expect(`=== instructions ===\n${question.questions["addressee"]!.instructions}\n=== choices ===\n${criteria}\n=== state ===\n${question.state}\n`).toMatchFileSnapshot("./__snapshots__/detector-state.txt");
+    const criteria = (name: string) => Object.entries(question.questions[name]!.criteria).map(([choice, text]) => `- ${choice}: ${text}`).join("\n");
+    await expect(
+      `=== instructions ===\n${question.questions["addressee"]!.instructions}\n=== choices ===\n${criteria("addressee")}\n` +
+        `=== chime_in instructions ===\n${question.questions["chime_in"]!.instructions}\n=== chime_in choices ===\n${criteria("chime_in")}\n` +
+        `=== state ===\n${question.state}\n`
+    ).toMatchFileSnapshot("./__snapshots__/detector-state.txt");
   });
 
   it("the WebFetch digest prompt", async () => {

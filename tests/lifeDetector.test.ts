@@ -22,6 +22,24 @@ describe("detector question (§4.3)", () => {
     expect(state.cast[0]!.persona).toHaveLength(300);
   });
 
+  it("asks chime_in for awake cast members only, unless the room's interval says no; shows availability and minutesAgo", () => {
+    const cast: DetectorCastMember[] = [
+      { ...member(0), availability: "awake" },
+      { ...member(1), availability: "asleep" },
+      { ...member(2), availability: "busy" },
+      { ...member(3), availability: "awake" }
+    ];
+    const asked = detectorQuestion({ target: "openai:gpt-6-luna", now: NOW, timeZone: "UTC", cast, messages: [message(1)] });
+    expect(Object.keys(asked.questions)).toEqual(["addressee", "chime_in"]);
+    expect(Object.keys(asked.questions["chime_in"]!.criteria)).toEqual(["waifu_0", "waifu_3", "nobody"]);
+    const state = JSON.parse(asked.state) as { cast: Array<{ availability: string }>; chronologicalChat: Array<{ minutesAgo: number }> };
+    expect(state.cast.map((entry) => entry.availability)).toEqual(["awake", "asleep", "busy", "awake"]);
+    expect(state.chronologicalChat[0]!.minutesAgo).toBe(29);
+    expect(Object.keys(detectorQuestion({ target: "openai:gpt-6-luna", now: NOW, timeZone: "UTC", cast, messages: [message(1)], chimeIn: false }).questions)).toEqual(["addressee"]);
+    const nobodyAwake = cast.map((entry) => ({ ...entry, availability: "asleep" as const }));
+    expect(Object.keys(detectorQuestion({ target: "openai:gpt-6-luna", now: NOW, timeZone: "UTC", cast: nobodyAwake, messages: [message(1)] }).questions)).toEqual(["addressee"]);
+  });
+
   it("marks a Discord reply with the name of the author it answers, and nothing else", () => {
     const messages: DetectorMessage[] = [message(1), { ...message(2), replyTo: "Mira" }];
     const chat = JSON.parse(detectorQuestion({ target: "openai:gpt-6-luna", now: NOW, timeZone: "UTC", cast: [member(0)], messages }).state).chronologicalChat as Array<Record<string, unknown>>;

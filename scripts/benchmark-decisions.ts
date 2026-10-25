@@ -15,7 +15,7 @@ import { CASES, RUBRICS } from "./decision-benchmark/cases.js";
 import { replayCases } from "./decision-benchmark/replay.js";
 import { LOOP_CASES, LOOP_RUBRICS, lexicalLoopBaseline, loopReplayCases, summarizeLoops } from "./decision-benchmark/loops.js";
 import { QUESTION_NAMES, isPredicateOnlyTarget, parseAnswers, requestBody, selectBenchmarkTargets, summarize, type Result } from "./decision-benchmark/core.js";
-import { ADDRESSEE_CASES, addresseeQuestion, expectedChoices, summarizeAddressee, type AddresseeResult } from "./decision-benchmark/addressee.js";
+import { ADDRESSEE_CASES, addresseeQuestion, expectedChimeChoices, expectedChoices, notAwakeChoices, summarizeAddressee, type AddresseeResult } from "./decision-benchmark/addressee.js";
 import { AddresseeDetector } from "../src/life/detector/decider.js";
 import { decisionRequest } from "../src/life/detector/protocol.js";
 import type { UsageLedger, UsageLedgerLine } from "../src/orchestration/usageLedger.js";
@@ -284,7 +284,10 @@ async function addresseeSuite(): Promise<void> {
   const runs = Number(value("runs", "1"));
   const limit = Number(value("limit", String(ADDRESSEE_CASES.length)));
   if (!Number.isInteger(runs) || runs < 1 || runs > 10 || !Number.isInteger(limit) || limit < 1 || limit > ADDRESSEE_CASES.length) throw new Error("invalid_run_limits");
-  const cases = ADDRESSEE_CASES.slice(0, limit);
+  // `--cases=S01,C01`: only these cases (iterating on wording without rerunning the whole suite).
+  const only = value("cases", "").split(",").filter(Boolean);
+  if (only.some((id) => !ADDRESSEE_CASES.some((sample) => sample.id === id))) throw new Error("unknown_case");
+  const cases = (only.length > 0 ? ADDRESSEE_CASES.filter((sample) => only.includes(sample.id)) : ADDRESSEE_CASES).slice(0, limit);
   const concurrency = Number(value("concurrency", "3"));
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error("invalid_concurrency");
   const requested = value("targets", "openai:gpt-6-luna,openrouter:cloudflare/clef,laya:english,laya:multilingual,laya:typed-decisions").split(",");
@@ -305,7 +308,7 @@ async function addresseeSuite(): Promise<void> {
     return;
   }
   const report = {
-    generatedAt: new Date().toISOString(), protocol: "addressee-detector-v1", dataset: "synthetic-addressee-v1",
+    generatedAt: new Date().toISOString(), protocol: "addressee-detector-v2", dataset: "synthetic-addressee-v2",
     datasetSha256: createHash("sha256").update(JSON.stringify(cases)).digest("hex"), cases, runs,
     hardware: { platform: process.platform, arch: process.arch, cpus: os.cpus()[0]?.model, ramBytes: os.totalmem() }, catalog, targets: {} as Record<string, any>
   };
@@ -337,13 +340,20 @@ async function addresseeSuite(): Promise<void> {
         let stop = false;
         for (const sample of ordered) {
           const question = addresseeQuestion(target, sample);
-          const result: AddresseeResult = { caseId: sample.id, group: sample.group, run, latencyMs: 0, expected: expectedChoices(question, sample) };
+          const chimeExpected = expectedChimeChoices(question, sample);
+          const notAwake = notAwakeChoices(question);
+          const result: AddresseeResult = { caseId: sample.id, group: sample.group, run, latencyMs: 0, expected: expectedChoices(question, sample),
+            ...(chimeExpected ? { chimeExpected } : {}), ...(notAwake.length > 0 ? { notAwake } : {}) };
           line = undefined;
           const before = performance.now();
           try {
             const answer = await decide(question);
             result.choice = answer.choice;
             result.probabilities = answer.probabilities;
+            if (answer.chimeIn) {
+              result.chimeChoice = answer.chimeIn.choice;
+              result.chimeProbabilities = answer.chimeIn.probabilities;
+            }
           } catch (error) {
             // Only the detector's closed error codes; never provider bodies, prompts or keys.
             const message = error instanceof Error ? error.message : "";
@@ -360,7 +370,7 @@ async function addresseeSuite(): Promise<void> {
           results.push(result);
           report.targets[target].summary = summarizeAddressee(results);
           await write();
-          console.log(`${target} ${sample.id} ${result.error ?? result.choice} (${Math.round(result.latencyMs)}ms)`);
+          console.log(`${target} ${sample.id} ${result.error ?? result.choice}${result.chimeChoice ? ` chime_in=${result.chimeChoice}` : ""} (${Math.round(result.latencyMs)}ms)`);
           if (stop) break;
         }
         if (stop) break;
