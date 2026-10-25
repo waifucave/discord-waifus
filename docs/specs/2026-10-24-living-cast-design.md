@@ -471,6 +471,10 @@ calibration). It does not reuse the conversation planner, which works on ledger 
 
 ## 6. Tools
 
+> **Superseded by §16** (tool surface v2, owner revision 2026-10-25) for tool names, the notes,
+> watch, schedule and places tools, and attachments. §6.1–§6.4, §6.8 and §6.9 still apply as §16 refers
+> to them.
+
 Tool names are snake_case. Results are short text; errors start with `error:` and set `is_error`.
 Every tool call and result is in the life log. Discord-side actions are also logged through the
 app logger (category `life`), which the Activity screen shows.
@@ -1395,6 +1399,7 @@ local merge. The branch `living-cast` merges to `main` only after L3.
 | L2 | app | Living cast core (§4–§8, §10, §11.2–§11.3): intake, wake router, detector mapping, wake queue, life loop and store, harness, tools, notes, maintenance, forget, search, scheduler, crash repair, Discord additions, data migrations, tests and goldens. |
 | — | owner | Golden review. |
 | L3 | app | §14: API, settings registry, help, CLI, dashboard, assistant tools and KB. |
+| L4 | app | §16: tool surface v2 (her folder, file tools, simulated Bash, reminder and watch files, attachments) plus the §14 pieces L3 deferred for it; then goldens again. |
 
 What L1 keeps and moves (everything else listed in §11.1 is deleted):
 
@@ -1408,3 +1413,333 @@ What L1 keeps and moves (everything else listed in §11.1 is deleted):
 | `context/fetchTranscript.ts` | `DiscordConversationSource` moves to `src/discord/`. |
 | `dm/dmForget.ts` | Drop its ledger, memory-store and context-store parts; keep floors, DM state, images and OCR purge. |
 | `oneShot/*` | Protocol, catalog and Laya move to `src/life/detector/`; the decider mapping is deleted. |
+
+## 16. Tool surface v2: her own computer (owner revision, 2026-10-25)
+
+This section replaces §6 (tools), §7.1–§7.3 (notes, encouragement, maintenance tools), the tool
+parts of §5.1, §5.7 and §8, and the notes/watches/schedule rows of §14. Where it conflicts with
+anything earlier in this spec, this section wins. The owner's goal: far fewer tools; each waifu has
+her own folder, like a small isolated machine she works in with Claude-Code-style file tools.
+
+### 16.1 Owner decisions (2026-10-25)
+
+| # | Decision |
+|---|---|
+| T1 | The notes tools are replaced by `Read`, `Write`, `Edit` over her own folder. |
+| T2 | One `ScheduleWake` tool. Reminders live in a file; she lists, changes and cancels them by editing it. |
+| T3 | One `WatchFor` tool. Watches live in a file, edited the same way. Every watch has a timeout; when it times out she gets a "timed out" notification, so a watch with nothing to match is a timer. |
+| T4 | A simulated `Bash` ([just-bash](https://www.npmjs.com/package/just-bash), Vercel Labs): a bash interpreter written in TypeScript over a virtual filesystem. It never starts a real process, has no network, and sees only her folder. The goal is an isolated machine: nothing she runs can touch the host. `python3` (CPython compiled to WebAssembly) is on, for things like cropping an image, inside the same isolation. |
+| T5 | Her places are a read-only file, and still in her system prompt. |
+| T6 | `Read` supports images. `ReadMessages` downloads attachments (images, documents) into her `/tmp`, which expires after 7 days. |
+| T7 | `SendMessage` can attach files from her folder by path. Private files (her `MEMORY.md`, the notes it links, her reminders, watches and places) are never attached; the result tells her why. Anything else is her discretion, DM downloads included. |
+| T8 | Tool names are PascalCase, like Claude Code: `ReadMessages`, `WebFetch`, … Parameters stay snake_case (`file_path`, `old_string`). |
+| T9 | Reminders and watches are JSON files. Every write is checked; a bad edit is refused with the exact error and the file stays unchanged. |
+| T10 | Isolation is the simulation itself: just-bash (no real programs) and its WebAssembly Python, in a worker thread with memory and time limits, over an in-memory copy of her folders whose changes the host checks before saving. No separate locked-down process and no OS sandbox (considered and declined: a just-bash bug would run with the app's rights; accepted for now). |
+
+Why JSON (T9): every curated model writes JSON reliably, the file is the tool's own shape, and
+`jq` works on it in Bash. YAML reads nicer but breaks on everyday notes: an unquoted colon (`note:
+Mina said: hi`) is a parse error, `18:00` can parse as a number in YAML 1.1, and `yes`/`no`/`on`
+become booleans. JSON's one weak spot (a comma left behind when deleting an entry) is caught by the
+write check, which returns the line and column.
+
+### 16.2 Her machine
+
+What she sees (never a host path, in any tool result, error or Bash output):
+
+| Path | What | Backed by |
+|---|---|---|
+| `/home/<slug>/` | Her home and working directory (`$HOME`, `~`). Her notes in any layout she likes, plus the files below. | `user/waifus/<id>/home/` |
+| `/home/<slug>/MEMORY.md` | Her index (§7.1 format). Copied into system block B at each epoch start (§5.4). | |
+| `/home/<slug>/places.md` | Read-only, kept up to date by the app (§16.6). | generated |
+| `/home/<slug>/schedule.json` | Her reminders (§16.4). | |
+| `/home/<slug>/watches.json` | Her watches (§16.5). | |
+| `/tmp/` | Downloads from `ReadMessages` (§16.3.1) and scratch files. Every file there is deleted 7 days after it was last written. Anything she moves or copies into her home stays. | `user/waifus/<id>/tmp/` |
+
+`<slug>` is her name, lower-case, ASCII-folded (`aria`). Nothing else exists: no `/etc`, no `/usr`,
+no other waifu's folder. Paths in every tool are absolute (`/home/aria/people/kevin.md`), `~`-based,
+or relative to her home.
+
+**Path rules** (one module, used by every tool, the Bash sync-back and the API):
+- After normalising, the path is inside `/home/<slug>/` or `/tmp/`; `..` that leaves them is refused.
+- At most 8 segments; each 1–100 characters, no control characters, no `\`, no NUL, not `.`/`..`,
+  not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`, with or
+  without an extension). Two names in one folder that differ only by case or Unicode normalisation
+  are refused (case-insensitive disks).
+- No symbolic or hard links anywhere: never created (Bash `ln` fails), and an existing link on disk
+  (the owner made one) is never followed, listed or written through.
+
+**Limits** (config, §16.10): home ≤ 50 MiB and ≤ 2,000 files; `/tmp` ≤ 200 MiB (oldest first deleted
+when a download would exceed it); a file written by `Write`/`Edit` ≤ 256 KiB; `MEMORY.md` in the
+system prompt cut at 200 lines / 8 KB with the existing tidy-up note. Exceeding a limit is an
+`is_error` result naming the limit; nothing is written.
+
+**Provenance index** (`user/waifus/<id>/life/files-index.json`, not visible to her): for every file
+`ReadMessages` downloaded, `{sha256, placeKey, messageId, authorId, attachmentId, downloadedAt}`.
+Updated when a file is downloaded; used by forget (§16.9), the dashboard's DM redaction (§16.11)
+and the download dedupe. A file is "from a DM" when its hash was downloaded from a DM place.
+
+### 16.3 Tools
+
+Results are short text; errors start with `error:` and set `is_error`. Eleven tools:
+
+| Tool | Parameters | Result |
+|---|---|---|
+| `ReadMessages` | `place`, `limit?` (15, 1–50), `before?` (ref) | Transcript lines (§6.2 format) with attachment paths. |
+| `SendMessage` | `place`, `text?` (≤2,000), `reply_to?`, `files?` (≤4 paths) | `sent #k9`, plus any files not attached and why. |
+| `React` | `place`, `ref`, `emoji` | `reacted` |
+| `WatchFor` | `when` (0–5 bindings), `note` (≤200), `timeout_minutes` (1–10,080), `once?` (true) | `watching w3 until Sun 25 Oct 14:02 (in ~/watches.json)` |
+| `ScheduleWake` | `at?` (local `YYYY-MM-DD HH:MM`) or `in_minutes?`, `note` (≤200), `repeat?` (`daily`/`weekly`) | `set r4 for Sun 25 Oct 18:00 (in ~/schedule.json)` |
+| `Read` | `file_path`, `offset?`, `limit?`, `pages?` (PDF, like `"1-5"`) | Text with line numbers, an image, or PDF text. |
+| `Write` | `file_path`, `content` | `wrote ~/people/kevin.md (1.2 KB)` |
+| `Edit` | `file_path`, `old_string`, `new_string`, `replace_all?` | `edited ~/people/kevin.md` |
+| `Bash` | `command`, `timeout_ms?` (10,000; ≤60,000) | Output, exit code, and what changed in her folders. |
+| `WebSearch` | `query` (≤300), `num_results?` (5, 1–8) | §6.8 unchanged. |
+| `WebFetch` | `url`, `prompt` (≤500) | §6.9 unchanged. |
+
+Retired: `list_watches`, `cancel_watch`, `list_schedule`, `cancel_wake`, `list_notes`, `read_note`,
+`write_note`, `edit_note`, `delete_note`, `search_notes`, `list_places`. Place handles (§6.1) are
+unchanged; an unknown handle returns `error: unknown place; see ~/places.md`. `WebSearch` and
+`WebFetch` keep §6.8 and §6.9 (only the names change); either is not offered when its caps are 0.
+
+#### 16.3.1 `ReadMessages`
+
+§6.2, with these changes:
+- **Attachments are downloaded** into `/tmp/<place path>/<ref>-<file name>` (the handle's segments:
+  `/tmp/bake-club/general/k3-cake.png`, `/tmp/dm/kevin/a7-menu.pdf`), and the line shows the path:
+  `[image: /tmp/bake-club/general/k3-cake.png]`, `[file: /tmp/dm/kevin/a7-menu.pdf · 1.2 MB]`.
+  Downloaded: images (png, jpeg, gif, webp), PDFs and text files (txt, md, csv, json, log, code),
+  each ≤ `life.attachments.maxBytes` (10 MiB), at most 10 per call. Everything else (audio, video,
+  archives, larger files) is listed with name and size and `not downloaded`. A file already
+  downloaded (same attachment id, still on disk) is not fetched again; an expired one is fetched
+  again when read again.
+- **No inline images** in `ReadMessages` results any more; she looks with `Read`. The line keeps a
+  short OCR hint when the OCR cache already has one: `[image: /tmp/…/k3-cake.png · "SALE 50%"]`.
+- Attachments of messages that render as `(removed)` (§7.5) are never downloaded.
+- Downloads go through the existing attachment fetcher (Discord CDN only, size checked before and
+  while reading), never through `WebFetch`.
+
+#### 16.3.2 `SendMessage`
+
+§6.3, plus `files`:
+- Each path is resolved by §16.2's rules; a missing file, a folder or one over 10 MiB is skipped.
+- **Private files are never attached**: `~/MEMORY.md`, every file `MEMORY.md` links to (resolved at
+  send time), `~/schedule.json`, `~/watches.json`, `~/places.md`. Copies under other names are hers to
+  share.
+- The message is sent with whatever could be attached; the result lists the rest:
+  `sent #k9; not attached: ~/people/kevin.md (your notes, reminders, watches and places are
+  private and can't be attached)`. If nothing can be sent (no text and no file left) the call is an
+  error and nothing is sent.
+- `text` may be empty when at least one file is attached.
+
+#### 16.3.3 `Read`
+
+- **Text** (UTF-8): `cat -n` style lines, `offset`/`limit` in lines (default the first 2,000; a
+  line longer than 2,000 characters is cut). Empty file → `(empty file)`.
+- **Images**: on routes with image input, the image itself, counted against
+  `life.maxInlineImagesPerEpoch` (8) and `life.maxInlineImageBytesPerEpoch` (12 MiB); over the caps
+  or on a route without image input, `[image: <OCR text>]` (the existing OCR worker) or `[image:
+  no text found]`. The bytes are copied into the image cache under their hash and pinned for the
+  epoch (§5.3), so replay never depends on the file (it may expire or be deleted).
+- **PDF**: extracted text with `--- page N ---` markers; `pages` limits the range (default the first
+  20 pages). A scanned PDF with no text says so.
+- Anything else: `error: <path> isn't a text file, an image or a PDF`.
+
+#### 16.3.4 `Write` and `Edit`
+
+- `Write` creates or replaces a text file (creating folders as needed). `Edit` replaces
+  `old_string`, which must occur exactly once unless `replace_all`. Both refuse `~/places.md`
+  (`error: places.md is kept up to date for you and can't be changed`) and binary files.
+- Writes to `~/schedule.json` and `~/watches.json` are checked (§16.4, §16.5) before anything is
+  written; a failed check returns the exact problem (`error: watches.json line 7, column 3:
+  expected "," or "]"`, `error: watches.json entry w3: timeout is in the past`).
+- An empty `content` is allowed (an empty note). Deleting and moving files is `Bash` (`rm`, `mv`).
+
+#### 16.3.5 `Bash`
+
+- **Engine**: just-bash (exact version pinned), in a dedicated `worker_thread` per call with
+  `resourceLimits` (old-generation heap 256 MiB) and a hard wall-clock limit (`timeout_ms`, default
+  10 s, at most `life.bash.maxTimeoutMs` 60 s). On timeout the worker is terminated, the result says
+  so, and nothing is saved. The host's event loop never runs her commands.
+- **Filesystem**: the worker gets an in-memory copy of `/home/<slug>` and `/tmp` (file contents
+  loaded lazily from the host side over the worker's message port, never by host path). just-bash
+  never touches the real disk. When the command ends, the worker posts back a **change set**
+  (written files, deleted files, created folders, renames). The host applies it **all or nothing**
+  through §16.2's rules and the checks of §16.4 and §16.5; if any change fails, nothing is saved and
+  the result shows the output plus `error: changes not saved: <first problem>`. Links in the change
+  set are refused.
+- **Commands**: just-bash's built-ins (file, text and data tools such as `ls`, `cat`, `grep`, `rg`,
+  `find`, `sed`, `awk`, `jq`, `sort`, `head`, `tail`, `wc`, `mv`, `cp`, `rm`, `mkdir`, `date`,
+  `sqlite3`) and `python3` when `life.bash.python` is on (default on). `js-exec`, `curl`,
+  `html-to-markdown` and any network are off; there is no `node`, no package manager and no real
+  binary.
+- **Python**: the CPython-WASM build just-bash ships, with only the virtual filesystem visible. If
+  that build has no image library, the host adds a built-in `image` command (inside the worker,
+  pure JavaScript) with `info`, `crop`, `resize`, `rotate`, `flip` and `convert` for png/jpeg/webp/gif,
+  so "crop this picture" works without Python packages. The implementer checks which is true and
+  documents it here.
+- **Environment**: `HOME=/home/<slug>`, `USER=<slug>`, `PWD` her home, `TZ` the host time zone
+  (her clock already shows local time), nothing else from the host environment.
+- **Output**: stdout and stderr interleaved, cut at `life.bash.maxOutputChars` (16,000) with
+  `… (output cut)`; then `exit 0` (or the code) and a one-line change summary (`changed: ~/notes.md;
+  deleted: /tmp/x.png`).
+- **Escape tests** (§16.12) are part of acceptance: they must show that no command, script or
+  Python code can read, write, list or execute anything outside her two folders, reach the
+  network, or block the host.
+
+### 16.4 `ScheduleWake` and `~/schedule.json`
+
+```json
+[
+  {"id": "r4", "at": "2026-10-25 18:00", "repeat": "daily", "note": "check if the bake sale flyer is up"}
+]
+```
+
+- `ScheduleWake` appends an entry (exactly one of `at` / `in_minutes`, 5 minutes to 30 days ahead,
+  host time zone) and returns its id and time. At most 20 entries.
+- **Editing**: she can change `at`, `repeat` or `note`, delete entries or add new ones; a new entry
+  may leave out `id` and gets one when saved (the app rewrites the file with it). Every write is
+  checked: valid JSON, an array, known fields only, `at` a valid local time within the window (a
+  past `at` is refused unless it is unchanged), `repeat` one of the two values, `note` ≤ 200
+  characters, ids unique, ≤ 20 entries.
+- Firing (§6.6 unchanged): a due reminder is routed first under a wake id fixed by `id` and due
+  time, then removed or moved to its next occurrence by rewriting the file under her life lock.
+- Sleep defers it to `morning` (D10). The notification is `reminder (Sat 14:20): "<note>"`.
+
+### 16.5 `WatchFor` and `~/watches.json`
+
+```json
+[
+  {"id": "w3", "timeout": "2026-10-25 18:00", "once": true, "note": "Mina wanted brownie tips",
+   "when": [{"place": "bake-club/#general", "from": "Mina", "words": ["brownie"]}]},
+  {"id": "w4", "timeout": "2026-10-24 14:30", "note": "tea's ready", "when": []}
+]
+```
+
+- `WatchFor` appends a watch with `timeout` = now + `timeout_minutes`. A binding (§6.5 matching
+  rules unchanged) sets any of `place`, `from` (a name she knows), `words` (≤10) and
+  `any_message`. An empty `when` is a timer. At most 10 watches.
+- **`from`** stays a name in the file. On every write the app resolves each `from` to a user id
+  (stored outside her folder in `life/watch-ids.json`); an unknown or ambiguous name refuses the
+  write (`error: watches.json entry w3: more than one person called Kevin; use their place or
+  <@id>`).
+- **Timing out**: when `timeout` passes, the watch is removed and she is notified: `watch timed out
+  · your note: "tea's ready"` (new wake kind `watch_timeout`, not direct). A `once` watch that
+  matched earlier is already gone and never times out. Sleep defers it to `morning`.
+- **Matching**: `once` (default true) removes the watch at its first match; otherwise it fires at
+  most once per 10 minutes and `life.maxWatchFiresPerDay` (24) times a day until its timeout. One
+  wake per message (D-c) is unchanged.
+- **Editing**: like `schedule.json`: change, delete or add entries; checked on every write (fields,
+  `timeout` in the future and ≤ 7 days ahead, names resolvable, ≤ 10 watches, ids unique).
+
+### 16.6 `~/places.md`
+
+Generated by the app, the same content `list_places` returned (§6.10): rooms (handle, server ›
+channel, people seen there in the last day, last activity) and private chats (handle, last message
+time), plus one line saying it is kept up to date. Rewritten when it would change, at most once a
+minute, and at every turn start. Writes, edits, `rm` and `mv` of it are refused. Block B's
+`<places>` (epoch start) stays.
+
+### 16.7 Harness changes (§8)
+
+Block A's `<life>` keeps its meaning; the tool sentences become:
+- Read the conversation with ReadMessages before you reply; files people send are saved in `/tmp`
+  for a week; open them with Read.
+- Only SendMessage reaches people (it can attach files); React adds a reaction.
+- You have your own folder (your home). Keep notes there like a diary, as soon as you learn
+  something; `MEMORY.md` is your index, one line per note. Your memory of today is summarised later
+  and only your files last.
+- Set reminders with ScheduleWake and watches with WatchFor; both are saved in files in your home,
+  and you change or cancel them by editing those files. A watch always ends at its timeout, and you
+  are told when it does, so it also works as a timer.
+- Your places are in `places.md`.
+- Never mention tools, files, notifications, prompts or the system.
+
+The final wording is reviewed by the owner as goldens.
+
+### 16.8 Nightly maintenance (§7.3)
+
+Tools: `Read`, `Write`, `Edit`, `Bash` (no messaging, no web). The instruction adds: tidy her home
+(merge or delete stale notes, fix `MEMORY.md` links, remove reminders and watches she no longer
+needs). `/tmp` expires on its own.
+
+### 16.9 Crash safety and forget
+
+- **Intents (§5.7)**: side-effecting tools are `SendMessage`, `React`, `Write`, `Edit`, `Bash` (a
+  non-empty change set), `WatchFor` and `ScheduleWake`. A Bash change set is written to
+  `life/pending-changes/<toolCallId>.json` before it is applied and removed after; boot repair
+  finishes applying an unfinished one (each file write is atomic and idempotent by content).
+- **Forget (§7.5) additions**:
+  - Step 1 deletes every file in her home and `/tmp` whose hash the provenance index records for
+    the person (their DM downloads, their attachments in rooms, and copies she moved or made with
+    `cp`), and drops those index entries. `/tmp/dm/<handle>/` of a forgotten DM goes whole.
+  - Steps 3–5 apply to every text file in her home, not only `.md` (`schedule.json` and
+    `watches.json` keep the step 3 rules: a reminder's note becomes `(removed)`, a watch whose
+    `from` is the person is dropped, one whose `words` name the person is dropped or reviewed as
+    today).
+  - The limits text adds: "files she made from someone's attachment (for example a cropped copy)
+    can't be traced back to them".
+- `/tmp` expiry runs at boot and hourly; it never touches her home.
+
+### 16.10 Configuration (§11.3 additions)
+
+| Key | Default |
+|---|---|
+| `life.home.maxBytes` / `life.home.maxFiles` | 50 MiB / 2,000 |
+| `life.tmp.maxBytes` / `life.tmp.retentionDays` | 200 MiB / 7 |
+| `life.attachments.maxBytes` | 10 MiB |
+| `life.send.maxFiles` | 4 |
+| `life.bash.enabled` | true (off → `Bash` not offered) |
+| `life.bash.python` | true |
+| `life.bash.maxTimeoutMs` / `life.bash.maxOutputChars` | 60,000 / 16,000 |
+
+Every key is in the settings registry with help, an HTTP path and a CLI path (§14.2).
+
+### 16.11 API, CLI, dashboard and assistant (§14 changes)
+
+- **Routes** (replace the notes, watches and schedule rows):
+  - `GET /api/waifus/:id/files?root=home|tmp&dir=` lists entries (name, size, modified, kind, and
+    `private: true` for a file from a DM).
+  - `GET /api/waifus/:id/files/*path` returns the file (text, or bytes with their type). A file from
+    a DM needs `includePrivate=1`, local requests only (§14.1 rule).
+  - `PUT` writes a text file under the same checks as `Write` (`places.md` refused, JSON files
+    checked); `DELETE` removes a file. Revision by content hash.
+  - `GET /api/waifus/:id/schedule` and `/watches` return the parsed files; `DELETE …/schedule/:rid`
+    and `…/watches/:wid` remove one entry by rewriting the file.
+- **CLI**: `waifus files <waifu> [path]` (list or print), `waifus schedule <waifu>`, `waifus watches
+  <waifu>`.
+- **Dashboard Life screen**: a file browser for home and `/tmp` (text editor with the same checks,
+  image preview, DM files behind the reveal toggle), reminders and watches lists with delete
+  buttons.
+- **Assistant tools**: `list_files`, `read_file`, `write_file` (confirmation card), `list_watches`,
+  `list_schedule`; never DM files.
+
+### 16.12 Tests and acceptance (§12 additions)
+
+- **Isolation** (Bash, including Python): `cat /etc/passwd`, `ls /`, `cd ..` past `/home`, absolute
+  host paths, `ln -s`, `ln`, writing a link via Python, `open()` of host paths, `os.listdir`,
+  `os.system`, `subprocess`, `socket`, `ctypes`, `import js`, environment variables showing nothing
+  of the host; an infinite loop, a fork-style recursion, a 1 GB string, and output flooding are
+  each stopped by the limits, the worker is terminated, and the host's event-loop delay stays
+  under 50 ms meanwhile; no host path ever appears in any result.
+- Every write path (`Write`, `Edit`, Bash change set, API `PUT`) enforces the same path rules,
+  limits and JSON checks; a Bash command that breaks `watches.json` saves nothing.
+- `SendMessage` attaches allowed files and lists private ones as not attached, with the message
+  still sent.
+- `ReadMessages` downloads within caps, dedupes by attachment id, never downloads a removed
+  message's attachment; `/tmp` expiry and its size cap.
+- `Read` of an image on a vision route and on a text-only route, over the epoch caps, after the
+  file expired (replay still works); PDF pages.
+- Forget deletes the person's downloads and moved copies by hash.
+- Watch timeout notification; a timer watch with empty `when`; editing a reminder's time in the
+  file moves it; a hand-broken file is refused with line and column.
+- Goldens regenerated: system prompt and tools, a wake turn, a DM wake, a turn that downloads and
+  reads an image, a `Bash` call, a watch timeout, maintenance.
+
+### 16.13 Migration
+
+Living cast is unreleased, so the L2 steps change in place: `living-cast-memories-to-notes-v1`
+writes into `home/` instead of `notes/`, and no lives exist on released hosts. One small idempotent
+step converts a development host's L2-era layout if present (`notes/` → `home/`,
+`life/schedule.json` and `life/watches.json` → the new files in her home with local times and
+`from` names, `watch-ids.json` from their stored ids) and starts a new epoch, since the tool list
+changed (§5.2).
