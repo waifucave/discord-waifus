@@ -233,10 +233,16 @@ export const NeedsReviewItemSchema = z.object({
   at: z.string(),
   source: z.string(),
   where: z.string(),
-  line: z.string()
+  /** `[private chat redacted]` for a private line unless the request said `includePrivate=1` (local). */
+  line: z.string(),
+  /** From a private chat (her summary, a DM wake or watch, a DM place): D14. */
+  private: z.literal(true).optional()
 });
 
-export const NeedsReviewResponseSchema = z.object({ waifuId: z.string(), items: z.array(NeedsReviewItemSchema) });
+export const NeedsReviewResponseSchema = z.object({ waifuId: z.string(), includePrivate: z.boolean(), items: z.array(NeedsReviewItemSchema) });
+
+/** `DELETE …/life/needs-review/:itemId`: only the id (the response is kept by Remote Access's ledger). */
+export const NeedsReviewDismissResponseSchema = z.object({ waifuId: z.string(), dismissed: z.string() });
 
 export const WakeResponseSchema = z.object({
   waifuId: z.string(),
@@ -322,7 +328,8 @@ export const ForgetPendingSchema = z.object({
   retried: z.boolean()
 });
 
-export const ReviewLineSchema = z.object({ where: z.string(), line: z.string() });
+/** A forget's review line; a private one (D14) always arrives as `[private chat redacted]` here. */
+export const ReviewLineSchema = z.object({ where: z.string(), line: z.string(), private: z.literal(true).optional() });
 
 export const ForgetScrubResultSchema = z.object({
   waifuId: z.string(),

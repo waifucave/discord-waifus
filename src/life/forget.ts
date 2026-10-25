@@ -70,6 +70,7 @@ import {
   updateLifeState
 } from "./lifeStore.js";
 import { lifeModelOf } from "./lifeLoop.js";
+import { DM_REDACTED, isDmPlaceKey, isDmPlaceRef } from "./lifeView.js";
 import { runNotesSession, scrubInstruction } from "./maintenance.js";
 import { markedUserIds, MEMORY_INDEX, Notes } from "./notes.js";
 import { lifeDir } from "./paths.js";
@@ -91,7 +92,22 @@ export type ForgetIdentity = {
   sharedNames: string[];
 };
 
-export type ReviewLine = { where: string; line: string };
+/** A line a forget only listed for the owner. `private`: it came from a private chat (D14). */
+export type ReviewLine = { where: string; line: string; private?: true };
+
+/**
+ * A review line is private (D14) when it came from her summary or her wake queue (previews quote
+ * other people's messages, DMs among them), from a watch bound to a DM, or when it names a DM place.
+ * Private lines are shown only with a local `includePrivate`.
+ */
+export function isPrivateReviewLine(item: { where?: unknown; line?: unknown; private?: unknown }): boolean {
+  return item.private === true || item.where === "summary" || item.where === "wakes" || isDmPlaceRef(item.line);
+}
+
+/** The line as a view without private content: a private line keeps its place and loses its text. */
+export function withoutPrivateReview<T extends ReviewLine>(item: T): T {
+  return isPrivateReviewLine(item) ? { ...item, line: DM_REDACTED, private: true } : item;
+}
 
 export type ForgetScrubResult = {
   waifuId: string;
@@ -305,8 +321,8 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   const names = removableNames(identity);
   const mentions = (text: string) => mentionsPerson(text, identity.userId, names);
   const uncertain = reviewNames(identity).filter((name) => !isGenericName(name));
-  const review = (where: string) => (text: string) => {
-    if (o.review && uncertain.some((name) => namesSomeone(text, name))) o.review({ where, line: text.trim().slice(0, 300) });
+  const review = (where: string) => (text: string, dm = false) => {
+    if (o.review && uncertain.some((name) => namesSomeone(text, name))) o.review({ where, line: text.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
   };
   let removed = await scrubWakeQueue(deps.storage, waifu.id, { userId: identity.userId, placeKeys: new Set([dmKey]), mentions, review: review("wakes") });
   await updateLifeState(deps.storage, waifu.id, (current) => {
@@ -323,15 +339,17 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     const watches = file.watches
       .filter((watch) => !watch.bindings.some((binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey || (binding.words ?? []).some(namesThem)))
       .map((watch) => {
+        // A watch bound to a DM is private (D14): its review lines are too.
+        const dm = watch.bindings.some((binding) => isDmPlaceKey(binding.placeKey));
         for (const binding of watch.bindings) {
-          for (const word of binding.words ?? []) if (o.review && partOfName(word)) o.review({ where: "watches", line: word.trim().slice(0, 300) });
+          for (const word of binding.words ?? []) if (o.review && partOfName(word)) o.review({ where: "watches", line: word.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
         }
         if (mentions(watch.note)) {
           removed += 1;
           return { ...watch, note: REMOVED_TEXT };
         }
-        review("watches")(watch.note);
-        for (const binding of watch.bindings) for (const word of binding.words ?? []) if (!partOfName(word)) review("watches")(word);
+        review("watches")(watch.note, dm);
+        for (const binding of watch.bindings) for (const word of binding.words ?? []) if (!partOfName(word)) review("watches")(word, dm);
         return watch;
       });
     removed += file.watches.length - watches.length;
@@ -563,12 +581,15 @@ export async function recordNeedsReview(storage: StorageService, waifuId: string
   const fresh = new Map<string, ReviewLine>();
   for (const line of lines) fresh.set(reviewKey(line), line);
   await updateNeedsReview(storage, waifuId, (items) =>
-    [...items.filter((item) => !fresh.has(reviewKey(item))), ...[...fresh.values()].map((line) => ({ at: at.toISOString(), source, ...line }))].slice(-MAX_REVIEW_FILE)
+    [
+      ...items.filter((item) => !fresh.has(reviewKey(item))),
+      ...[...fresh.values()].map((line) => ({ at: at.toISOString(), source, ...line, ...(isPrivateReviewLine(line) ? { private: true } : {}) }))
+    ].slice(-MAX_REVIEW_FILE)
   );
 }
 
 /** A review line as the dashboard shows it: `id` (a hash of where + line) names it for dismissal. */
-export type NeedsReviewItem = { id: string; at: string; source: string; where: string; line: string };
+export type NeedsReviewItem = { id: string; at: string; source: string; where: string; line: string; private?: true };
 
 function reviewItemId(item: unknown): string {
   return createHash("sha256").update(reviewKey(item)).digest("hex").slice(0, 16);
@@ -593,7 +614,17 @@ export async function readNeedsReview(storage: StorageService, waifuId: string):
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
     if (typeof record.where !== "string" || typeof record.line !== "string") return [];
-    return [{ id: reviewItemId(item), at: typeof record.at === "string" ? record.at : "", source: typeof record.source === "string" ? record.source : "", where: record.where, line: record.line }];
+    return [
+      {
+        id: reviewItemId(item),
+        at: typeof record.at === "string" ? record.at : "",
+        source: typeof record.source === "string" ? record.source : "",
+        where: record.where,
+        line: record.line,
+        // A line recorded before lines were marked is read by the same rule.
+        ...(isPrivateReviewLine(record) ? { private: true as const } : {})
+      }
+    ];
   });
 }
 

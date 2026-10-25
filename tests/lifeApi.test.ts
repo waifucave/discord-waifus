@@ -1,7 +1,7 @@
 // The life API (Living cast spec §14.1): status, the life log with DM content left out unless a
 // local request asks for it (D14), owner wakes (also with Discord offline), a manual compaction, a
 // reset, and the forget review lines. Temp data roots, scripted winter fakes; no live calls.
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
@@ -9,7 +9,7 @@ import { createApiServer } from "../src/api/server.js";
 import { dispatchInternal } from "../src/api/internalDispatch.js";
 import { createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
-import { recordNeedsReview } from "../src/life/forget.js";
+import { isPrivateReviewLine, recordNeedsReview } from "../src/life/forget.js";
 import { appendLifeLog, readLifeFile, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import {
@@ -17,6 +17,7 @@ import {
   LifeLogResponseSchema,
   LifeResetResponseSchema,
   LifeStatusResponseSchema,
+  NeedsReviewDismissResponseSchema,
   NeedsReviewResponseSchema,
   WakeResponseSchema
 } from "../src/shared/schemas/api.js";
@@ -241,23 +242,84 @@ describe("owner actions on a life", () => {
 });
 
 describe("forget review lines", () => {
-  it("lists review lines and dismisses one by id", async () => {
+  it("lists review lines and dismisses one by id; the dismissal answers with the id only (review I-3)", async () => {
     const w = await lifeWorld(roots, {});
     await recordNeedsReview(w.storage, "aria", new Date(AT), "owner", [
       { where: "notes/people/sam.md", line: "Sam's cousin bakes too" },
-      { where: "summary", line: "Sam came by" }
+      { where: "summary", line: "Sam came by" },
+      { where: "wakes", line: "Sam can we talk? I think I'm pregnant" }
     ]);
     const app = await apiFor(w);
     const listed = NeedsReviewResponseSchema.parse((await app.inject({ method: "GET", url: "/api/waifus/aria/life/needs-review" })).json());
-    expect(listed.items.map((item) => item.line)).toEqual(["Sam's cousin bakes too", "Sam came by"]);
+    expect(listed.items.map((item) => item.line)).toEqual(["Sam's cousin bakes too", "[private chat redacted]", "[private chat redacted]"]);
     const id = listed.items[0]!.id;
     const dismissed = await app.inject({ method: "DELETE", url: `/api/waifus/aria/life/needs-review/${id}` });
     expect(dismissed.statusCode).toBe(200);
-    expect(NeedsReviewResponseSchema.extend({}).passthrough().parse(dismissed.json()).items.map((item) => item.line)).toEqual(["Sam came by"]);
+    expect(NeedsReviewDismissResponseSchema.strict().parse(dismissed.json())).toEqual({ waifuId: "aria", dismissed: id });
+    // The mutation layer keeps the response for a day: no review line rides in it (repro r10).
+    const ledger = await readFile(path.join(w.root, "app/remote-access/operations/ledger.json"), "utf8").catch(() => "");
+    expect(ledger).not.toContain("pregnant");
+    expect(ledger).not.toContain("Sam came by");
     expect((await app.inject({ method: "DELETE", url: `/api/waifus/aria/life/needs-review/${id}` })).statusCode).toBe(404);
     expect((await app.inject({ method: "DELETE", url: "/api/waifus/aria/life/needs-review/not-hex" })).statusCode).toBe(400);
     const status = LifeStatusResponseSchema.parse((await app.inject({ method: "GET", url: "/api/waifus/aria/life" })).json());
-    expect(status.counts.needsReview).toBe(1);
+    expect(status.counts.needsReview).toBe(2);
+  });
+
+  it("keeps summary lines and other people's DM wake previews private: local includePrivate only (review I-3, repros r4/r4b)", async () => {
+    const w = await lifeWorld(roots, {});
+    // A summary line after a DM forget (a shared name), and a line recorded before lines were marked.
+    await recordNeedsReview(w.storage, "aria", new Date(AT), "dm_forget_everything", [
+      { where: "summary", line: "In DMs, Sam from the bake club told me about his court date on Friday." },
+      { where: "system prompt", line: "dm/sam — Sam (DM)" },
+      { where: "notes/people/sam.md", line: "Sam bakes on Sundays" }
+    ]);
+    const app = await apiFor(w);
+    const plain = NeedsReviewResponseSchema.parse((await app.inject({ method: "GET", url: "/api/waifus/aria/life/needs-review" })).json());
+    expect(plain.includePrivate).toBe(false);
+    expect(JSON.stringify(plain)).not.toContain("court date");
+    expect(JSON.stringify(plain)).not.toContain("dm/sam");
+    expect(plain.items.map((item) => item.private ?? false)).toEqual([true, true, false]);
+    const local = NeedsReviewResponseSchema.parse((await app.inject({ method: "GET", url: "/api/waifus/aria/life/needs-review?includePrivate=1" })).json());
+    expect(local.includePrivate).toBe(true);
+    expect(local.items[0]!.line).toContain("court date");
+    // The same ids either way, so a hidden line can be dismissed.
+    expect(local.items.map((item) => item.id)).toEqual(plain.items.map((item) => item.id));
+    // Remote Access never reads them, and cannot ask (403).
+    const remotePlain = await dispatchInternal(app, remote(), undefined, { method: "GET", url: "/api/waifus/aria/life/needs-review" });
+    expect(remotePlain.statusCode).toBe(200);
+    expect(remotePlain.body).not.toContain("court date");
+    const remoteAsk = await dispatchInternal(app, remote(), undefined, { method: "GET", url: "/api/waifus/aria/life/needs-review?includePrivate=1" });
+    expect(remoteAsk.statusCode).toBe(403);
+    expect(JSON.parse(remoteAsk.body)).toMatchObject({ error: "PrivateContentLocalOnly" });
+  });
+
+  it("a line from her queue (a wake preview may quote a DM) is private, also one recorded unmarked (repro r4b)", () => {
+    expect(isPrivateReviewLine({ where: "wakes", line: "Sam can we talk? I think I'm pregnant" })).toBe(true);
+    expect(isPrivateReviewLine({ where: "summary", line: "Sam came by" })).toBe(true);
+    expect(isPrivateReviewLine({ where: "watches", line: "biopsy", private: true })).toBe(true);
+    expect(isPrivateReviewLine({ where: "system prompt", line: "DM/Sam — Sam" })).toBe(true);
+    expect(isPrivateReviewLine({ where: "notes/people/sam.md", line: "Sam bakes on Sundays" })).toBe(false);
+    expect(isPrivateReviewLine({ where: "reminders", line: "bring Sam's tray back" })).toBe(false);
+  });
+
+  it("the forget response never carries a private review line (review I-3)", async () => {
+    const w = await lifeWorld(roots, {});
+    const lives = [{ waifuId: "aria", removedLines: 1, removedSentences: 0, needsReview: [{ where: "summary", line: "Sam told me about his court date" }, { where: "wakes", line: "Sam? I'm pregnant", private: true as const }, { where: "notes/a.md", line: "Sam bakes" }] }];
+    const cast = { forgetUser: async (input: { discordUserId: string; dryRun: boolean }) => ({ discordUserId: input.discordUserId, dryRun: false, dmContexts: 0, dmStates: 0, dmLimits: 0, cachedImages: 0, lives }) };
+    const app = await createApiServer({ dataRoot: w.root, storage: w.storage, runtime: runtimeState(w.root), castRuntime: cast as never, remoteTrust: { isAuthorized: () => true } });
+    apps.push(app);
+    const response = await app.inject({ method: "POST", url: `/api/people/${KEVIN}/forget`, payload: { confirm: true } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { lives: Array<{ needsReview: Array<{ line: string; private?: boolean }> }> };
+    expect(body.lives[0]!.needsReview).toEqual([
+      { where: "summary", line: "[private chat redacted]", private: true },
+      { where: "wakes", line: "[private chat redacted]", private: true },
+      { where: "notes/a.md", line: "Sam bakes" }
+    ]);
+    const ledger = await readFile(path.join(w.root, "app/remote-access/operations/ledger.json"), "utf8").catch(() => "");
+    expect(ledger).not.toContain("court date");
+    expect(ledger).not.toContain("pregnant");
   });
 
   it("counts today's searches from her usage file and today's cost from the ledger", async () => {

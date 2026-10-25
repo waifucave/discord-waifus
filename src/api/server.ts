@@ -9,7 +9,7 @@ import { curatedCatalog, installedCatalog } from "../models/catalog.js";
 import type { AssistantModelClient } from "./assistant/service.js";
 import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
 import { decisionModelCatalog } from "../life/detector/catalog.js";
-import { queueOwnerScrubs } from "../life/forget.js";
+import { queueOwnerScrubs, withoutPrivateReview } from "../life/forget.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
@@ -957,9 +957,12 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     assertSnowflakeId(userId);
     const body = PeopleForgetBodySchema.parse(request.body);
     const input = { discordUserId: userId, dryRun: body.dryRun === true };
-    const answer = <T extends { pending?: unknown[] }>(result: T): T => {
+    const answer = <T extends { pending?: unknown[]; lives?: Array<{ needsReview: Array<{ where: string; line: string; private?: true }> }> }>(result: T): T => {
       if (result.pending && result.pending.length > 0) void reply.code(202);
-      return result;
+      // Private review lines (D14) never travel in this response (Remote Access keeps it a day):
+      // the owner reads them on the host (GET …/life/needs-review?includePrivate=1).
+      if (!result.lives) return result;
+      return { ...result, lives: result.lives.map((life) => ({ ...life, needsReview: life.needsReview.map(withoutPrivateReview) })) };
     };
     // The live runtime also drops cached DM messages and images (spec 9.1.4).
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;

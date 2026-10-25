@@ -343,8 +343,11 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   listed with `retried: false`. Then each life's scrub (also when a part failed): her summary rewritten without him, his
   wakes, watches, reminders, DM cursor and handle removed, her notes cleaned by a notes session,
   notes that are his deleted whole, a new epoch, then a verification pass. The response adds
-  `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes, needsReview: [{ where, line }],
-  queued? }]`; review lines are also kept in `user/waifus/<id>/life/needs-review.json`. A scrub
+  `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes, needsReview: [{ where, line,
+  private? }], queued? }]`; review lines are also kept in `user/waifus/<id>/life/needs-review.json`.
+  A private review line (D14: from her summary or queue, a watch bound to a DM, or naming a DM
+  place) is always `[private chat redacted]` in this response; read it with
+  `GET …/life/needs-review?includePrivate=1` on the host. A scrub
   whose notes session failed stays queued (`queued: true`) and runs again at her next start or
   nightly maintenance. With Discord offline (no cast runtime) the scrubs are queued and run when
   each life next starts; the response then lists those waifus in `livesQueued`. `dryRun` reports
@@ -390,8 +393,12 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
 - `POST /api/waifus/:waifuId/life/reset` `{confirm: true}` — a fresh epoch with no summary (notes,
   plans, queued wakes and intake cursors stay; the old log is kept 7 days) → `{epoch, deferred}`
   (`deferred`: she has no model now; the epoch starts at her next turn). **409** without a live cast.
-- `GET /api/waifus/:waifuId/life/needs-review` → `{items: [{id, at, source, where, line}]}`: lines a
-  forget only listed (a name someone else also has). `DELETE …/needs-review/:itemId` dismisses one.
+- `GET /api/waifus/:waifuId/life/needs-review[?includePrivate=1]` → `{waifuId, includePrivate,
+  items: [{id, at, source, where, line, private?}]}`: lines a forget only listed (a name someone
+  else also has). A private line (her summary or queue, a watch bound to a DM, a DM place) reads
+  `[private chat redacted]` unless the request is local and says `includePrivate=1` (403
+  `PrivateContentLocalOnly` over Remote Access and for the assistant); its `id` is the same either
+  way. `DELETE …/needs-review/:itemId` dismisses one → `{waifuId, dismissed}`.
 
 ## Usage, search and the detector
 

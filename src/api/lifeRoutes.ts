@@ -9,7 +9,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { availabilityAt } from "../life/clock.js";
-import { dismissNeedsReview, readNeedsReview } from "../life/forget.js";
+import { dismissNeedsReview, readNeedsReview, withoutPrivateReview } from "../life/forget.js";
 import { listLogEpochs, readLifeFile, readLifeLog, readLifeState } from "../life/lifeStore.js";
 import { scanDmContent, viewLogLine } from "../life/lifeView.js";
 import { LifeActionError, type LivingCast } from "../life/livingCast.js";
@@ -269,7 +269,10 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
   app.get("/api/waifus/:waifuId/life/needs-review", async (request) => {
     const waifuId = waifuIdOf(request.params);
     await existingWaifu(o.storage, waifuId);
-    return { waifuId, items: await readNeedsReview(o.storage, waifuId) };
+    // Private lines (D14) keep their place and lose their text unless the request is local and asks.
+    const includePrivate = includePrivateOf(request);
+    const items = await readNeedsReview(o.storage, waifuId);
+    return { waifuId, includePrivate, items: includePrivate ? items : items.map(withoutPrivateReview) };
   });
 
   app.delete("/api/waifus/:waifuId/life/needs-review/:itemId", async (request) => {
@@ -277,6 +280,7 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
     const { itemId } = z.object({ itemId: z.string().regex(/^[0-9a-f]{16}$/u) }).parse(request.params);
     await existingWaifu(o.storage, waifuId);
     if (!(await dismissNeedsReview(o.storage, waifuId, itemId))) throw notFound("That review line is not listed any more.");
-    return { waifuId, dismissed: itemId, items: await readNeedsReview(o.storage, waifuId) };
+    // Only the id: the mutation layer keeps this response for a day, and review lines may be private.
+    return { waifuId, dismissed: itemId };
   });
 }

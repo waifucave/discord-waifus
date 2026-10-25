@@ -23,6 +23,7 @@ import type {
   LifeResetResult,
   LifeStatus,
   LogsResponse,
+  NeedsReviewDismissResponse,
   NeedsReviewResponse,
   OwnerNotices,
   SearchUsage,
@@ -469,10 +470,10 @@ export const api = {
     request<WakeResult>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/wake`, { body: note ? { note } : {} }),
   compactLife: (waifuId: string) => request<LifeCompactResult>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/life/compact`),
   resetLife: (waifuId: string) => request<LifeResetResult>("POST", `/api/waifus/${encodeURIComponent(waifuId)}/life/reset`, { body: { confirm: true } }),
-  needsReview: (waifuId: string, signal?: AbortSignal) =>
-    request<NeedsReviewResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review`, { signal }),
+  needsReview: (waifuId: string, includePrivate: boolean, signal?: AbortSignal) =>
+    request<NeedsReviewResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
   dismissNeedsReview: (waifuId: string, itemId: string) =>
-    request<void>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review/${encodeURIComponent(itemId)}`),
+    request<NeedsReviewDismissResponse>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review/${encodeURIComponent(itemId)}`),
 
   // Usage, search, detector
   usage: (query: { from?: string; to?: string; groupBy?: UsageGroupKey[]; waifuId?: string; tz?: string }, signal?: AbortSignal) => {

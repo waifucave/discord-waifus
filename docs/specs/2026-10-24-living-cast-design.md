@@ -1325,7 +1325,11 @@ Choices L3 made where the sections above leave room (owner review welcome):
   intake cursors stay, the old log is kept 7 days. Without a model, reset only clears the summary
   and the fresh epoch starts at her next turn (`deferred: true`).
 - **Needs review**: each review line's id is the first 16 hex characters of the SHA-256 of
-  `where` and `line`; `DELETE` removes that one line.
+  `where` and `line`; `DELETE` removes that one line and answers `{waifuId, dismissed}` only (the
+  Remote Access ledger keeps mutation responses a day). A line from her summary or her wake queue,
+  from a watch bound to a DM, or naming a DM place is private (D14): `GET` shows it as
+  `[private chat redacted]` (same id) unless the request is local and says `includePrivate=1`, and
+  the forget response's `lives[].needsReview` always redacts it.
 - **Incomplete migrations** are also written to `app/migrations-incomplete.json` (removed once every
   step completes), so `waifus doctor`/`status` and `GET /api/owner-notices` report them with no host
   running.

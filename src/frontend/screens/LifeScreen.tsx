@@ -100,7 +100,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
   const log = useApi<LifeLog>((s) => api.lifeLog(waifuId, { limit: LOG_PAGE, includePrivate, ...(epoch !== undefined ? { epoch } : {}) }, s), [waifuId, includePrivate, epoch]);
   const [older, setOlder] = useState<LifeLogLineView[]>([]);
   const [olderMore, setOlderMore] = useState<boolean | undefined>(undefined);
-  const review = useApi<NeedsReviewResponse>((s) => api.needsReview(waifuId, s), [waifuId]);
+  const review = useApi<NeedsReviewResponse>((s) => api.needsReview(waifuId, includePrivate, s), [waifuId, includePrivate]);
   const search = useApi<SearchUsage>((s) => api.searchUsage(s), []);
   const [message, setMessage] = useState<{ tone: "ok" | "err" | "warn"; text: string } | undefined>(undefined);
   const [note, setNote] = useState("");

@@ -175,8 +175,9 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   the wake waits in her queue). `POST …/life/compact` summarises her life now (409 without a live
   cast or without a model; after 10 s it answers 202 `{state: "running"}` and finishes on its own).
   `POST …/life/reset {confirm: true}` starts a fresh epoch with no summary (her notes, plans and
-  queued wakes stay). `GET …/life/needs-review` lists lines a forget could not remove for sure;
-  `DELETE …/life/needs-review/:itemId` dismisses one.
+  queued wakes stay). `GET …/life/needs-review` lists lines a forget could not remove for sure
+  (lines from private chats, her summary or her queue read `[private chat redacted]` unless the
+  owner reveals them on the host); `DELETE …/life/needs-review/:itemId` dismisses one.
 - `POST /api/people/:userId/forget` `{confirm: true, dryRun?}`: the owner's forget of one Discord
   user, best effort: every DM with them (conversations, DM state, cached DM images; rate-limit
   counters reset to their forget floor), a `forgotten.json` record, server member lists, the Living

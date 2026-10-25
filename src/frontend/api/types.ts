@@ -17,6 +17,7 @@ import type {
   LifeStatusResponseSchema,
   LifeWakeViewSchema,
   NeedsReviewItemSchema,
+  NeedsReviewDismissResponseSchema,
   NeedsReviewResponseSchema,
   OwnerNoticesResponseSchema,
   PeopleForgetResponseSchema,
@@ -360,6 +361,7 @@ export type LifeCompactResult = z.output<typeof LifeCompactResponseSchema>;
 export type LifeResetResult = z.output<typeof LifeResetResponseSchema>;
 export type NeedsReviewItem = z.output<typeof NeedsReviewItemSchema>;
 export type NeedsReviewResponse = z.output<typeof NeedsReviewResponseSchema>;
+export type NeedsReviewDismissResponse = z.output<typeof NeedsReviewDismissResponseSchema>;
 
 /** `GET /api/logs`: newest first. */
 export type LogsResponse = { entries: Array<{ time: string; level: string; message: string; context?: unknown }> };
