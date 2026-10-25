@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -87,7 +87,8 @@ import {
   discordProfileStatus,
   PROFILE_IMAGE_EXT_BY_MIME,
   PROFILE_IMAGE_MAX_BYTES,
-  sniffImageMime
+  sniffImageMime,
+  writeWaifuProfileImage
 } from "../discord/profileSync.js";
 import { DirectoryTransportError, GuildDirectory, type DirectoryKind } from "../discord/guildDirectory.js";
 import { assertKnownProvider, assertModelChoiceValid } from "./writeValidation.js";
@@ -1504,13 +1505,7 @@ async function saveWaifuAsset(
         : "Asset upload is not a PNG, JPEG, WebP or GIF image."
     );
   }
-  const dir = resolveDataPath(dataRoot, "user", "waifus", waifuId);
-  await mkdir(dir, { recursive: true });
-  await Promise.all(
-    Object.values(ASSET_EXT_BY_MIME).map((knownExt) => rm(path.join(dir, `${kind}.${knownExt}`), { force: true }))
-  );
-  const relativePath = path.join("user", "waifus", waifuId, `${kind}.${ext}`);
-  await writeFile(resolveDataPath(dataRoot, relativePath), body, { mode: 0o600 });
+  const relativePath = await writeWaifuProfileImage(dataRoot, waifuId, kind, contentType, body);
   return reply.status(201).send({
     ok: true,
     kind,

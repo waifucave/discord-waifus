@@ -2223,6 +2223,15 @@ Change Nickname.
 
 **Images.** `POST /api/waifus/:id/assets/pfp|banner` take PNG, JPEG, WebP or GIF up to 8 MB (the
 route's body limit is raised to match); the bytes must be the declared type (magic-byte check).
+Both go through one writer (`writeWaifuProfileImage`). **Import** (owner addition, 2026-10-25): when
+a sync finds no local avatar (or banner) but her own bot shows one, it downloads it from Discord's
+CDN (`avatars|banners/<userId>/<hash>.png?size=1024`, `.gif` for an `a_` hash; fetch injectable),
+checks it like an upload (magic bytes, 8 MB), saves it as her image and records
+`{contentHash, discordHash}` as already in sync, so nothing is uploaded back. Only for a bot the
+sync may edit (never the House bot or a shared bot); once per Discord hash (an image removed
+locally after its import or upload is not fetched again while Discord shows the recorded hash); a
+failed or invalid download is a logged warning and saves nothing. A later upload of hers is synced
+as before.
 
 **API and dashboard.** `GET /api/waifus/:waifuId/discord-profile` (`DiscordProfileStatusSchema`:
 `state` = `synced` | `pending` | `rate_limited` | `error` | `offline` | `no_bot` | `bot_missing` |

@@ -4,10 +4,12 @@
 // uploaded in the dashboard. Only a waifu bot that exactly one waifu uses is ever edited; the House
 // bot never. Only fields that differ are sent, an image is re-uploaded only when its bytes changed
 // (or Discord shows another image), and rate limits are recorded per field with their retry time
-// in `app/discord-profile-sync.json`, so a reconnect or a restart never hammers Discord.
+// in `app/discord-profile-sync.json`, so a reconnect or a restart never hammers Discord. Without a
+// local avatar or banner, the one her bot already shows is downloaded once and kept as hers.
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "../backend/logger.js";
 import { atomicWriteJson } from "../storage/atomic.js";
@@ -62,6 +64,44 @@ export async function readWaifuProfileImage(dataRoot: string, waifuId: string, k
     return { contentType, bytes, hash: createHash("sha256").update(bytes).digest("hex") };
   }
   return undefined;
+}
+
+/** Saves her avatar or banner (`contentType` one of PROFILE_IMAGE_EXT_BY_MIME), replacing any other type. */
+export async function writeWaifuProfileImage(
+  dataRoot: string,
+  waifuId: string,
+  kind: ProfileImageKind,
+  contentType: string,
+  bytes: Uint8Array
+): Promise<string> {
+  const ext = PROFILE_IMAGE_EXT_BY_MIME[contentType];
+  if (!ext) throw new Error(`Unsupported profile image type ${contentType}.`);
+  await mkdir(resolveDataPath(dataRoot, "user", "waifus", waifuId), { recursive: true });
+  await Promise.all(
+    Object.values(PROFILE_IMAGE_EXT_BY_MIME).map((known) => rm(resolveDataPath(dataRoot, "user", "waifus", waifuId, `${kind}.${known}`), { force: true }))
+  );
+  const relativePath = path.join("user", "waifus", waifuId, `${kind}.${ext}`);
+  await writeFile(resolveDataPath(dataRoot, relativePath), bytes, { mode: 0o600 });
+  return relativePath;
+}
+
+/** Her bot's avatar or banner on Discord's CDN (an `a_` hash is animated: GIF). */
+export function discordProfileImageUrl(userId: string, kind: ProfileImageKind, hash: string): string {
+  const folder = kind === "pfp" ? "avatars" : "banners";
+  return `https://cdn.discordapp.com/${folder}/${userId}/${hash}.${hash.startsWith("a_") ? "gif" : "png"}?size=1024`;
+}
+
+/** Downloads one CDN image and checks it like an upload (type by its bytes, at most 8 MB). */
+async function downloadProfileImage(fetcher: typeof fetch, url: string): Promise<ProfileImage> {
+  const response = await fetcher(url, { signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`Discord CDN answered ${response.status}`);
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > PROFILE_IMAGE_MAX_BYTES) throw new Error("image is larger than 8 MB");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > PROFILE_IMAGE_MAX_BYTES) throw new Error("image is empty or larger than 8 MB");
+  const contentType = sniffImageMime(bytes);
+  if (!contentType) throw new Error("not a PNG, JPEG, WebP or GIF image");
+  return { contentType, bytes, hash: createHash("sha256").update(bytes).digest("hex") };
 }
 
 export function imageDataUri(image: ProfileImage): string {
@@ -303,6 +343,8 @@ export type DiscordProfileSyncOptions = {
   discord: () => ProfileSyncDiscord | undefined;
   logger?: Logger;
   now?: () => number;
+  /** Downloads her bot's current avatar/banner from Discord's CDN (tests inject a fake). */
+  fetch?: typeof fetch;
 };
 
 const RETRY_SLACK_MS = 1_000;
@@ -391,10 +433,13 @@ export class DiscordProfileSync {
       if (Date.parse(until) <= now) delete record.retryAfter[field];
     }
 
-    const [avatar, banner] = await Promise.all([
+    let [avatar, banner] = await Promise.all([
       readWaifuProfileImage(this.dataRoot, waifu.id, "pfp"),
       readWaifuProfileImage(this.dataRoot, waifu.id, "banner")
     ]);
+    // No local image but her bot shows one: keep Discord's as hers, recorded as in sync (no upload back).
+    if (!avatar && user.avatar) avatar = await this.importImage(waifu.id, user, "pfp", user.avatar, record);
+    if (!banner && user.banner) banner = await this.importImage(waifu.id, user, "banner", user.banner, record);
     const username = desiredUsername(waifu);
     const desired: DesiredProfile = {
       username: username.value,
@@ -504,6 +549,35 @@ export class DiscordProfileSync {
     }
     await this.saveRecord(botId, record);
     this.scheduleRetry(botId, record);
+  }
+
+  /** Downloads her bot's current image once per Discord hash; a failure is logged and skipped. */
+  private async importImage(
+    waifuId: string,
+    user: BotProfileUser,
+    kind: ProfileImageKind,
+    discordHash: string,
+    record: BotProfileRecord
+  ): Promise<ProfileImage | undefined> {
+    const field = kind === "pfp" ? "avatar" : "banner";
+    const synced = record[field];
+    if (synced?.discordHash === discordHash && synced.contentHash) return undefined; // imported or uploaded before: removed since
+    try {
+      const image = await downloadProfileImage(this.options.fetch ?? fetch, discordProfileImageUrl(user.id, kind, discordHash));
+      // An upload that landed during the download wins.
+      if (await readWaifuProfileImage(this.dataRoot, waifuId, kind)) return undefined;
+      await writeWaifuProfileImage(this.dataRoot, waifuId, kind, image.contentType, image.bytes);
+      record[field] = { contentHash: image.hash, discordHash };
+      this.options.logger?.info("Imported her bot's Discord image", { waifuId, kind });
+      return image;
+    } catch (error) {
+      this.options.logger?.warn("Could not import her bot's Discord image", {
+        waifuId,
+        kind,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return undefined;
+    }
   }
 
   private async saveRecord(botId: string, record: BotProfileRecord): Promise<void> {

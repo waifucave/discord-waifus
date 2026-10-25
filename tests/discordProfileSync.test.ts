@@ -1,6 +1,6 @@
 // Living cast §17: her own bot's Discord profile (username, avatar, banner, bio, nicknames) synced
 // from her config. Fake bot handles only; no Discord calls.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Client, Events } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -108,13 +108,33 @@ function fakeBot(init: Partial<FakeBot["state"]> = {}): FakeBot {
   return bot as unknown as FakeBot;
 }
 
-function service(storage: StorageService, bots: Record<string, BotProfileHandle>, clock = { now: Date.parse("2026-10-25T12:00:00Z") }) {
+function service(
+  storage: StorageService,
+  bots: Record<string, BotProfileHandle>,
+  clock = { now: Date.parse("2026-10-25T12:00:00Z") },
+  extra: { fetch?: typeof fetch; logger?: unknown } = {}
+) {
   return new DiscordProfileSync({
     storage,
     discord: () => ({ waifuBotProfile: (botId) => bots[botId], connectedWaifuBotIds: () => Object.keys(bots) }),
-    now: () => clock.now
+    now: () => clock.now,
+    ...(extra as object)
   });
 }
+
+/** Discord's CDN as a fake fetch: URL → bytes (anything else is a 404). */
+function fakeCdn(files: Record<string, Buffer>) {
+  return vi.fn(async (url: string | URL | Request) => {
+    const bytes = files[String(url)];
+    return bytes ? new Response(new Uint8Array(bytes), { status: 200 }) : new Response("nope", { status: 404 });
+  });
+}
+
+function fakeLogger() {
+  return { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+}
+
+const BOT_USER_ID = "900000000000000001";
 
 describe("profile schema", () => {
   it("validates her Discord username, bio and nicknames with clear errors", () => {
@@ -369,6 +389,95 @@ describe("DiscordProfileSync", () => {
     expect((await sync.status("ella"))?.state).toBe("shared_bot");
     expect((await sync.status("kai"))?.state).toBe("no_bot");
     expect((await sync.status("noa"))?.state).toBe("bot_missing");
+  });
+
+  it("imports her bot's Discord avatar and banner when none is local, and never uploads them back", async () => {
+    const { root: dir, storage } = await root();
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella" });
+    const bot = fakeBot({ user: { id: BOT_USER_ID, username: "Ella", avatar: "abc123", banner: "a_def456" } });
+    const cdn = fakeCdn({
+      [`https://cdn.discordapp.com/avatars/${BOT_USER_ID}/abc123.png?size=1024`]: PNG,
+      [`https://cdn.discordapp.com/banners/${BOT_USER_ID}/a_def456.gif?size=1024`]: GIF
+    });
+    const sync = service(storage, { ella: bot }, undefined, { fetch: cdn as unknown as typeof fetch });
+    await sync.syncBot("ella");
+    expect(cdn).toHaveBeenCalledTimes(2);
+    expect(await readFile(path.join(dir, "user", "waifus", "ella", "pfp.png"))).toEqual(PNG);
+    expect(await readFile(path.join(dir, "user", "waifus", "ella", "banner.gif"))).toEqual(GIF);
+    expect(bot.editUser).not.toHaveBeenCalled();
+    const status = (await sync.status("ella"))!;
+    expect(status).toMatchObject({ state: "synced", images: { avatar: { contentType: "image/png", synced: true }, banner: { contentType: "image/gif", synced: true } } });
+
+    // Once per Discord hash: a later sync (or a restart) downloads and uploads nothing.
+    await service(storage, { ella: bot }, undefined, { fetch: cdn as unknown as typeof fetch }).syncBot("ella");
+    expect(cdn).toHaveBeenCalledTimes(2);
+    expect(bot.editUser).not.toHaveBeenCalled();
+
+    // Her own upload afterwards goes up as before.
+    await writeImage(dir, "ella", "pfp.png", PNG2);
+    await sync.syncBot("ella");
+    expect(bot.editUser).toHaveBeenCalledTimes(1);
+    expect(Object.keys(bot.editUser.mock.calls[0]![0] as object)).toEqual(["avatar"]);
+    expect(cdn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not import over a local image, nor re-import one removed after import", async () => {
+    const { root: dir, storage } = await root();
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella" });
+    await writeImage(dir, "ella", "pfp.png", PNG2);
+    const bot = fakeBot({ user: { id: BOT_USER_ID, username: "Ella", avatar: "abc123", banner: null } });
+    const cdn = fakeCdn({ [`https://cdn.discordapp.com/avatars/${BOT_USER_ID}/abc123.png?size=1024`]: PNG });
+    const sync = service(storage, { ella: bot }, undefined, { fetch: cdn as unknown as typeof fetch });
+    await sync.syncBot("ella");
+    expect(cdn).not.toHaveBeenCalled();
+    expect(bot.editUser).toHaveBeenCalledTimes(1); // hers replaces Discord's
+
+    // Imported, then deleted locally: Discord's hash is the recorded one, so nothing comes back.
+    const other = await root();
+    await writeBots(other.storage, ["ella"]);
+    await writeWaifu(other.storage, { id: "ella", name: "Ella", botId: "ella" });
+    const bot2 = fakeBot({ user: { id: BOT_USER_ID, username: "Ella", avatar: "abc123", banner: null } });
+    const sync2 = service(other.storage, { ella: bot2 }, undefined, { fetch: cdn as unknown as typeof fetch });
+    await sync2.syncBot("ella");
+    expect(cdn).toHaveBeenCalledTimes(1);
+    await rm(path.join(other.root, "user", "waifus", "ella", "pfp.png"));
+    await sync2.syncBot("ella");
+    expect(cdn).toHaveBeenCalledTimes(1);
+    expect(bot2.editUser).not.toHaveBeenCalled();
+  });
+
+  it("logs a failed or invalid download and saves nothing", async () => {
+    const { root: dir, storage } = await root();
+    await writeBots(storage, ["ella"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "ella" });
+    const bot = fakeBot({ user: { id: BOT_USER_ID, username: "Ella", avatar: "abc123", banner: "def456" } });
+    const cdn = fakeCdn({ [`https://cdn.discordapp.com/banners/${BOT_USER_ID}/def456.png?size=1024`]: Buffer.from("<svg/>") });
+    const logger = fakeLogger();
+    const sync = service(storage, { ella: bot }, undefined, { fetch: cdn as unknown as typeof fetch, logger });
+    await sync.syncBot("ella");
+    expect(cdn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith("Could not import her bot's Discord image", expect.objectContaining({ kind: "pfp", message: expect.stringContaining("404") }));
+    expect(logger.warn).toHaveBeenCalledWith("Could not import her bot's Discord image", expect.objectContaining({ kind: "banner", message: expect.stringContaining("not a PNG") }));
+    expect(await readdir(path.join(dir, "user", "waifus", "ella"))).toEqual(["waifu.json"]);
+    expect(bot.editUser).not.toHaveBeenCalled();
+    const file = JSON.parse(await readFile(path.join(dir, "app", "discord-profile-sync.json"), "utf8"));
+    expect(file.bots.ella.avatar).toBeUndefined();
+    expect(file.bots.ella.banner).toBeUndefined();
+  });
+
+  it("never imports for a shared bot or the House bot", async () => {
+    const { storage } = await root();
+    await writeBots(storage, ["shared", "house"]);
+    await writeWaifu(storage, { id: "ella", name: "Ella", botId: "shared" });
+    await writeWaifu(storage, { id: "mina", name: "Mina", botId: "shared" });
+    await writeWaifu(storage, { id: "noa", name: "Noa", botId: "house" });
+    const cdn = fakeCdn({});
+    const withAvatar = () => fakeBot({ user: { id: BOT_USER_ID, username: "x", avatar: "abc123", banner: null } });
+    await service(storage, { shared: withAvatar(), house: withAvatar() }, undefined, { fetch: cdn as unknown as typeof fetch }).syncAll();
+    expect(cdn).not.toHaveBeenCalled();
   });
 
   it("reports offline (with what is waiting) when no runtime is connected", async () => {

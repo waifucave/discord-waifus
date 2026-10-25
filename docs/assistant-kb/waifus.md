@@ -44,7 +44,8 @@ every change to these fields, her images or her bot link.
   nickname the app set there.
 - Avatar and banner: `POST /api/waifus/:id/assets/pfp|banner` with the raw image bytes and their
   `content-type` (PNG, JPEG, WebP or GIF, at most 8 MB; the bytes must be that type). An unchanged
-  image is never uploaded again.
+  image is never uploaded again. Without an uploaded one, the avatar or banner her bot already has
+  on Discord is downloaded once and kept as hers (not uploaded back); uploading replaces it.
 
 She can change her own `username`, `bio` and `nicknames` too: they are also her file
 `~/profile.json` (see life.md); her edit becomes these fields, and changing them here rewrites it.
