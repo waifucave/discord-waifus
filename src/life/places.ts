@@ -9,6 +9,7 @@
 // place: a handle is never reassigned, a rename adds the new slug as the primary handle and keeps
 // the old one as an alias, and collisions get `-2`, `-3` in creation order.
 
+import { notePlace } from "./placeRecorder.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
@@ -232,7 +233,9 @@ export async function resolvePlace(storage: StorageService, waifuId: string, inp
     return key ? places.find((place) => place.placeKey === key) : undefined;
   };
   // A miss on this turn's cached list looks again at the current one (a place new since the turn began).
-  return (await find()) ?? (refreshPlaces(storage, waifuId) ? await find() : undefined);
+  const place = (await find()) ?? (refreshPlaces(storage, waifuId) ? await find() : undefined);
+  if (place) notePlace(place.placeKey);
+  return place;
 }
 
 /** The label a notification uses for a place that is not (or no longer) hers: never the raw key. */
@@ -242,6 +245,7 @@ export function unknownPlaceLabel(placeKey: string): string {
 
 /** The handle of a placeKey (assigning one when the place is hers), else a readable fallback. */
 export async function handleOf(storage: StorageService, waifuId: string, placeKey: string): Promise<string> {
+  notePlace(placeKey);
   const handles = await readLifeFile(storage, waifuId, "handles");
   const known = handles.primary[placeKey];
   if (known) return known;

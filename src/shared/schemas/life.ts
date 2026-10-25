@@ -158,6 +158,14 @@ export const LifeLogLineSchema = z.object({
   message: z.record(z.string(), z.unknown()).nullable(),
   /** tool_results: per tool call, the Discord message ids the result shows (kept-turn omission, §5.6). */
   messageIds: z.record(z.string(), z.array(z.string())).optional(),
+  /**
+   * tool_results written by the life loop: the calls that resolved to a DM place (their input or what
+   * they returned), recorded as the tools ran; present (maybe empty) means every call was recorded
+   * (D14, spec §14.4). Never sent to the model.
+   */
+  dmCalls: z.array(z.string()).optional(),
+  /** Lines that carry wakes (a turn's notifications, folded wakes): whether any is about a DM place. */
+  dmWakes: z.boolean().optional(),
   /** compaction_boundary: where the epoch came from. */
   boundary: z.object({ fromEpoch: z.number().int().positive(), reason: z.string(), keptTurns: z.number().int().nonnegative() }).optional()
 });

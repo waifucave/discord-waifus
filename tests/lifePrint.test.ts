@@ -1,6 +1,8 @@
-// `/print life` (Living cast §10.4, D14): the owner sees her last 20 log lines, but nothing a DM
-// said: DM tool results and DM send arguments are redacted, and so is every quoted part of a
-// notification line about a DM, in a turn's notification block or folded into a tool result.
+// `/print life` and the dashboard view (Living cast §10.4, §14.4, D14): the owner sees her last 20 log
+// lines, but nothing from a DM: in a DM turn every tool call, result and her own text is hidden;
+// elsewhere a call that resolved to a DM place is hidden; notification lines about a DM lose
+// everything from their first quote. The review's repros live here (DM place variants, a quote in a
+// sender's name, a note with a line break, list_watches naming a DM, a web search in a DM turn).
 import { afterEach, describe, expect, it } from "vitest";
 import { appendLifeLog, updateLifeState } from "../src/life/lifeStore.js";
 import { printSystemPromptText, scanDmContent, viewLogLine } from "../src/life/lifeView.js";
@@ -48,15 +50,24 @@ describe("/print life", () => {
         ]
       })
     ]);
+    await appendLifeLog(w.storage, "aria", 1, [
+      { seq: 3, at: AT, kind: "notifications", turnId: "t2", message: { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mina · "lemon or chocolate?"\n</notifications>' }] } },
+      { seq: 4, at: AT, kind: "assistant", turnId: "t2", message: { role: "assistant", content: [{ type: "tool_use", id: "c4", name: "send_message", input: { place: "bake-club/#general", text: "lemon, always" } }] } },
+      { seq: 5, at: AT, kind: "tool_results", turnId: "t2", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "c4", content: "sent #a4" }] } }
+    ]);
     const printed = await w.cast.printLife("aria");
     expect(printed).not.toContain("divorce");
     expect(printed).not.toContain("lawyer");
     expect(printed).toContain("dm · dm/kevin · from Kevin · 2 unread");
     expect(printed).toContain('"are you coming saturday?"');
-    expect(printed).toContain("yes! lemon tarts");
+    // A DM turn hides every call, also its room send (spec §14.4).
+    expect(printed).not.toContain("yes! lemon tarts");
     expect(printed).toContain("read_messages([private chat redacted])");
     expect(printed).toContain("send_message([private chat redacted])");
-    expect(printed).toContain("result: sent #a2");
+    expect(printed).not.toContain("result: sent #a2");
+    // A room-only turn shows everything.
+    expect(printed).toContain("lemon, always");
+    expect(printed).toContain("result: sent #a4");
   });
 
   it("redacts her own text in a turn that touched a DM, and shows everything with private", async () => {
@@ -115,5 +126,82 @@ describe("/print life", () => {
     const second = viewLogLine(lines[1]!, scan, { includePrivate: false });
     expect(second.redacted).toBe(1);
     expect(viewLogLine(lines[1]!, scan, { includePrivate: true }).view.blocks[0]).toMatchObject({ text: "Kevin: hi" });
+  });
+
+  it("hides every tool call and result of a DM turn, also a web search and notes (review: DM turns)", () => {
+    const lines: LifeLogLine[] = [
+      line(0, "notifications", { role: "user", content: [{ type: "text", text: '- dm · dm/kevin · from Kevin · "I failed my exam, dont tell anyone"' }] }),
+      line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "web_search", input: { query: "how to comfort a friend who failed his exam" } }] }),
+      line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: "results: 5 ways to comfort a friend who failed" }] })
+    ];
+    const scan = scanDmContent(lines);
+    const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
+    expect(shown).not.toContain("failed");
+    expect(shown).toContain('"name":"web_search"');
+  });
+
+  it("decides on what the tools recorded: a recorded DM call is hidden, a recorded room call is shown", () => {
+    const lines: LifeLogLine[] = [
+      { ...line(0, "notifications", { role: "user", content: [{ type: "text", text: '- mention · bake-club/#general · from Mina · "dm_ me the recipe"' }] }), dmWakes: false },
+      line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "a", name: "ReadMessages", input: { place: "bake-club/#general" } }, { type: "tool_use", id: "b", name: "Recall", input: { topic: "Kevin" } }] }),
+      { ...line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "Mina: dm_ me the recipe" }, { type: "tool_result", tool_use_id: "b", content: "Kevin's secret" }] }), dmCalls: ["b"] }
+    ];
+    const scan = scanDmContent(lines);
+    expect([...scan.dmCalls]).toEqual(["b"]);
+    // A call that resolved to a DM place makes the whole turn private.
+    expect(scan.dmTurns.has("t1")).toBe(true);
+    const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
+    expect(shown).not.toContain("secret");
+    const room: LifeLogLine[] = [lines[0]!, { ...lines[1]!, message: { role: "assistant", content: [{ type: "tool_use", id: "a", name: "ReadMessages", input: { place: "bake-club/#general" } }] } }, { ...lines[2]!, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "Mina: dm_ me the recipe" }] }, dmCalls: [] }];
+    const roomScan = scanDmContent(room);
+    expect(roomScan.dmTurns.size).toBe(0);
+    expect(JSON.stringify(room.map((entry) => viewLogLine(entry, roomScan, { includePrivate: false }).view))).toContain("Mina: dm_ me the recipe");
+  });
+
+  it("an unrecorded call is matched the way resolvePlace reads places: any case, spaces, <…> (review I-1)", () => {
+    for (const place of ["dm/kevin", "DM/kevin", "Dm/Kevin", " dm/kevin", "dm/kevin ", "<dm/kevin>", "\ndm/kevin", "dm_300000000000000003_aria"]) {
+      const lines: LifeLogLine[] = [
+        line(0, "notifications", { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mia · "aria??"\n</notifications>' }] }),
+        line(1, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "read_messages", input: { place } }] }),
+        line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "#k1 Kevin: my HIV test came back positive" }] }),
+        line(3, "assistant", { role: "assistant", content: [{ type: "text", text: "Kevin trusted me." }, { type: "tool_use", id: "c2", name: "send_message", input: { place, text: "Your secret is safe." } }] })
+      ];
+      const scan = scanDmContent(lines);
+      const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
+      expect(shown, JSON.stringify(place)).not.toContain("HIV");
+      expect(shown, JSON.stringify(place)).not.toContain("secret is safe");
+      expect(shown, JSON.stringify(place)).not.toContain("trusted");
+    }
+  });
+
+  it("a quote in a DM sender's name or a line break in a note never escapes the redaction (review I-2)", async () => {
+    const { notificationLines } = await import("../src/life/notifications.js");
+    const { redactDmNotifications } = await import("../src/life/lifeView.js");
+    const view = { handle: () => "dm/kevin", unread: () => 1, timeZone: "UTC" };
+    const rendered = notificationLines(
+      [
+        { id: "w1", reason: "dm", placeKey: "dm_300000000000000003_aria", fromName: 'Kev"in', preview: "I relapsed last night, please don't tell anyone", at: AT },
+        { id: "w2", reason: "watch", placeKey: "dm_300000000000000003_aria", matched: "biopsy", note: "Kevin's biopsy\nresults: malignant", at: AT }
+      ] as never,
+      view as never
+    );
+    expect(rendered.join("\n").split("\n")).toHaveLength(1);
+    expect(rendered[0]).not.toContain('Kev"in');
+    expect(redactDmNotifications(rendered.join("\n"))).not.toMatch(/relapsed|malignant|biopsy/u);
+    // An old line (rendered before the fix): an unpaired quote in the name, and a note across lines.
+    const old = '- dm · dm/kevin · from Kev"in · "I relapsed last night"\n- watch · dm/kevin · "biopsy" · from Kevin · your note: "Kevin\'s biopsy\nresults: malignant, he is scared"\n- mention · bake-club/#general · from Mina · "cake?"';
+    const redacted = redactDmNotifications(old);
+    expect(redacted).not.toMatch(/relapsed|malignant|scared|biopsy/u);
+    expect(redacted).toContain('"cake?"');
+  });
+
+  it("list_watches lines that name a DM place are hidden (review: DM-bound watches)", () => {
+    const lines: LifeLogLine[] = [
+      line(0, "assistant", { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "list_watches", input: {} }] }),
+      line(1, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: 'w1 · until Sat 18:00 · once · dm/kevin from Kevin words: biopsy · note: "Kevin\'s biopsy results come Friday"' }] })
+    ];
+    const scan = scanDmContent(lines);
+    const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
+    expect(shown).not.toContain("biopsy");
   });
 });

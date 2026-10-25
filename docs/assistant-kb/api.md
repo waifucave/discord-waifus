@@ -167,8 +167,8 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   busy; idle or mid-turn; epoch, queue, today's cost and budget, last compaction, counts of review
   lines and queued forget scrubs). `GET /api/waifus/:id/life/log?epoch&before&limit` pages her life
   log (newest last; default 50, at most 200; old epochs are kept 7 days). Content from private chats
-  (DM notifications, tool calls and results that touch a DM, her own text in a turn that touched a
-  DM, and her summary) is left out unless the request says `includePrivate=1`, which only a request
+  (DM notifications; every tool call, result and her own text in a turn that touched a DM; a call
+  that touched a DM in any other turn; and her summary) is left out unless the request says `includePrivate=1`, which only a request
   on the host itself may do: over Remote Access, and for the assistant, it is refused with 403
   `PrivateContentLocalOnly`. `POST /api/waifus/:id/wake {note?}` wakes her as the owner (skips sleep
   and budget) → `{outcome: queued | deferred | quiet | dropped | queued_offline}` (Discord offline:

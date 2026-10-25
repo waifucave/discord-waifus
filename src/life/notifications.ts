@@ -49,7 +49,14 @@ export type NotificationView = {
   timeZone: string;
 };
 
-const quote = (text: string) => `"${text.replace(/"/g, "'")}"`;
+/**
+ * A quoted part on one line: its own double quotes become single ones and line breaks become spaces,
+ * so a quote always closes on its line (the owner's views redact a DM line from its first quote, D14).
+ */
+const quote = (text: string) => `"${text.replace(/"/g, "'").replace(/\s*[\r\n]+\s*/g, " ")}"`;
+
+/** A person's name as notifications show it: no double quotes and no line breaks (they would shift the quoting). */
+const plainName = (name: string) => name.replace(/"/g, "'").replace(/\s*[\r\n]+\s*/g, " ");
 
 function placeLine(group: Wake[], view: NotificationView): string {
   const first = group[0]!;
@@ -60,7 +67,7 @@ function placeLine(group: Wake[], view: NotificationView): string {
   const watch = group.find((wake) => wake.reason === "watch" || wake.reasons?.includes("watch"));
   if (watch?.matched) parts.push(quote(watch.matched));
   const from = [...group].reverse().find((wake) => wake.fromName)?.fromName;
-  if (from) parts.push(`from ${from}`);
+  if (from) parts.push(`from ${plainName(from)}`);
   const unread = view.unread(first.placeKey!);
   if (unread !== undefined && unread > 0) parts.push(`${unread} unread`);
   const preview = [...group].reverse().find((wake) => wake.preview !== undefined)?.preview ?? latest.preview;
@@ -106,7 +113,7 @@ export function notificationLines(wakes: readonly Wake[], view: NotificationView
 }
 
 export function quietLines(quiet: WakeQueue["quiet"], view: NotificationView): string[] {
-  return quiet.map((line) => `- +${line.count} more from ${line.name}${line.placeKey ? ` (${view.handle(line.placeKey)})` : ""}`);
+  return quiet.map((line) => `- +${line.count} more from ${plainName(line.name)}${line.placeKey ? ` (${view.handle(line.placeKey)})` : ""}`);
 }
 
 /** The whole block; undefined when there is nothing to say. */
@@ -152,7 +159,7 @@ export function morningBatch(
   if (dms.length > 0) {
     lines.push(
       `  · DMs: ${dms
-        .map((dm, index) => `${dm.name ?? view.handle(dm.placeKey)} (${dm.messages}${index === 0 ? ` message${dm.messages === 1 ? "" : "s"}` : ""})`)
+        .map((dm, index) => `${dm.name ? plainName(dm.name) : view.handle(dm.placeKey)} (${dm.messages}${index === 0 ? ` message${dm.messages === 1 ? "" : "s"}` : ""})`)
         .join(", ")}`
     );
   }
@@ -163,7 +170,7 @@ export function morningBatch(
       const parts = ["watch matched"];
       if (item.placeKey) parts.push(view.handle(item.placeKey));
       if (item.matched) parts.push(quote(item.matched));
-      if (item.fromName) parts.push(`from ${item.fromName}`);
+      if (item.fromName) parts.push(`from ${plainName(item.fromName)}`);
       if (item.note) parts.push(`your note: ${quote(item.note)}`);
       lines.push(`  · ${parts.join(" · ")}`);
     } else if (item.reason === "followup") {

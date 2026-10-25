@@ -1,46 +1,96 @@
-// The owner's views of a life (Living cast spec §14.1, §10.4, D14): the dashboard's life log and
-// `/print life` / `/print system_prompt`. DM content stays private from the owner too unless the
+// The owner's views of a life (Living cast spec §14.1, §14.4, §10.4, D14): the dashboard's life log
+// and `/print life` / `/print system_prompt`. DM content stays private from the owner too unless the
 // owner asks for it on this computer: the dashboard's reveal toggle (`includePrivate=1`, local
 // requests only) and `/print … private:true` (owner-only and ephemeral) show everything.
 //
-// What counts as DM content (hidden by default):
-// - the arguments and the result of any tool call that names a DM place (whatever the tool is called:
-//   a call is about a DM when one of its string arguments is a DM place, `dm/<name>` or `dm_<key>`);
-// - every quoted part of a notification line about a DM (a preview, a matched word, a note), in a
-//   turn's notification block or folded into a tool result;
-// - her own assistant text in a turn whose wakes or tool calls touched a DM place;
+// What counts as DM content (hidden by default, spec §14.4):
+// - everything she did in a DM turn: a turn whose wakes include a DM place, or in which any tool call
+//   resolved to a DM place. Every tool call's input and result in it (web search, notes, any tool)
+//   and her own text are hidden;
+// - outside DM turns, the input and result of any tool call that resolved to a DM place;
+// - in notifications (a turn's block, or folded into a tool result), everything from the first quote
+//   to the end of a line about a DM (a preview, a matched word, a note), across lines while a quote
+//   stays open;
 // - her compaction summary (`<life_so_far>`), which can carry anything from her DMs.
-// Room sends, room reads and her notes are shown (her notes are labelled as possibly holding things
-// from private chats). Reasoning is never shown: reasoning blocks become a bare marker and opaque
-// provider state (`nativeState`, signatures) is never returned.
+// The life loop records what each call resolved to (`dmCalls` on the tool-results line, `dmWakes`
+// on lines that carry wakes); a line written before that, or a call whose results are not written
+// yet, falls back to matching DM place references the way `resolvePlace` reads them (trimmed,
+// without `<>`, any case; any string containing `dm/` or `dm_`). Room sends, room reads and her notes
+// outside DM turns are shown. Reasoning is never shown: reasoning blocks become a bare marker and
+// opaque provider state (`nativeState`, signatures) is never returned.
 
 import type { LifeLogLine, LifeState } from "../shared/schemas/life.js";
 import { lifeSystem } from "./request.js";
 
 export const DM_REDACTED = "[private chat redacted]";
 
-/** A place argument that names a DM: a handle (`dm/kevin`) or a raw key (`dm_<user>_<waifu>`). */
+/** A DM place reference anywhere in a text, read like `resolvePlace` does (any case, `<…>` allowed). */
+const DM_REFERENCE = /(?:^|[^a-z0-9_])<?dm[/_][^\s>]/iu;
+
+/** A place argument (or any string input) that names a DM: `dm/kevin`, ` DM/Kevin `, `<dm/kevin>`, `dm_<key>`. */
 export function isDmPlaceRef(value: unknown): boolean {
-  return typeof value === "string" && value.length <= 200 && /^dm[/_]\S+$/u.test(value);
+  return typeof value === "string" && value.length <= 4000 && /dm[/_]/iu.test(value);
 }
 
-/** A notification line about a DM: `- dm · dm/kevin · …`, `- +3 more from Kevin (dm/kevin)`. */
-const DM_NOTIFICATION_LINE = /^\s*[-·] .*(?:· |\()dm[/_]/u;
+/** A placeKey a tool resolved to: a DM conversation (`dm_<user>_<waifu>`). */
+export function isDmPlaceKey(placeKey: string | undefined): boolean {
+  return typeof placeKey === "string" && placeKey.startsWith("dm_");
+}
+
+/** A notification line about a DM: `- dm · dm/kevin · …`, `- +3 more from Kevin (dm/kevin)`, `  · watch matched · dm/kevin · …`. */
+const DM_NOTIFICATION_LINE = /^\s*[-·] .*(?:· |\(|\s)<?dm[/_]/iu;
+
+/** A line that starts a notification entry (or the block's tags); anything else continues the line before. */
+const ENTRY_START = /^\s*(?:[-·] |<\/?notifications>)/u;
 
 /**
- * Notification lines about a DM keep their reason, place and sender but lose every quoted part (the
- * preview, a matched watch word, a note), wherever they appear: a turn's notification block, or
- * notifications folded into a tool result.
+ * Notification lines about a DM keep their reason, place and sender up to the first quote; from the
+ * first quote to the end of the line (a preview, a matched word, a note) is left out, and so is every
+ * line that continues it (an old note with a line break), until the next entry starts.
  */
 export function redactDmNotifications(text: string): string {
-  return text
+  const out: string[] = [];
+  let continuing = false;
+  for (const line of text.split("\n")) {
+    const entry = ENTRY_START.test(line);
+    if (continuing && !entry) {
+      out.push(DM_REDACTED);
+      continue;
+    }
+    continuing = false;
+    if (!DM_NOTIFICATION_LINE.test(line)) {
+      out.push(line);
+      continue;
+    }
+    const first = line.indexOf('"');
+    out.push(first < 0 ? line : `${line.slice(0, first)}"${DM_REDACTED}"`);
+    continuing = true;
+  }
+  return out.join("\n");
+}
+
+/**
+ * A tool result outside a DM turn: notification-style lines about a DM lose their quoted parts, and
+ * any other line naming a DM place keeps only what comes before the reference.
+ */
+function redactDmResult(text: string): string {
+  const notified = redactDmNotifications(text);
+  return notified
     .split("\n")
-    .map((line) => (DM_NOTIFICATION_LINE.test(line) ? line.replace(/"[^"\n]*"/gu, `"${DM_REDACTED}"`) : line))
+    .map((line) => {
+      if (DM_NOTIFICATION_LINE.test(line)) return line;
+      const match = DM_REFERENCE.exec(line);
+      return match ? `${line.slice(0, match.index + match[0].search(/<?dm[/_]/iu))}${DM_REDACTED}` : line;
+    })
     .join("\n");
 }
 
 function mentionsDmNotification(text: string): boolean {
   return text.split("\n").some((line) => DM_NOTIFICATION_LINE.test(line));
+}
+
+function namesDmPlace(text: string): boolean {
+  return DM_REFERENCE.test(text);
 }
 
 /** Any string inside a tool call's input that names a DM place (generic over tool and argument names). */
@@ -79,21 +129,43 @@ function imageText(block: Block): string {
   return "[image]";
 }
 
-/** Which tool calls name a DM place, and which turns touched one (their wakes or their tool calls). */
+/** Which tool calls touched a DM place, and which turns are DM turns (spec §14.4). */
 export type DmScan = { dmCalls: ReadonlySet<string>; dmTurns: ReadonlySet<string> };
 
 export function scanDmContent(lines: readonly LifeLogLine[]): DmScan {
   const dmCalls = new Set<string>();
   const dmTurns = new Set<string>();
+  // What the life loop recorded when the tools ran: per call, whether it resolved to a DM place.
+  const recorded = new Map<string, boolean>();
   for (const line of lines) {
+    if (line.dmCalls === undefined) continue;
+    for (const block of blocksOf(line.message)) {
+      if (block["type"] === "tool_result") recorded.set(String(block["tool_use_id"]), line.dmCalls.includes(String(block["tool_use_id"])));
+    }
+  }
+  for (const line of lines) {
+    const turn = line.turnId;
+    if (line.dmWakes === true && turn) dmTurns.add(turn);
     for (const block of blocksOf(line.message)) {
       const type = block["type"];
-      const touches =
-        (type === "tool_use" && inputNamesDm(block["input"])) ||
-        (type === "text" && mentionsDmNotification(String(block["text"] ?? ""))) ||
-        (type === "tool_result" && mentionsDmNotification(resultText(block["content"])));
-      if (type === "tool_use" && touches) dmCalls.add(String(block["id"]));
-      if (touches && line.turnId) dmTurns.add(line.turnId);
+      if (type === "tool_use") {
+        const id = String(block["id"]);
+        const dm = recorded.has(id) ? recorded.get(id)! : inputNamesDm(block["input"]);
+        if (dm) dmCalls.add(id);
+      } else if (type === "tool_result") {
+        const id = String(block["tool_use_id"]);
+        if (!recorded.has(id) && namesDmPlace(resultText(block["content"]))) dmCalls.add(id);
+      } else if (type === "text" && line.dmWakes === undefined && line.message?.["role"] !== "assistant") {
+        // A line written before the life loop recorded its wakes: read its notifications.
+        if (mentionsDmNotification(String(block["text"] ?? "")) && turn) dmTurns.add(turn);
+      }
+    }
+  }
+  for (const line of lines) {
+    if (!line.turnId) continue;
+    for (const block of blocksOf(line.message)) {
+      const id = block["type"] === "tool_use" ? String(block["id"]) : block["type"] === "tool_result" ? String(block["tool_use_id"]) : undefined;
+      if (id !== undefined && dmCalls.has(id)) dmTurns.add(line.turnId);
     }
   }
   return { dmCalls, dmTurns };
@@ -161,7 +233,7 @@ export function viewLogLine(line: LifeLogLine, scan: DmScan, o: { includePrivate
     if (type === "tool_use") {
       const id = String(block["id"] ?? "");
       const name = String(block["name"] ?? "");
-      if (hide && scan.dmCalls.has(id)) {
+      if (hide && (dmTurn || scan.dmCalls.has(id))) {
         blocks.push({ type: "tool_use", id, name, redacted: true });
         redacted += 1;
       } else blocks.push({ type: "tool_use", id, name, input: plainInput(block["input"]) });
@@ -170,17 +242,20 @@ export function viewLogLine(line: LifeLogLine, scan: DmScan, o: { includePrivate
     if (type === "tool_result") {
       const toolUseId = String(block["tool_use_id"] ?? "");
       const isError = block["is_error"] === true;
-      if (hide && scan.dmCalls.has(toolUseId)) {
+      if (hide && (dmTurn || scan.dmCalls.has(toolUseId))) {
         blocks.push({ type: "tool_result", toolUseId, ...(isError ? { isError } : {}), redacted: true });
         redacted += 1;
       } else {
         const text = resultText(block["content"]);
-        blocks.push({ type: "tool_result", toolUseId, ...(isError ? { isError } : {}), text: hide ? redactDmNotifications(text) : text });
+        blocks.push({ type: "tool_result", toolUseId, ...(isError ? { isError } : {}), text: hide ? redactDmResult(text) : text });
       }
       continue;
     }
     if (type === "life_image") {
-      blocks.push({ type: "image", text: imageText(block) });
+      if (hide && dmTurn) {
+        blocks.push({ type: "image", redacted: true });
+        redacted += 1;
+      } else blocks.push({ type: "image", text: imageText(block) });
       continue;
     }
     blocks.push({ type: "other", text: `[${type || "block"}]` });

@@ -1256,7 +1256,7 @@ an ignored one 1.
 |---|---|
 | `GET/POST /api/waifus`, `GET/PUT/DELETE /api/waifus/:id` | Fields per §11.3. |
 | `GET /api/waifus/:id/life` | Status, current turn, queue, epoch, today's usage and cost. |
-| `GET /api/waifus/:id/life/log?epoch&before&limit` | Life log lines without `nativeState` (reasoning blocks show only that they exist), newest last, default 50, at most 200; old epochs 7 days. DM content is left out by the §14.4 rule unless `includePrivate=1`, which only a request on the host itself may send (403 `PrivateContentLocalOnly` over Remote Access and for the dashboard assistant). Room sends are not redacted; a line of a DM-touching turn is marked `dm: true` ("may include things from private chats"). |
+| `GET /api/waifus/:id/life/log?epoch&before&limit` | Life log lines without `nativeState` (reasoning blocks show only that they exist), newest last, default 50, at most 200; old epochs 7 days. DM content is left out by the §14.4 rule unless `includePrivate=1`, which only a request on the host itself may send (403 `PrivateContentLocalOnly` over Remote Access and for the dashboard assistant). A line of a DM turn is marked `dm: true`, so the dashboard can say what it hides. |
 | `POST /api/waifus/:id/wake {note}`, `POST …/life/compact`, `POST …/life/reset` | |
 | `GET /api/waifus/:id/notes`, `GET/PUT/DELETE /api/waifus/:id/notes/*path` | Revision by content hash; path rules §6.7. |
 | `GET/DELETE /api/waifus/:id/watches[/:wid]`, `GET/DELETE /api/waifus/:id/schedule[/:rid]` | |
@@ -1301,13 +1301,22 @@ The assistant KB is rewritten.
 Choices L3 made where the sections above leave room (owner review welcome):
 
 - **DM content rule (D14)**, one rule for the dashboard, the CLI (`waifus life --private`) and
-  `/print`: a tool call is a DM call when any of its string arguments is a DM place reference
-  (`dm/…` or `dm_…`), whatever the tool is called; its call and its result are left out. A turn whose
-  wakes or calls touched a DM place is a DM turn: her assistant text in it is left out too (stricter
-  than labelling it), and so is her compaction summary (`<life_so_far>`, `summary.hidden`). Quoted
-  parts of DM notification lines are replaced by `[private chat redacted]`; DM wake previews and
-  notes in the queue are hidden. `includePrivate=1` / `private:true` show everything, local only;
-  the dashboard assistant never gets it.
+  `/print`. A **DM turn** is a turn whose wakes include a DM place, or in which any tool call
+  resolved to a DM place. In a DM turn every tool call (its input) and every result is hidden,
+  whatever the tool (web search, web fetch, notes, room sends, …), and so is her own text and her
+  compaction summary (`<life_so_far>`, `summary.hidden`). Outside DM turns, a call that resolved
+  to a DM place stays hidden with its result. The decision is made on what the tools resolved, never
+  on the raw argument: while a tool runs, every place it resolves or names is recorded, and the
+  `tool_results` line keeps `dmCalls` (the ids of calls that touched a DM place); `notifications`
+  lines (and `tool_results` lines that fold in wakes) keep `dmWakes`. Lines written before this
+  (or a call still in flight) fall back to matching: a string argument naming `dm/…` or `dm_…` after
+  trimming, dropping `<…>` and in any case. Notification lines about a DM keep their reason, place
+  and sender up to the first `"`; the rest of that line and every line that continues it (until the
+  next entry) becomes `[private chat redacted]`. Notifications render names without `"` or line
+  breaks and quoted parts without line breaks, so a quote always closes on its line. Outside DM
+  turns, a result line naming a DM place (a `list_watches` line) is cut at the reference. DM wake
+  previews and notes in the queue are hidden. `includePrivate=1` / `--private` show everything,
+  local only; the dashboard assistant and Remote Access never get it.
 - **Owner wake with Discord offline** is queued in her `wakes.json` (`outcome: "queued_offline"`) and
   runs when the cast connects.
 - **Compact and reset** need the live cast (409 `RuntimeOffline` otherwise) and, for compact, a model

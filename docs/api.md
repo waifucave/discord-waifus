@@ -372,9 +372,12 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   404 after). Lines carry `{seq, at, kind, turnId?, role?, blocks, dm, origin?, boundary?}`; blocks
   are `text`, `tool_use` (`id`, `name`, `input`), `tool_result` (`toolUseId`, `isError?`, `text`),
   `image`, `reasoning` (only that it exists) and `other`. `nativeState` is never returned.
-- **DM content (D14)** is left out unless `includePrivate=1`: every tool call whose arguments name a
-  DM place and its result, the quoted parts of DM notification lines, her own text in a turn that
-  touched a DM, DM wake previews and notes, and her summary. A redacted block keeps its type (and a
+- **DM content (D14)** is left out unless `includePrivate=1`. In a DM turn (its wakes include a DM,
+  or one of its calls resolved to a DM place) every tool call's input, every result and her own
+  text; in any other turn a call that resolved to a DM place and its result; DM notification lines
+  from their first quote; DM wake previews and notes; and her summary. The decision uses the places
+  the tools resolved, recorded when they ran (`dmCalls`, `dmWakes` on the log line); older lines
+  fall back to matching `dm/…` or `dm_…` in any case. A redacted block keeps its type (and a
   call its name) with `redacted: true`; `redactedBlocks` counts them. `includePrivate=1` works only
   for a request on the host itself: over Remote Access, and for the dashboard assistant, it is
   **403** `PrivateContentLocalOnly`.

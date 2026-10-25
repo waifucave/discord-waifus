@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, closeWorlds, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, closeWorlds, dmOf, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { scanDmContent, viewLogLine } from "../src/life/lifeView.js";
 import { removeTempRoot } from "./testUtils.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
@@ -124,5 +125,40 @@ describe("life loop", () => {
     const handles = JSON.parse(JSON.stringify(await (await import("../src/life/lifeStore.js")).readLifeFile(world.storage, "aria", "handles")));
     expect(handles.primary[ROOM_KEY]).toBe("bake-club/#general");
     expect(KEVIN).toBeTruthy();
+  });
+
+  it("records which wakes and calls were about a DM, so the owner's views decide on what resolved (D14, §14.4)", async () => {
+    const world = await lifeWorld(roots, {
+      scripts: script(
+        // A DM place spelled the way resolvePlace accepts it, and a web search in the same (DM) turn.
+        toolTurn([{ name: "read_messages", input: { place: " <DM/Kevin> " } }, { name: "read_messages", input: { place: "bake-club/#general" } }]),
+        textTurn("he needs a hug"),
+        toolTurn([{ name: "read_messages", input: { place: "bake-club/#general" } }]),
+        textTurn("cake time")
+      )
+    });
+    const dm = world.discord.post(dmOf("aria"), "my exam went badly");
+    await world.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    world.cast.intake.flushDms();
+    await world.cast.settle();
+    await world.cast.life("aria").runNow();
+    await mention(world, "aria cake?");
+    await world.cast.life("aria").runNow();
+    const state = await readLifeState(world.storage, "aria");
+    const log = await readLifeLog(world.storage, "aria", state.epoch);
+    const notifications = log.filter((line) => line.kind === "notifications");
+    expect(notifications.map((line) => line.dmWakes)).toEqual([true, false]);
+    const results = log.filter((line) => line.kind === "tool_results");
+    const dmCallId = (log[1]!.message!["content"] as Array<{ id: string }>)[0]!.id;
+    expect(results[0]!.dmCalls).toEqual([dmCallId]);
+    expect(results[1]!.dmCalls).toEqual([]);
+    const scan = scanDmContent(log);
+    const shown = log.map((line) => viewLogLine(line, scan, { includePrivate: false }).view);
+    const text = JSON.stringify(shown);
+    expect(text).not.toContain("exam");
+    expect(text).not.toContain("hug");
+    // The room turn after it is shown in full.
+    expect(text).toContain("cake time");
+    expect(text).toContain("aria cake?");
   });
 });

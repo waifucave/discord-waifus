@@ -16,6 +16,8 @@
 // (`life:<id>` lock, shared with compaction, maintenance and forget); turns of different waifus run
 // in parallel up to `life.maxConcurrentTurns`.
 
+import { isDmPlaceKey } from "./lifeView.js";
+import { withPlaceRecord } from "./placeRecorder.js";
 import { createHash } from "node:crypto";
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
@@ -453,7 +455,7 @@ export class Life {
       pendingNotices: current.pendingNotices.slice(notices.length),
       ...(followUpDue && current.failedTurn ? { failedTurn: { ...current.failedTurn, followUpDone: true } } : {})
     }));
-    await this.append(run, "notifications", { role: "user", content });
+    await this.append(run, "notifications", { role: "user", content }, { dmWakes: wakes.some((wake) => isDmPlaceKey(wake.placeKey)) || quiet.some((line) => isDmPlaceKey(line.placeKey)) });
     deps.logger.info("Life turn started", { category: "life", waifuId: this.waifuId, turnId, wakes: wakes.length, reasons: [...new Set(wakes.map((wake) => wake.reason))] });
     return this.rounds(run);
   }
@@ -535,13 +537,18 @@ export class Life {
         // A refusal in the middle of tool calls: they are closed with error results, so the log
         // never holds an unanswered call (review M8).
         if (result.toolCalls.length > 0) {
-          await this.append(run, "tool_results", {
-            role: "user",
-            content: [
-              ...result.toolCalls.map((call) => ({ type: "tool_result" as const, tool_use_id: call.id, content: REFUSED_RESULT, is_error: true })),
-              { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }
-            ]
-          });
+          await this.append(
+            run,
+            "tool_results",
+            {
+              role: "user",
+              content: [
+                ...result.toolCalls.map((call) => ({ type: "tool_result" as const, tool_use_id: call.id, content: REFUSED_RESULT, is_error: true })),
+                { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }
+              ]
+            },
+            { dmCalls: [] }
+          );
         }
         return this.endTurn(run, rounds, "refusal");
       }
@@ -566,21 +573,24 @@ export class Life {
               : undefined;
       // A turn that ends here (capped or interrupted) never folds new wakes in: she could not answer
       // them; they stay queued for her next turn (review I1).
+      const wakesBefore = run.wakes.length;
       const folded = run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);
+      const dmFolded = run.wakes.slice(wakesBefore).some((wake) => isDmPlaceKey(wake.placeKey));
       const tail: ContentBlockLike[] = [...folded];
       if (capped) tail.push({ type: "text", text: `[system] turn ended: ${capped}` });
       if (executed.interrupted) tail.push({ type: "text", text: "[system] interrupted" });
       tail.push({ type: "text", text: this.timeLineText(run.waifu, estimate, run.model) });
-      await this.append(run, "tool_results", { role: "user", content: [...executed.results, ...tail] }, { messageIds: executed.messageIds });
+      await this.append(run, "tool_results", { role: "user", content: [...executed.results, ...tail] }, { messageIds: executed.messageIds, dmCalls: executed.dmCalls, ...(folded.length > 0 ? { dmWakes: dmFolded } : {}) });
       if (executed.interrupted) return this.endInterrupted(run, rounds);
       if (capped) return this.endTurn(run, rounds, capped);
     }
   }
 
-  private async runTools(run: TurnRun, calls: Array<{ id: string; name: string; input: unknown }>, cutOff: boolean): Promise<{ results: ContentBlockLike[]; messageIds: Record<string, string[]>; interrupted: boolean }> {
+  private async runTools(run: TurnRun, calls: Array<{ id: string; name: string; input: unknown }>, cutOff: boolean): Promise<{ results: ContentBlockLike[]; messageIds: Record<string, string[]>; dmCalls: string[]; interrupted: boolean }> {
     const deps = this.deps;
     const results: ContentBlockLike[] = [];
     const messageIds: Record<string, string[]> = {};
+    const dmCalls: string[] = [];
     const offered = new Set(run.state.systemSnapshot?.tools ?? []);
     let interrupted = false;
     for (let index = 0; index < calls.length; index += 1) {
@@ -602,7 +612,7 @@ export class Life {
         const argsDigest = createHash("sha256").update(JSON.stringify(call.input ?? {})).digest("hex").slice(0, 32);
         if (tool.sideEffect) await appendIntent(deps.storage, this.waifuId, { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest, at: deps.now().toISOString() });
         try {
-          output = await tool.run(call.input, {
+          const recorded = await withPlaceRecord(() => tool.run(call.input, {
             deps,
             waifu: run.waifu,
             route: run.model,
@@ -612,7 +622,10 @@ export class Life {
             selfAuthorIds: run.selfIds,
             toolNames: run.state.systemSnapshot?.tools ?? [],
             ...(tool.sideEffect ? { intent: { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest } } : {})
-          });
+          }));
+          output = recorded.value;
+          // D14 (spec §14.4): the owner's views hide a call that resolved to (or named) a DM place.
+          if ([...recorded.places].some(isDmPlaceKey)) dmCalls.push(call.id);
         } catch (error) {
           if (error instanceof ImageBuildAbortedError || run.signal.aborted) {
             interrupted = true;
@@ -642,7 +655,7 @@ export class Life {
         ...(output.isError ? { is_error: true } : {})
       });
     }
-    return { results, messageIds, interrupted };
+    return { results, messageIds, dmCalls, interrupted };
   }
 
   /** New wakes during a turn are folded into the next tool-results message (§4.6). */

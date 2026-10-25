@@ -17,8 +17,9 @@ summarises it into her `<life_so_far>` and a new epoch starts with her last few 
 - `waifus life <id> [--log]`, or `GET /api/waifus/:id/life` and `GET /api/waifus/:id/life/log`.
 - `/print life` and `/print system_prompt` (House bot, owner only) in Discord.
 
-Content from private chats is hidden by default everywhere: a DM notification, a tool call or
-result that touches a DM, her own text in a turn that touched a DM, and her summary. The owner can
+Content from private chats is hidden by default everywhere: a DM notification; every tool call,
+result and her own text in a turn that touched a DM (a web search or a room send included); a call
+that touched a DM in any other turn; and her summary. The owner can
 reveal it on the host itself (the Life screen's reveal toggle, `waifus life --private`,
 `includePrivate=1`, `/print … private:true`). Over Remote Access, and for the dashboard assistant,
 it stays hidden.
