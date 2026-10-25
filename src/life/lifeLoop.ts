@@ -117,7 +117,8 @@ type TurnRun = {
   /** What this turn's calls cost so far. */
   spentUsd: number;
   /** "Typing…" in the place of the wake that started the turn (§6.3): pending until she commits. */
-  typing?: { keeper: TypingKeeper; placeKey?: string; readSeen: boolean };
+  /** `sentTo`: where she last wrote this turn; only her next SendMessage types again, there. */
+  typing?: { keeper: TypingKeeper; placeKey?: string; sentTo?: string };
 };
 
 type TurnOutcome = "idle" | "again";
@@ -519,7 +520,7 @@ export class Life {
     const plan = typingPlan(wakes);
     const keeper = new TypingKeeper(deps, waifu);
     this.typing = keeper;
-    run.typing = { keeper, ...(plan ? { placeKey: plan.placeKey } : {}), readSeen: false };
+    run.typing = { keeper, ...(plan ? { placeKey: plan.placeKey } : {}) };
     if (plan?.immediate) keeper.start(plan.placeKey);
     try {
       return await this.rounds(run);
@@ -529,10 +530,12 @@ export class Life {
     }
   }
 
-  /** An uncertain wake's typing starts once she commits (after her first ReadMessages, §6.3). */
-  private commitTyping(run: TurnRun): void {
+  /** A call other than ReadMessages commits her (§6.3); after a send only her next SendMessage types. */
+  private commitTyping(run: TurnRun, name: string): void {
     const typing = run.typing;
-    if (typing?.placeKey && typing.readSeen && !run.signal.aborted) typing.keeper.start(typing.placeKey);
+    if (!typing || name === "ReadMessages" || run.signal.aborted) return;
+    const place = name === "SendMessage" ? (typing.sentTo ?? typing.placeKey) : typing.sentTo ? undefined : typing.placeKey;
+    if (place) typing.keeper.start(place);
   }
 
   private async rounds(run: TurnRun): Promise<TurnOutcome> {
@@ -579,10 +582,10 @@ export class Life {
           ...(firstCall ? { thinkingBlocksStripped: run.state.epochStrippedThinkingBlocks } : {}),
           attribution: { purpose: "life", waifuId: this.waifuId, turnId: run.turnId }
         }, {
-          // Her reply text streams inside a call (SendMessage's text): a call other than reading,
-          // started after her first read, commits her. Plain text is her own thoughts: no typing.
+          // Her reply text streams inside a call (SendMessage's text): a call other than reading
+          // commits her. Plain text is her own thoughts: no typing.
           onToolCallStart: (_id, name) => {
-            if (name !== "ReadMessages") this.commitTyping(run);
+            this.commitTyping(run, name);
           }
         });
       } catch (error) {
@@ -694,9 +697,9 @@ export class Life {
         continue;
       }
       const tool = offered.has(call.name) ? lifeTool(call.name) : undefined;
-      // Anything but reading after her first read commits her (SendMessage types on its own; a
-      // route that streams no call start lands here).
-      if (tool && call.name !== "ReadMessages" && call.name !== "SendMessage") this.commitTyping(run);
+      // Anything but reading commits her (SendMessage types on its own; a route that streams no
+      // call start lands here).
+      if (tool && call.name !== "SendMessage") this.commitTyping(run, call.name);
       let places: ReadonlySet<string> = new Set();
       let output: ToolOutput;
       if (!tool) {
@@ -741,9 +744,11 @@ export class Life {
           });
         }
       }
-      if (run.typing && tool && !output.isError) {
-        if (call.name === "ReadMessages") run.typing.readSeen = true;
-        if (call.name === "SendMessage") for (const place of places) run.typing.keeper.sent(place);
+      if (run.typing && tool && !output.isError && call.name === "SendMessage") {
+        for (const place of places) {
+          run.typing.keeper.sent(place);
+          run.typing.sentTo = place;
+        }
       }
       if (output.messageIds?.length) messageIds[call.id] = output.messageIds;
       results.push({

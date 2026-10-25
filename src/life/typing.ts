@@ -1,11 +1,12 @@
-// "Typing…" while she works (Living cast spec §6.3): one keeper per life shows her bot typing in the
-// place of the wake that started the turn, refreshed every 8 s (Discord clears it after about 10 s)
-// until she sends there or the turn ends. A direct wake starts it at turn start; an uncertain one
-// (detector, watch, @everyone, a shared role) only once she commits: any call other than
-// ReadMessages after her first ReadMessages, from the moment it starts streaming (a SendMessage's
-// reply text streams inside the call). Plain text is her own thoughts and commits nothing. Never in
-// maintenance or compaction (they never use a keeper; a mid-turn compaction stops it). A waifu without her own bot shows nothing; a failure is
-// a warning at most once a minute and never touches the turn.
+// "Typing…" while she works (Living cast spec §6.3): one keeper per life shows her bot typing in one
+// place at a time, refreshed every 8 s (Discord clears it after about 10 s). It starts in the place of
+// the wake that started the turn: at turn start for a wake meant for her (mention, name, DM, owner, the
+// detector's pick), and for a looser one (watch, @everyone, a shared role) once she commits, that is
+// any call but ReadMessages, from the moment it starts streaming. A send stops it; her next
+// SendMessage starting to stream brings it back where she last wrote, other calls after a send don't.
+// Plain text is her own thoughts and commits nothing. Never in maintenance or compaction (they never
+// use a keeper; a mid-turn compaction stops it). A waifu without her own bot shows nothing; a failure
+// is a warning at most once a minute and never touches the turn.
 
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import type { Wake, WakeReason } from "../shared/schemas/life.js";
@@ -14,8 +15,8 @@ import type { LifeDeps } from "./deps.js";
 export const TYPING_REFRESH_MS = 8_000;
 const WARN_EVERY_MS = 60_000;
 
-/** Wakes that show typing from the turn's start: someone spoke to her (or the owner woke her). */
-const TYPING_DIRECT: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner"]);
+/** Wakes that show typing from the turn's start: someone spoke to her, the detector picked her, or the owner woke her. */
+const TYPING_DIRECT: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "detector"]);
 
 /** The place typing would show in for a turn's wakes, and whether it starts at once. */
 export function typingPlan(wakes: readonly Wake[]): { placeKey: string; immediate: boolean } | undefined {
@@ -27,8 +28,6 @@ export function typingPlan(wakes: readonly Wake[]): { placeKey: string; immediat
 export class TypingKeeper {
   private timer: ReturnType<typeof setInterval> | undefined;
   private placeKey: string | undefined;
-  /** Places she sent to this turn: typing never comes back there. */
-  private readonly done = new Set<string>();
   private warnedAt = -Infinity;
 
   constructor(
@@ -40,9 +39,9 @@ export class TypingKeeper {
     return this.placeKey;
   }
 
-  /** Shows typing in `placeKey` now and keeps it alive (a no-op when it already is, or she sent there). */
+  /** Shows typing in `placeKey` now and keeps it alive (a no-op when it already is); typing elsewhere stops. */
   start(placeKey: string): void {
-    if (this.placeKey === placeKey || this.done.has(placeKey)) return;
+    if (this.placeKey === placeKey) return;
     this.stop();
     const place = parseConversationKey(placeKey);
     if (!place) return;
@@ -54,9 +53,8 @@ export class TypingKeeper {
     this.timer.unref?.();
   }
 
-  /** She sent in `placeKey`: typing stops there for the rest of the turn. */
+  /** She sent in `placeKey`: the message cleared typing there, so stop refreshing it. */
   sent(placeKey: string): void {
-    this.done.add(placeKey);
     if (this.placeKey === placeKey) this.stop();
   }
 

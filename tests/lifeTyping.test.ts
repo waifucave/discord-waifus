@@ -53,14 +53,16 @@ describe("the typing keeper", () => {
     keeper.sent(ROOM_KEY);
     await vi.advanceTimersByTimeAsync(TYPING_REFRESH_MS * 3);
     expect(f.typed).toHaveLength(4);
-    // Typing never comes back to a place she sent to this turn.
+    // Her next message there types again; starting elsewhere moves it (one place at a time).
     keeper.start(ROOM_KEY);
-    expect(f.typed).toHaveLength(4);
+    expect(f.typed).toHaveLength(5);
     keeper.start(`dm_${KEVIN}_ella`);
+    expect(f.typed.at(-1)).toBe(`dm:${KEVIN}`);
+    await vi.advanceTimersByTimeAsync(TYPING_REFRESH_MS);
     expect(f.typed.at(-1)).toBe(`dm:${KEVIN}`);
     keeper.stop();
     await vi.advanceTimersByTimeAsync(TYPING_REFRESH_MS * 2);
-    expect(f.typed).toHaveLength(5);
+    expect(f.typed).toHaveLength(7);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -81,13 +83,14 @@ describe("the typing keeper", () => {
     keeper.stop();
   });
 
-  it("plans the place of the wake that started the turn: direct wakes type at once, uncertain ones wait", () => {
+  it("plans the place of the wake that started the turn: wakes meant for her type at once, looser ones wait", () => {
     expect(typingPlan([wake("mention", ROOM_KEY), wake("detector", "g_1_2")])).toEqual({ placeKey: ROOM_KEY, immediate: true });
     expect(typingPlan([wake("dm", `dm_${KEVIN}_ella`)])).toEqual({ placeKey: `dm_${KEVIN}_ella`, immediate: true });
-    for (const reason of ["detector", "watch", "everyone", "role"] as const) expect(typingPlan([wake(reason, ROOM_KEY)])).toEqual({ placeKey: ROOM_KEY, immediate: false });
-    expect(typingPlan([wake("reminder"), wake("detector", ROOM_KEY)])).toEqual({ placeKey: ROOM_KEY, immediate: false });
+    expect(typingPlan([wake("detector", ROOM_KEY)])).toEqual({ placeKey: ROOM_KEY, immediate: true });
+    for (const reason of ["watch", "everyone", "role"] as const) expect(typingPlan([wake(reason, ROOM_KEY)])).toEqual({ placeKey: ROOM_KEY, immediate: false });
+    expect(typingPlan([wake("reminder"), wake("watch", ROOM_KEY)])).toEqual({ placeKey: ROOM_KEY, immediate: false });
     expect(typingPlan([wake("reminder"), wake("owner")])).toBeUndefined();
-    expect(typingPlan([{ ...wake("detector", ROOM_KEY), reasons: ["detector", "mention"] }])).toEqual({ placeKey: ROOM_KEY, immediate: true });
+    expect(typingPlan([{ ...wake("watch", ROOM_KEY), reasons: ["watch", "mention"] }])).toEqual({ placeKey: ROOM_KEY, immediate: true });
   });
 });
 
@@ -104,24 +107,47 @@ describe("typing in a turn", () => {
     expect(w.discord.typing).toEqual([CHANNEL, CHANNEL]);
   });
 
-  it("a 'maybe for you' waits until she does more than read; reading alone shows nothing", async () => {
+  it("a 'maybe for you' types from the start; a watch waits until she does more than read", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
+        textTurn("(not for me)"),
+        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
+        textTurn("(nothing)"),
         toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
         toolTurn([{ name: "WebSearch", input: { query: "lemon tart recipe" } }]),
-        textTurn("(nothing to add)"),
-        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        textTurn("(not for me)")
+        textTurn("(nothing to add)")
       )
     });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const message = w.discord.post(ROOM, "any good tart recipes?");
-    const detector = { reason: "detector" as const, placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: message.id, preview: "any good tart recipes?", at: w.clock.now().toISOString() };
-    await enqueueWake(w.storage, "ella", { id: "w-d1", ...detector });
+    const base = { placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: message.id, preview: "any good tart recipes?", at: w.clock.now().toISOString() };
+    await enqueueWake(w.storage, "ella", { id: "w-d1", reason: "detector", ...base });
     await w.cast.life("ella").runNow();
     expect(w.discord.typing).toEqual([CHANNEL]);
-    await enqueueWake(w.storage, "ella", { id: "w-d2", ...detector });
+    // A watch that only reads shows nothing; one that goes on to search does.
+    await enqueueWake(w.storage, "ella", { id: "w-w1", reason: "watch", ...base });
     await w.cast.life("ella").runNow();
     expect(w.discord.typing).toEqual([CHANNEL]);
+    await enqueueWake(w.storage, "ella", { id: "w-w2", reason: "watch", ...base });
+    await w.cast.life("ella").runNow();
+    expect(w.discord.typing).toEqual([CHANNEL, CHANNEL]);
+  });
+
+  it("types again for her next message after a send, but not while she only writes notes", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: script(
+        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "hi!" } }]),
+        toolTurn([{ name: "Write", input: { file_path: "~/kevin.md", content: "likes tarts" } }]),
+        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "also, lemon" } }]),
+        textTurn("(sent)")
+      )
+    });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const message = w.discord.post(ROOM, "hey ella");
+    await enqueueWake(w.storage, "ella", { id: "w-m", reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: message.id, preview: "hey ella", at: w.clock.now().toISOString() });
+    await w.cast.life("ella").runNow();
+    // Turn start + the first send's own typing; nothing for the note; the second SendMessage
+    // typing as it starts streaming + its own typing.
+    expect(w.discord.typing).toEqual([CHANNEL, CHANNEL, CHANNEL, CHANNEL]);
   });
 });
