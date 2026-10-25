@@ -2,9 +2,10 @@ import { useState } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 import { api } from "../../api/client";
 import { useApi } from "../../api/useApi";
-import type { DiscordBotsFile, ModelChoice, ModelsResponse, ProvidersResponse, ServersResponse, WaifusResponse } from "../../api/types";
+import type { ModelChoice, ModelsResponse, ProvidersResponse, ServersResponse, WaifusResponse } from "../../api/types";
 import { Notice } from "../Notice";
 import { DiscordBotGuide } from "../DiscordBotGuide";
+import { useDiscordBotSetup } from "../useDiscordBotSetup";
 import { ModelPicker } from "../ModelPicker";
 
 const STEPS = ["Welcome", "Provider", "Model", "Cast", "Discord", "Channel"] as const;
@@ -17,16 +18,14 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const providers = useApi<ProvidersResponse>((s) => api.providers(s), []);
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const servers = useApi<ServersResponse>((s) => api.servers(s), []);
-  const bots = useApi<DiscordBotsFile>((s) => api.discordBots(s), []);
   const models = useApi<ModelsResponse>((s) => api.models(s), []);
 
   // Step state
   const [keyProviderId, setKeyProviderId] = useState("deepseek");
   const [apiKey, setApiKey] = useState("");
   const [waifuModel, setWaifuModel] = useState<ModelChoice | undefined>();
-  const [houseToken, setHouseToken] = useState("");
-  const [houseAppId, setHouseAppId] = useState("");
-  const [botsSaved, setBotsSaved] = useState(false);
+  // Step 4: the interactive guide, House bot only (a waifu's own bot is set up in Cast or Settings).
+  const botSetup = useDiscordBotSetup({ houseOnly: true });
 
   const run = async (fn: () => Promise<void>, advance = true) => {
     setSaving(true);
@@ -68,23 +67,11 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
       }
     });
 
-  const saveBots = () =>
-    run(async () => {
-      const current = await api.discordBots();
-      await api.putDiscordBots({
-        ...current,
-        orchestrator: {
-          id: current.orchestrator?.id ?? "house",
-          displayName: current.orchestrator?.displayName ?? "House",
-          enabled: true,
-          ...(current.orchestrator ?? {}),
-          applicationId: houseAppId || current.orchestrator?.applicationId,
-          ...(houseToken ? { token: houseToken } : {})
-        }
-      });
-      setBotsSaved(true);
-      await api.reload();
-    });
+  /** "Save & continue": saves what is typed in the guide, and moves on only if that worked. */
+  const saveBotsAndContinue = async () => {
+    setError(undefined);
+    if (await botSetup.save()) setStep((s) => s + 1);
+  };
 
   const modelLessWaifus = (waifus.data?.waifus ?? []).filter((w) => !w.model);
   const guilds = servers.data?.servers ?? [];
@@ -231,33 +218,23 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           <section>
             <h1 className="onboarding-title">Connect Discord.</h1>
             <p className="onboarding-lede">
-              Each character is her own Discord bot. Start with the director's bot; add one per character in Cast
-              afterwards.
+              Start with the House bot: it reads your rooms and runs <code>/wake</code>, <code>/print</code> and the
+              other owner commands. Each character then gets a bot of her own; add those in Cast or Settings afterwards.
             </p>
-            <DiscordBotGuide kind="house" collapsedByDefault={false} applicationId={houseAppId || undefined} />
-            <div className="fused" style={{ maxWidth: 640, marginTop: 16 }}><div className="grid grid-2">
-              <div className="field">
-                <label className="field-label">Application ID</label>
-                <input className="input" value={houseAppId} onChange={(e) => setHouseAppId(e.target.value)} />
-              </div>
-              <div className="field">
-                <label className="field-label">Bot token</label>
-                <input
-                  className="input"
-                  type="password"
-                  value={houseToken}
-                  onChange={(e) => setHouseToken(e.target.value)}
-                />
-              </div>
-            </div></div>
-            {botsSaved && <Notice tone="ok">Saved — the runtime is reconnecting.</Notice>}
+            <DiscordBotGuide setup={botSetup} />
             <div className="onboarding-actions">
               <button className="btn ghost" onClick={() => setStep(3)}>
                 <ArrowLeft className="icon" /> Back
               </button>
-              <button className="btn primary" onClick={saveBots} disabled={saving || (!houseToken && !houseAppId)}>
-                {saving ? "Saving…" : "Save & continue"}
-              </button>
+              {botSetup.dirty ? (
+                <button className="btn primary" onClick={saveBotsAndContinue} disabled={!botSetup.saveable || botSetup.saving}>
+                  {botSetup.saving ? "Saving…" : "Save & continue"}
+                </button>
+              ) : (
+                <button className="btn primary" onClick={skip} disabled={botSetup.saving}>
+                  Continue
+                </button>
+              )}
               <button className="btn ghost" onClick={skip}>
                 Later
               </button>
@@ -270,7 +247,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
             <h1 className="onboarding-title">Give them a room.</h1>
             {guilds.length === 0 ? (
               <p className="onboarding-lede">
-                Once the director bot joins a server, it appears here and in Rooms — then enable your characters per
+                Once the House bot joins a server, it appears here and in Rooms — then enable your characters per
                 channel. You can finish setup now.
               </p>
             ) : (

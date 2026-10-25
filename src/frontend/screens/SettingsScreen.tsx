@@ -7,8 +7,6 @@ import type {
   AutoUpdateStatus,
   DetectorConfigResponse,
   DetectorModelsResponse,
-  DiscordBotConfig,
-  DiscordBotsFile,
   ModelChoice,
   ModelsResponse,
   ProvidersResponse,
@@ -20,6 +18,7 @@ import type { ViewId } from "../nav";
 import { FootRow, HeadRow, TabCells } from "./scaffold";
 import { Notice } from "../components/Notice";
 import { DiscordBotGuide } from "../components/DiscordBotGuide";
+import { useDiscordBotSetup } from "../components/useDiscordBotSetup";
 import { ContextExternalLink } from "../components/ContextExternalLink";
 import { RemoteAccessTab } from "../components/remoteAccess/RemoteAccessTab";
 import { ModelPicker } from "../components/ModelPicker";
@@ -54,7 +53,7 @@ export function SettingsScreen({
       ) : active === "remote-access" ? (
         <RemoteAccessTab />
       ) : (
-        <AppTab />
+        <AppTab onNavigate={onNavigate} />
       )}
       <FootRow />
     </div>
@@ -239,10 +238,8 @@ function AssistantTab() {
 
 /* ================= app + discord bots ================= */
 
-function AppTab() {
+function AppTab({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const config = useApi<AppConfig>((s) => api.getConfig(s), []);
-  const bots = useApi<DiscordBotsFile>((s) => api.discordBots(s), []);
-  const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const [message, setMessage] = useState<string | undefined>(undefined);
   const [tone, setTone] = useState<"ok" | "err">("ok");
 
@@ -265,7 +262,7 @@ function AppTab() {
         </div>
       )}
 
-      <BotsSection bots={bots} waifus={waifus} onResult={(ok, text) => { setTone(ok ? "ok" : "err"); setMessage(text); }} />
+      <BotsSection onNavigate={onNavigate} />
 
       <div className="fused" style={{ flex: "none" }}>
         <div className="fgrid" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
@@ -349,102 +346,18 @@ function UpdatesSection({ config, onResult }: {
   </section>;
 }
 
-function BotsSection({
-  bots,
-  waifus,
-  onResult
-}: {
-  bots: ReturnType<typeof useApi<DiscordBotsFile>>;
-  waifus: ReturnType<typeof useApi<WaifusResponse>>;
-  onResult: (ok: boolean, text: string) => void;
-}) {
-  const [drafts, setDrafts] = useState<Record<string, { applicationId: string; token: string }>>({});
-  const [showGuide, setShowGuide] = useState(false);
-
-  const entries: Array<{ key: string; label: string; bot: DiscordBotConfig | null; isHouse: boolean }> = [
-    { key: "house", label: "House bot", bot: bots.data?.orchestrator ?? null, isHouse: true },
-    ...(waifus.data?.waifus ?? []).map((waifu) => ({
-      key: waifu.botId ?? `waifu-${waifu.id}`,
-      label: waifu.displayName || waifu.name,
-      bot: (bots.data?.waifus ?? []).find((b) => b.id === (waifu.botId ?? waifu.id)) ?? null,
-      isHouse: false
-    }))
-  ];
-
-  const saveBot = async (entry: (typeof entries)[number]) => {
-    const draft = drafts[entry.key];
-    if (!draft || !bots.data) return;
-    const patch: DiscordBotConfig = {
-      id: entry.bot?.id ?? (entry.isHouse ? "house" : entry.key),
-      displayName: entry.bot?.displayName ?? entry.label,
-      enabled: true,
-      ...(entry.bot ?? {}),
-      ...(draft.applicationId ? { applicationId: draft.applicationId } : {}),
-      ...(draft.token ? { token: draft.token } : {})
-    };
-    try {
-      await api.putDiscordBots(
-        entry.isHouse
-          ? { ...bots.data, orchestrator: patch }
-          : {
-              ...bots.data,
-              waifus: [...bots.data.waifus.filter((b) => b.id !== patch.id), patch]
-            }
-      );
-      await api.reload();
-      setDrafts((d) => ({ ...d, [entry.key]: { applicationId: "", token: "" } }));
-      bots.reload();
-      onResult(true, `${entry.label} bot saved — reconnecting.`);
-    } catch (err) {
-      onResult(false, (err as Error).message);
-    }
-  };
-
+function BotsSection({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
+  // One guide for every bot: the list at its top picks the bot, the steps take its values.
+  const setup = useDiscordBotSetup();
   return (
     <div className="fused" style={{ flex: "none" }}>
-      <button className="disclosure-head" onClick={() => setShowGuide((v) => !v)}>
-        <span className="t-micro" style={{ color: "var(--ink)" }}>How to create a Discord bot</span>
-        <span className="caret">{showGuide ? "▾" : "▸"}</span>
-      </button>
-      {showGuide && <div className="cell" style={{ padding: "16px 20px" }}><DiscordBotGuide kind="house" collapsedByDefault={false} hideHeader /></div>}
-      {entries.map((entry) => {
-        const draft = drafts[entry.key] ?? { applicationId: "", token: "" };
-        return (
-          <div key={entry.key} style={{ display: "flex", flexDirection: "column", gap: "var(--line)", background: "var(--ink)" }}>
-            <div className="cell slabel">
-              <span className="t-small">{entry.label}</span>
-              <span className="t-micro">
-                {entry.bot
-                  ? `${entry.bot.applicationId ? `app ${entry.bot.applicationId}` : "no app id"} · ${entry.bot.tokenConfigured ? `token set${entry.bot.tokenHint ? ` (${entry.bot.tokenHint})` : ""}` : "no token"}`
-                  : "not linked"}
-                {entry.bot?.tokenConfigured && <span className="chip sky" style={{ marginLeft: 8 }}>connected</span>}
-              </span>
-            </div>
-            <div className="fgrid" style={{ gridTemplateColumns: "1fr 1fr 120px" }}>
-              <div className="fcell">
-                <label className="field-label">Application ID</label>
-                <input
-                  className="input"
-                  value={draft.applicationId}
-                  onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, applicationId: e.target.value } }))}
-                />
-              </div>
-              <div className="fcell">
-                <label className="field-label">Bot token · write-only</label>
-                <input
-                  className="input"
-                  type="password"
-                  value={draft.token}
-                  onChange={(e) => setDrafts((d) => ({ ...d, [entry.key]: { ...draft, token: e.target.value } }))}
-                />
-              </div>
-              <button className="cell clickable btn" onClick={() => saveBot(entry)} disabled={!draft.applicationId && !draft.token}>
-                Save
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      <div className="cell slabel">
+        <span className="t-small">Discord bots</span>
+        <span className="t-micro">pick a bot, then follow the steps and paste each value where it appears</span>
+      </div>
+      <div className="cell" style={{ padding: "16px 20px" }}>
+        <DiscordBotGuide setup={setup} pickerStyle="list" onOpenRooms={() => onNavigate("rooms")} />
+      </div>
     </div>
   );
 }

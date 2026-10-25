@@ -333,6 +333,39 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var
 .step .num { font-family: var(--font-mono); font-size: 11px; color: var(--mute); flex: none; width: 22px; }
 .step .step-title { font-size: 13.5px; }
 .step .step-desc { color: var(--mute); font-size: 12px; line-height: 1.55; }
+.step .body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* interactive Discord bot guide (picker, inline fields, sticky save bar) */
+.bot-guide { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bot-guide-steps { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bot-picker { border: none; padding: 0; margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: var(--line); background: var(--ink); border: var(--line) solid var(--ink); }
+.bot-picker legend { padding: 0 0 6px; float: none; background: transparent; }
+.bot-picker.list { flex-direction: column; flex-wrap: nowrap; }
+.bot-picker-single { padding: 4px 0; }
+.bot-pick { position: relative; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--paper); cursor: pointer; min-width: 0; font-size: 13px; }
+.bot-picker.list .bot-pick { flex-wrap: wrap; padding: 12px 20px; }
+.bot-pick:hover { background: var(--sky); }
+.bot-pick.on { background: var(--mint); }
+.bot-pick input[type="radio"] { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.bot-pick:focus-within { outline: 2px solid var(--ink); outline-offset: -2px; }
+.bot-pick-name { font-weight: 500; overflow-wrap: anywhere; }
+.bot-pick-detail { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; color: var(--mute); }
+.bot-field { margin-top: 8px; max-width: 560px; border: var(--line) solid var(--ink); }
+.bot-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.bot-invite { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; min-width: 0; }
+.bot-invite .input { border: var(--line) solid var(--ink); padding: 8px 10px; font-size: 11.5px; min-width: 0; }
+.bot-invite-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bot-save-bar { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--paper); border-top: var(--line) solid var(--ink); }
+.bot-save-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.bot-save-bar .btn { flex: none; }
+@media (max-width: 680px) {
+  .bot-picker:not(.list) { flex-direction: column; flex-wrap: nowrap; }
+  .bot-pick { padding: 14px; min-height: 48px; flex-wrap: wrap; }
+  .bot-save-bar { flex-direction: column; align-items: stretch; }
+  .bot-save-bar .btn { min-height: 52px; }
+  .bot-field { max-width: none; }
+  .bot-invite-actions .btn { flex: 1 1 auto; }
+}
 
 /* ===== Norma (assistant panel) ===== */
 .norma { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; background: var(--ink); display: grid; grid-template-rows: 96px 1fr 68px; gap: var(--line); padding: var(--line); z-index: 30; }
@@ -477,4 +510,15 @@ select.cell:focus, input.cell:focus, textarea.cell:focus { background-color: var
   .headrow .actioncell { padding: 0 10px; font-size: 14px; text-align: center; }
   .tabcells { grid-auto-columns: minmax(max-content, 1fr); overflow-x: auto; }
   .tabcells .tabcell { padding: 0 14px; }
+}
+
+/* onboarding at phone width: the rail stacks above the step */
+@media (max-width: 680px) {
+  .onboarding { flex-direction: column; overflow: auto; }
+  .onboarding-rail { width: auto; flex-direction: row; flex-wrap: wrap; padding: 14px; gap: 8px 14px; }
+  .onboarding-rail .brand { margin-bottom: 0 !important; width: 100%; }
+  .onboarding-rail > .btn { margin-top: 0 !important; }
+  .onboarding-main { padding: 24px 16px; overflow-y: visible; }
+  .onboarding-title { font-size: 26px; }
+  .onboarding-actions { flex-wrap: wrap; }
 }

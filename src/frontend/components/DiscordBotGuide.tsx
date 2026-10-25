@@ -1,13 +1,5 @@
-import { useMemo, useState } from "react";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  ExternalLink as ExternalLinkIcon,
-  Info,
-  ShieldAlert
-} from "lucide-react";
+import { useId, useMemo, useState } from "react";
+import { Check, Copy, ExternalLink as ExternalLinkIcon, ShieldAlert } from "lucide-react";
 import {
   DISCORD_INTENTS_DOC,
   DISCORD_OAUTH_DOC,
@@ -19,264 +11,395 @@ import {
   permissionListFor,
   type BotKind
 } from "../utils/discord";
+import {
+  changeSummary,
+  checkApplicationId,
+  checkToken,
+  connectionLabel,
+  connectionFor,
+  effectiveApplicationId,
+  setupBadge,
+  summarizeTarget,
+  type BotTarget
+} from "../utils/discordBots";
+import type { DiscordBotSetup } from "./useDiscordBotSetup";
 import { Pill } from "./Pill";
 import { Notice } from "./Notice";
 import { ContextExternalLink } from "./ContextExternalLink";
 
 /**
- * Step-by-step Discord developer-portal walkthrough.
+ * Interactive Discord developer-portal walkthrough: pick a bot, then paste each value into the
+ * step that produces it. The Application ID (step 3) and bot token (step 4) are typed right
+ * here; the intents (step 5) and the invite link (step 7) follow what is typed, and Save sits in a
+ * sticky bar. All state lives in `useDiscordBotSetup`, so a host (Settings, onboarding) can also
+ * react to a save.
  *
- * Used in: onboarding, Settings → Discord bots, the waifu editor
- * (waifu bot section), and Servers view (invite-into-guild helper).
- *
- * `applicationId` and `guildId` are optional. When provided, the invite block
- * builds a ready-to-click URL targeting that exact guild.
+ * - `pickerStyle="chips"`: a compact "Which bot?" row. `"list"`: one row per bot with its app id,
+ *   token and connection status (Settings).
+ * - With a single bot (House-only mode) the picker is replaced by a one-line heading.
+ * - `guildId` makes the invite target that server; `onOpenRooms` adds the Rooms button to step 8.
  */
 export function DiscordBotGuide({
-  kind,
-  applicationId,
+  setup,
+  pickerStyle = "chips",
   guildId,
-  collapsedByDefault = true,
-  hideHeader = false,
-  botDisplayName
+  onOpenRooms
 }: {
-  kind: BotKind;
-  applicationId?: string;
+  setup: DiscordBotSetup;
+  pickerStyle?: "chips" | "list";
   guildId?: string;
-  collapsedByDefault?: boolean;
-  /** Skip the guide's own titled toggle — for hosts that already render their own disclosure heading. */
-  hideHeader?: boolean;
-  botDisplayName?: string;
+  onOpenRooms?: () => void;
 }) {
-  const [open, setOpen] = useState(!collapsedByDefault || hideHeader);
+  const { selected } = setup;
+  const kind: BotKind = selected.kind;
+  const ids = useId();
+  const appIdField = `${ids}-app-id`;
+  const tokenField = `${ids}-token`;
   const intents = intentListFor(kind);
   const permissions = permissionListFor(kind);
-  const inviteUrl = useMemo(() => {
-    if (!applicationId || !isLikelyApplicationId(applicationId)) return undefined;
-    return buildInviteUrl(applicationId, kind, guildId);
-  }, [applicationId, kind, guildId]);
-  const niceKind = kind === "house" ? "House" : "character";
-  const botLabel = botDisplayName ? `"${botDisplayName}"` : `this ${niceKind} bot`;
+  const typedAppId = effectiveApplicationId(selected, setup.draft);
+  const appIdCheck = checkApplicationId(setup.draft.applicationId ?? "");
+  const tokenCheck = checkToken(setup.draft.token);
+  const summary = summarizeTarget(selected);
+  const inviteUrl = useMemo(
+    () => (isLikelyApplicationId(typedAppId) ? buildInviteUrl(typedAppId, kind, guildId) : undefined),
+    [typedAppId, kind, guildId]
+  );
+  const portalIntents = intents.filter((intent) => intent.portalToggle);
+  const autoIntents = intents.filter((intent) => !intent.portalToggle);
+  const willChange = changeSummary(selected, setup.draft);
+  const connection = connectionLabel(setup.status);
+  const isWaifu = kind === "waifu";
+  const nameForSteps = selected.label;
+
+  if (setup.loading) return <p className="t-mute t-small" role="status">Loading bots…</p>;
+  if (setup.error && !setup.bots.data) return <Notice tone="err">{setup.error.message}</Notice>;
 
   return (
-    <div className="panel" style={{ marginTop: 8 }}>
-      {!hideHeader && (
-        <button
-          className="btn ghost"
-          onClick={() => setOpen((o) => !o)}
-          style={{
-            width: "100%",
-            justifyContent: "space-between",
-            height: 36,
-            padding: "0 4px"
-          }}
-          aria-expanded={open}
-        >
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            {open ? <ChevronDown className="icon" /> : <ChevronRight className="icon" />}
-            <Info className="icon" style={{ color: "var(--info)" }} />
-            <strong style={{ fontWeight: 600 }}>
-              How to set up the {niceKind} bot in Discord
-            </strong>
-          </span>
-          <Pill tone="info">portal walkthrough</Pill>
-        </button>
-      )}
+    <div className="bot-guide">
+      <BotPicker setup={setup} style={pickerStyle} />
 
-      {open && (
-        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
-          <Step
-            num={1}
-            title="Create a Discord application"
-            body={
-              <>
-                Open the{" "}
-                <ContextExternalLink href={DISCORD_PORTAL_URL}>
-                  Discord Developer Portal <ExternalLinkIcon className="icon" style={iconSm} />
-                </ContextExternalLink>{" "}
-                and click <strong>New Application</strong>. Use the name you want to appear in
-                Discord for {botLabel} — e.g.{" "}
-                <em>{kind === "house" ? "House" : botDisplayName || "Aria"}</em>.
-              </>
-            }
-          />
+      <div className="bot-guide-steps">
+        <Step
+          num={1}
+          title="Create a Discord application"
+          body={
+            <>
+              Open the{" "}
+              <ContextExternalLink href={DISCORD_PORTAL_URL}>
+                Discord Developer Portal <ExternalLinkIcon className="icon" style={iconSm} />
+              </ContextExternalLink>{" "}
+              and click <strong>New Application</strong>. Name it <code>{selected.suggestedName}</code>
+              {isWaifu ? ", her display name, so the bot posts under the right name" : ""}.
+              <div className="field-hint" style={{ marginTop: 4 }}>
+                The name can be anything you like. For a test copy of the bot, add a suffix such as{" "}
+                <code>{selected.suggestedName} Test</code>.
+              </div>
+            </>
+          }
+        />
 
-          <Step
-            num={2}
-            title="Set name, avatar, and (optional) banner"
-            body={
-              <>
-                On the <strong>General Information</strong> page set:
-                <ul style={ul}>
-                  <li><strong>NAME</strong> — what Discord shows next to the bot's messages.</li>
-                  <li><strong>APP ICON</strong> — square image. Becomes the bot's avatar.</li>
-                  <li><strong>DESCRIPTION</strong> — shown on the bot's profile.</li>
-                </ul>
-                Discord hosts each bot's avatar and banner; set them in the Discord Developer
-                Portal. The uploads here only change the local dashboard preview.
-              </>
-            }
-          />
+        <Step
+          num={2}
+          title="Set name, avatar, and (optional) banner"
+          body={
+            <>
+              On the <strong>General Information</strong> page set:
+              <ul style={ul}>
+                <li><strong>NAME</strong> — what Discord shows next to the bot's messages.</li>
+                <li><strong>APP ICON</strong> — square image. Becomes the bot's avatar.</li>
+                <li><strong>DESCRIPTION</strong> — shown on the bot's profile.</li>
+              </ul>
+              Discord hosts each bot's avatar and banner; set them in the Discord Developer Portal.
+              The uploads here only change the local dashboard preview.
+            </>
+          }
+        />
 
-          <Step
-            num={3}
-            title="Copy the Application ID"
-            body={
-              <>
-                Still on <strong>General Information</strong>, click{" "}
-                <strong>Copy</strong> under <code>APPLICATION ID</code> and paste it into the{" "}
-                <em>Application ID</em> field {kind === "house" ? "under Settings → Discord bots → House bot" : "on this character"}.
-                It's a 17–20 digit number used to build the invite URL and to register slash
-                commands.
-                {applicationId && !isLikelyApplicationId(applicationId) && (
-                  <div style={{ marginTop: 6 }}>
-                    <Notice tone="warn">
-                      The current value <code>{applicationId}</code> doesn't look like a valid
-                      Discord application ID (expect 17–20 digits).
-                    </Notice>
-                  </div>
-                )}
-              </>
-            }
-          />
-
-          <Step
-            num={4}
-            title="Reset and copy the bot token"
-            body={
-              <>
-                Open the <strong>Bot</strong> tab → click <strong>Reset Token</strong> →{" "}
-                <strong>Yes, do it!</strong> → <strong>Copy</strong>. Paste that token into the{" "}
-                <em>Bot token</em> field below.
-                <div style={{ marginTop: 6 }}>
-                  <Notice tone="warn">
-                    <ShieldAlert className="icon" style={iconSm} /> The token is shown{" "}
-                    <strong>once</strong>. Treat it like a password — anyone with it can act as the
-                    bot. Our backend redacts it from logs and never returns it via the API.
-                  </Notice>
+        <Step
+          num={3}
+          title="Copy the Application ID"
+          body={
+            <>
+              Still on <strong>General Information</strong>, click <strong>Copy</strong> under{" "}
+              <code>APPLICATION ID</code> and paste it here. It's a 17–20 digit number; the invite link
+              below is built from it.
+              <div className="fgrid cols-1 bot-field">
+                <div className="fcell">
+                  <label className="field-label" htmlFor={appIdField}>Application ID{selected.bot?.applicationId ? " · saved" : ""}</label>
+                  <input
+                    id={appIdField}
+                    className="input mono"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={setup.draft.applicationId ?? selected.bot?.applicationId ?? ""}
+                    onChange={(event) => setup.setApplicationId(event.target.value)}
+                    aria-invalid={appIdCheck.state === "invalid"}
+                    aria-describedby={`${appIdField}-msg`}
+                    placeholder="e.g. 123456789012345678"
+                  />
+                  <span id={`${appIdField}-msg`} className={appIdCheck.state === "invalid" ? "field-error" : "field-hint"} aria-live="polite">
+                    {appIdCheck.state === "invalid"
+                      ? appIdCheck.message
+                      : appIdCheck.state === "valid"
+                        ? "Looks like a valid Application ID."
+                        : "Not a secret: it only identifies the application."}
+                  </span>
                 </div>
-              </>
-            }
-          />
+              </div>
+            </>
+          }
+        />
 
-          <Step
-            num={5}
-            title="Enable Privileged Gateway Intents"
-            body={
-              <>
-                On the <strong>Bot</strong> tab, scroll to{" "}
-                <strong>Privileged Gateway Intents</strong> and toggle:
+        <Step
+          num={4}
+          title="Reset and copy the bot token"
+          body={
+            <>
+              Open the <strong>Bot</strong> tab → click <strong>Reset Token</strong> →{" "}
+              <strong>Yes, do it!</strong> → <strong>Copy</strong>, then paste it here.
+              <div className="fgrid cols-1 bot-field">
+                <div className="fcell">
+                  <label className="field-label" htmlFor={tokenField}>Bot token · write-only</label>
+                  <input
+                    id={tokenField}
+                    className="input mono"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    data-1p-ignore
+                    data-lpignore="true"
+                    value={setup.draft.token}
+                    onChange={(event) => setup.setToken(event.target.value)}
+                    aria-invalid={tokenCheck.state === "invalid"}
+                    aria-describedby={`${tokenField}-msg`}
+                    placeholder={summary.tokenConfigured ? "Leave empty to keep the stored token" : "Paste the token"}
+                  />
+                  <span
+                    id={`${tokenField}-msg`}
+                    className={tokenCheck.state === "invalid" ? "field-error" : "field-hint"}
+                    aria-live="polite"
+                  >
+                    {tokenCheck.message ?? (summary.tokenConfigured
+                      ? `A token is already stored${summary.tokenHint ? ` (${summary.tokenHint})` : ""}. It is never shown again; paste a new one only to replace it.`
+                      : "No token stored yet for this bot.")}
+                  </span>
+                </div>
+              </div>
+              <div style={{ marginTop: 6 }}>
+                <Notice tone="warn">
+                  <ShieldAlert className="icon" style={iconSm} /> The token is shown <strong>once</strong>.
+                  Treat it like a password — anyone with it can act as the bot. Our backend redacts it
+                  from logs and never returns it via the API.
+                </Notice>
+              </div>
+            </>
+          }
+        />
+
+        <Step
+          num={5}
+          title="Enable Privileged Gateway Intents"
+          body={
+            <>
+              On the <strong>Bot</strong> tab, scroll to <strong>Privileged Gateway Intents</strong>.
+              {portalIntents.length === 0 ? (
+                <p style={{ margin: "4px 0" }}>
+                  {nameForSteps} needs <strong>no privileged intents</strong>: leave all three off. The
+                  House bot is the one that reads the rooms; she only posts, reacts and attaches files.
+                </p>
+              ) : (
                 <ul style={ul}>
-                  {intents.map((i) => (
-                    <li key={i.name}>
-                      <code>{i.name}</code>{" "}
-                      {i.privileged && <Pill tone="warn">privileged</Pill>}{" "}
-                      {i.required ? (
-                        <Pill tone="ok">required</Pill>
-                      ) : (
-                        <Pill tone="neutral">optional</Pill>
-                      )}
-                      {i.note && (
-                        <div style={{ color: "var(--text-muted)", fontSize: "var(--fs-xs)" }}>
-                          {i.note}
-                        </div>
-                      )}
+                  {portalIntents.map((intent) => (
+                    <li key={intent.name}>
+                      <code>{intent.name}</code> {intent.privileged && <Pill tone="warn">privileged</Pill>}{" "}
+                      {intent.required ? <Pill tone="ok">turn on</Pill> : <Pill tone="neutral">optional</Pill>}
+                      {intent.note && <div className="field-hint">{intent.note}</div>}
                     </li>
                   ))}
                 </ul>
-                Leave <code>PRESENCE INTENT</code> off — we don't use it.{" "}
-                <ContextExternalLink href={DISCORD_INTENTS_DOC}>
-                  Discord intent docs <ExternalLinkIcon className="icon" style={iconSm} />
-                </ContextExternalLink>
-              </>
-            }
-          />
-
-          <Step
-            num={6}
-            title="Set bot-tab toggles"
-            body={
-              <>
-                Still on the <strong>Bot</strong> tab:
+              )}
+              Leave <code>PRESENCE INTENT</code> off — we don't use it.
+              <details style={{ marginTop: 6 }}>
+                <summary className="t-small">Requested automatically (no toggle)</summary>
                 <ul style={ul}>
-                  <li>
-                    <strong>PUBLIC BOT</strong> — turn <em>off</em> if you don't want anyone else
-                    inviting your bot.
-                  </li>
-                  <li>
-                    <strong>REQUIRES OAUTH2 CODE GRANT</strong> — leave <em>off</em>.
-                  </li>
-                  {kind === "house" && (
-                    <li>
-                      <strong>SERVER MEMBERS INTENT</strong> only matters if you also want full
-                      member fetches; otherwise the House bot falls back to opportunistic
-                      caching.
+                  {autoIntents.map((intent) => (
+                    <li key={intent.name}>
+                      <code>{intent.name}</code>
+                      {intent.note && <span className="field-hint"> {intent.note}</span>}
                     </li>
+                  ))}
+                </ul>
+              </details>
+              <ContextExternalLink href={DISCORD_INTENTS_DOC}>
+                Discord intent docs <ExternalLinkIcon className="icon" style={iconSm} />
+              </ContextExternalLink>
+            </>
+          }
+        />
+
+        <Step
+          num={6}
+          title="Set bot-tab toggles"
+          body={
+            <>
+              Still on the <strong>Bot</strong> tab:
+              <ul style={ul}>
+                <li>
+                  <strong>PUBLIC BOT</strong> — turn <em>off</em> if you don't want anyone else inviting
+                  your bot.
+                </li>
+                <li>
+                  <strong>REQUIRES OAUTH2 CODE GRANT</strong> — leave <em>off</em>.
+                </li>
+              </ul>
+            </>
+          }
+        />
+
+        <Step
+          num={7}
+          title="Generate an invite link and add the bot to a server"
+          body={
+            <>
+              Use the link below (it follows the Application ID you typed, with the right scopes and
+              permissions) or build one yourself via <strong>OAuth2 → URL Generator</strong>:
+              <ul style={ul}>
+                <li>
+                  <strong>SCOPES:</strong> <code>bot</code>
+                  {kind === "house" && (
+                    <>
+                      {" "}+ <code>applications.commands</code>
+                    </>
                   )}
-                </ul>
-              </>
-            }
-          />
+                </li>
+                <li>
+                  <strong>BOT PERMISSIONS:</strong>
+                  <ul style={ul}>
+                    {permissions.map((permission) => (
+                      <li key={permission}>{permission}</li>
+                    ))}
+                  </ul>
+                </li>
+              </ul>
+              Open the generated URL, pick the server, click <strong>Authorize</strong>. You need{" "}
+              <em>Manage Server</em> on the target guild.
+              <InviteBlock url={inviteUrl} applicationId={typedAppId} guildId={guildId} kind={kind} />
+              <div style={{ marginTop: 6 }}>
+                <ContextExternalLink href={DISCORD_OAUTH_DOC}>
+                  OAuth2 bot-authorization docs <ExternalLinkIcon className="icon" style={iconSm} />
+                </ContextExternalLink>{" "}
+                ·{" "}
+                <ContextExternalLink href={DISCORD_PERMISSIONS_DOC}>
+                  Permission reference <ExternalLinkIcon className="icon" style={iconSm} />
+                </ContextExternalLink>
+              </div>
+            </>
+          }
+        />
 
-          <Step
-            num={7}
-            title="Generate an invite link and add the bot to a server"
-            body={
-              <>
-                Either use the link below (already filled in with the right scopes and
-                permissions) or build one yourself via{" "}
-                <strong>OAuth2 → URL Generator</strong>:
-                <ul style={ul}>
-                  <li>
-                    <strong>SCOPES:</strong> <code>bot</code>
-                    {kind === "house" && (
-                      <>
-                        {" "}+ <code>applications.commands</code>
-                      </>
-                    )}
-                  </li>
-                  <li>
-                    <strong>BOT PERMISSIONS:</strong>
-                    <ul style={ul}>
-                      {permissions.map((p) => (
-                        <li key={p}>{p}</li>
-                      ))}
-                    </ul>
-                  </li>
-                </ul>
-                Open the generated URL, pick the server, click <strong>Authorize</strong>. You need
-                <em> Manage Server</em> on the target guild.
-                <InviteBlock url={inviteUrl} applicationId={applicationId} guildId={guildId} kind={kind} />
-                <div style={{ marginTop: 6 }}>
-                  <ContextExternalLink href={DISCORD_OAUTH_DOC}>
-                    OAuth2 bot-authorization docs <ExternalLinkIcon className="icon" style={iconSm} />
-                  </ContextExternalLink>{" "}
-                  ·{" "}
-                  <ContextExternalLink href={DISCORD_PERMISSIONS_DOC}>
-                    Permission reference <ExternalLinkIcon className="icon" style={iconSm} />
-                  </ContextExternalLink>
+        <Step
+          num={8}
+          title="Verify in Discord"
+          body={
+            <>
+              {isWaifu ? (
+                <>
+                  Give her role access to the channel(s) she should talk in (right-click the channel →{" "}
+                  <strong>Edit Channel → Permissions</strong>, or via a role): <em>View Channel, Send
+                  Messages, Send Messages in Threads, Add Reactions, Attach Files</em>. The House bot
+                  must be in the same server and see those channels too, since it reads them for her.
+                  Then enable her for each channel on the <strong>Rooms</strong> page.
+                </>
+              ) : (
+                <>
+                  The House bot reads the rooms for every waifu, and runs <code>/wake</code> and{" "}
+                  <code>/print</code>. Give its role <em>View Channel</em> and{" "}
+                  <em>Read Message History</em> in each channel your cast should be in (right-click the
+                  channel → <strong>Edit Channel → Permissions</strong>, or via a role). Then choose
+                  which waifus talk in each channel on the <strong>Rooms</strong> page.
+                </>
+              )}
+              <div className="bot-status" aria-live="polite">
+                <span className="field-label">Status</span>
+                <Pill tone={connection.tone}>{connection.text}</Pill>
+                {setup.watching && <span className="field-hint">checking…</span>}
+                {setup.status?.state === "error" && setup.status.error && (
+                  <span className="field-hint">{setup.status.error}</span>
+                )}
+              </div>
+              {onOpenRooms && (
+                <div style={{ marginTop: 8 }}>
+                  <button type="button" className="btn" onClick={onOpenRooms}>
+                    Open Rooms
+                  </button>
                 </div>
-              </>
-            }
-          />
+              )}
+            </>
+          }
+        />
+      </div>
 
-          <Step
-            num={8}
-            title="Verify in Discord"
-            body={
-              <>
-                In the target server, give the bot's role access to the channel(s) you want it to
-                operate in (right-click the channel → <strong>Edit Channel → Permissions</strong>
-                {" "}or via a role). Confirm{" "}
-                <em>View Channel, Send Messages, Read Message History, Add Reactions</em> are
-                allowed. Then come back here and choose at least one character for that channel on the{" "}
-                <strong>Rooms</strong> page.
-              </>
-            }
-          />
+      <div className="bot-save-bar">
+        <div className="bot-save-text">
+          {setup.result ? (
+            <Notice tone={setup.result.ok ? "ok" : "err"}>{setup.result.text}</Notice>
+          ) : willChange.length > 0 ? (
+            <span className="t-small">Unsaved for {nameForSteps}: {willChange.join(", ")}.</span>
+          ) : (
+            <span className="t-small t-mute">Type the Application ID and token above, then save.</span>
+          )}
         </div>
-      )}
+        <button type="button" className="btn primary" onClick={() => void setup.save()} disabled={!setup.saveable || setup.saving}>
+          {setup.saving ? "Saving…" : `Save ${isWaifu ? "her bot" : "House bot"}`}
+        </button>
+      </div>
     </div>
+  );
+}
+
+/** "Which bot?": a radio group, so the arrow keys move between bots and Tab leaves the group. */
+function BotPicker({ setup, style }: { setup: DiscordBotSetup; style: "chips" | "list" }) {
+  const group = useId();
+  if (setup.targets.length <= 1) {
+    const only = setup.targets[0]!;
+    return (
+      <div className="bot-picker-single">
+        <span className="field-label">Setting up</span> <strong>{only.label}</strong>{" "}
+        <span className="field-hint">runs /wake, /print and reads the rooms for the whole cast</span>
+      </div>
+    );
+  }
+  return (
+    <fieldset className={"bot-picker " + style}>
+      <legend className="field-label">Which bot?</legend>
+      {setup.targets.map((target) => (
+        <PickerOption key={target.key} group={group} target={target} setup={setup} style={style} />
+      ))}
+    </fieldset>
+  );
+}
+
+function PickerOption({ group, target, setup, style }: { group: string; target: BotTarget; setup: DiscordBotSetup; style: "chips" | "list" }) {
+  const checked = setup.selected.key === target.key;
+  const badge = setupBadge(target);
+  const connection = connectionLabel(connectionFor(target, setup.runtime.data));
+  const summary = summarizeTarget(target);
+  return (
+    <label className={"bot-pick" + (checked ? " on" : "")}>
+      <input type="radio" name={group} value={target.key} checked={checked} onChange={() => setup.select(target.key)} />
+      <span className="bot-pick-name">{target.label}</span>
+      {style === "list" ? (
+        <>
+          <span className="bot-pick-detail t-micro">{summary.text}</span>
+          <Pill tone={connection.tone}>{connection.text}</Pill>
+        </>
+      ) : (
+        <Pill tone={badge.tone}>{badge.text}</Pill>
+      )}
+    </label>
   );
 }
 
@@ -301,7 +424,7 @@ function InviteBlock({
   kind
 }: {
   url: string | undefined;
-  applicationId: string | undefined;
+  applicationId: string;
   guildId: string | undefined;
   kind: BotKind;
 }) {
@@ -309,7 +432,7 @@ function InviteBlock({
   if (!applicationId) {
     return (
       <Notice tone="info">
-        Paste the Application ID above and an invite link will be generated here automatically.
+        Paste the Application ID in step 3 and an invite link will appear here.
       </Notice>
     );
   }
@@ -321,32 +444,35 @@ function InviteBlock({
     );
   }
   return (
-    <div className="row" style={{ marginTop: 8, gap: 8 }}>
-      <input className="input code" readOnly value={url} style={{ flex: 1, minWidth: 0 }} />
-      <button
-        className="btn"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(url);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          } catch {
-            // ignore; user can copy manually
-          }
-        }}
-      >
-        {copied ? <Check className="icon" /> : <Copy className="icon" />}
-        {copied ? "Copied" : "Copy URL"}
-      </button>
-      <ContextExternalLink className="btn primary" href={url}>
-        Open invite <ExternalLinkIcon className="icon" />
-      </ContextExternalLink>
-      {guildId && (
-        <Pill tone="info">
-          targets guild <code>{guildId}</code>
-        </Pill>
-      )}
-      {kind === "house" && <Pill tone="info">includes slash commands</Pill>}
+    <div className="bot-invite">
+      <input className="input code" readOnly value={url} aria-label="Invite link" onFocus={(event) => event.currentTarget.select()} />
+      <div className="bot-invite-actions">
+        <button
+          type="button"
+          className="btn"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(url);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            } catch {
+              // ignore; the user can copy the selected text by hand
+            }
+          }}
+        >
+          {copied ? <Check className="icon" /> : <Copy className="icon" />}
+          {copied ? "Copied" : "Copy URL"}
+        </button>
+        <ContextExternalLink className="btn primary" href={url}>
+          Open invite <ExternalLinkIcon className="icon" />
+        </ContextExternalLink>
+        {guildId && (
+          <Pill tone="info">
+            targets guild <code>{guildId}</code>
+          </Pill>
+        )}
+        {kind === "house" && <Pill tone="info">includes slash commands</Pill>}
+      </div>
     </div>
   );
 }
