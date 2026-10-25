@@ -310,7 +310,9 @@ export const UsageResponseSchema = z.object({
   groupBy: z.array(z.enum(USAGE_GROUP_KEYS)),
   totals: UsageTotalsSchema,
   groups: z.array(UsageTotalsSchema.extend({ key: z.array(z.string()), label: z.string().optional() })),
-  skippedLines: z.number().int().nonnegative()
+  skippedLines: z.number().int().nonnegative(),
+  /** More than 1000 groups: the rest are added up in one `(other)` group. */
+  groupsCapped: z.literal(true).optional()
 });
 
 export const DetectorConfigResponseSchema = z.object({

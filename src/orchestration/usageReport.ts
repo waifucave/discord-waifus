@@ -2,8 +2,14 @@
 // call in `user/usage/<UTC day>.jsonl`, grouped by local days of one IANA time zone (the host's,
 // unless the caller names another). Ledger files are read one UTC day beyond each edge, so a local
 // day that straddles two UTC files is complete; malformed lines are skipped and counted.
+//
+// Memory stays bounded whatever the range: each file is streamed line by line and every line is
+// filtered and added up at once (nothing is kept per line), at most MAX_USAGE_GROUPS groups are
+// kept (the rest are added to one "(other)" group and `groupsCapped` says so), and `groupBy=turn`
+// covers at most MAX_TURN_RANGE_DAYS days.
 
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { instantOfLocal, localDayKey, nextLocalMidnight } from "../life/clock.js";
 import { USAGE_GROUP_KEYS, type UsageGroupKey } from "../shared/schemas/api.js";
 import { UsageLedgerEntrySchema, type UsageLedgerEntry } from "../shared/schemas/usage.js";
@@ -41,9 +47,18 @@ export type UsageReport = {
   totals: UsageTotals;
   groups: Array<UsageTotals & { key: string[]; label?: string }>;
   skippedLines: number;
+  /** More than MAX_USAGE_GROUPS groups: the rest are added up in one `(other)` group. */
+  groupsCapped?: true;
 };
 
 export const MAX_USAGE_RANGE_DAYS = 366;
+/** The most groups one report keeps; further keys are added to one `(other)` group. */
+export const MAX_USAGE_GROUPS = 1000;
+/** `groupBy=turn` makes a group per turn: it covers at most this many days. */
+export const MAX_TURN_RANGE_DAYS = 31;
+/** A ledger line longer than this is malformed (skipped and counted), never parsed. */
+const MAX_LINE_CHARS = 64 * 1024;
+const OTHER = "(other)";
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/u;
 const NONE = "(none)";
 
@@ -97,7 +112,7 @@ export function shiftDay(day: string, days: number): string {
 }
 
 /** The instant range [start, end) of the local days `from`..`to` in `timeZone`. */
-export function localRange(from: string, to: string, timeZone: string): { start: number; end: number } {
+export function localRange(from: string, to: string, timeZone: string): { start: number; end: number; days: number } {
   const a = parseDay(from, "from");
   const b = parseDay(to, "to");
   const start = instantOfLocal(timeZone, a.year, a.month, a.day, 0, 0).getTime();
@@ -106,7 +121,7 @@ export function localRange(from: string, to: string, timeZone: string): { start:
   if (end <= start) throw new UsageQueryError("to must not be before from.");
   const days = Math.round((Date.UTC(b.year, b.month - 1, b.day) - Date.UTC(a.year, a.month - 1, a.day)) / 86_400_000) + 1;
   if (days > MAX_USAGE_RANGE_DAYS) throw new UsageQueryError(`A usage range covers at most ${MAX_USAGE_RANGE_DAYS} days.`);
-  return { start, end };
+  return { start, end, days };
 }
 
 /** `groupBy=day,waifu`: one or two keys. */
@@ -141,59 +156,83 @@ function keyOf(entry: UsageLedgerEntry, group: UsageGroupKey, timeZone: string):
   }
 }
 
-/** Every ledger line in the local range, parsed (malformed lines counted, not thrown). */
-async function readRange(dataRoot: string, start: number, end: number): Promise<{ entries: UsageLedgerEntry[]; skipped: number }> {
-  const entries: UsageLedgerEntry[] = [];
+/**
+ * Streams every ledger line in the local range to `visit`, parsed (malformed lines counted, not
+ * thrown). One line at a time: no file and no list of entries is held in memory.
+ */
+async function scanRange(dataRoot: string, start: number, end: number, visit: (entry: UsageLedgerEntry) => void): Promise<number> {
   let skipped = 0;
   const firstDay = new Date(start - 86_400_000).toISOString().slice(0, 10);
   const lastDay = new Date(end + 86_400_000).toISOString().slice(0, 10);
   for (let day = firstDay; day <= lastDay; day = shiftDay(day, 1)) {
-    let raw: string;
+    const stream = createReadStream(usageLedgerPath(dataRoot, day), { encoding: "utf8" });
+    const opened = await new Promise<boolean>((resolve) => {
+      stream.once("open", () => resolve(true));
+      stream.once("error", () => resolve(false));
+    });
+    if (!opened) continue;
+    const lines = createInterface({ input: stream, crlfDelay: Infinity });
     try {
-      raw = await readFile(usageLedgerPath(dataRoot, day), "utf8");
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        if (line.length > MAX_LINE_CHARS) {
+          skipped += 1;
+          continue;
+        }
+        let parsed;
+        try {
+          parsed = UsageLedgerEntrySchema.safeParse(JSON.parse(line));
+        } catch {
+          skipped += 1;
+          continue;
+        }
+        if (!parsed.success) {
+          skipped += 1;
+          continue;
+        }
+        const at = Date.parse(parsed.data.at);
+        if (at >= start && at < end) visit(parsed.data);
+      }
     } catch {
-      continue;
-    }
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      let parsed;
-      try {
-        parsed = UsageLedgerEntrySchema.safeParse(JSON.parse(line));
-      } catch {
-        skipped += 1;
-        continue;
-      }
-      if (!parsed.success) {
-        skipped += 1;
-        continue;
-      }
-      const at = Date.parse(parsed.data.at);
-      if (at >= start && at < end) entries.push(parsed.data);
+      // A file that fails mid-read (removed, unreadable) counts what was read.
+    } finally {
+      lines.close();
+      stream.destroy();
     }
   }
-  return { entries, skipped };
+  return skipped;
 }
 
 export async function usageReport(dataRoot: string, query: UsageQuery): Promise<UsageReport> {
   const timeZone = assertTimeZone(query.timeZone);
-  const { start, end } = localRange(query.from, query.to, timeZone);
-  const { entries, skipped } = await readRange(dataRoot, start, end);
+  const { start, end, days } = localRange(query.from, query.to, timeZone);
+  if (query.groupBy.includes("turn") && days > MAX_TURN_RANGE_DAYS) {
+    throw new UsageQueryError(`groupBy=turn covers at most ${MAX_TURN_RANGE_DAYS} days; pick a shorter range.`);
+  }
   const totals = emptyTotals();
   const groups = new Map<string, UsageTotals & { key: string[] }>();
-  for (const entry of entries) {
-    if (query.waifuId && entry.waifuId !== query.waifuId) continue;
-    if (query.purpose && entry.purpose !== query.purpose) continue;
-    if (query.guildId && entry.guildId !== query.guildId) continue;
+  let capped = false;
+  const otherKey = query.groupBy.map(() => OTHER);
+  const skipped = await scanRange(dataRoot, start, end, (entry) => {
+    if (query.waifuId && entry.waifuId !== query.waifuId) return;
+    if (query.purpose && entry.purpose !== query.purpose) return;
+    if (query.guildId && entry.guildId !== query.guildId) return;
     add(totals, entry);
-    const key = query.groupBy.map((group) => keyOf(entry, group, timeZone));
-    const id = JSON.stringify(key);
+    let key = query.groupBy.map((group) => keyOf(entry, group, timeZone));
+    let id = JSON.stringify(key);
     let group = groups.get(id);
+    if (!group && groups.size >= MAX_USAGE_GROUPS) {
+      capped = true;
+      key = otherKey;
+      id = JSON.stringify(key);
+      group = groups.get(id);
+    }
     if (!group) {
       group = { key, ...emptyTotals() };
       groups.set(id, group);
     }
     add(group, entry);
-  }
+  });
   return {
     from: query.from,
     to: query.to,
@@ -201,7 +240,8 @@ export async function usageReport(dataRoot: string, query: UsageQuery): Promise<
     groupBy: query.groupBy,
     totals,
     groups: [...groups.values()].sort((a, b) => a.key.join("\u0000").localeCompare(b.key.join("\u0000"))),
-    skippedLines: skipped
+    skippedLines: skipped,
+    ...(capped ? { groupsCapped: true as const } : {})
   };
 }
 

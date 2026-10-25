@@ -411,7 +411,9 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   one or two of `day`, `waifu`, `purpose`, `model`, `provider`, `turn`, `place`, `server` →
   `{from, to, timeZone, groupBy, totals, groups: [{key, label?, calls, inputTokens, outputTokens,
   cacheReadTokens, cacheWriteTokens, reasoningTokens, costUsd, costKnownCalls, unpricedCalls,
-  failedCalls}], skippedLines}`.
+  failedCalls}], skippedLines, groupsCapped?}`. At most 1000 groups: further keys are added up in
+  one `(other)` group and `groupsCapped: true` says so. `groupBy=turn` covers at most 31 days
+  (400 otherwise). The ledger is streamed line by line, so a long range costs time, not memory.
 - `GET /api/search/usage` — today's web searches and page fetches, the caps, whether an Exa key is
   saved, and the newest queries.
 - `GET /api/detector/config` → `{target, default}`; `PUT /api/detector/config` `{target}` sets the

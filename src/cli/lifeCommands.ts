@@ -236,5 +236,6 @@ export async function usageCommand(
   if (report.totals.unpricedCalls) ctx.out("  * some calls have no known price");
   if (report.totals.failedCalls) ctx.out(`  ${report.totals.failedCalls} failed or aborted call(s) included`);
   if (report.skippedLines) ctx.out(`  ${report.skippedLines} unreadable ledger line(s) skipped`);
+  if (report.groupsCapped) ctx.out("  over 1000 groups: the rest are added up under (other)");
   return EXIT.ok;
 }

@@ -18,6 +18,8 @@ import {
   UsageResponseSchema
 } from "../src/shared/schemas/api.js";
 import { StorageService } from "../src/storage/storageService.js";
+import { ASSISTANT_USAGE_MAX_GROUPS, usageForAssistant } from "../src/api/assistant/tools.js";
+import { MAX_USAGE_GROUPS } from "../src/orchestration/usageReport.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -89,6 +91,42 @@ describe("GET /api/usage", () => {
     }
     const plain = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage" })).json());
     expect(plain.groupBy).toEqual(["day"]);
+  });
+
+  it("streams the ledger and keeps bounded results: capped groups, groupBy=turn over at most 31 days (review I-5, repro r7)", async () => {
+    const { root, app } = await setup();
+    // 1,500 turns in one day, an oversized line and a torn one.
+    const lines = Array.from({ length: 1500 }, (_, i) => ledgerLine(new Date(Date.UTC(2026, 9, 24, 0, 0, i)).toISOString(), { turnId: `t${i}` }));
+    lines.push(ledgerLine("2026-10-24T12:00:00.000Z", { turnId: "x".repeat(70_000) }), "{torn");
+    await writeLedger(root, "2026-10-24", lines);
+    const byTurn = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2026-10-24&to=2026-10-24&tz=UTC&groupBy=turn" })).json());
+    expect(byTurn.totals.calls).toBe(1500);
+    expect(byTurn.skippedLines).toBe(2);
+    expect(byTurn.groups).toHaveLength(MAX_USAGE_GROUPS + 1);
+    expect(byTurn.groupsCapped).toBe(true);
+    const other = byTurn.groups.find((group) => group.key[0] === "(other)");
+    expect(other?.calls).toBe(1500 - MAX_USAGE_GROUPS);
+    expect(byTurn.groups.reduce((sum, group) => sum + group.calls, 0)).toBe(1500);
+    const tooLong = await app.inject({ method: "GET", url: "/api/usage?from=2026-09-01&to=2026-10-24&tz=UTC&groupBy=turn" });
+    expect(tooLong.statusCode).toBe(400);
+    expect(tooLong.json().message).toMatch(/31 days/u);
+    // A year by day stays fine.
+    const year = UsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/usage?from=2025-10-25&to=2026-10-24&tz=UTC" })).json());
+    expect(year.totals.calls).toBe(1500);
+    expect(year.groupsCapped).toBeUndefined();
+  });
+
+  it("get_usage gives the assistant the costliest groups only", () => {
+    const groups = Array.from({ length: 100 }, (_, i) => ({ key: [`t${i}`], calls: 1, costUsd: i / 100 }));
+    const body = JSON.stringify({ from: "2026-10-24", to: "2026-10-24", totals: { calls: 100 }, groups });
+    const trimmed = JSON.parse(usageForAssistant(200, body)) as { groups: Array<{ key: string[] }>; omittedGroups: number; totals: { calls: number } };
+    expect(trimmed.groups).toHaveLength(ASSISTANT_USAGE_MAX_GROUPS);
+    expect(trimmed.groups[0]!.key).toEqual(["t99"]);
+    expect(trimmed.omittedGroups).toBe(100 - ASSISTANT_USAGE_MAX_GROUPS);
+    expect(trimmed.totals.calls).toBe(100);
+    const small = JSON.stringify({ groups: groups.slice(0, 3) });
+    expect(usageForAssistant(200, small)).toBe(small);
+    expect(usageForAssistant(400, '{"error":"x"}')).toBe('{"error":"x"}');
   });
 });
 

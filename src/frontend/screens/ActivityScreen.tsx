@@ -265,6 +265,7 @@ function UsagePanel() {
             {report.from} … {report.to} · {report.timeZone}
             {report.totals.unpricedCalls ? " · * some calls have no known price" : ""}
             {report.skippedLines ? ` · ${report.skippedLines} unreadable ledger line(s) skipped` : ""}
+            {report.groupsCapped ? " · over 1000 groups: the rest are added up under (other)" : ""}
           </div>
         </div>
       )}

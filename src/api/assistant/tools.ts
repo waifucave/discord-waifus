@@ -83,6 +83,27 @@ const NO_ARGS = { type: "object", properties: {}, additionalProperties: false } 
 /** get_setting_help answers are cut here (overhaul spec §10.7). */
 const SETTING_HELP_MAX_CHARS = 12_000;
 
+/** The most usage groups one `get_usage` answer carries (the costliest; the rest are counted). */
+export const ASSISTANT_USAGE_MAX_GROUPS = 40;
+
+/**
+ * A usage report sized for the assistant's context: the costliest groups only, the rest counted in
+ * `omittedGroups` (their calls and cost stay in `totals`).
+ */
+export function usageForAssistant(statusCode: number, body: string): string {
+  if (statusCode !== 200) return body;
+  let report: { groups?: Array<{ costUsd?: number; calls?: number }> } & Record<string, unknown>;
+  try {
+    report = JSON.parse(body) as typeof report;
+  } catch {
+    return body.slice(0, SETTING_HELP_MAX_CHARS);
+  }
+  const groups = Array.isArray(report.groups) ? report.groups : [];
+  if (groups.length <= ASSISTANT_USAGE_MAX_GROUPS) return body;
+  const kept = [...groups].sort((a, b) => (b.costUsd ?? 0) - (a.costUsd ?? 0) || (b.calls ?? 0) - (a.calls ?? 0)).slice(0, ASSISTANT_USAGE_MAX_GROUPS);
+  return JSON.stringify({ ...report, groups: kept, omittedGroups: groups.length - kept.length, note: `Only the ${ASSISTANT_USAGE_MAX_GROUPS} costliest groups are listed; totals cover everything. Narrow the range or the groupBy for more.` });
+}
+
 const MODEL_CHOICE_PARAMETER = {
   type: "object",
   description: "A curated model from list_models.",
@@ -957,7 +978,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
         if (typeof args[key] === "string" && args[key]) query.set(key, args[key] as string);
       }
       const suffix = query.toString();
-      return (await inject(ctx, { method: "GET", url: `/api/usage${suffix ? `?${suffix}` : ""}` })).body;
+      const result = await inject(ctx, { method: "GET", url: `/api/usage${suffix ? `?${suffix}` : ""}` });
+      return usageForAssistant(result.status, result.body);
     }
   },
   {

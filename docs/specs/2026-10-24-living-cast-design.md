@@ -1342,7 +1342,10 @@ Choices L3 made where the sections above leave room (owner review welcome):
   sends fail). A waifu with no bot linked speaks through the House bot and is not a notice.
 - **Usage**: `groupBy` also takes `provider` and `server`, one or two keys; totals carry
   `failedCalls`; ranges are at most 366 days; `waifus usage` reads the ledger directly (works with
-  the host stopped).
+  the host stopped). The ledger is streamed (one line at a time, added up at once); a report keeps
+  at most 1000 groups (the rest in one `(other)` group, `groupsCapped: true`); `groupBy=turn`
+  covers at most 31 days; the assistant's `get_usage` gets the 40 costliest groups and a count of
+  the rest (totals cover everything).
 - **CLI**: `waifus get|set|unset|list|help` over the verified host (identity handshake on
   `GET /api/runtime`); `app` keys also offline in `config.toml`, except `updates.enabled`, which
   stays with `waifus update --auto`. Targets are `group[:id]` plus the dotted shorthand for
