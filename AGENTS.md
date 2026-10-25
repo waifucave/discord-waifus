@@ -136,7 +136,7 @@ NPM_CONFIG_CACHE=/tmp/codex-npm-cache npm install --prefix "$SMOKE_DIR" -g "$PAC
 DC_WAIFUS_HOME="$SMOKE_DIR/home" "$SMOKE_DIR/bin/waifus" doctor
 ```
 
-Keep release tarballs under `release-artifacts/`; do not leave `.tgz` files in the repo root or commit them. The GitHub `Root npm Package` workflow uses the repository `NPM_TOKEN`; verify its result because credentials can expire. If authenticated manual publication is needed, publish the reviewed archive through:
+Keep release tarballs under `release-artifacts/`; do not leave `.tgz` files in the repo root or commit them. The GitHub `Root npm Package` workflow publishes through npm trusted publishing (no stored token); verify its result, since the npm package's trusted publisher must match this repo and workflow file. If authenticated manual publication is needed, publish the reviewed archive through:
 
 ```bash
 node scripts/publish-archive.mjs <archive> <sha256> <package-name> <version> <latest|next> --yes

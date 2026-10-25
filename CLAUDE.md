@@ -21,7 +21,9 @@ specs and plans describe earlier checkpoints and do not establish present releas
 Remote releases additionally require all five exact optional helper pins and matching registry
 integrities/signatures/compatibility before packing. `release:beta --dry-run` checks the proposed
 version in memory without changing tracked version files. The root publish workflow requires
-installed-helper launch/cold-restart checks on every native target before using `NPM_TOKEN`.
+installed-helper launch/cold-restart checks on every native target before it publishes. It
+publishes through npm trusted publishing (GitHub OIDC for this repo and `npm-root-package.yml`,
+configured on the npm package), so no npm token is stored.
 The five `@waifucave/ts-connect-*` helper packages are published: `package.json` pins them
 exactly (currently 0.1.14) and `package-lock.json` resolves each from registry.npmjs.org with an
 integrity hash. A helper bump must publish all five first; a missing one blocks the release.
