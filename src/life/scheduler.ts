@@ -23,7 +23,7 @@ import { availabilityAt, instantOfLocal, localParts, parseLocalDateTime, sleepWi
 import type { LifeDeps } from "./deps.js";
 import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
 import { checkEnvFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
-import type { ReminderEntry, WatchEntry } from "./home/specialFiles.js";
+import { onceKey, type ReminderEntry, type WatchEntry } from "./home/specialFiles.js";
 import { morningBatch, type MorningPlace } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
@@ -186,11 +186,19 @@ export class Scheduler {
     const now = deps.now();
     const store = homeStoreFor(deps, waifu);
     const entries = await store.readSchedule(deps.timeZone);
-    const fired = new Set((await store.readScheduleIds()).fired);
+    const ids = await store.readScheduleIds();
+    const fired = new Set(ids.fired);
     const due = entries.filter((entry) => (parseLocalDateTime(entry.at, deps.timeZone)?.getTime() ?? Infinity) <= now.getTime());
     if (due.length === 0) return;
     // An occurrence already routed (a crash before its removal) is removed now, never routed again.
-    const fresh = due.filter((reminder) => !fired.has(reminderWakeId(reminder, deps.timeZone)));
+    // After the fired list was lost (a corrupt side file, kept aside), an occurrence due before the
+    // loss may have fired already: it is removed without firing rather than risk a second wake.
+    const lostBefore = ids.recoveredAt ? Date.parse(ids.recoveredAt) : undefined;
+    const fresh = due.filter(
+      (reminder) =>
+        !fired.has(reminderWakeId(reminder, deps.timeZone)) &&
+        !(lostBefore !== undefined && parseLocalDateTime(reminder.at, deps.timeZone)!.getTime() <= lostBefore)
+    );
     for (const reminder of fresh) {
       const at = parseLocalDateTime(reminder.at, deps.timeZone)!;
       const wake: Wake = { id: reminderWakeId(reminder, deps.timeZone), reason: "reminder", note: reminder.note, at: at.toISOString() };
@@ -216,7 +224,15 @@ export class Scheduler {
     const fired = new Set(ids.fired);
     const due = entries.filter((entry) => (parseLocalDateTime(entry.timeout, deps.timeZone)?.getTime() ?? Infinity) <= now.getTime());
     if (due.length === 0) return;
-    const fresh = due.filter((watch) => !fired.has(watchTimeoutWakeId(watch, deps.timeZone)));
+    // A once watch that already matched never also times out; after a lost fired list (see reminders)
+    // a timeout due before the loss is dropped without a wake.
+    const lostBefore = ids.recoveredAt ? Date.parse(ids.recoveredAt) : undefined;
+    const fresh = due.filter(
+      (watch) =>
+        !fired.has(watchTimeoutWakeId(watch, deps.timeZone)) &&
+        !fired.has(onceKey(watch)) &&
+        !(lostBefore !== undefined && parseLocalDateTime(watch.timeout, deps.timeZone)!.getTime() <= lostBefore)
+    );
     for (const watch of fresh) {
       const at = parseLocalDateTime(watch.timeout, deps.timeZone)!;
       await this.o.router.route(waifu.id, { id: watchTimeoutWakeId(watch, deps.timeZone), reason: "watch_timeout", watchId: watch.id, note: watch.note, at: at.toISOString() });

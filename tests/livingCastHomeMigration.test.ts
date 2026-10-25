@@ -94,7 +94,7 @@ describe("living-cast-home-v1 (§16.13)", () => {
     expect(files.has("user/waifus/aria/life/watches.json")).toBe(false);
     expect(files.has("user/.archive/living-cast/life/aria/watches.json")).toBe(true);
     const state = JSON.parse(files.get("user/waifus/aria/life/state.json")!) as Record<string, unknown>;
-    expect(state).toMatchObject({ pendingEpochStart: true, pendingEpochReason: "reset", revision: 8, epoch: 3, summary: "s" });
+    expect(state).toMatchObject({ pendingEpochStart: true, pendingEpochReason: "tools", revision: 8, epoch: 3, summary: "s" });
     // Re-running changes nothing.
     expect(await migrateLivingCastHome(root, { now: () => new Date(NOW.getTime() + 3_600_000), timeZone: "UTC" })).toBeUndefined();
     expect(await snapshot(root)).toEqual(files);

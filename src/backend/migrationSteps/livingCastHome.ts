@@ -14,9 +14,10 @@
 //   to the archive (`user/.archive/living-cast/life/<id>/`). Her file already there (a re-run after
 //   a crash) is kept; the side file is then built from the file on disk.
 // - A life whose epoch snapshot still lists retired tools (`send_message`, `write_note`, …) gets a
-//   pending epoch start (reason `reset`: her summary carries over, her old logs stay their usual 7
-//   days), since the tool list changed (§5.2). Once that epoch has started, its snapshot lists the
-//   new tools, so a re-run marks nothing.
+//   pending epoch start (reason `tools`): before her next turn her epoch is summarised with the old
+//   calls turned into text (`compactRetiredTools`); only a failed summary falls back to a reset (her
+//   summary carries over, her old logs stay their usual 7 days). Once that epoch has started, its
+//   snapshot lists the new tools, so a re-run marks nothing.
 // A file that cannot be parsed is left alone and the step reports itself incomplete.
 
 import { createHash } from "node:crypto";
@@ -110,7 +111,7 @@ async function markEpoch(waifuDir: string, now: Date, counts: Counts): Promise<v
     revision: typeof state.revision === "number" ? state.revision + 1 : 1,
     updatedAt: now.toISOString(),
     pendingEpochStart: true,
-    pendingEpochReason: "reset"
+    pendingEpochReason: "tools"
   });
   counts.epochs += 1;
 }

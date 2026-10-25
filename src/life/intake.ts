@@ -308,7 +308,7 @@ export class Intake {
           directWakes.push({ waifu, wake: { id: newWakeId(), reason: ordered[0]!, ...(ordered.length > 1 ? { reasons: ordered } : {}), ...base }, shared });
         }
       }
-      const fired = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay });
+      const fired = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own, createdAt: raw.createdAt }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay });
       for (const { watch, matched } of fired) {
         await this.o.router.route(waifu.id, { id: newWakeId(), reason: "watch", watchId: watch.id, matched, note: watch.note, ...base }, { guildId: input.guildId });
       }

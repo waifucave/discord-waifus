@@ -321,6 +321,11 @@ export function checkScheduleText(text: string, ctx: ScheduleCheckContext): Sche
 
 // ---- watches.json (§16.5) -----------------------------------------------------------------------------
 
+/** The key of a `once` watch's match in the fired list (a file the app could not rewrite never fires it twice). */
+export function onceKey(watch: Pick<WatchEntry, "id" | "timeout">): string {
+  return `once-${watch.id}-${watch.timeout}`;
+}
+
 export type WatchBindingEntry = { place?: string; from?: string; words?: string[]; any_message?: boolean };
 export type WatchEntry = { id: string; timeout: string; once: boolean; note: string; when: WatchBindingEntry[] };
 

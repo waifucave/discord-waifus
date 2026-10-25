@@ -418,13 +418,18 @@ async function dropWatches(home: HomeStore, timeZone: string, drop: (bindings: A
  * for the person (their DM's downloads, their attachments in rooms, and copies she moved or made
  * with `cp`), with those index entries; and `/tmp/dm/<handle>/` of their DM, whole. `dmOnly`
  * (`/forget conversation`): only what came from the DM. Returns how many files went.
+ *
+ * `tombstones`: the hashes forgotten so far (filled in, and used): the provenance entries go with
+ * the files, so a copy a running Bash command saves after this step is found only by them when the
+ * step runs again under her life lock (spec §16.9).
  */
-export async function scrubPersonFiles(deps: LifeDeps, waifu: WaifuConfig, identity: Pick<ForgetIdentity, "userId">, o: { dmOnly?: boolean } = {}): Promise<number> {
+export async function scrubPersonFiles(deps: LifeDeps, waifu: WaifuConfig, identity: Pick<ForgetIdentity, "userId">, o: { dmOnly?: boolean; tombstones?: Set<string> } = {}): Promise<number> {
   const home = homeStoreFor(deps, waifu);
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
   const theirs = (entry: { placeKey: string; authorId: string }) => entry.placeKey === dmKey || (!o.dmOnly && entry.authorId === identity.userId);
   const index = await home.readIndex();
-  const hashes = new Set(index.entries.filter(theirs).map((entry) => entry.sha256));
+  const hashes = o.tombstones ?? new Set<string>();
+  for (const entry of index.entries) if (theirs(entry)) hashes.add(entry.sha256);
   let removed = 0;
   // Their DM's folder of downloads goes whole (named by her DM handle, before the handle is dropped).
   const handles = await readLifeFile(deps.storage, waifu.id, "handles").catch(() => ({ handles: {} as Record<string, string> }));

@@ -98,7 +98,8 @@ describe("Read of an image (§16.3.3)", () => {
     expect(ctx.route.imageInput).toBe(true);
     const [a, b, c] = await pictures(w, 3);
     expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual(["inline"]);
-    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual([{ text: "[image: a lemon tart]" }]);
+    // A picture already shown this epoch is not shown again: she is told so, with its text.
+    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual([{ text: "[image: you've already seen this picture; the text in it: a lemon tart]" }]);
     expect(modes((await lifeTool("Read")!.run({ file_path: b }, ctx)).content)).toEqual(["inline"]);
     // The epoch's count cap (2): the third image is its OCR text.
     expect(modes((await lifeTool("Read")!.run({ file_path: c }, ctx)).content)).toEqual([{ text: "[image: a lemon tart]" }]);

@@ -16,8 +16,11 @@ import { toolError, type ToolOutput } from "./tools/types.js";
 
 export const MAINTENANCE_MAX_ROUNDS = 30;
 
+/** The session's opening file listing names at most this many files. */
+export const MAINTENANCE_LISTING_MAX = 200;
+
 export const MAINTENANCE_INSTRUCTION =
-  "[system] It's quiet; time to tidy your home. Resolve contradictions in your notes (the newest fact wins), merge duplicates, merge or delete notes that are stale, fix broken links in MEMORY.md and keep it short: one line per note, well under 200 lines. Remove reminders and watches you no longer need from schedule.json and watches.json. /tmp cleans itself. When you're done, reply with one short line saying what you changed.";
+  "[system] It's quiet; time to tidy your home. Resolve contradictions in your notes (the newest fact wins), merge duplicates, merge or delete notes that are stale, fix broken links in MEMORY.md and keep it short: one line per note, well under 200 lines. Remove reminders and watches you no longer need from schedule.json and watches.json; edit those two carefully: a broken file is refused with the line and column. /tmp cleans itself. When you're done, reply with one short line saying what you changed.";
 
 export function scrubInstruction(o: { userId: string; names: readonly string[] }): string {
   const who = o.names.length > 0 ? `${o.names.map((name) => `"${name}"`).join(", ")} (<@${o.userId}>)` : `<@${o.userId}>`;
@@ -48,19 +51,27 @@ export async function runNotesSession(
 ): Promise<MaintenanceOutcome> {
   const store = homeStoreFor(deps, o.waifu);
   const before = new Map(await store.readAllText());
-  const listing = [...before.keys()].sort();
+  // Every file of her home (pictures and large files too), the first MAINTENANCE_LISTING_MAX by name.
+  const all = (await store.files.walk("home").catch(() => [])).filter((entry) => entry.kind === "file").map((entry) => entry.path.segments.join("/")).sort();
+  const listing = all.slice(0, MAINTENANCE_LISTING_MAX);
+  const more = all.length - listing.length;
   const toolNames = maintenanceToolNames(deps.config());
   const messages: ProviderMessageLike[] = [
     {
       role: "user",
       content: [
         { type: "text", text: o.instruction },
-        { type: "text", text: listing.length > 0 ? `Your files: ${listing.map((name) => `~/${name}`).join(", ")}` : "Your home is empty." },
+        {
+          type: "text",
+          text: listing.length > 0 ? `Your files: ${listing.map((name) => `~/${name}`).join(", ")}${more > 0 ? `, … and ${more} more; use \`ls -R\`` : ""}` : "Your home is empty."
+        },
         { type: "text", text: timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability }) }
       ]
     }
   ];
   const tools = modelTools(toolNames, deps.config());
+  // One scratch for the whole session (a Read earlier in it lets a later Write replace a special file).
+  const turn = { id: `${o.kind}-${deps.now().getTime()}`, sentPlaces: new Set<string>(), dmUsersSent: new Set<string>(), fetches: 0 };
   let rounds = 0;
   let summary = "";
   try {
@@ -90,7 +101,8 @@ export async function runNotesSession(
               deps,
               waifu: o.waifu,
               route: o.model,
-              turn: { id: `maintenance-${rounds}`, sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 },
+              turn,
+              mode: "session",
               signal: o.signal ?? new AbortController().signal,
               toolCallId: call.id,
               selfAuthorIds: [],

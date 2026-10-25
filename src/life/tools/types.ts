@@ -39,6 +39,12 @@ export type TurnScratch = {
   dm?: boolean;
   /** Searches and fetches recorded on the dashboard's list this turn (marked private if the turn becomes a DM turn). */
   webEntries?: number;
+  /**
+   * Her special files (schedule.json, watches.json) as she last read them this turn: path key →
+   * content hash. A whole-file Write needs a current Read (a reminder fires or a watch times out on
+   * its own in between).
+   */
+  readHashes?: Map<string, string>;
 };
 
 export type ToolContext = {
@@ -54,6 +60,11 @@ export type ToolContext = {
   toolNames: readonly string[];
   /** A side-effect tool's intent (§5.7): the tool may add lines to it (send: the content digest). */
   intent?: { turnId: string; toolCallId: string; tool: string; argsDigest: string };
+  /**
+   * `life` (default): a turn of her life. `session`: nightly maintenance or a forget's notes scrub,
+   * outside her life: Read never shows an image inline and never touches her life's image state.
+   */
+  mode?: "life" | "session";
 };
 
 export type LifeTool = {
@@ -62,6 +73,8 @@ export type LifeTool = {
   /** The description under the current configuration (Bash with or without python3). */
   describe?: (config: AppConfig) => string;
   inputSchema: Record<string, unknown>;
+  /** Its input schema under the current config (limits it states), when they depend on it. */
+  schemaFor?: (config: AppConfig) => Record<string, unknown>;
   /** Writes an intent before it runs and a done line after (§5.7). */
   sideEffect: boolean;
   run(input: unknown, ctx: ToolContext): Promise<ToolOutput>;

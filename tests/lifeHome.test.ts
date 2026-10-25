@@ -213,4 +213,21 @@ describe("forget by content hash (§16.9)", () => {
     expect(await herFile(w, "aria", "tmp/dm/kevin/a1-dm.txt")).toBeUndefined();
     expect(await herFile(w, "aria", "tmp/bake-club/general/b2-room.txt")).toBe("from the room");
   });
+
+  it("a copy a running Bash saves after step 1 is found by the forget's tombstones under her life lock (review S7)", async () => {
+    const w = await lifeWorld(roots);
+    const store = await storeOf(w);
+    const resolved = store.resolve("/tmp/dm/kevin/a1-dm.txt");
+    if (!resolved.ok) throw new Error(resolved.error);
+    await store.saveDownload(resolved.path, Buffer.from("from the dm"), { placeKey: `dm_${KEVIN}_aria`, authorId: KEVIN, messageId: "1", attachmentId: "1", downloadedAt: w.clock.now().toISOString() });
+    const prepared = await w.cast.prepareForget({ waifuId: "aria", userId: KEVIN, source: "owner", scope: "everything" });
+    expect(prepared).toBeDefined();
+    expect(await herFile(w, "aria", "tmp/dm/kevin/a1-dm.txt")).toBeUndefined();
+    // Her Bash command, started before the forget, saves its copy now (the provenance is gone).
+    const copy = store.resolve("~/kept.txt");
+    if (!copy.ok) throw new Error(copy.error);
+    await store.files.writeBytes(copy.path, Buffer.from("from the dm"));
+    await w.cast.runForget(prepared!);
+    expect(await herFile(w, "aria", "home/kept.txt")).toBeUndefined();
+  });
 });

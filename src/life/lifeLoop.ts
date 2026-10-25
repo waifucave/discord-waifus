@@ -31,7 +31,7 @@ import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
 import { timeLine } from "./clock.js";
-import { compactLife, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
+import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
@@ -342,6 +342,20 @@ export class Life {
     const harness = await currentHarness(deps, waifu, model);
     if (!state.systemSnapshot) {
       return startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "first", summarized: false, strippedBlocks: 0, first: true });
+    }
+    if (state.pendingEpochStart && state.pendingEpochReason === "tools") {
+      const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
+      const outcome = await compactRetiredTools(deps, {
+        waifu,
+        state,
+        lines: await readLifeLog(deps.storage, this.waifuId, state.epoch),
+        summaryRoute: old ?? lifeModelOf(deps, waifu),
+        ...(state.modelRoute?.effort ? { effort: state.modelRoute.effort } : {}),
+        nextHarness: harness,
+        omit: { deleted: await this.deletedOmissions(state), people: [] },
+        signal
+      });
+      return outcome.state;
     }
     if (state.pendingEpochStart) return startPendingEpoch(deps, this.waifuId, state, harness);
     const lines = await readLifeLog(deps.storage, this.waifuId, state.epoch);

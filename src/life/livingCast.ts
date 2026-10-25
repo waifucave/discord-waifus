@@ -50,7 +50,7 @@ import { MEMORY_INDEX } from "./home/memoryIndex.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces } from "./places.js";
 import { printLifeLines, printSystemPromptText } from "./lifeView.js";
-import { compactLife, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
+import { compactLife, compactRetiredTools, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
 import { WebTools } from "./search.js";
@@ -97,6 +97,8 @@ export type PreparedForget = {
   scope: "everything" | "conversation";
   source: "owner" | "dm";
   rateLimited: boolean;
+  /** The hashes of her files from the person that step 1 removed (found again under her life lock). */
+  tombstones: Set<string>;
 };
 export type PreparedOwnerForget = Array<{ waifu: WaifuConfig; scrub: PendingScrub; identity: ForgetIdentity }>;
 
@@ -548,10 +550,11 @@ export class LivingCast {
     // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10),
     // and her files from them (§16.9 step 1; `conversation`: only what came from the DM).
     await this.dropDmMark(o.waifuId, o.userId);
-    await scrubPersonFiles(deps, waifu, identity, { dmOnly: o.scope === "conversation" }).catch((error: unknown) => {
+    const tombstones = new Set<string>();
+    await scrubPersonFiles(deps, waifu, identity, { dmOnly: o.scope === "conversation", tombstones }).catch((error: unknown) => {
       deps.logger.warn("Forget could not delete her files from the person", { waifuId: o.waifuId, message: error instanceof Error ? error.message : String(error) });
     });
-    return { waifu, identity, scrub, scope: o.scope, source: o.source, rateLimited };
+    return { waifu, identity, scrub, scope: o.scope, source: o.source, rateLimited, tombstones };
   }
 
   /** Forget: the intake mark of her DM with this person, written at once (F10). */
@@ -569,7 +572,16 @@ export class LivingCast {
     const deps = this.deps;
     const { waifu, identity, scrub } = prepared;
     const none: ForgetScrubResult = { waifuId: waifu.id, removedLines: 0, removedSentences: 0, needsReview: [] };
-    // Rate limited, or the cast is stopping: the scrub stays queued (it runs at her next start).
+    // Step 1 again once her running turn is over: a Bash command that was running may have saved a
+    // copy of a file step 1 removed (its provenance is gone; the tombstones still know its hash).
+    const filesAgain = () =>
+      scrubPersonFiles(deps, waifu, identity, { dmOnly: prepared.scope === "conversation", tombstones: prepared.tombstones }).catch((error: unknown) => {
+        deps.logger.warn("Forget could not delete her files from the person", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+        return 0;
+      });
+    // Rate limited, or the cast is stopping: the scrub stays queued (it runs at her next start). The
+    // file step still runs again after her current turn (never aborted for a rate-limited request).
+    if (prepared.rateLimited && !this.stopped) void this.track(this.mutex.run(lifeLocks.life(waifu.id), filesAgain));
     if (prepared.rateLimited || this.stopped) return { ...none, queued: true };
     if (prepared.source === "dm") {
       // Recorded before the abort, so a burst of requests cannot abort her turns again and again.
@@ -582,6 +594,7 @@ export class LivingCast {
     const lease = this.activity.begin("forget");
     return this.mutex
       .run(lifeLocks.life(waifu.id), async () => {
+        await filesAgain();
         if (prepared.scope === "conversation") {
           await this.forgetConversation(waifu, identity);
           await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
@@ -667,6 +680,21 @@ export class LivingCast {
         const harness = await currentHarness(deps, waifu, model);
         // A forget or a deferred reset left an epoch to start: that epoch starts now, nothing is
         // summarised again (a reset's old log would come back into the summary).
+        // A tool-surface change is summarised with the old calls as text (§16.13).
+        if (state.pendingEpochStart && state.pendingEpochReason === "tools") {
+          const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
+          const outcome = await compactRetiredTools(deps, {
+            waifu,
+            state,
+            lines: await readLifeLog(deps.storage, waifuId, state.epoch),
+            summaryRoute: old ?? model,
+            ...(state.modelRoute?.effort ? { effort: state.modelRoute.effort } : {}),
+            nextHarness: harness,
+            omit: { deleted: state.deletedReadIds.map((id) => `message ${id}`), people: [] },
+            signal: controller.signal
+          });
+          return { epoch: outcome.state.epoch, summarized: outcome.summarized, aborted: outcome.aborted === true };
+        }
         if (state.pendingEpochStart) {
           const next = await startPendingEpoch(deps, waifuId, state, harness);
           return { epoch: next.epoch, summarized: false, aborted: false };

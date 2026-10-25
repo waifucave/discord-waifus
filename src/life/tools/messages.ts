@@ -17,8 +17,9 @@ import { readActiveChatParticipants } from "../../orchestration/stores/participa
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { OutgoingFile } from "../../discord/client.js";
 import { clockText } from "../clock.js";
+import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
-import { safeFileName, type HerPath } from "../home/pathRules.js";
+import { pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
@@ -32,6 +33,8 @@ import { CANNOT_POST, MESSAGE_TOO_OLD, parseInput, toolError, UNKNOWN_PLACE, typ
 export const MAX_DOWNLOADS_PER_READ = 10;
 /** A downloaded file larger than this is not attached by SendMessage (§16.3.2). */
 export const MAX_SEND_FILE_BYTES = 10 * 1024 * 1024;
+/** Discord's limit for one message's files together (a bot in a server without boosts). */
+export const MAX_SEND_TOTAL_BYTES = 10 * 1024 * 1024;
 const OCR_HINT_CHARS = 40;
 const NO_BOT = "you have no Discord bot of your own, so you can't post; the owner has been told";
 
@@ -122,6 +125,7 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
     ...deleted.filter((id) => refs.has(id)).map((id) => ({ id, deleted: true }))
   ].sort((a, b) => compareIds(a.id, b.id));
   const downloads = new Downloads(ctx, place);
+  downloads.plan(entries.flatMap((entry) => (entry.message && (ctx.selfAuthorIds.includes(entry.message.authorId) || !isRemovedMessage(entry.message, forgotten)) ? [entry.message] : [])));
   for (const entry of entries) {
     if (entry.deleted) {
       const at = snowflakeTime(entry.id);
@@ -172,12 +176,15 @@ const TEXT_EXTENSIONS = new Set([
   "sh", "bash", "zsh", "sql", "ini", "cfg", "conf", "php", "lua", "r", "pl", "srt", "vtt"
 ]);
 
-type AttachmentKind = "image" | "pdf" | "text" | "other";
+type AttachmentKind = "image" | "pdf" | "text" | "video" | "other";
+
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "avi", "m4v", "wmv", "flv", "3gp"]);
 
 function attachmentKind(a: RawAttachment): AttachmentKind {
   if (a.isVoice) return "other";
   const mime = (a.contentType ?? "").split(";")[0]!.trim().toLowerCase();
   const ext = /\.([A-Za-z0-9]{1,10})$/u.exec(a.filename)?.[1]?.toLowerCase() ?? "";
+  if (mime.startsWith("video/") || VIDEO_EXTENSIONS.has(ext)) return "video";
   if (isImageAttachment(a)) return DOWNLOAD_IMAGE_TYPES.has(mime === "image/jpg" ? "image/jpeg" : mime) || ["png", "jpg", "jpeg", "gif", "webp"].includes(ext) ? "image" : "other";
   if (mime === "application/pdf" || ext === "pdf") return "pdf";
   if (mime.startsWith("text/") || mime === "application/json" || TEXT_EXTENSIONS.has(ext)) return "text";
@@ -193,9 +200,12 @@ export function placeFolder(handle: string): string[] {
     .map((segment) => safeFileName(segment, "place"));
 }
 
-/** One ReadMessages call's downloads: at most 10, within the size cap, deduped by attachment id. */
+/**
+ * One ReadMessages call's downloads: at most 10, within the size cap, deduped by attachment id.
+ * The 10 go to the newest messages first (`plan`); older ones say to read fewer at a time.
+ */
 class Downloads {
-  private count = 0;
+  private readonly allowed = new Set<RawAttachment>();
   private readonly store;
   private index: Awaited<ReturnType<ReturnType<typeof storeOf>["readIndex"]>> | undefined;
 
@@ -204,6 +214,19 @@ class Downloads {
     private readonly place: ResolvedPlace
   ) {
     this.store = storeOf(ctx);
+  }
+
+  /** Picks the attachments this read downloads: newest message first, up to MAX_DOWNLOADS_PER_READ. */
+  plan(messages: readonly RawDiscordMessage[]): void {
+    const max = this.ctx.deps.config().life.attachments.maxBytes;
+    for (const message of [...messages].sort((a, b) => compareIds(b.id, a.id))) {
+      for (const attachment of [...message.attachments, ...message.snapshots.flatMap((snapshot) => snapshot.attachments)]) {
+        if (this.allowed.size >= MAX_DOWNLOADS_PER_READ) return;
+        const kind = attachmentKind(attachment);
+        if (attachment.isVoice || kind === "other" || kind === "video" || attachment.size > max) continue;
+        this.allowed.add(attachment);
+      }
+    }
   }
 
   /** The line each attachment of a message shows (by attachment object). */
@@ -221,14 +244,13 @@ class Downloads {
     const kind = attachmentKind(attachment);
     // A voice message keeps its own line (`[voice message · 0:12]`).
     if (attachment.isVoice) return undefined;
-    const label = kind === "image" ? "image" : "file";
+    const label = kind === "image" ? "image" : kind === "video" ? "video" : "file";
     const size = formatBytes(attachment.size);
     const max = this.ctx.deps.config().life.attachments.maxBytes;
-    if (kind === "other") return `[${label}: ${attachment.filename} · ${size} · not downloaded]`;
-    if (attachment.size > max || this.count >= MAX_DOWNLOADS_PER_READ) return `[${label}: ${attachment.filename} · ${size} · not downloaded]`;
+    if (kind === "other" || kind === "video" || attachment.size > max) return `[${label}: ${attachment.filename} · ${size} · not downloaded]`;
+    if (!this.allowed.has(attachment)) return `[${label}: ${attachment.filename} · ${size} · not downloaded (too many in one read; read fewer)]`;
     const target = this.targetPath(attachment, ref, used);
     if (!target) return `[${label}: ${attachment.filename} · ${size} · not downloaded]`;
-    this.count += 1;
     const saved = await this.download(message, attachment, target);
     if (!saved) return `[${label}: ${attachment.filename} · ${size} · couldn't be downloaded]`;
     if (kind === "image") {
@@ -298,16 +320,19 @@ async function attachments(ctx: ToolContext, requested: readonly string[]): Prom
   const files: OutgoingFile[] = [];
   const skipped: string[] = [];
   const seen = new Set<string>();
+  let total = 0;
   for (const input of requested) {
-    const target = pathArg(store, input);
+    const target = await pathArg(store, input);
     if (!target.ok) {
       skipped.push(`${input} (${String(target.output.content).replace(/^error:\s*/u, "")})`);
       continue;
     }
     const p = target.path;
-    if (seen.has(p.virtual)) continue;
-    seen.add(p.virtual);
-    if (privateFiles.has(p.virtual)) {
+    // Names compare as the disk does (`~/memory.md` is `~/MEMORY.md`).
+    const key = pathKey(p.virtual);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (privateFiles.has(key)) {
       skipped.push(`${p.display} (${PRIVATE_FILE_REASON})`);
       continue;
     }
@@ -320,6 +345,7 @@ async function attachments(ctx: ToolContext, requested: readonly string[]): Prom
     else if (info.kind === "dir") skipped.push(`${p.display} (it is a folder)`);
     else if (info.kind !== "file") skipped.push(`${p.display} (it can't be used)`);
     else if (info.size > MAX_SEND_FILE_BYTES) skipped.push(`${p.display} (larger than ${MAX_SEND_FILE_BYTES / (1024 * 1024)} MB)`);
+    else if (total + info.size > MAX_SEND_TOTAL_BYTES) skipped.push(`${p.display} (the files together would be over ${MAX_SEND_TOTAL_BYTES / (1024 * 1024)} MB, Discord's limit for one message)`);
     else {
       const data = await store.files.readBytes(p, { maxBytes: MAX_SEND_FILE_BYTES }).catch(() => undefined);
       if (!data) {
@@ -328,6 +354,7 @@ async function attachments(ctx: ToolContext, requested: readonly string[]): Prom
       }
       // A DM's download sent anywhere is about that DM (D14): the owner's views hide the call.
       await noteDmFile(store, p);
+      total += data.length;
       files.push({ name: p.segments[p.segments.length - 1]!, data });
     }
   }
@@ -359,6 +386,12 @@ async function presentPeople(deps: LifeDeps, place: ResolvedPlace): Promise<stri
 function isUndeliverable(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === 50007 || code === "50007";
+}
+
+/** Discord's 40005 (request entity too large): the files are over the server's upload limit. */
+function isTooLarge(error: unknown): boolean {
+  const { code, status } = (error as { code?: unknown; status?: unknown } | null) ?? {};
+  return code === 40005 || code === "40005" || status === 413;
 }
 
 export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
@@ -437,6 +470,7 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
       await updateExistingDmState(deps.storage, place.userId!, waifu.id, (state) => ({ ...state, undeliverableSince: deps.now().toISOString() })).catch(() => undefined);
       return toolError("they can't receive your messages right now");
     }
+    if (attached.files.length > 0 && isTooLarge(error)) return toolError("the message could not be sent: the files are too large for Discord here; send fewer or smaller ones");
     deps.logger.warn("Life send failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
     return toolError("the message could not be sent");
   }
@@ -463,6 +497,31 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   const ref = refs.get(messageId);
   const sent = ref ? `sent #${ref}` : "sent";
   return { content: attached.skipped.length > 0 ? `${sent}; not attached: ${attached.skipped.join(", ")}` : sent, resultRef: messageId, messageIds: [messageId] };
+}
+
+function readMessagesDescription(retentionDays: number): string {
+  return `Read the latest messages in one of your places (a room, thread or private chat). Lines look like \`[14:02 #k3] Kevin: text\`; \`#k3\` is the message's ref. Files people sent are saved in /tmp ${keptForText(retentionDays)} and shown by their path; open them with Read. Pass before with a ref to read older messages.`;
+}
+
+const SEND_DESCRIPTION =
+  "Send a message to a place. This is the only way anyone sees what you write. Keep it like a chat message; send several if you have several things to say. Use <@Name> to mention someone who is there.";
+const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to, schedule.json, watches.json and places.md can't be attached.";
+
+/** SendMessage's input schema; `files` (at most `maxFiles`) only when attaching is on. */
+function sendSchema(maxFiles: number): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      place: { type: "string", description: "A place handle." },
+      text: { type: "string", maxLength: 2000, description: maxFiles > 0 ? "The message (may be empty when you attach a file)." : "The message." },
+      reply_to: { type: "string", description: "Optional: the ref of the message you are replying to, like #k3." },
+      ...(maxFiles > 0
+        ? { files: { type: "array", items: { type: "string" }, maxItems: maxFiles, description: `Optional: paths of files to attach, like /tmp/cake-small.png (at most ${maxFiles}).` } }
+        : {})
+    },
+    required: ["place"],
+    additionalProperties: false
+  };
 }
 
 // ---- react --------------------------------------------------------------------------------------
@@ -511,7 +570,8 @@ export const messageTools: LifeTool[] = [
   {
     name: "ReadMessages",
     description:
-      "Read the latest messages in one of your places (a room, thread or private chat). Lines look like `[14:02 #k3] Kevin: text`; `#k3` is the message's ref. Files people sent are saved in /tmp for a week and shown by their path; open them with Read. Pass before with a ref to read older messages.",
+      readMessagesDescription(7),
+    describe: (config) => readMessagesDescription(config.life.tmp.retentionDays),
     inputSchema: {
       type: "object",
       properties: {
@@ -528,18 +588,10 @@ export const messageTools: LifeTool[] = [
   {
     name: "SendMessage",
     description:
-      "Send a message to a place. This is the only way anyone sees what you write. Keep it like a chat message; send several if you have several things to say. Use <@Name> to mention someone who is there. You can attach files from your folders; your notes, reminders, watches and places stay private.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        place: { type: "string", description: "A place handle." },
-        text: { type: "string", maxLength: 2000, description: "The message (may be empty when you attach a file)." },
-        reply_to: { type: "string", description: "Optional: the ref of the message you are replying to, like #k3." },
-        files: { type: "array", items: { type: "string" }, maxItems: 4, description: "Optional: paths of files to attach, like /tmp/cake-small.png (at most 4)." }
-      },
-      required: ["place"],
-      additionalProperties: false
-    },
+      `${SEND_DESCRIPTION} You can attach files from your folders; ${PRIVATE_ATTACH_TEXT}`,
+    describe: (config) => (config.life.send.maxFiles > 0 ? `${SEND_DESCRIPTION} You can attach files from your folders; ${PRIVATE_ATTACH_TEXT}` : SEND_DESCRIPTION),
+    schemaFor: (config) => sendSchema(config.life.send.maxFiles),
+    inputSchema: sendSchema(4),
     sideEffect: true,
     run: sendMessageTool
   },

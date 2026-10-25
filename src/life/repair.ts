@@ -23,8 +23,9 @@ import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { appendLifeLog, compactIntents, lifeLogTorn, readIntents, readLifeFile, readLifeLog, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { homeStoreFor } from "./home/index.js";
-import { readScheduleEntries, readWatchEntries } from "./home/specialFiles.js";
-import { SCHEDULE_FILE, WATCHES_FILE } from "./home/pathRules.js";
+import { parseStrictJson, readScheduleEntries, readWatchEntries } from "./home/specialFiles.js";
+import { SCHEDULE_FILE, specialJsonFile, WATCHES_FILE } from "./home/pathRules.js";
+import { parseLocalDateTime } from "./clock.js";
 import { safeJournalName } from "./home/homeStore.js";
 import { stripCopiedHeader } from "./outbound.js";
 import { selfAuthorIds } from "./people.js";
@@ -80,10 +81,25 @@ async function recoverCall(
   }
   if (!intent.start) return { text: "[interrupted]", isError: true };
   const store = waifu ? homeStoreFor(deps, waifu) : undefined;
-  const fileText = async (path: unknown) => {
+  // Her path as she wrote it, under her current slug (she may have been renamed since).
+  const resolvePath = async (path: unknown) => {
     if (!store || typeof path !== "string") return undefined;
-    const resolved = store.resolve(path);
-    return resolved.ok ? store.files.readText(resolved.path).catch(() => undefined) : undefined;
+    const resolved = await store.resolveExisting(path);
+    if (resolved.ok) return resolved.path;
+    const renamed = await store.resolveExisting(path.replace(/^\/home\/[^/]+/u, `/home/${store.slug}`));
+    return renamed.ok ? renamed.path : undefined;
+  };
+  const fileText = async (path: unknown) => {
+    const p = await resolvePath(path);
+    return p && store ? store.files.readText(p).catch(() => undefined) : undefined;
+  };
+  // A reminder or watch entry made by the call: its note, and its time within a minute of what the
+  // call asked for (counted from the intent).
+  const intentAt = Math.min(...[intent.start, ...intent.lines].flatMap((line) => (line ? [Date.parse(line.at)] : [])).filter(Number.isFinite));
+  const near = (local: string, wanted: number | undefined) => {
+    if (wanted === undefined) return true;
+    const at = parseLocalDateTime(local, deps.timeZone)?.getTime();
+    return at !== undefined && Math.abs(at - wanted) <= 90_000;
   };
   switch (call.name) {
     case "SendMessage":
@@ -113,9 +129,12 @@ async function recoverCall(
       return { text: `sent #${refs.get(found.id) ?? "?"} (recovered)`, isError: false };
     }
     case "Write": {
+      const p = await resolvePath(input["file_path"]);
       const current = await fileText(input["file_path"]);
-      // A reminder or watch file the app gave new ids to still holds what she wrote.
-      const done = current !== undefined && typeof input["content"] === "string" && (current === input["content"] || (input["content"].trim() !== "" && current.length >= input["content"].length && /"id":/u.test(current)));
+      const content = input["content"];
+      // A reminder or watch file the app gave new ids to (and rewrote in its own layout) still
+      // holds what she wrote: the same entries, ids aside. Any other file must match exactly.
+      const done = current !== undefined && typeof content === "string" && (current === content || (p !== undefined && specialJsonFile(p) !== undefined && sameEntriesIgnoringIds(current, content)));
       return done ? { text: `wrote ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not written", isError: true };
     }
     case "Edit": {
@@ -127,17 +146,44 @@ async function recoverCall(
     }
     case "ScheduleWake": {
       const entries = store ? readScheduleEntries(await fileText(`~/${SCHEDULE_FILE}`), deps.timeZone) : [];
-      const found = entries.find((reminder) => reminder.note === input["note"]);
+      const wanted =
+        typeof input["at"] === "string"
+          ? parseLocalDateTime(input["at"], deps.timeZone)?.getTime()
+          : typeof input["in_minutes"] === "number" && Number.isFinite(intentAt)
+            ? intentAt + input["in_minutes"] * 60_000
+            : undefined;
+      const found = entries.find((reminder) => reminder.note === input["note"] && near(reminder.at, wanted));
       return found ? { text: `set ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
     }
     case "WatchFor": {
       const entries = store ? readWatchEntries(await fileText(`~/${WATCHES_FILE}`), deps.timeZone) : [];
-      const found = entries.find((watch) => watch.note === input["note"]);
+      const wanted = typeof input["timeout_minutes"] === "number" && Number.isFinite(intentAt) ? intentAt + input["timeout_minutes"] * 60_000 : undefined;
+      const found = entries.find((watch) => watch.note === input["note"] && near(watch.timeout, wanted));
       return found ? { text: `watching ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
     }
     default:
       return { text: "[interrupted]", isError: true };
   }
+}
+
+/** Both texts are JSON arrays with the same entries once `id` is set aside (her special files). */
+function sameEntriesIgnoringIds(current: string, written: string): boolean {
+  const entries = (text: string): string[] | undefined => {
+    try {
+      const value = parseStrictJson(text);
+      if (!Array.isArray(value)) return undefined;
+      return value.map((entry) => {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return JSON.stringify(entry);
+        const { id: _id, ...rest } = entry as Record<string, unknown>;
+        return JSON.stringify(Object.fromEntries(Object.entries(rest).sort(([a], [b]) => a.localeCompare(b))));
+      });
+    } catch {
+      return undefined;
+    }
+  };
+  const a = entries(current);
+  const b = entries(written);
+  return a !== undefined && b !== undefined && a.length === b.length && a.every((entry, index) => entry === b[index]);
 }
 
 export type RepairOutcome = { tornLines: boolean; closedCalls: number; recovered: number; wasInTurn: boolean };

@@ -103,7 +103,11 @@ export async function buildLifeRequest(
   return {
     system: lifeSystem(o.state),
     messages,
-    tools: modelTools(o.state.systemSnapshot?.tools ?? []).map((tool) => ({ ...tool, description: o.state.systemSnapshot?.toolDescriptions?.[tool.name] ?? tool.description })),
+    tools: modelTools(o.state.systemSnapshot?.tools ?? []).map((tool) => ({
+      ...tool,
+      description: o.state.systemSnapshot?.toolDescriptions?.[tool.name] ?? tool.description,
+      inputSchema: o.state.systemSnapshot?.toolSchemas?.[tool.name] ?? tool.inputSchema
+    })),
     imageCount: count.images,
     imageKeys: count.keys
   };

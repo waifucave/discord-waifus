@@ -276,7 +276,7 @@ describe("ReadMessages downloads (§16.3.1)", () => {
     w.discord.post(ROOM, "mina's", { authorId: MINA_USER, authorName: "Mina", attachments: [attachment("6100", "secret.txt", "text/plain", 5)] });
     await recordForgottenPerson(w.storage, MINA_USER, w.clock.now());
     const body = text(await run("ReadMessages", { place: "bake-club/#general" }, await ctxFor(w)));
-    expect(body.match(/not downloaded\]/gu)).toHaveLength(2);
+    expect(body.match(/not downloaded \(too many in one read; read fewer\)\]/gu)).toHaveLength(2);
     expect(fetcher.fileCalls.map((ref) => ref.attachmentId)).not.toContain("6100");
     expect(fetcher.fileCalls).toHaveLength(10);
     await kevinDms(w, "my recipe", [attachment("6200", "recipe.md", "text/markdown", 5)]);
@@ -300,8 +300,9 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     expect((await watch({ when: [{ any_message: true }], timeout_minutes: 0 })).isError).toBe(true);
     expect((await watch({ when: [{ any_message: true }], timeout_minutes: 10_081 })).isError).toBe(true);
     expect((await watch({ when: [{ words: Array.from({ length: 11 }, (_, i) => `w${i}`) }] })).isError).toBe(true);
-    expect(text(await watch({ when: [{ from: "Kevin" }] }))).toMatch(/^error: watches\.json entry 1: more than one person called Kevin; use <@id>$/u);
-    expect(text(await watch({ when: [{ place: "nowhere/#x" }] }))).toMatch(/^error: watches\.json entry 1: unknown place nowhere\/#x; see places\.md$/u);
+    // A check of her file reports as the tool's own error, not as an entry of the file.
+    expect(text(await watch({ when: [{ from: "Kevin" }] }))).toBe("error: WatchFor: more than one person called Kevin; use <@id>");
+    expect(text(await watch({ when: [{ place: "nowhere/#x" }] }))).toBe("error: WatchFor: unknown place nowhere/#x; see places.md");
     expect(text(await watch({ when: [{ from: `<@${KEVIN}>`, words: ["cake"] }], note: "Kevin's cake news" }))).toMatch(/^watching w1 until Sat 24 Oct 15:0\d \(in ~\/watches\.json\)$/u);
     // A timer: no bindings, only a timeout.
     expect(text(await watch({ when: [], note: "tea's ready", timeout_minutes: 5 }))).toMatch(/^watching w2 until /u);
@@ -355,6 +356,9 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     const before = (await herFile(w, "aria", "home/watches.json"))!;
     // Deleting the last entry and leaving its comma behind.
     const broken = before.replace(/,\n {2}\{"id": "w2".*\n/u, ",\n");
+    // A whole-file Write needs a Read first (the file changes on its own: a watch matches or times out).
+    expect(text(await run("Write", { file_path: "~/watches.json", content: broken }, ctx))).toBe("error: watches.json already exists; Read it first (Write replaces the whole file)");
+    await run("Read", { file_path: "~/watches.json" }, ctx);
     const refused = await run("Write", { file_path: "~/watches.json", content: broken }, ctx);
     expect(refused.isError).toBe(true);
     expect(text(refused)).toMatch(/^error: watches\.json line \d+, column \d+: /u);
@@ -384,6 +388,7 @@ describe("ScheduleWake and ~/schedule.json (§16.4)", () => {
     expect(file).toHaveLength(20);
     // A hand-written entry without an id gets the next one; a bad field is refused.
     const entries = file.slice(1);
+    await run("Read", { file_path: "~/schedule.json" }, ctx);
     expect(text(await run("Write", { file_path: "~/schedule.json", content: JSON.stringify([...entries, { at: "2026-10-26 09:00", note: "new" }]) }, ctx))).toMatch(/new entries got ids/u);
     expect((JSON.parse((await herFile(w, "aria", "home/schedule.json"))!) as Array<{ id: string }>).pop()!.id).toBe("r21");
     expect(text(await run("Write", { file_path: "~/schedule.json", content: JSON.stringify([{ at: "2026-10-26 09:00", note: "x", repeat: "hourly" }]) }, ctx))).toMatch(/^error: schedule\.json entry 1: /u);
@@ -400,9 +405,14 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
     for (const bad of ["/etc/passwd", "../me.md", "~/../mina/x.md", "/home/mina/x.md", "/tmp/../home/aria/x.md/..", "a\\b.md", "con.txt", "people/NUL", "~/a/b/c/d/e/f/g/h/i.md", `${"x".repeat(101)}.md`, "", "~", "/tmp"]) {
       expect((await run("Write", { file_path: bad, content: "x" }, ctx)).isError, bad).toBe(true);
     }
-    // Two names that differ only by case are refused (case-insensitive disks).
-    expect(text(await run("Write", { file_path: "~/People/x.md", content: "x" }, ctx))).toMatch(/two names can't differ only by case/u);
-    expect(text(await run("Write", { file_path: "~/me.MD", content: "x" }, ctx))).toMatch(/two names can't differ only by case/u);
+    // Device names in every disguise, and names ending in a dot or a space, are refused.
+    for (const bad of ["people/con ", "aux.", "~/COM\u00b9.txt", "lpt1 .md", "notes.", "people /x.md", "people./x.md"]) {
+      expect((await run("Write", { file_path: bad, content: "x" }, ctx)).isError, bad).toBe(true);
+    }
+    // A name that differs only by case is the file or folder already there (case-insensitive disks).
+    expect(text(await run("Write", { file_path: "~/People/x.md", content: "x" }, ctx))).toBe("wrote ~/people/x.md (1 B)");
+    expect(text(await run("Write", { file_path: "~/me.MD", content: "x" }, ctx))).toBe("wrote ~/me.md (1 B)");
+    expect(await herFile(w, "aria", "home/me.md")).toBe("x");
     // No host path leaks into any error.
     const outside = await run("Read", { file_path: "/etc/passwd" }, ctx);
     expect(text(outside)).toBe("error: /etc/passwd is outside your folders (your home ~ and /tmp)");

@@ -25,6 +25,8 @@ export type WatchCandidate = {
   text: string;
   /** The message is hers. */
   own: boolean;
+  /** When it was posted (catch-up after a restart matches a watch by the message's own time). */
+  createdAt?: string;
 };
 
 /** What matched: the word, "any message", or the person's name. */
@@ -41,10 +43,8 @@ export function bindingMatch(binding: ResolvedBinding, message: WatchCandidate):
   return binding.placeKey ? "any message" : undefined;
 }
 
-/** The key of a `once` watch's match in the fired list (a file the app could not rewrite never fires it twice). */
-export function onceKey(watch: Pick<WatchEntry, "id" | "timeout">): string {
-  return `once-${watch.id}-${watch.timeout}`;
-}
+import { onceKey } from "./home/specialFiles.js";
+export { onceKey };
 
 export type FiredWatch = { watch: WatchEntry; matched: string; binding: ResolvedBinding };
 
@@ -53,6 +53,9 @@ export async function fireWatches(store: HomeStore, message: WatchCandidate, o: 
   if (message.own) return [];
   const fired: FiredWatch[] = [];
   const nowMs = o.now.getTime();
+  const posted = message.createdAt ? Date.parse(message.createdAt) : Number.NaN;
+  // A message from before a watch timed out still matches it, however late it is handled.
+  const messageMs = Number.isFinite(posted) ? Math.min(posted, nowMs) : nowMs;
   await store.rewriteWatches(o.timeZone, (entries, ids) => {
     const kept: WatchEntry[] = [];
     const watches = { ...ids.watches };
@@ -60,7 +63,7 @@ export async function fireWatches(store: HomeStore, message: WatchCandidate, o: 
     for (const watch of entries) {
       const ends = parseLocalDateTime(watch.timeout, o.timeZone)?.getTime() ?? 0;
       const side = ids.watches[watch.id];
-      if (ends <= nowMs || !side || firedKeys.includes(onceKey(watch))) {
+      if (ends <= messageMs || !side || firedKeys.includes(onceKey(watch))) {
         kept.push(watch);
         continue;
       }

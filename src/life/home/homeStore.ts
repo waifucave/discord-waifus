@@ -17,7 +17,7 @@
 // index `life/files-index.json` (§16.2: which downloads came from whom, and from a DM).
 
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { readWaifu } from "../../orchestration/stores/config.js";
@@ -31,9 +31,11 @@ import { HerFiles, HerFilesError, type HerEntry } from "./herFiles.js";
 import {
   collisionKey,
   herSlug,
+  isDmFolderPath,
   isPlacesFile,
   MEMORY_FILE,
   parseVirtual,
+  pathKey,
   PLACES_FILE,
   resolveHerPath,
   SCHEDULE_FILE,
@@ -46,6 +48,9 @@ import {
 import {
   checkScheduleText,
   checkWatchesText,
+  formatEntries,
+  onceKey,
+  parseStrictJson,
   readScheduleEntries,
   readWatchEntries,
   scheduleText,
@@ -62,11 +67,32 @@ export const WRITE_MAX_BYTES = 256 * 1024;
 export const MAX_PROVENANCE_ENTRIES = 10_000;
 const MAX_FIRED = 100;
 
-export type HomeLimits = { homeMaxBytes: number; homeMaxFiles: number; tmpMaxBytes: number; writeMaxBytes: number };
+export type HomeLimits = {
+  homeMaxBytes: number;
+  homeMaxFiles: number;
+  homeMaxFolders: number;
+  tmpMaxBytes: number;
+  tmpMaxFiles: number;
+  writeMaxBytes: number;
+};
 
 export function homeLimitsOf(life: Pick<LifeConfig, "home" | "tmp">): HomeLimits {
-  return { homeMaxBytes: life.home.maxBytes, homeMaxFiles: life.home.maxFiles, tmpMaxBytes: life.tmp.maxBytes, writeMaxBytes: WRITE_MAX_BYTES };
+  return {
+    homeMaxBytes: life.home.maxBytes,
+    homeMaxFiles: life.home.maxFiles,
+    homeMaxFolders: life.home.maxFolders,
+    tmpMaxBytes: life.tmp.maxBytes,
+    tmpMaxFiles: life.tmp.maxFiles,
+    writeMaxBytes: WRITE_MAX_BYTES
+  };
 }
+
+/** Most entries one change set may carry (the worker refuses more before sending). */
+export const MAX_CHANGE_SET_ENTRIES = 5_000;
+/** Checking a change set must finish within this; past it the set is refused and nothing is saved. */
+export const CHANGE_CHECK_DEADLINE_MS = 30_000;
+/** Text files read whole for forget and maintenance (her home's own limit bounds them). */
+const READ_ALL_MAX_BYTES = 64 * 1024 * 1024;
 
 /** What checking her files needs from the running app (her clock, the people she knows). */
 export type CheckEnv = {
@@ -150,7 +176,8 @@ export class HomeStore {
     readonly storage: StorageService,
     readonly waifuId: string,
     readonly slug: string,
-    private readonly limits: () => HomeLimits
+    private readonly limits: () => HomeLimits,
+    private readonly hooks: { onCorruptSide?(name: string): void; now?(): Date } = {}
   ) {
     this.files = new HerFiles(storage, waifuId, slug);
   }
@@ -163,6 +190,12 @@ export class HomeStore {
 
   resolve(input: unknown, o: { allowRoot?: boolean } = {}): ResolvedHerPath {
     return resolveHerPath(input, this.slug, o);
+  }
+
+  /** A path as she wrote it, spelled as on disk (`~/Memory.md` → `~/MEMORY.md` when that exists). */
+  async resolveExisting(input: unknown, o: { allowRoot?: boolean } = {}): Promise<ResolvedHerPath> {
+    const resolved = this.resolve(input, o);
+    return resolved.ok ? { ok: true, path: await this.files.canonical(resolved.path) } : resolved;
   }
 
   path(root: HerRoot, segments: readonly string[]): HerPath {
@@ -184,20 +217,38 @@ export class HomeStore {
 
   // ---- side files ----------------------------------------------------------------------------------
 
-  private async readSide<T>(relative: string, schema: z.ZodType<T>): Promise<T> {
+  /**
+   * A side file. Missing reads as empty. One that exists but cannot be read is kept as
+   * `<name>.corrupt-<ms>`, replaced by an empty one marked `recoveredAt` (her reminders and watches
+   * due before then are ambiguous: the scheduler drops them without firing), and the owner is told.
+   */
+  private async readSide<T>(relative: string, schema: z.ZodType<T>, o: { recover?: boolean } = {}): Promise<T> {
+    const file = this.storage.dataPath(relative);
+    let text: string;
     try {
-      return schema.parse(JSON.parse(await readFile(this.storage.dataPath(relative), "utf8")));
+      text = await readFile(file, "utf8");
     } catch {
       return schema.parse({});
+    }
+    try {
+      return schema.parse(JSON.parse(text));
+    } catch {
+      if (!o.recover) return schema.parse({});
+      const at = (this.hooks.now?.() ?? new Date()).toISOString();
+      await copyFile(file, `${file}.corrupt-${Date.parse(at)}`).catch(() => undefined);
+      const fresh = schema.parse({ recoveredAt: at });
+      await this.writeSide(relative, fresh).catch(() => undefined);
+      this.hooks.onCorruptSide?.(path.basename(relative));
+      return fresh;
     }
   }
 
   readWatchIds(): Promise<WatchIds> {
-    return this.readSide(lifePaths.watchIds(this.waifuId), WatchIdsSchema);
+    return this.readSide(lifePaths.watchIds(this.waifuId), WatchIdsSchema, { recover: true });
   }
 
   readScheduleIds(): Promise<ScheduleIds> {
-    return this.readSide(lifePaths.scheduleIds(this.waifuId), ScheduleIdsSchema);
+    return this.readSide(lifePaths.scheduleIds(this.waifuId), ScheduleIdsSchema, { recover: true });
   }
 
   async readIndex(): Promise<FilesIndex> {
@@ -260,6 +311,10 @@ export class HomeStore {
       resolvePerson: env.resolvePerson
     });
     if (!checked.ok) throw new HomeError(checked.error, "special");
+    // A `once` watch that matched is gone for good: a stale copy of the file never brings it back.
+    for (const entry of checked.entries) {
+      if (ids.fired.includes(onceKey(entry))) throw new HomeError(`error: watches.json entry ${entry.id}: it already matched once and was removed; leave it out`, "special");
+    }
     const finalText = checked.rewritten ? checked.text : text;
     const watches: WatchIds["watches"] = {};
     for (const [id, bindings] of checked.resolved) watches[id] = { bindings, fires: ids.watches[id]?.fires ?? [] };
@@ -282,6 +337,7 @@ export class HomeStore {
    */
   private checkPlan(plan: readonly Planned[], current: Map<string, HerEntry>, o: { writeMax?: number } = {}): void {
     const limits = this.limits();
+    const created = new Set<string>();
     const sim = new Map<string, { root: HerRoot; kind: "file" | "dir"; size: number }>();
     for (const [virtual, entry] of current) sim.set(virtual, { root: entry.path.root, kind: entry.kind, size: entry.size });
     for (const step of plan) {
@@ -295,11 +351,15 @@ export class HomeStore {
         const folder = this.path(step.path.root, step.path.segments.slice(0, depth));
         const there = sim.get(folder.virtual);
         if (there?.kind === "file") throw new HomeError(`error: ${folder.display} is a file, not a folder`, "invalid");
-        if (!there) sim.set(folder.virtual, { root: folder.root, kind: "dir", size: 0 });
+        if (!there) {
+          sim.set(folder.virtual, { root: folder.root, kind: "dir", size: 0 });
+          created.add(folder.virtual);
+        }
       }
       const there = sim.get(key);
       if (step.kind === "dir") {
         if (there?.kind === "file") throw new HomeError(`error: ${step.path.display} is a file, not a folder`, "invalid");
+        if (!there) created.add(key);
         sim.set(key, { root: step.path.root, kind: "dir", size: 0 });
         continue;
       }
@@ -307,9 +367,11 @@ export class HomeStore {
       if (o.writeMax !== undefined && (step.data?.length ?? 0) > o.writeMax) {
         throw new HomeError(`error: a file can be at most ${o.writeMax / 1024} KB; split it into several files`, "limit");
       }
+      if (!there) created.add(key);
       sim.set(key, { root: step.path.root, kind: "file", size: step.data?.length ?? 0 });
     }
-    // Names that differ only by case or normalisation, among the entries the plan creates.
+    // Names that differ only by case or normalisation, where the plan creates one of them (two such
+    // names the owner already has on a case-sensitive disk are left alone).
     const byFolder = new Map<string, Map<string, string>>();
     for (const virtual of sim.keys()) {
       const parent = path.posix.dirname(virtual);
@@ -318,7 +380,7 @@ export class HomeStore {
       if (!names) byFolder.set(parent, (names = new Map()));
       const key = collisionKey(name);
       const other = names.get(key);
-      if (other !== undefined && other !== name) {
+      if (other !== undefined && other !== name && (created.has(virtual) || created.has(path.posix.join(parent, other)))) {
         const shown = parseVirtual(parent, this.slug)?.display ?? parent;
         throw new HomeError(`error: ${shown} already has ${other}; two names can't differ only by case`, "collision");
       }
@@ -326,15 +388,26 @@ export class HomeStore {
     }
     let homeBytes = 0;
     let homeFiles = 0;
+    let homeFolders = 0;
     let tmpBytes = 0;
+    let tmpFiles = 0;
     for (const entry of sim.values()) {
-      if (entry.kind !== "file") continue;
+      if (entry.kind !== "file") {
+        if (entry.root === "home") homeFolders += 1;
+        continue;
+      }
       if (entry.root === "home") {
         homeBytes += entry.size;
         homeFiles += 1;
-      } else tmpBytes += entry.size;
+      } else {
+        tmpBytes += entry.size;
+        tmpFiles += 1;
+      }
     }
     const before = (root: HerRoot) => [...current.values()].filter((entry) => entry.kind === "file" && entry.path.root === root);
+    const foldersBefore = [...current.values()].filter((entry) => entry.kind === "dir" && entry.path.root === "home").length;
+    if (homeFolders > limits.homeMaxFolders && homeFolders > foldersBefore) throw new HomeError(`error: your home has ${limits.homeMaxFolders} folders already; merge or delete some first`, "limit");
+    if (tmpFiles > limits.tmpMaxFiles && tmpFiles > before("tmp").length) throw new HomeError(`error: /tmp has ${limits.tmpMaxFiles} files already; delete some first`, "limit");
     const grew = (root: HerRoot, now: number) => now > before(root).reduce((sum, entry) => sum + entry.size, 0);
     if (homeBytes > limits.homeMaxBytes && grew("home", homeBytes)) throw new HomeError(`error: your home is full (${mib(limits.homeMaxBytes)}); delete or shorten something first`, "limit");
     if (homeFiles > limits.homeMaxFiles && homeFiles > before("home").length) throw new HomeError(`error: your home has ${limits.homeMaxFiles} files already; merge or delete some first`, "limit");
@@ -347,9 +420,10 @@ export class HomeStore {
    * Creates or replaces a text file (folders made as needed). `expectedHash`: the content hash the
    * writer last saw (the API's revision): a different file on disk is a conflict.
    */
-  async writeText(p: HerPath, content: string, env: CheckEnv, o: { expectedHash?: string | null } = {}): Promise<{ bytes: number; created: boolean; hash: string; rewritten: boolean }> {
+  async writeText(p: HerPath, content: string, env: CheckEnv, o: { expectedHash?: string | null; staleMessage?: string } = {}): Promise<{ bytes: number; created: boolean; hash: string; rewritten: boolean; path: HerPath }> {
     if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
     return this.locked(async () => {
+      p = await this.files.canonical(p);
       const info = await this.files.inspect(p);
       if (info.kind === "link") throw new HomeError(`error: ${p.display} can't be used: it is a link`, "link");
       if (info.kind === "dir") throw new HomeError(`error: ${p.display} is a folder`, "invalid");
@@ -357,7 +431,7 @@ export class HomeStore {
       if (info.kind === "file") existing = await this.files.readBytes(p);
       if (o.expectedHash !== undefined) {
         const current = existing ? sha256(existing) : null;
-        if (current !== o.expectedHash) throw new HomeError(`error: ${p.display} changed since it was read`, "conflict");
+        if (current !== o.expectedHash) throw new HomeError(o.staleMessage ?? `error: ${p.display} changed since it was read`, "conflict");
       }
       if (existing && !isTextBytes(existing)) throw new HomeError(`error: ${p.display} isn't a text file; remove it with Bash first if you want to replace it`, "binary");
       const raw = Buffer.from(content, "utf8");
@@ -367,16 +441,50 @@ export class HomeStore {
       this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
       await this.files.writeBytes(p, data);
       await this.saveSpecialSide(special);
-      return { bytes: data.length, created: existing === undefined, hash: sha256(data), rewritten: data !== raw };
+      return { bytes: data.length, created: existing === undefined, hash: sha256(data), rewritten: data !== raw, path: p };
+    });
+  }
+
+  /**
+   * Appends one entry to her reminder or watch file (ScheduleWake, WatchFor), reading and writing
+   * under one hold of her home lock, so nothing the app rewrites in between is lost. Returns the id
+   * it got.
+   */
+  async appendEntry(name: typeof SCHEDULE_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>, env: CheckEnv): Promise<string> {
+    return this.locked(async () => {
+      const p = this.home(name);
+      const text = await this.files.readText(p).catch(() => undefined);
+      let entries: Array<Record<string, unknown>> = [];
+      if (text?.trim()) {
+        let value: unknown;
+        try {
+          value = parseStrictJson(text);
+        } catch {
+          value = undefined;
+        }
+        if (!Array.isArray(value)) throw new HomeError(`error: ~/${name} can't be read as a list right now; fix it first (Read it to see why)`, "special");
+        entries = value as Array<Record<string, unknown>>;
+      }
+      const before = new Set(entries.map((existing) => existing["id"]));
+      const raw = Buffer.from(formatEntries([...entries, entry]), "utf8");
+      const special = await this.checkSpecial(p, raw, env);
+      const data = special.data ?? raw;
+      this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
+      await this.files.writeBytes(p, data);
+      await this.saveSpecialSide(special);
+      const saved = parseStrictJson(data.toString("utf8")) as Array<Record<string, unknown>>;
+      const id = saved.map((existing) => existing["id"]).find((candidate) => typeof candidate === "string" && !before.has(candidate));
+      return typeof id === "string" ? id : "?";
     });
   }
 
   /** Replaces `oldString` (exactly once unless `replaceAll`). Returns how many were replaced. */
-  async editText(p: HerPath, oldString: string, newString: string, replaceAll: boolean, env: CheckEnv): Promise<{ count: number; rewritten: boolean }> {
+  async editText(p: HerPath, oldString: string, newString: string, replaceAll: boolean, env: CheckEnv): Promise<{ count: number; rewritten: boolean; hash: string }> {
     if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
     if (oldString.length === 0) throw new HomeError("error: old_string must not be empty", "invalid");
     if (oldString === newString) throw new HomeError("error: old_string and new_string are the same", "invalid");
     return this.locked(async () => {
+      p = await this.files.canonical(p);
       const info = await this.files.inspect(p);
       if (info.kind === "missing") throw new HomeError(`error: ${p.display} doesn't exist`, "missing");
       if (info.kind === "link") throw new HomeError(`error: ${p.display} can't be used: it is a link`, "link");
@@ -396,7 +504,7 @@ export class HomeStore {
       this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
       await this.files.writeBytes(p, data);
       await this.saveSpecialSide(special);
-      return { count: replaceAll ? count : 1, rewritten: data !== raw };
+      return { count: replaceAll ? count : 1, rewritten: data !== raw, hash: sha256(data) };
     });
   }
 
@@ -404,6 +512,7 @@ export class HomeStore {
   async deleteFile(p: HerPath, env: CheckEnv, o: { expectedHash?: string | null } = {}): Promise<boolean> {
     if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
     return this.locked(async () => {
+      p = await this.files.canonical(p);
       const info = await this.files.inspect(p);
       if (info.kind === "missing") return false;
       if (info.kind === "link") throw new HomeError(`error: ${p.display} can't be used: it is a link`, "link");
@@ -431,34 +540,46 @@ export class HomeStore {
    * untouched, her special files checked, the limits and names checked on the result, and nothing
    * changed under her since the command started. Journalled first (`journalId`, the tool call id).
    */
-  async applyChanges(changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string }): Promise<AppliedChanges> {
+  async applyChanges(changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string; deadlineMs?: number }): Promise<AppliedChanges> {
+    const entries = changes.writes.length + changes.deletes.length + changes.dirs.length;
+    if (entries > MAX_CHANGE_SET_ENTRIES) {
+      throw new HomeError(`error: the command changed ${entries} files and folders; at most ${MAX_CHANGE_SET_ENTRIES} can be saved at once`, "limit");
+    }
+    const deadline = Date.now() + (o.deadlineMs ?? CHANGE_CHECK_DEADLINE_MS);
+    const inTime = () => {
+      if (Date.now() > deadline) throw new HomeError("error: the changes took too long to check; save fewer files at once", "limit");
+    };
     return this.locked(async () => {
       const plan: Planned[] = [];
-      const parse = (virtual: string): HerPath => {
-        const p = parseVirtual(virtual, this.slug);
-        if (!p || p.segments.length === 0) throw new HomeError(`error: ${virtual} is outside your folders`, "invalid");
-        return p;
+      const baseByKey = new Map([...base].map(([virtual, entry]) => [pathKey(virtual), entry] as const));
+      const parse = async (virtual: string): Promise<HerPath> => {
+        const resolved = resolveHerPath(virtual, this.slug, { allowRoot: true });
+        if (!resolved.ok) throw new HomeError(`error: ${resolved.error}`, "invalid");
+        if (resolved.path.segments.length === 0) throw new HomeError(`error: ${virtual} is one of your folders and can't be replaced`, "invalid");
+        return this.files.canonical(resolved.path);
       };
       for (const virtual of changes.deletes) {
-        const p = parse(virtual);
+        const p = await parse(virtual);
         if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
         plan.push({ path: p, kind: "delete" });
       }
-      for (const virtual of changes.dirs) plan.push({ path: parse(virtual), kind: "dir" });
+      for (const virtual of changes.dirs) plan.push({ path: await parse(virtual), kind: "dir" });
       for (const write of changes.writes) {
-        const p = parse(write.path);
+        const p = await parse(write.path);
         if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
         plan.push({ path: p, kind: "write", data: Buffer.from(write.data) });
       }
+      inTime();
       // Nothing changed under her while the command ran (the app's own rewrites included).
       for (const step of plan) {
         if (step.kind === "dir") continue;
-        const was = base.get(step.path.virtual);
+        const was = base.get(step.path.virtual) ?? baseByKey.get(pathKey(step.path.virtual));
         const now = await this.files.inspect(step.path);
         if (now.kind === "link") throw new HomeError(`error: ${step.path.display} can't be used: it is a link`, "link");
         const changed = was === undefined ? now.kind === "file" : was.kind === "file" ? now.kind !== "file" || now.size !== was.size || now.mtimeMs !== was.mtimeMs : false;
         if (changed) throw new HomeError(`error: ${step.path.display} changed while the command ran; run it again`, "conflict");
       }
+      inTime();
       // Writes identical to what is on disk are no change at all.
       const effective: Planned[] = [];
       for (const step of plan) {
@@ -482,53 +603,78 @@ export class HomeStore {
         Object.assign(side, checked.watchIds ? { watchIds: checked.watchIds } : {}, checked.scheduleIds ? { scheduleIds: checked.scheduleIds } : {});
       }
       this.checkPlan(effective, await this.snapshot());
+      inTime();
       const journal: Journal = {
         writes: effective.filter((step) => step.kind === "write").map((step) => ({ path: step.path.virtual, data: step.data!.toString("base64") })),
         deletes: effective.filter((step) => step.kind === "delete").map((step) => step.path.virtual),
         dirs: effective.filter((step) => step.kind === "dir").map((step) => step.path.virtual),
         ...side
       };
-      const applied: AppliedChanges = { changed: [], deleted: journal.deletes.map((virtual) => parse(virtual).display), created: journal.dirs.map((virtual) => parse(virtual).display) };
-      for (const write of journal.writes) applied.changed.push(parse(write.path).display);
+      const display = (virtual: string) => parseVirtual(virtual, this.slug)?.display ?? virtual;
+      const applied: AppliedChanges = { changed: journal.writes.map((write) => display(write.path)), deleted: journal.deletes.map(display), created: journal.dirs.map(display) };
       if (journal.writes.length + journal.deletes.length + journal.dirs.length === 0 && !side.watchIds && !side.scheduleIds) return applied;
-      const journalFile = this.storage.dataPath(path.join(lifePaths.pendingChanges(this.waifuId), `${safeJournalName(o.journalId)}.json`));
-      await mkdir(path.dirname(journalFile), { recursive: true, mode: 0o700 });
+      const journalDir = this.storage.dataPath(lifePaths.pendingChanges(this.waifuId));
+      const journalFile = path.join(journalDir, `${safeJournalName(o.journalId)}.json`);
+      await mkdir(journalDir, { recursive: true, mode: 0o700 });
+      // The previous call's marker: its done intent is written by now (her calls run one at a time).
+      for (const name of await readdir(journalDir).catch(() => [] as string[])) if (name.endsWith(APPLIED_SUFFIX)) await rm(path.join(journalDir, name), { force: true });
       await atomicWriteJson(journalFile, journal);
-      await this.applyJournal(journal);
-      await rm(journalFile, { force: true });
+      // The files are written without a flush each, then flushed together: the journal makes the
+      // set complete after a crash either way.
+      await this.applyJournal(journal, { durable: false });
+      // Kept as a marker until her next change set: a crash before the call's done intent still
+      // tells boot repair the changes were saved.
+      await rename(journalFile, `${journalFile.slice(0, -".json".length)}${APPLIED_SUFFIX}`).catch(() => rm(journalFile, { force: true }));
       return applied;
     });
   }
 
+  /** A journal's path under her current slug (she may have been renamed between a crash and boot). */
+  private journalPath(virtual: string): HerPath | undefined {
+    return parseVirtual(virtual.replace(/^\/home\/[^/]+/u, `/home/${this.slug}`), this.slug);
+  }
+
   /** Applies a journal (idempotent: a write is by content, a delete of nothing is nothing). */
-  private async applyJournal(journal: Journal): Promise<void> {
+  private async applyJournal(journal: Journal, o: { durable?: boolean } = {}): Promise<void> {
+    const written: HerPath[] = [];
     for (const virtual of journal.deletes) {
-      const p = parseVirtual(virtual, this.slug);
+      const p = this.journalPath(virtual);
       if (p && p.segments.length > 0) await this.files.remove(p, { recursive: true }).catch((error: unknown) => {
         if (!(error instanceof HerFilesError && error.code === "missing")) throw error;
       });
     }
     for (const virtual of journal.dirs) {
-      const p = parseVirtual(virtual, this.slug);
+      const p = this.journalPath(virtual);
       if (p) await this.files.ensureFolders(p, p.segments.length);
     }
     for (const write of journal.writes) {
-      const p = parseVirtual(write.path, this.slug);
-      if (p) await this.files.writeBytes(p, Buffer.from(write.data, "base64"));
+      const p = this.journalPath(write.path);
+      if (!p) continue;
+      await this.files.writeBytes(p, Buffer.from(write.data, "base64"), o.durable === false ? { durable: false } : {});
+      written.push(p);
     }
+    if (o.durable === false) await this.files.flush(written);
     await this.saveSpecialSide(journal);
   }
 
-  /** Boot repair (§16.9): finishes every journalled change set a crash left. Returns their ids. */
+  /**
+   * Boot repair (§16.9): finishes every journalled change set a crash left. Returns their ids, and
+   * the id of a change set saved just before the crash (its marker).
+   */
   async recoverPendingChanges(): Promise<string[]> {
     const dir = this.storage.dataPath(lifePaths.pendingChanges(this.waifuId));
-    let names: string[];
+    let all: string[];
     try {
-      names = (await readdir(dir)).filter((name) => name.endsWith(".json"));
+      all = await readdir(dir);
     } catch {
       return [];
     }
+    const names = all.filter((name) => name.endsWith(".json"));
     const done: string[] = [];
+    for (const name of all.filter((entry) => entry.endsWith(APPLIED_SUFFIX))) {
+      done.push(name.slice(0, -APPLIED_SUFFIX.length));
+      await rm(path.join(dir, name), { force: true });
+    }
     await this.locked(async () => {
       for (const name of names.sort()) {
         const file = path.join(dir, name);
@@ -659,10 +805,12 @@ export class HomeStore {
       let total = files.reduce((sum, candidate) => sum + candidate.size, 0);
       const existing = files.find((candidate) => candidate.path.virtual === p.virtual);
       if (existing) total -= existing.size;
+      let count = files.length - (existing ? 1 : 0);
       for (const oldest of files.filter((candidate) => candidate !== existing).sort((a, b) => a.mtimeMs - b.mtimeMs)) {
-        if (total + data.length <= limits.tmpMaxBytes) break;
+        if (total + data.length <= limits.tmpMaxBytes && count + 1 <= limits.tmpMaxFiles) break;
         await this.files.remove(oldest.path).catch(() => undefined);
         total -= oldest.size;
+        count -= 1;
       }
       if (total + data.length > limits.tmpMaxBytes) return false;
       await this.files.writeBytes(p, data);
@@ -696,7 +844,7 @@ export class HomeStore {
   async dmOrigin(p: HerPath, index?: FilesIndex): Promise<string | undefined> {
     const entries = (index ?? (await this.readIndex())).entries.filter((entry) => entry.placeKey.startsWith("dm_"));
     const byPath = entries.find((entry) => entry.path === p.virtual);
-    if (p.root === "tmp" && p.segments[0] === "dm") return byPath?.placeKey ?? "dm_file";
+    if (isDmFolderPath(p)) return entries.find((entry) => pathKey(entry.path) === pathKey(p.virtual))?.placeKey ?? byPath?.placeKey ?? "dm_file";
     if (entries.length === 0) return undefined;
     const info = await this.files.inspect(p);
     if (info.kind !== "file" || !entries.some((entry) => entry.size === info.size)) return undefined;
@@ -721,20 +869,26 @@ export class HomeStore {
    * places. Copies under other names are hers to share.
    */
   async privateFiles(): Promise<Set<string>> {
-    const out = new Set([MEMORY_FILE, SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE].map((name) => this.home(name).virtual));
-    const index = await this.files.readText(this.home(MEMORY_FILE)).catch(() => undefined);
+    const out = new Set([MEMORY_FILE, SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE].map((name) => pathKey(this.home(name).virtual)));
+    const memory = await this.files.canonical(this.home(MEMORY_FILE));
+    const index = await this.files.readText(memory).catch(() => undefined);
     for (const target of markdownLinks(index ?? "")) {
-      const resolved = this.resolve(target.startsWith("/") || target.startsWith("~") ? target : `~/${target}`);
-      if (resolved.ok) out.add(resolved.path.virtual);
+      const resolved = await this.resolveExisting(target.startsWith("/") || target.startsWith("~") ? target : `~/${target}`);
+      if (resolved.ok) out.add(pathKey(resolved.path.virtual));
     }
     return out;
+  }
+
+  /** One of her private files (by `privateFiles`, any spelling). */
+  async isPrivateFile(p: HerPath, privateKeys?: ReadonlySet<string>): Promise<boolean> {
+    return (privateKeys ?? (await this.privateFiles())).has(pathKey((await this.files.canonical(p)).virtual));
   }
 
   /** The text files of her home (forget's scrub and verification, maintenance): path below home → text. */
   async readAllText(): Promise<Map<string, string>> {
     const out = new Map<string, string>();
     for (const entry of await this.files.walk("home")) {
-      if (entry.kind !== "file" || entry.size > 4 * WRITE_MAX_BYTES) continue;
+      if (entry.kind !== "file" || entry.size > READ_ALL_MAX_BYTES) continue;
       const data = await this.files.readBytes(entry.path).catch(() => undefined);
       if (data && isTextBytes(data)) out.set(entry.path.segments.join("/"), data.toString("utf8"));
     }
@@ -746,6 +900,9 @@ export class HomeStore {
     return [...(await this.files.walk("home")), ...(await this.files.walk("tmp"))].filter((entry) => entry.kind === "file");
   }
 }
+
+/** A change set's journal after it was applied (kept until her next one). */
+const APPLIED_SUFFIX = ".applied";
 
 export function safeJournalName(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 100) || "change";
@@ -766,17 +923,27 @@ async function rmdirQuiet(dir: string): Promise<void> {
   await rmdir(dir).catch(() => undefined);
 }
 
-/** Relative link targets in Markdown (`[Kevin](people/kevin.md)`), without anchors; URLs left out. */
+/**
+ * Link targets in Markdown that name her files (§16.3.2): inline links `[t](people/kevin.md)`,
+ * `[t](<people/mina notes.md> "title")`, reference definitions `[r1]: people/ref.md`, with `./`,
+ * `~/` or absolute paths, percent-encoding and anchors or queries removed. URLs are left out.
+ */
 export function markdownLinks(text: string): string[] {
+  const raw: string[] = [];
+  // Inline: `](target)`, `](<target with spaces>)`, an optional title after the target.
+  for (const match of text.matchAll(/\]\(\s*(?:<([^>\n]*)>|([^)\s]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?\s*\)/gu)) raw.push((match[1] ?? match[2])!);
+  // Reference definitions: `[id]: target` or `[id]: <target>` at the start of a line.
+  for (const match of text.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]*)>|(\S+))/gmu)) raw.push((match[1] ?? match[2])!);
   const out: string[] = [];
-  for (const match of text.matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/gu)) {
-    const target = match[1]!.split("#")[0]!;
-    if (!target || /^[a-z][a-z0-9+.-]*:/iu.test(target)) continue;
+  for (const candidate of raw) {
+    let target = candidate.trim().split("#")[0]!.split("?")[0]!;
+    if (!target || /^[a-z][a-z0-9+.-]*:/iu.test(target) || target.startsWith("//")) continue;
     try {
-      out.push(decodeURIComponent(target.replace(/^\.\//u, "")));
+      target = decodeURIComponent(target);
     } catch {
-      out.push(target.replace(/^\.\//u, ""));
+      // kept as written
     }
+    out.push(target.replace(/^(\.\/)+/u, ""));
   }
   return out;
 }

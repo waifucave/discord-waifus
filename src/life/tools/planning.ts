@@ -1,6 +1,8 @@
 // `WatchFor` and `ScheduleWake` (Living cast spec §16.4, §16.5, T2, T3): each appends one entry to
 // her own file (`~/watches.json`, `~/schedule.json`); she lists, changes and cancels them by reading
-// and editing the file. The write goes through the same checks as any other write of the file.
+// and editing the file. The write goes through the same checks as any other write of the file, and
+// reads and writes the file under one hold of her home lock (nothing the app rewrites in between is
+// lost). A check's error names the tool, not the entry (`WatchFor: …`).
 
 import { z } from "zod";
 import { dayTimeText, parseLocalDateTime } from "../clock.js";
@@ -9,7 +11,6 @@ import { HomeError } from "../home/homeStore.js";
 import { SCHEDULE_FILE, WATCHES_FILE } from "../home/pathRules.js";
 import {
   ceilMinute,
-  formatEntries,
   localMinuteText,
   MAX_BINDINGS,
   MAX_NOTE_CHARS,
@@ -37,20 +38,20 @@ async function currentEntries(ctx: ToolContext, name: string): Promise<{ ok: tru
   return { ok: false, output: toolError(`~/${name} can't be read as a list right now; fix it first (Read it to see why)`) };
 }
 
-async function append(ctx: ToolContext, name: string, entry: Record<string, unknown>): Promise<{ ok: true; id: string } | { ok: false; output: ToolOutput }> {
-  const current = await currentEntries(ctx, name);
-  if (!current.ok) return current;
-  const before = new Set(current.entries.map((existing) => existing["id"]));
+async function append(ctx: ToolContext, tool: "WatchFor" | "ScheduleWake", name: typeof SCHEDULE_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>): Promise<{ ok: true; id: string } | { ok: false; output: ToolOutput }> {
   const store = storeOf(ctx);
   try {
-    await store.writeText(store.home(name), formatEntries([...current.entries, entry]), checkEnvFor(ctx.deps, ctx.waifu.id));
+    return { ok: true, id: await store.appendEntry(name, entry, checkEnvFor(ctx.deps, ctx.waifu.id)) };
   } catch (error) {
-    if (error instanceof HomeError) return { ok: false, output: toolError(error.message) };
+    if (error instanceof HomeError) return { ok: false, output: toolError(asToolError(tool, error.message)) };
     throw error;
   }
-  const saved = await currentEntries(ctx, name);
-  const id = saved.ok ? saved.entries.map((existing) => existing["id"]).find((candidate) => typeof candidate === "string" && !before.has(candidate)) : undefined;
-  return { ok: true, id: typeof id === "string" ? id : "?" };
+}
+
+/** `error: watches.json entry w3: timeout is in the past` → `error: WatchFor: timeout is in the past`. */
+export function asToolError(tool: string, message: string): string {
+  const problem = message.replace(/^error:\s*/u, "").replace(/^(?:~\/)?(?:watches|schedule)\.json entry [^:]+:\s*/u, "");
+  return `error: ${tool}: ${problem}`;
 }
 
 // ---- WatchFor ----------------------------------------------------------------------------------------
@@ -81,7 +82,8 @@ async function watchFor(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const current = await currentEntries(ctx, WATCHES_FILE);
   if (!current.ok) return current.output;
   if (current.entries.length >= MAX_WATCHES) return toolError(`you already have ${MAX_WATCHES} watches; remove one from ~/watches.json first`);
-  const timeout = ceilMinute(new Date(deps.now().getTime() + args.timeout_minutes * 60_000));
+  // To the nearest minute (the file's times are whole minutes).
+  const timeout = new Date(Math.round((deps.now().getTime() + args.timeout_minutes * 60_000) / 60_000) * 60_000);
   const entry = {
     timeout: localMinuteText(timeout, deps.timeZone),
     once: args.once,
@@ -93,7 +95,7 @@ async function watchFor(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
       ...(binding.any_message !== undefined ? { any_message: binding.any_message } : {})
     }))
   };
-  const saved = await append(ctx, WATCHES_FILE, entry);
+  const saved = await append(ctx, "WatchFor", WATCHES_FILE, entry);
   if (!saved.ok) return saved.output;
   const ends = parseLocalDateTime(entry.timeout, deps.timeZone) ?? timeout;
   return { content: `watching ${saved.id} until ${dayTimeText(ends, deps.timeZone)} (in ~/${WATCHES_FILE})` };
@@ -131,7 +133,7 @@ async function scheduleWake(input: unknown, ctx: ToolContext): Promise<ToolOutpu
   if (!current.ok) return current.output;
   if (current.entries.length >= MAX_REMINDERS) return toolError(`you already have ${MAX_REMINDERS} reminders; remove one from ~/${SCHEDULE_FILE} first`);
   const entry = { at: localMinuteText(due, deps.timeZone), ...(args.repeat ? { repeat: args.repeat } : {}), note: args.note };
-  const saved = await append(ctx, SCHEDULE_FILE, entry);
+  const saved = await append(ctx, "ScheduleWake", SCHEDULE_FILE, entry);
   if (!saved.ok) return saved.output;
   return { content: `set ${saved.id} for ${dayTimeText(due, deps.timeZone)}${args.repeat ? `, then ${args.repeat}` : ""} (in ~/${SCHEDULE_FILE})` };
 }
@@ -160,7 +162,7 @@ export const planningTools: LifeTool[] = [
           }
         },
         note: { type: "string", maxLength: MAX_NOTE_CHARS, description: "A note to yourself, shown when it fires or times out." },
-        timeout_minutes: { type: "integer", minimum: 1, maximum: 10080, description: "When the watch ends (at most a week)." },
+        timeout_minutes: { type: "integer", minimum: 1, maximum: 10080, description: "Minutes until the watch ends (1–10080, a week)." },
         once: { type: "boolean", description: "Stop after the first match (default true)." }
       },
       required: ["note", "timeout_minutes"],

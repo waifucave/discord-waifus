@@ -31,11 +31,18 @@ import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import { selfAuthorIds } from "./people.js";
 import { placesWithHandles, renderPlacesBlock } from "./places.js";
 import { buildLifeRequest, lifeBudget } from "./request.js";
-import { modelTools, offeredToolNames } from "./tools/index.js";
+import { lifeTool, modelTools, offeredToolNames } from "./tools/index.js";
 
 export const KEPT_TURNS = 3;
 
-export type HarnessNow = { harness: string; tools: string[]; toolDescriptions: Record<string, string>; route: LifeModelRoute; hash: string };
+export type HarnessNow = {
+  harness: string;
+  tools: string[];
+  toolDescriptions: Record<string, string>;
+  toolSchemas: Record<string, Record<string, unknown>>;
+  route: LifeModelRoute;
+  hash: string;
+};
 
 export function routeOf(model: CuratedModel, effort?: string): LifeModelRoute {
   return { providerId: model.providerId, modelId: model.modelId, ...(effort ? { effort } : {}) };
@@ -49,13 +56,22 @@ export async function currentHarness(deps: LifeDeps, waifu: WaifuConfig, model: 
   const others = (await listWaifus(deps.storage).catch(() => []))
     .filter((other) => other.enabled && other.id !== waifu.id)
     .map((other) => ({ name: other.name, displayName: other.displayName }));
-  const harness = buildBlockA(waifu, { serverNicknames: nicknames, others }, deps.timeZone);
+  const harness = buildBlockA(waifu, { serverNicknames: nicknames, others }, deps.timeZone, { tmpRetentionDays: deps.config().life.tmp.retentionDays });
   const tools = offeredToolNames(deps);
   const route = routeOf(model, waifu.model?.effort);
   // The descriptions as configured now (Bash says whether python3 is there): kept in the epoch's
   // snapshot, so a setting change takes effect at a turn boundary through a compaction (§5.2).
-  const toolDescriptions = Object.fromEntries(modelTools(tools, deps.config()).map((tool) => [tool.name, tool.description]));
-  return { harness, tools, toolDescriptions, route, hash: harnessHash(harness, tools.map((name) => `${name}:${toolDescriptions[name] ?? ""}`), route) };
+  const defined = modelTools(tools, deps.config());
+  const toolDescriptions = Object.fromEntries(defined.map((tool) => [tool.name, tool.description]));
+  const toolSchemas = Object.fromEntries(defined.map((tool) => [tool.name, tool.inputSchema as Record<string, unknown>]));
+  return {
+    harness,
+    tools,
+    toolDescriptions,
+    toolSchemas,
+    route,
+    hash: harnessHash(harness, tools.map((name) => `${name}:${toolDescriptions[name] ?? ""}:${JSON.stringify(toolSchemas[name] ?? {})}`), route)
+  };
 }
 
 /**
@@ -221,7 +237,7 @@ export async function startEpoch(
         epochStartedAt: now.toISOString(),
         status: current.status,
         summary: o.summary,
-        systemSnapshot: { harnessHash: o.harness.hash, harness: o.harness.harness, memoryIndex, places, tools: o.harness.tools, toolDescriptions: o.harness.toolDescriptions },
+        systemSnapshot: { harnessHash: o.harness.hash, harness: o.harness.harness, memoryIndex, places, tools: o.harness.tools, toolDescriptions: o.harness.toolDescriptions, toolSchemas: o.harness.toolSchemas },
         modelRoute: o.harness.route,
         inlineImageCount: 0,
         inlineImageBytes: 0,
@@ -245,11 +261,76 @@ export async function startEpoch(
 
 /**
  * The epoch a forget (§7.5 step 2) or a deferred owner reset (§14.4) left to start. A forget's drops
- * every old log (its turns are in the scrubbed summary); a reset's keeps them the usual 7 days.
+ * every old log (its turns are in the scrubbed summary); a reset's keeps them the usual 7 days. A
+ * tool-surface change (`tools`, §16.13) normally goes through `compactRetiredTools`; here it is a reset.
  */
 export function startPendingEpoch(deps: LifeDeps, waifuId: string, state: LifeState, harness: HarnessNow): Promise<LifeState> {
-  const reset = state.pendingEpochReason === "reset";
+  const reset = state.pendingEpochReason === "reset" || state.pendingEpochReason === "tools";
   return startEpoch(deps, waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: reset ? "reset" : "forget", summarized: !reset, strippedBlocks: 0, ...(reset ? {} : { pruneAll: true }) });
+}
+
+const FLAT_RESULT_CHARS = 2_000;
+const FLAT_ARGS_CHARS = 200;
+
+function flatArgs(input: unknown): string {
+  if (input === null || typeof input !== "object") return "";
+  const parts = Object.values(input as Record<string, unknown>).map((value) => (typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : JSON.stringify(value)));
+  const text = parts.join(" ").replace(/\s+/gu, " ").trim();
+  return text.length > FLAT_ARGS_CHARS ? `${text.slice(0, FLAT_ARGS_CHARS)}…` : text;
+}
+
+function flatResult(content: unknown): string {
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((block: Record<string, unknown>) => (block?.["type"] === "text" ? String(block["text"] ?? "") : block?.["type"] === "life_image" && typeof (block["mode"] as { text?: unknown })?.text === "string" ? String((block["mode"] as { text: string }).text) : "[image]"))
+            .join("\n")
+        : "";
+  return text.length > FLAT_RESULT_CHARS ? `${text.slice(0, FLAT_RESULT_CHARS)}…` : text;
+}
+
+/**
+ * Her log with every call of a tool the app no longer has (the L2 surface, §16.13) turned into plain
+ * text, its result too (`[used read_note people/kevin.md]`, `[read_note result: …]`): a provider
+ * refuses a history that calls tools the request does not define.
+ */
+export function flattenRetiredCalls(lines: readonly LifeLogLine[], isKnown: (name: string) => boolean = (name) => lifeTool(name) !== undefined): LifeLogLine[] {
+  const retired = new Map<string, string>();
+  return lines.map((line) => {
+    const message = line.message as unknown as ProviderMessageLike | null;
+    if (!message || !Array.isArray(message.content)) return line;
+    let changed = false;
+    const content = (message.content as unknown as Array<Record<string, unknown>>).map((block) => {
+      if (block["type"] === "tool_use" && typeof block["name"] === "string" && !isKnown(block["name"])) {
+        changed = true;
+        retired.set(String(block["id"]), block["name"]);
+        const args = flatArgs(block["input"]);
+        return { type: "text", text: `[used ${block["name"]}${args ? ` ${args}` : ""}]` };
+      }
+      if (block["type"] === "tool_result" && retired.has(String(block["tool_use_id"]))) {
+        changed = true;
+        return { type: "text", text: `[${retired.get(String(block["tool_use_id"]))} result: ${flatResult(block["content"])}]` };
+      }
+      return block;
+    });
+    return changed ? { ...line, message: { ...(message as unknown as Record<string, unknown>), content } as unknown as Record<string, unknown> } : line;
+  });
+}
+
+/**
+ * The pending epoch of a tool-surface change (§16.13): her epoch is summarised like any compaction,
+ * with the retired calls as text and no turns kept (they would call tools that are gone). Only a
+ * failed summary falls back to the reset (her old summary carries over); an aborted one changes
+ * nothing and runs again.
+ */
+export async function compactRetiredTools(
+  deps: LifeDeps,
+  o: { waifu: WaifuConfig; state: LifeState; lines: readonly LifeLogLine[]; summaryRoute: CuratedModel | undefined; effort?: string; nextHarness: HarnessNow; omit: CompactionOmissions; signal?: AbortSignal }
+): Promise<CompactionOutcome> {
+  const lines = flattenRetiredCalls(o.lines);
+  return compactLife(deps, { ...o, lines, reason: "tools", keepTurns: 0, shrinkLastResults: false });
 }
 
 export const COMPACTION_INSTRUCTION =

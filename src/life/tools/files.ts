@@ -4,8 +4,11 @@
 //
 // Read shows text with line numbers, an image (on a route with image input, within the epoch's
 // image caps; the bytes go into the image cache under their hash, pinned for the epoch, so replay
-// never depends on the file) or its OCR text, or a PDF's text with page markers. A file from a DM
-// is recorded as a DM call (D14), so the owner's views hide it.
+// never depends on the file) or its OCR text, or a PDF's text with page markers; its output is cut
+// at READ_MAX_OUTPUT_CHARS. A file from a DM is recorded as a DM call (D14), so the owner's views
+// hide it. Outside her life (maintenance, a forget's scrub: `ctx.mode` "session") an image is always
+// its OCR text and her life's image state is never touched. A whole-file Write of schedule.json or
+// watches.json needs a Read of it this turn that is still current (spec §16.4, §16.5).
 
 import { z } from "zod";
 import { MAX_INLINE_IMAGE_BYTES } from "../../orchestration/context/images.js";
@@ -15,7 +18,7 @@ import { checkEnvFor, homeStoreFor } from "../home/index.js";
 import { HomeError, isTextBytes, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
-import { type HerPath } from "../home/pathRules.js";
+import { pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { notePlace } from "../placeRecorder.js";
 import { parseInput, toolError, type LifeResultBlock, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
@@ -23,16 +26,29 @@ export const READ_DEFAULT_LINES = 2_000;
 export const READ_MAX_LINE_CHARS = 2_000;
 export const READ_MAX_BYTES = 10 * 1024 * 1024;
 export const PDF_DEFAULT_PAGES = 20;
+/** About 25k tokens: a Read result is cut here (whole lines, whole pages where possible). */
+export const READ_MAX_OUTPUT_CHARS = 100_000;
 const OCR_TIMEOUT_MS = 4_000;
 
 export function storeOf(ctx: Pick<ToolContext, "deps" | "waifu">): HomeStore {
   return homeStoreFor(ctx.deps, ctx.waifu);
 }
 
-/** A checked path, or the error result. */
-export function pathArg(store: HomeStore, input: string, o: { allowRoot?: boolean } = {}): { ok: true; path: HerPath } | { ok: false; output: ToolOutput } {
-  const resolved = store.resolve(input, o);
+/**
+ * A checked path spelled as on disk (`~/Memory.md` is `~/MEMORY.md` when that exists, so every
+ * check by name sees the real file), or the error result.
+ */
+export async function pathArg(store: HomeStore, input: string, o: { allowRoot?: boolean } = {}): Promise<{ ok: true; path: HerPath } | { ok: false; output: ToolOutput }> {
+  const resolved = await store.resolveExisting(input, o);
   return resolved.ok ? resolved : { ok: false, output: toolError(resolved.error) };
+}
+
+/** Cuts a Read result at READ_MAX_OUTPUT_CHARS, on a line break when there is one near. */
+export function capReadOutput(text: string, more: string): string {
+  if (text.length <= READ_MAX_OUTPUT_CHARS) return text;
+  const lineEnd = text.lastIndexOf("\n", READ_MAX_OUTPUT_CHARS);
+  const cut = lineEnd > READ_MAX_OUTPUT_CHARS * 0.8 ? lineEnd : READ_MAX_OUTPUT_CHARS;
+  return `${text.slice(0, cut)}\n(cut at ${cut.toLocaleString("en-US")} characters; pass ${more} to read on)`;
 }
 
 /**
@@ -91,6 +107,15 @@ function numbered(text: string, offset: number, limit: number): string {
   return out.join("\n");
 }
 
+async function ocrMode(ctx: ToolContext, attachment: Parameters<NonNullable<ToolContext["deps"]["ocr"]>["cachedText"]>[0], o: { seen?: boolean } = {}): Promise<LifeImageBlock["mode"]> {
+  const { deps } = ctx;
+  const cached = await deps.ocr?.cachedText(attachment).catch(() => undefined);
+  const text = cached ?? (deps.images ? await deps.ocr?.textFor?.(attachment, { timeoutMs: OCR_TIMEOUT_MS, signal: ctx.signal }).catch(() => undefined) : undefined);
+  const clean = (text ?? "").replace(/\s+/gu, " ").trim();
+  if (o.seen) return { text: clean ? `[image: you've already seen this picture; the text in it: ${clean}]` : "[image: you've already seen this picture]" };
+  return { text: clean ? `[image: ${clean}]` : "[image: no text found]" };
+}
+
 async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: string, dmOrigin: string | undefined): Promise<ToolOutput> {
   const { deps } = ctx;
   const key = `file:${sha256(data)}`;
@@ -101,12 +126,16 @@ async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: s
   const header = `${p.display}: image (${sizeText(data.length)})`;
   const cache = deps.images;
   if (cache?.put) await cache.put(key, { mimeType, data }, conversationKey ? { conversationKey } : {}).catch(() => undefined);
+  // Outside her life (maintenance, a scrub) a picture is only its text: her life's image state,
+  // caps and pins stay as they are.
+  if (ctx.mode === "session") return { content: [{ type: "text", text: header }, { type: "life_image", file: p.display, attachment, mode: await ocrMode(ctx, attachment) }] };
   const state = await readLifeState(deps.storage, ctx.waifu.id, deps.now());
+  // A picture already shown this epoch is not shown again (it is still in her log above).
+  if (state.shownImageKeys.includes(key)) return { content: [{ type: "text", text: header }, { type: "life_image", file: p.display, attachment, mode: await ocrMode(ctx, attachment, { seen: true }) }] };
   const life = deps.config().life;
   const inline =
     ctx.route.imageInput &&
     cache?.put !== undefined &&
-    !state.shownImageKeys.includes(key) &&
     data.length <= MAX_INLINE_IMAGE_BYTES &&
     state.inlineImageCount + 1 <= life.maxInlineImagesPerEpoch &&
     state.inlineImageBytes + data.length <= life.maxInlineImageBytesPerEpoch;
@@ -114,10 +143,7 @@ async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: s
   if (inline) {
     mode = "inline";
   } else {
-    const cached = await deps.ocr?.cachedText(attachment).catch(() => undefined);
-    const text = cached ?? (cache ? await deps.ocr?.textFor?.(attachment, { timeoutMs: OCR_TIMEOUT_MS, signal: ctx.signal }).catch(() => undefined) : undefined);
-    const clean = (text ?? "").replace(/\s+/gu, " ").trim();
-    mode = { text: clean ? `[image: ${clean}]` : "[image: no text found]" };
+    mode = await ocrMode(ctx, attachment);
   }
   await updateLifeState(deps.storage, ctx.waifu.id, (current) => ({
     ...current,
@@ -147,16 +173,17 @@ async function readPdf(ctx: ToolContext, p: HerPath, data: Buffer, pages: string
   if (result.pages.every((page) => !page.text)) parts.push("(no text found: it is probably scanned images)");
   const last = result.pages[result.pages.length - 1]!.page;
   if (last < result.totalPages) parts.push(`(pages ${range.first}–${last} of ${result.totalPages}; pass pages like "${last + 1}-${Math.min(result.totalPages, last + PDF_DEFAULT_PAGES)}" to read on)`);
-  return { content: parts.join("\n") };
+  return { content: capReadOutput(parts.join("\n"), "pages") };
 }
 
 async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(ReadInput, input);
   if (!parsed.ok) return parsed.output;
   const store = storeOf(ctx);
-  const target = pathArg(store, parsed.value.file_path);
+  const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
   const p = target.path;
+  if (specialJsonFile(p) && (await store.files.inspect(p)).kind === "missing") rememberRead(ctx, p, null);
   const info = await store.files.inspect(p);
   if (info.kind === "missing") return toolError(`${p.display} doesn't exist`);
   if (info.kind === "link") return toolError(`${p.display} can't be used: it is a link`);
@@ -170,11 +197,18 @@ async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     return failure(error);
   }
   const dmOrigin = await noteDmFile(store, p);
+  if (specialJsonFile(p)) rememberRead(ctx, p, sha256(data));
   const kind = sniff(data);
   if (kind.kind === "image") return readImage(ctx, p, data, kind.mimeType, dmOrigin);
   if (kind.kind === "pdf") return readPdf(ctx, p, data, parsed.value.pages);
-  if (kind.kind === "text") return { content: numbered(data.toString("utf8"), parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES) };
+  if (kind.kind === "text") return { content: capReadOutput(numbered(data.toString("utf8"), parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES), "offset and limit") };
   return toolError(`${p.display} isn't a text file, an image or a PDF`);
+}
+
+/** What she last read of a special file this turn (`null`: it didn't exist). */
+function rememberRead(ctx: ToolContext, p: HerPath, hash: string | null): void {
+  ctx.turn.readHashes ??= new Map();
+  ctx.turn.readHashes.set(pathKey(p.virtual), hash ?? "");
 }
 
 // ---- Write -----------------------------------------------------------------------------------------
@@ -185,11 +219,29 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   const parsed = parseInput(WriteInput, input);
   if (!parsed.ok) return parsed.output;
   const store = storeOf(ctx);
-  const target = pathArg(store, parsed.value.file_path);
+  const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
+  // A whole-file Write of her reminders or watches replaces what the app changed since she read it
+  // (a reminder fired, a watch matched or timed out, the owner deleted one): it needs a current Read.
+  const special = specialJsonFile(target.path);
+  const known = special ? ctx.turn.readHashes?.get(pathKey(target.path.virtual)) : undefined;
+  const name = target.path.segments[0];
+  // A file from a DM she replaces (or a new one in a DM's folder) makes the call a DM call (D14).
+  await noteDmFile(store, target.path);
+  const guard = special
+    ? {
+        expectedHash: known ? known : null,
+        staleMessage:
+          known === undefined
+            ? `error: ${name} already exists; Read it first (Write replaces the whole file)`
+            : `error: ${name} changed since you read it (${special === "watches" ? "a watch matched or timed out" : "a reminder fired"}); Read it again`
+      }
+    : {};
   try {
-    const result = await store.writeText(target.path, parsed.value.content, checkEnvFor(ctx.deps, ctx.waifu.id));
-    return { content: `wrote ${target.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})` };
+    const result = await store.writeText(target.path, parsed.value.content, checkEnvFor(ctx.deps, ctx.waifu.id), guard);
+    if (special) rememberRead(ctx, result.path, result.hash);
+    await noteDmFile(store, result.path);
+    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})` };
   } catch (error) {
     return failure(error);
   }
@@ -208,11 +260,14 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(EditInput, input);
   if (!parsed.ok) return parsed.output;
   const store = storeOf(ctx);
-  const target = pathArg(store, parsed.value.file_path);
+  const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
   await noteDmFile(store, target.path);
   try {
     const result = await store.editText(target.path, parsed.value.old_string, parsed.value.new_string, parsed.value.replace_all === true, checkEnvFor(ctx.deps, ctx.waifu.id));
+    // Her view of the file now includes her edit (an earlier stale Read stays stale).
+    const key = pathKey(target.path.virtual);
+    if (specialJsonFile(target.path) && ctx.turn.readHashes?.has(key)) rememberRead(ctx, target.path, result.hash);
     const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
     return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}` };
   } catch (error) {
@@ -221,12 +276,13 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 const pathSchema = { type: "string", description: "A path in your folders: ~/people/kevin.md, /tmp/bake-club/general/k3-cake.png, or relative to your home." };
+const textPathSchema = { type: "string", description: "A path in your folders: ~/people/kevin.md, /tmp/notes.txt, or relative to your home." };
 
 export const fileTools: LifeTool[] = [
   {
     name: "Read",
     description:
-      "Read a file from your folders. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you (or described when they can't be). PDFs come back as text with page markers (the first 20 pages; use pages for others).",
+      "Read a file from your folders. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you; when they can't be, you get any text in them. PDFs come back as text with page markers (the first 20 pages; use pages for others).",
     inputSchema: {
       type: "object",
       properties: {
@@ -244,10 +300,10 @@ export const fileTools: LifeTool[] = [
   {
     name: "Write",
     description:
-      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. places.md can't be changed; schedule.json and watches.json are checked before they are saved.",
+      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. places.md can't be changed; schedule.json and watches.json are checked before they are saved, and need a fresh Read before Write replaces them.",
     inputSchema: {
       type: "object",
-      properties: { file_path: pathSchema, content: { type: "string", description: "The whole file (at most 256 KB)." } },
+      properties: { file_path: textPathSchema, content: { type: "string", description: "The whole file (at most 256 KB)." } },
       required: ["file_path", "content"],
       additionalProperties: false
     },
@@ -257,11 +313,11 @@ export const fileTools: LifeTool[] = [
   {
     name: "Edit",
     description:
-      "Replace text in a file: old_string must appear exactly once (include enough around it), unless replace_all is true. Read the file first so you match it exactly.",
+      "Replace text in a file: old_string must appear exactly once (include enough around it), unless replace_all is true. Read the file first so you match it exactly. Leave out the line numbers Read shows.",
     inputSchema: {
       type: "object",
       properties: {
-        file_path: pathSchema,
+        file_path: textPathSchema,
         old_string: { type: "string", description: "The exact text to replace." },
         new_string: { type: "string", description: "What replaces it." },
         replace_all: { type: "boolean", description: "Replace every occurrence (default false)." }

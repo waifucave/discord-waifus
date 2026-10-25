@@ -27,7 +27,9 @@ export const SystemSnapshotSchema = z.object({
   /** The tool names offered this epoch, in order. */
   tools: z.array(z.string()).default([]),
   /** Their descriptions this epoch (sent unchanged for the whole epoch). */
-  toolDescriptions: z.record(z.string(), z.string()).optional()
+  toolDescriptions: z.record(z.string(), z.string()).optional(),
+  /** Their input schemas this epoch (limits they state follow the config at epoch start). */
+  toolSchemas: z.record(z.string(), z.record(z.string(), z.unknown())).optional()
 });
 export type SystemSnapshot = z.infer<typeof SystemSnapshotSchema>;
 
@@ -115,7 +117,7 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
    * Why the pending epoch starts: `forget` (absent too) drops every old log; `reset` (an owner reset
    * without a model, §14.4) keeps them the usual 7 days.
    */
-  pendingEpochReason: z.enum(["forget", "reset"]).optional(),
+  pendingEpochReason: z.enum(["forget", "reset", "tools"]).optional(),
   /** Thinking blocks stripped from the kept turns at epoch start, reported on the epoch's first call (§12). */
   epochStrippedThinkingBlocks: z.number().int().nonnegative().optional(),
   /** §5.2 errors: the failed turn, and whether its one follow-up turn has run. */
@@ -279,14 +281,18 @@ export const WatchIdsSchema = z.object({
     )
     .default({}),
   /** Wake ids of timeouts already routed (newest 100). */
-  fired: z.array(z.string()).default([])
+  fired: z.array(z.string()).default([]),
+  /** Set when an unreadable side file was replaced: what was due before then is ambiguous. */
+  recoveredAt: IsoDateStringSchema.optional()
 });
 export type WatchIds = z.infer<typeof WatchIdsSchema>;
 
 export const ScheduleIdsSchema = z.object({
   nextId: z.number().int().positive().default(1),
   /** Wake ids of occurrences already routed (newest 100). */
-  fired: z.array(z.string()).default([])
+  fired: z.array(z.string()).default([]),
+  /** Set when an unreadable side file was replaced: what was due before then is ambiguous. */
+  recoveredAt: IsoDateStringSchema.optional()
 });
 export type ScheduleIds = z.infer<typeof ScheduleIdsSchema>;
 

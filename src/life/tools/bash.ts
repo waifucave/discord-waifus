@@ -1,15 +1,17 @@
 // `Bash` (Living cast spec §16.3.5, T10): a simulated bash over a copy of her two folders, in its
 // own worker thread (src/life/bash/). The result is the output (stdout, then stderr), cut at
-// `life.bash.maxOutputChars`, then `exit <code>` and one line naming what changed. The change set is
-// applied all or nothing by the home store; when it is not empty an intent is written first and the
-// set is journalled, so a crash mid-apply is finished at boot (§16.9).
+// `life.bash.maxOutputChars`, then `exit <code>` and one line naming what changed (the first 20
+// entries of each kind). The change set is applied all or nothing by the home store; when it is not
+// empty an intent is written first and the set is journalled, so a crash mid-apply is finished at
+// boot (§16.9). A command that read, listed, moved or deleted anything from a private chat, or whose
+// output names such a file, is recorded as touching that chat (D14).
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { runBash } from "../bash/runner.js";
+import { MAX_CHANGE_ENTRIES, runBash } from "../bash/runner.js";
 import { checkEnvFor } from "../home/index.js";
-import { HomeError } from "../home/homeStore.js";
-import { parseVirtual } from "../home/pathRules.js";
+import { HomeError, type HomeStore } from "../home/homeStore.js";
+import { isDmFolderPath, parseVirtual, pathKey } from "../home/pathRules.js";
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
 import { noteDmFile, storeOf } from "./files.js";
@@ -18,6 +20,8 @@ import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
 /** Room the in-memory copy has beyond her two folders' limits (scratch work that is deleted again). */
 const WORK_ROOM_BYTES = 64 * 1024 * 1024;
+/** Entries of each kind named in the change line before "… and N more". */
+const SUMMARY_ENTRIES = 20;
 
 const BashInput = z.object({
   command: z.string().min(1).max(20_000),
@@ -28,6 +32,50 @@ function cut(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}\n… (output cut)` : text;
 }
 
+function listed(label: string, items: readonly string[]): string | undefined {
+  if (items.length === 0) return undefined;
+  const shown = items.slice(0, SUMMARY_ENTRIES).join(", ");
+  return `${label}: ${shown}${items.length > SUMMARY_ENTRIES ? `, … and ${items.length - SUMMARY_ENTRIES} more` : ""}`;
+}
+
+/**
+ * Records the private chats a command touched (D14): any path under `/tmp/dm/` (any spelling), any
+ * file whose path or content hash the provenance index has from a DM, and output that names one.
+ */
+async function noteDmTouches(store: HomeStore, paths: readonly string[], text: string): Promise<void> {
+  const index = await store.readIndex();
+  const dmEntries = index.entries.filter((entry) => entry.placeKey.startsWith("dm_"));
+  const dmPaths = new Map(dmEntries.map((entry) => [pathKey(entry.path), entry.placeKey] as const));
+  const sizes = new Set(dmEntries.map((entry) => entry.size));
+  const noted = new Set<string>();
+  for (const virtual of paths) {
+    const p = parseVirtual(virtual, store.slug);
+    if (!p || p.segments.length === 0) continue;
+    const byPath = dmPaths.get(pathKey(p.virtual));
+    if (byPath) {
+      if (!noted.has(byPath)) notePlace(byPath);
+      noted.add(byPath);
+      continue;
+    }
+    if (isDmFolderPath(p)) {
+      const origin = await store.dmOrigin(p, index).catch(() => "dm_file");
+      if (origin && !noted.has(origin)) notePlace(origin);
+      if (origin) noted.add(origin);
+      continue;
+    }
+    if (sizes.size === 0) continue;
+    const info = await store.files.inspect(p);
+    if (info.kind !== "file" || !sizes.has(info.size)) continue;
+    const origin = await store.dmOrigin(p, index).catch(() => undefined);
+    if (origin && !noted.has(origin)) {
+      notePlace(origin);
+      noted.add(origin);
+    }
+  }
+  const lowered = pathKey(text);
+  if (lowered.includes("/tmp/dm/") || dmEntries.some((entry) => lowered.includes(pathKey(entry.path)))) notePlace("dm_file");
+}
+
 async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(BashInput, input);
   if (!parsed.ok) return parsed.output;
@@ -36,7 +84,7 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const timeoutMs = Math.min(parsed.value.timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS, life.bash.maxTimeoutMs);
   const store = storeOf(ctx);
   // A command that names a private chat's downloads is about that chat (D14).
-  if (/\/tmp\/dm(?:\/|\b)/u.test(parsed.value.command)) notePlace("dm_file");
+  if (/\/tmp\/dm(?:\/|\b)/iu.test(parsed.value.command)) notePlace("dm_file");
   const run = await runBash({
     store,
     command: parsed.value.command,
@@ -44,18 +92,22 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     python: life.bash.python,
     timeZone: deps.timeZone,
     signal: ctx.signal,
-    maxFileSystemBytes: life.home.maxBytes + life.tmp.maxBytes + WORK_ROOM_BYTES
+    maxFileSystemBytes: life.home.maxBytes + life.tmp.maxBytes + WORK_ROOM_BYTES,
+    maxMemoryBytes: life.bash.maxMemoryMb * 1024 * 1024,
+    maxChanges: MAX_CHANGE_ENTRIES
   });
-  for (const virtual of run.read) {
-    const p = parseVirtual(virtual, store.slug);
-    if (p) await noteDmFile(store, p);
-  }
   if (run.outcome === "aborted") return toolError("interrupted; nothing was saved");
   if (run.outcome === "timeout") return toolError(`the command took longer than ${Math.round(timeoutMs / 1000)} s and was stopped; nothing was saved`);
+  if (run.outcome === "memory") return toolError("the command used too much memory and was stopped; nothing was saved");
   if (run.outcome === "failed") return toolError(`${run.error ?? "the command failed"}; nothing was saved`);
   const output = [run.stdout, run.stderr].filter((part) => part.length > 0).join(run.stdout.endsWith("\n") || !run.stdout ? "" : "\n");
   const lines = [cut(output.replace(/\n$/u, ""), life.bash.maxOutputChars) || "(no output)", `exit ${run.exitCode}`];
   const changes = run.changes ?? { writes: [], deletes: [], dirs: [] };
+  await noteDmTouches(store, [...run.read, ...(run.touched ?? []), ...changes.deletes], output).catch(() => undefined);
+  if (run.tooMany !== undefined) {
+    lines.push(`error: changes not saved: the command changed ${run.tooMany} files and folders; at most ${MAX_CHANGE_ENTRIES} can be saved at once`);
+    return { content: lines.join("\n"), isError: true };
+  }
   if (changes.writes.length + changes.deletes.length + changes.dirs.length === 0) return { content: lines.join("\n") };
   // A non-empty change set is a side effect (§16.9): intent first, done after.
   const argsDigest = createHash("sha256").update(JSON.stringify(input ?? {})).digest("hex").slice(0, 32);
@@ -67,12 +119,10 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
       const p = parseVirtual(virtual, store.slug);
       if (p) await noteDmFile(store, p);
     }
-    const summary = [
-      applied.changed.length > 0 ? `changed: ${applied.changed.join(", ")}` : undefined,
-      applied.created.length > 0 ? `new folders: ${applied.created.join(", ")}` : undefined,
-      applied.deleted.length > 0 ? `deleted: ${applied.deleted.join(", ")}` : undefined
-    ].filter(Boolean);
+    const summary = [listed("changed", applied.changed), listed("new folders", applied.created), listed("deleted", applied.deleted)].filter(Boolean);
     if (summary.length > 0) lines.push(summary.join("; "));
+    // Her special files changed under her own hand: what she read of them is current again.
+    for (const write of changes.writes) ctx.turn.readHashes?.delete(pathKey(write.path));
     return { content: lines.join("\n") };
   } catch (error) {
     if (!(error instanceof HomeError)) throw error;
@@ -84,22 +134,29 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 function bashDescription(python: boolean): string {
-  return `Run a bash command in your own folders: your home (~, where you start) and /tmp. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir, sqlite3${python ? ", python3 with its standard library" : ""}, and image to look at, crop, resize, rotate, flip or convert pictures). There is no internet and nothing outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
+  return `Run a bash command in your own folders: your home (~, where you start) and /tmp. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read). There is no internet and nothing outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
+}
+
+/** Bash's input schema; the timeout's limit as configured (`life.bash.maxTimeoutMs`). */
+function bashSchema(maxTimeoutMs: number): Record<string, unknown> {
+  const max = Math.max(1_000, maxTimeoutMs);
+  return {
+    type: "object",
+    properties: {
+      command: { type: "string", description: "The command (a whole script is fine)." },
+      timeout_ms: { type: "integer", minimum: 1000, maximum: max, description: `How long it may run (default ${Math.min(BASH_DEFAULT_TIMEOUT_MS, max)}, at most ${max}).` }
+    },
+    required: ["command"],
+    additionalProperties: false
+  };
 }
 
 export const bashTool_: LifeTool = {
   name: "Bash",
   description: bashDescription(true),
   describe: (config) => bashDescription(config.life.bash.python),
-  inputSchema: {
-    type: "object",
-    properties: {
-      command: { type: "string", description: "The command (a whole script is fine)." },
-      timeout_ms: { type: "integer", minimum: 1000, description: "How long it may run (default 10000)." }
-    },
-    required: ["command"],
-    additionalProperties: false
-  },
+  inputSchema: bashSchema(60_000),
+  schemaFor: (config) => bashSchema(config.life.bash.maxTimeoutMs),
   // Its intent is written by the tool itself, only for a non-empty change set (§16.9).
   sideEffect: false,
   run: bashTool

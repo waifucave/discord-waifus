@@ -17,8 +17,15 @@ import type { PersonResolution } from "./specialFiles.js";
 export { HomeStore, homeLimitsOf } from "./homeStore.js";
 
 /** Her store (her slug from her name as configured now). */
-export function homeStoreFor(deps: Pick<LifeDeps, "storage" | "config">, waifu: Pick<WaifuConfig, "id" | "name">): HomeStore {
-  return new HomeStore(deps.storage, waifu.id, herSlug(waifu), () => homeLimitsOf(deps.config().life));
+export function homeStoreFor(deps: Pick<LifeDeps, "storage" | "config"> & Partial<Pick<LifeDeps, "notices" | "now">>, waifu: Pick<WaifuConfig, "id" | "name">): HomeStore {
+  return new HomeStore(deps.storage, waifu.id, herSlug(waifu), () => homeLimitsOf(deps.config().life), {
+    ...(deps.now ? { now: deps.now } : {}),
+    onCorruptSide: (name) =>
+      deps.notices?.set(
+        `home-side:${waifu.id}:${name}`,
+        `${waifu.name}'s life/${name} could not be read and was replaced (a copy is kept beside it); reminders or watches that were due before now were dropped without firing.`
+      )
+  });
 }
 
 /** Checks with the live app: `from` names resolve against everyone she can see. */

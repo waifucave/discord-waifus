@@ -3,8 +3,8 @@
 // shrinks when three kept turns alone would start the new epoch over budget. Scripted winter fakes,
 // temp data root; no live calls.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compactLife, currentHarness, KEPT_TURNS, RESULT_LEFT_OUT, withoutLastResults } from "../src/life/compaction.js";
-import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
+import { compactLife, compactRetiredTools, currentHarness, flattenRetiredCalls, KEPT_TURNS, RESULT_LEFT_OUT, withoutLastResults } from "../src/life/compaction.js";
+import { readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
@@ -100,5 +100,72 @@ describe("compaction sizes", () => {
     expect(await compact("crumb ".repeat(4_000))).toBe(1);
     // One turn alone over the limit: nothing is kept.
     expect(await compact("crumb ".repeat(12_000))).toBe(0);
+  });
+});
+
+/** A turn of the L2 surface: `read_note` and its result, then a closing text. */
+function retiredTurn(id: string): LifeLogLine[] {
+  return [
+    { seq: 0, at: AT, kind: "notifications", turnId: id, message: { role: "user", content: `<notifications>wake ${id}</notifications>` } },
+    { seq: 0, at: AT, kind: "assistant", turnId: id, message: { role: "assistant", content: [{ type: "tool_use", id: `call_${id}`, name: "read_note", input: { path: "people/kevin.md" } }] } },
+    { seq: 0, at: AT, kind: "tool_results", turnId: id, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `call_${id}`, content: "Kevin likes lemon tart" }] } },
+    { seq: 0, at: AT, kind: "assistant", turnId: id, message: { role: "assistant", content: [{ type: "text", text: `done ${id}` }] } }
+  ];
+}
+
+describe("a tool-surface change (§16.13, review B4)", () => {
+  it("flattenRetiredCalls turns calls of tools that are gone, and their results, into text; current tools stay", () => {
+    const flat = flattenRetiredCalls([...retiredTurn("t1"), ...turn("t2", "kept as is")]);
+    const json = JSON.stringify(flat);
+    expect(json).toContain("[used read_note people/kevin.md]");
+    expect(json).toContain("[read_note result: Kevin likes lemon tart]");
+    expect(json).not.toContain('"name":"read_note"');
+    expect(json).toContain('"name":"ReadMessages"');
+    expect(json).toContain('"tool_use_id":"call_t2"');
+  });
+
+  it("summarises her epoch with the old calls as text and keeps no turns", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("ok"), textTurn("Earlier: Kevin likes lemon tart.")) });
+    const { deps, waifu, route, state, nextHarness } = await compactable(w);
+    const calls = w.anthropic.calls.length;
+    const outcome = await compactRetiredTools(deps, { waifu, state, lines: [...retiredTurn("t1"), ...retiredTurn("t2")], summaryRoute: route, nextHarness, omit: { deleted: [], people: [] } });
+    expect(outcome.summarized).toBe(true);
+    const request = JSON.stringify(w.anthropic.calls[calls]!.request.messages);
+    expect(request).toContain("[used read_note people/kevin.md]");
+    expect(request).not.toContain('"name":"read_note"');
+    const after = await readLifeState(w.storage, "aria");
+    expect(after).toMatchObject({ summary: "Earlier: Kevin likes lemon tart.", pendingEpochStart: false });
+    const log = await readLifeLog(w.storage, "aria", after.epoch);
+    expect(log[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
+  });
+
+  it("the migration's pending `tools` epoch is summarised before her next turn", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("ok"), textTurn("Summary after the move."), textTurn("hello again")) });
+    const { state } = await compactable(w);
+    await updateLifeState(w.storage, "aria", (current) => ({ ...current, pendingEpochStart: true, pendingEpochReason: "tools" as const }));
+    await enqueueWake(w.storage, "aria", { id: newWakeId(), reason: "reminder", note: "second", at: w.clock.now().toISOString() });
+    await w.cast.life("aria").runNow();
+    const after = await readLifeState(w.storage, "aria");
+    expect(after.epoch).toBe(state.epoch + 1);
+    expect(after.summary).toBe("Summary after the move.");
+    expect((await readLifeLog(w.storage, "aria", after.epoch))[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
+  });
+
+  it("a failed summary falls back to the reset: her old summary carries over and the epoch starts", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: [
+        ...script(textTurn("ok")),
+        () => {
+          throw new Error("provider down");
+        }
+      ]
+    });
+    const { deps, waifu, route, state, nextHarness } = await compactable(w);
+    const outcome = await compactRetiredTools(deps, { waifu, state: { ...state, summary: "old summary" }, lines: retiredTurn("t1"), summaryRoute: route, nextHarness, omit: { deleted: [], people: [] } });
+    expect(outcome.summarized).toBe(false);
+    const after = await readLifeState(w.storage, "aria");
+    expect(after.epoch).toBe(state.epoch + 1);
+    expect(after.summary).toBe("old summary");
+    expect(after.pendingEpochStart).toBe(false);
   });
 });

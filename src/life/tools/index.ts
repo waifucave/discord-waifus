@@ -41,7 +41,13 @@ export function modelTools(names: readonly string[], config?: AppConfig): ModelT
   return names.flatMap((name) => {
     const tool = lifeTool(name);
     if (!tool) return [];
-    return [{ name: tool.name, description: config && tool.describe ? tool.describe(config) : tool.description, inputSchema: tool.inputSchema }];
+    return [
+      {
+        name: tool.name,
+        description: config && tool.describe ? tool.describe(config) : tool.description,
+        inputSchema: config && tool.schemaFor ? tool.schemaFor(config) : tool.inputSchema
+      }
+    ];
   });
 }
 

@@ -10,7 +10,7 @@ import path from "node:path";
 import { ATOMIC_TEMP_NAME, atomicWriteFile } from "../../storage/atomic.js";
 import type { StorageService } from "../../storage/storageService.js";
 import { waifuDir } from "../paths.js";
-import { herPath, MAX_PATH_SEGMENTS, segmentProblem, type HerPath, type HerRoot } from "./pathRules.js";
+import { canonicalSpecialName, collisionKey, herPath, MAX_PATH_SEGMENTS, segmentProblem, type HerPath, type HerRoot } from "./pathRules.js";
 
 export class HerFilesError extends Error {
   override name = "HerFilesError";
@@ -50,6 +50,35 @@ export class HerFiles {
 
   path(root: HerRoot, segments: readonly string[]): HerPath {
     return herPath(root, segments, this.slug);
+  }
+
+  /**
+   * The path as it is spelled on disk (§16.2): each segment that matches an existing entry of its
+   * folder by `collisionKey` (case, Unicode normalisation) takes that entry's name, and her special
+   * files at the top of her home take their canonical names. On a case-insensitive disk `~/Memory.md`
+   * and `~/MEMORY.md` are one file; this makes every check see the one name.
+   */
+  async canonical(p: HerPath): Promise<HerPath> {
+    const out: string[] = [];
+    let folder = this.hostRoot(p.root);
+    let exists = true;
+    for (const segment of p.segments) {
+      let name = segment;
+      if (exists) {
+        const names = await readdir(folder).catch(() => undefined);
+        if (!names) exists = false;
+        else {
+          const key = collisionKey(segment);
+          name = names.includes(segment) ? segment : (names.find((candidate) => collisionKey(candidate) === key) ?? segment);
+          if (!names.includes(name)) exists = false;
+        }
+      }
+      out.push(name);
+      folder = path.join(folder, name);
+    }
+    const special = canonicalSpecialName({ root: p.root, segments: out });
+    if (special) out[0] = special;
+    return out.every((segment, index) => segment === p.segments[index]) ? p : this.path(p.root, out);
   }
 
   /**
@@ -127,13 +156,31 @@ export class HerFiles {
     }
   }
 
-  /** Writes a file whole (folders made as needed), atomically. No checks beyond links. */
-  async writeBytes(p: HerPath, data: Uint8Array): Promise<void> {
+  /**
+   * Writes a file whole (folders made as needed), atomically. No checks beyond links. `durable:
+   * false` skips the flush to disk (a journalled change set flushes all its files at once after).
+   */
+  async writeBytes(p: HerPath, data: Uint8Array, o: { durable?: boolean } = {}): Promise<void> {
     await this.ensureFolders(p, p.segments.length - 1);
     const info = await this.inspect(p);
     if (info.kind === "link") throw new HerFilesError(`${p.display} can't be used: it is a link`, "link");
     if (info.kind === "dir") throw new HerFilesError(`${p.display} is a folder`, "not_file");
-    await atomicWriteFile(this.hostPath(p), data);
+    await atomicWriteFile(this.hostPath(p), data, o.durable === false ? { durable: false } : {});
+  }
+
+  /** Flushes files written with `durable: false` (and their folders) to disk, a few at a time. */
+  async flush(paths: readonly HerPath[]): Promise<void> {
+    const targets = [...new Set(paths.flatMap((p) => [this.hostPath(p), path.dirname(this.hostPath(p))]))];
+    for (let index = 0; index < targets.length; index += 32) {
+      await Promise.all(
+        targets.slice(index, index + 32).map(async (target) => {
+          const handle = await open(target, fsConstants.O_RDONLY | O_NOFOLLOW).catch(() => undefined);
+          if (!handle) return;
+          await handle.sync().catch(() => undefined);
+          await handle.close();
+        })
+      );
+    }
   }
 
   /** Removes a file (or an empty-able folder tree when `recursive`). Links are refused, never followed. */

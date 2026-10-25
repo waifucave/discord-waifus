@@ -2,14 +2,15 @@
 // result, and between a Discord send and its result, recovers without a duplicate send; boot catch-up
 // takes what arrived during downtime within the window; queued wakes start turns again.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appendIntent, appendLifeLog, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { RESTART_NOTE, UNCERTAIN_SEND } from "../src/life/repair.js";
 import { contentDigest } from "../src/life/tools/messages.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
-import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, script, toolTurn, type LifeWorld } from "./lifeFixtures.js";
+import { ARIA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -140,6 +141,52 @@ describe("crash repair (§5.7)", () => {
     const results = ((await tail(w)).message as { content: Array<{ content?: string; is_error?: boolean }> }).content;
     expect(results[0]).toMatchObject({ content: "[interrupted] not sent", is_error: true });
     expect(w.discord.sent).toEqual([]);
+  });
+});
+
+describe("crash repair of her file tools (review minors)", () => {
+  /** Restarts and returns the repaired call's result. */
+  async function repaired(w: LifeWorld): Promise<{ content?: string; is_error?: boolean }> {
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("aria"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    return ((await tail(w)).message as { content: Array<{ content?: string; is_error?: boolean }> }).content[0]!;
+  }
+
+  it("a Write of watches.json counts as done when the file holds the same entries with ids; another file only when equal", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+    const content = '[{"timeout": "2026-10-25 14:00", "once": true, "note": "tea", "when": []}]';
+    await crashAfter(w, { id: "call_w", name: "Write", input: { file_path: "~/watches.json", content } }, { intent: true });
+    await writeHerFile(w, "watches.json", content);
+    expect(await repaired(w)).toMatchObject({ content: "wrote ~/watches.json (recovered)" });
+
+    const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+    await crashAfter(v, { id: "call_n", name: "Write", input: { file_path: "~/notes.md", content: "short" } }, { intent: true });
+    // A longer file that merely has "id": in it is not what she wrote.
+    await writeHerFile(v, "notes.md", 'something else entirely, "id": 1');
+    expect(await repaired(v)).toMatchObject({ content: "[interrupted] not written", is_error: true });
+  });
+
+  it("a ScheduleWake counts as done only for an entry with its note at the time it asked for", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+    await crashAfter(w, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
+    // An older reminder with the same note at another time is not this one.
+    await writeHerFile(w, "schedule.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}]');
+    expect(await repaired(w)).toMatchObject({ content: "[interrupted] not set", is_error: true });
+
+    const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+    await crashAfter(v, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
+    await writeHerFile(v, "schedule.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}, {"at": "2026-10-25 18:00", "note": "call mum"}]');
+    expect(await repaired(v)).toMatchObject({ content: "set r2 (recovered)" });
+  });
+
+  it("a Bash change set saved just before the crash (its done line not written yet) is reported as saved", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+    await crashAfter(w, { id: "call_b", name: "Bash", input: { command: "echo hi > ~/x.md" } }, { intent: true });
+    const dir = path.join(w.root, "user", "waifus", "aria", "life", "pending-changes");
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, "call_b.applied"), "{}");
+    expect(await repaired(w)).toMatchObject({ content: "[interrupted by a restart] the command ran and its changes were saved" });
   });
 });
 
