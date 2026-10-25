@@ -65,7 +65,9 @@ const DASHBOARD_CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self'",
+  // The dashboard fetches avatars and her pictures with its session and shows them as blob: URLs,
+  // which only its own scripts can mint; 'self' alone does not match blob:.
+  "img-src 'self' blob:",
   "font-src 'self'",
   "media-src 'self'",
   "connect-src 'self'",

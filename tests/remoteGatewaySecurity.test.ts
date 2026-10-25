@@ -400,6 +400,23 @@ describe("remote gateway response policy", () => {
     expect(Object.isFrozen(DASHBOARD_SECURITY_HEADERS)).toBe(true);
   });
 
+  it("lets the dashboard show the images it fetched as blob: URLs and nothing from elsewhere", () => {
+    // The Cast avatars and her pictures in Life are fetched with the session and shown from
+    // URL.createObjectURL; with only 'self' every one of them was blocked over Remote Access.
+    for (const policy of [
+      DASHBOARD_SECURITY_HEADERS["content-security-policy"],
+      dashboardSecurityHeaders(
+        `http://waifus-${"a".repeat(52)}.localhost:49231`,
+        `http://waifus-${"a".repeat(52)}.localhost:49232`
+      )["content-security-policy"]
+    ]) {
+      const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+      expect(imgSrc).toBe("img-src 'self' blob:");
+      expect(policy).toContain("script-src 'self';");
+      expect(policy).not.toMatch(/(script|connect|default)-src[^;]*blob:/u);
+    }
+  });
+
   it("allows popups only in the installed shell sandbox without escape or top navigation", () => {
     const policy = SHELL_SECURITY_HEADERS["content-security-policy"];
     expect(policy).toContain(
