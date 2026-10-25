@@ -185,7 +185,7 @@ PUT shim in `src/api/server.ts`.
 **Discord features (Phase 5, spec 9):**
 - *Conversation cache and guild directory* (`src/discord/conversationCache.ts`,
   `guildDirectory.ts`, `gatewayFeed.ts`): `ConversationMessageCache` is the life's message source
-  (`readPage` serves `read_messages`). It keeps recent raw messages per conversation, fed by REST pages, gateway events
+  (`readPage` serves `ReadMessages`). It keeps recent raw messages per conversation, fed by REST pages, gateway events
   (messages, edits, deletes, reactions) and our own sends (published before
   `sendWaifuMessage`/`sendDirectMessage` return). A conversation is trusted after a REST sync while
   its gateway scope (`guild`, or `dm:<waifuId>` per DM bot) stays connected; trusted reads make no

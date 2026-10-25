@@ -245,6 +245,12 @@ One text block in a user turn, followed by the time line (§5.4):
 
 ### 5.1 Storage
 
+> Superseded in part by §16 (tool surface v2): her notes, reminders and watches are files in her
+> home (`user/waifus/<id>/home/`: `MEMORY.md`, `schedule.json`, `watches.json`, `places.md`), with
+> side files `life/watch-ids.json`, `life/schedule-ids.json`, `life/files-index.json` and
+> `life/pending-changes/` (§16.14). The `watches.json` and `schedule.json` rows below are the L2
+> layout.
+
 `user/waifus/<id>/life/`:
 
 | File | Contents |
@@ -432,6 +438,9 @@ calibration). It does not reuse the conversation planner, which works on ledger 
   `life.maxLogMessages` and the 3-turn window.
 
 ### 5.7 Crash, restart and catch-up
+
+> Tool names here are the L2 surface; §16.9 and §16.14 give the v2 names (`SendMessage`, `React`,
+> `Write`, `Edit`, `Bash`, `ScheduleWake`, `WatchFor`) and how each is repaired.
 
 - **Intents.** Before a side-effecting tool runs (`send_message`, `react`, `write_note`,
   `edit_note`, `delete_note`, `schedule_wake`, `watch_for`, cancels), an intent line
@@ -1579,8 +1588,10 @@ unchanged; an unknown handle returns `error: unknown place; see ~/places.md`. `W
   the result shows the output plus `error: changes not saved: <first problem>`. Links in the change
   set are refused.
 - **Commands**: just-bash's built-ins (file, text and data tools such as `ls`, `cat`, `grep`, `rg`,
-  `find`, `sed`, `awk`, `jq`, `sort`, `head`, `tail`, `wc`, `mv`, `cp`, `rm`, `mkdir`, `date`,
-  `sqlite3`) and `python3` when `life.bash.python` is on (default on). `js-exec`, `curl`,
+  `find`, `sed`, `awk`, `jq`, `sort`, `head`, `tail`, `wc`, `mv`, `cp`, `rm`, `mkdir`, `date`)
+  and `python3` when `life.bash.python` is on (default on). `sqlite3` was left out after the L4
+  review (§16.14: its WebAssembly memory is not covered by the worker's limits and is not given back
+  when the worker is stopped). `js-exec`, `curl`, `tar`,
   `html-to-markdown` and any network are off; there is no `node`, no package manager and no real
   binary.
 - **Python**: the CPython-WASM build just-bash ships, with only the virtual filesystem visible. If
@@ -1590,8 +1601,8 @@ unchanged; an unknown handle returns `error: unknown place; see ~/places.md`. `W
   documents it here.
   **As built (checked by experiment and by `tests/bashIsolation.test.ts`):** just-bash 3.6.0 ships
   CPython 3.13.2 for Emscripten with the **standard library only**: no PIL/Pillow, no numpy, no
-  `ctypes` (`_ctypes` is not built), no `sqlite3` module (`_sqlite3` is not built; the `sqlite3`
-  shell command is there), no `js`/`pyodide` modules; `zlib`, `struct`, `json`, `csv`, `re`,
+  `ctypes` (`_ctypes` is not built), no `sqlite3` module (`_sqlite3` is not built), no
+  `js`/`pyodide` modules; `zlib`, `struct`, `json`, `csv`, `re`,
   `datetime`, `hashlib` and the like work. Python runs in just-bash's own nested worker and sees
   just-bash's filesystem (`os.listdir('/')` is `['home', 'tmp']`; inside Python the bridge is
   mounted at an internal `/host`, which can appear in its error messages and is not a host path).
@@ -1604,8 +1615,11 @@ unchanged; an unknown handle returns `error: unknown place; see ~/places.md`. `W
   pure JavaScript inside the worker: its own PNG codec over `node:zlib`, and the pinned pure-JS
   `jpeg-js` 0.4.4, `omggif` 1.0.10 and `@stacksjs/ts-webp` 0.1.6): `info`, `crop IN OUT WxH[+X+Y]`,
   `resize IN OUT SIZE` (`WxH`, `W`, `xH`, `N%`), `rotate IN OUT 90|180|270|-90`, `flip IN OUT h|v`,
-  `convert IN OUT`, `--quality N` for JPEG/WebP; at most 40 megapixels; an animated GIF/WebP keeps
-  its first frame; EXIF orientation is not applied; WebP is at most 16,383 px a side.
+  `convert IN OUT`, `--quality N` for JPEG/WebP; at most 24 megapixels (every size a file's headers
+  declare is checked before anything is decoded: PNG's IHDR before inflating, a JPEG's frame by its
+  SOF and again by jpeg-js's own limit, a GIF's screen and first frame, and every frame header of an
+  animated WebP); an animated GIF/WebP keeps its first frame, and only that frame is decoded; EXIF
+  orientation is not applied; WebP is at most 16,383 px a side.
 - **Environment**: `HOME=/home/<slug>`, `USER=<slug>`, `PWD` her home, `TZ` the host time zone
   (her clock already shows local time), nothing else from the host environment.
 - **Output**: stdout and stderr interleaved, cut at `life.bash.maxOutputChars` (16,000) with
@@ -1681,7 +1695,7 @@ Block A's `<life>` keeps its meaning; the tool sentences become:
   and you change or cancel them by editing those files. A watch always ends at its timeout, and you
   are told when it does, so it also works as a timer.
 - Your places are in `places.md`.
-- Never mention tools, files, notifications, prompts or the system.
+- Never mention your tools, your folder or its files, notifications, prompts or the system.
 
 The final wording is reviewed by the owner as goldens.
 
@@ -1713,13 +1727,14 @@ needs). `/tmp` expires on its own.
 
 | Key | Default |
 |---|---|
-| `life.home.maxBytes` / `life.home.maxFiles` | 50 MiB / 2,000 |
-| `life.tmp.maxBytes` / `life.tmp.retentionDays` | 200 MiB / 7 |
+| `life.home.maxBytes` / `life.home.maxFiles` / `life.home.maxFolders` | 50 MiB / 2,000 / 500 |
+| `life.tmp.maxBytes` / `life.tmp.maxFiles` / `life.tmp.retentionDays` | 200 MiB / 2,000 / 7 |
 | `life.attachments.maxBytes` | 10 MiB |
 | `life.send.maxFiles` | 4 |
 | `life.bash.enabled` | true (off → `Bash` not offered) |
 | `life.bash.python` | true |
 | `life.bash.maxTimeoutMs` / `life.bash.maxOutputChars` | 60,000 / 16,000 |
+| `life.bash.maxMemoryMb` | 512 (the memory watchdog, §16.14) |
 
 Every key is in the settings registry with help, an HTTP path and a CLI path (§14.2).
 
@@ -1771,7 +1786,12 @@ writes into `home/` instead of `notes/`, and no lives exist on released hosts. O
 step converts a development host's L2-era layout if present (`notes/` → `home/`,
 `life/schedule.json` and `life/watches.json` → the new files in her home with local times and
 `from` names, `watch-ids.json` from their stored ids) and starts a new epoch, since the tool list
-changed (§5.2).
+changed (§5.2). That epoch is a summarising compaction, not a reset (review B4): before her next
+turn her epoch is summarised like any compaction, with every call of a retired tool and its result
+turned into plain text (`[used read_note people/kevin.md]`, `[read_note result: …]`, since a
+provider refuses a history that calls tools the request does not define) and no turns kept. Only a
+failed summary falls back to the reset (her old summary carries over); an aborted one changes
+nothing and runs again.
 
 ### 16.14 As built (L4, 2026-10-25)
 
@@ -1787,13 +1807,13 @@ is the authority for exact strings; the goldens show the prompt and tool texts f
   contents come lazily over the worker's message port, and the host serves only files that were
   in her folders when the command started, by her path (never a host path, never a link); writes
   outside her two folders and to `places.md` fail, and so does every `symlink`/`link`.
-- Commands: just-bash's built-ins except `curl`, `html-to-markdown`, `js-exec` and `tar` (its xz
-  and zstd modes would load just-bash's optional native addons), plus `image`, plus `python3` when
-  `life.bash.python` is on.
+- Commands: just-bash's built-ins except `curl`, `html-to-markdown`, `js-exec`, `tar` (its xz
+  and zstd modes would load just-bash's optional native addons) and `sqlite3` (below), plus
+  `image`, plus `python3` when `life.bash.python` is on.
 - Time: the host's wall clock (`timeout_ms`, default 10 s, at most `life.bash.maxTimeoutMs`) is the
   one time limit; just-bash's own deadlines are set 30 s past it, so a long command always ends
-  with the worker terminated (just-bash's Python and SQLite workers go with it), `error: the
-  command took longer than N s and was stopped; nothing was saved`. An abort (pause, stop) is the
+  with the worker terminated (just-bash's Python worker goes with it), `error: the command took
+  longer than N s and was stopped; nothing was saved`. An abort (pause, stop) is the
   same with `interrupted; nothing was saved`.
 - Other limits are just-bash's: 100,000 commands (an endless shell loop), call depth 100 (a fork
   bomb), the format-width and string limits, 1 MiB of output (she sees `life.bash.maxOutputChars`
@@ -1813,22 +1833,103 @@ is the authority for exact strings; the goldens show the prompt and tool texts f
   nothing saved while the host's event-loop delay stays under 50 ms (99th percentile), an abort,
   and no host path in any result (except a path her own command typed, echoed in its error).
 
+**Memory watchdog (review C1).** A worker's `resourceLimits` cover only its JavaScript heap, not
+WebAssembly memory (CPython's, sql.js's) nor just-bash's in-memory filesystem buffers, so the host
+also watches the process: before each Bash run it takes `process.memoryUsage.rss()` as the
+baseline, polls it every 25 ms, and when the growth passes `life.bash.maxMemoryMb` (default 512,
+128–4,096) it terminates the worker: `error: the command used too much memory and was stopped;
+nothing was saved`. Measured on the review's repros (macOS arm64, Node 26, budget 512 MiB):
+- `sqlite3` inserting 2,000 × 1 MB blobs (the review's 8–11 GB case): stopped at a peak of +495 to
+  +590 MiB over the baseline. But terminating a worker in the middle of sql.js does not give its
+  memory back: each stopped run left about 600 MiB resident (279 → 879 → 1,475 → 2,119 → 2,837 MiB
+  over five runs), and even 100 inserts of 1 MB passed the budget. A plain worker, a Python worker
+  and a shell loop do give it back when terminated (Python: peak 633 MiB, 224 MiB after). So
+  **`sqlite3` was dropped** from her commands rather than kept with a leak; `zeroblob(1e9)` alone
+  had stayed at +110 MiB.
+- Python growing a `bytearray` list: `MemoryError` inside Python at about 448 MiB (peak +480 to
+  +514 MiB) before the watchdog; `'x' * 10**9`: `MemoryError` (+32 MiB).
+- Filling just-bash's in-memory filesystem with 314 MiB from Python: stopped by the watchdog
+  (+467 MiB); about 500 MiB stayed resident after the first such run and was reused by later ones;
+  a later run hit `/tmp is full (200 MiB)` at the change-set check instead (+361 MiB).
+The watchdog measures the whole process, so another turn's growth at the same moment counts too;
+the budget is far above what a normal command needs.
+
+**Entry limits (review S6).** `/tmp` holds at most `life.tmp.maxFiles` files (2,000) and her home
+at most `life.home.maxFolders` folders (500), next to the byte and file limits; a change set that
+would pass one is refused (`/tmp has 2000 files already; delete some first`, `your home has 500
+folders already; merge or delete some first`) unless it does not add to that count. A change set
+has at most 5,000 entries: the worker stops collecting past it and the run ends `error: changes
+not saved: the command changed N files and folders; at most 5000 can be saved at once` before the
+host sees any of them; the host checks the same number again and must finish checking within 30 s
+(else `the changes took too long to check; save fewer files at once`, nothing saved). The written
+files are flushed together (in batches of 32, then their folders) instead of one `fsync` each: the
+journal already makes the set complete after a crash. The change line names the first 20 entries
+of each kind, then `… and N more`. Downloads evict the oldest `/tmp` files for the file count too.
+(The review's 20,000 empty files had taken 191 s under her home lock with a 360 KB change line.)
+
+**Names as the disk compares them (review S1, S2, S4).** Every path she or the owner gives is
+first spelled as on disk: each segment that matches an existing name by `collisionKey` (NFC, lower
+case) takes that name, and her four special names take their canonical spelling (`~/Schedule.json`
+is `~/schedule.json`, `~/Places.MD` is `~/places.md`), so every check by name (special files,
+`places.md`, private files, `/tmp/dm`, provenance) sees the real file. A Bash change set is mapped
+the same way. Two names that differ only by case are refused only when the change set creates one
+of them. Device names are refused in any disguise (`con `, `aux.`, `COM¹` after NFKC, `lpt1 .md`),
+and so is any name ending in a dot or a space; a refused name says why (`aux. is a reserved name`),
+never "outside your folders". Private files for `SendMessage` are `MEMORY.md` and every file it
+links to by any Markdown form (inline links, `<…>` targets with spaces, titles, reference
+definitions, `./`, `~/`, absolute paths, `#`/`?` parts dropped, percent-decoding), resolved through
+the same path rules and compared by the same key; `http:`, `mailto:` and other schemes are not
+files. `/tmp/DM/…` is a DM folder like `/tmp/dm/…`, for her tools and the API.
+
+**Read before Write (review B1).** Reminders fire and watches match or time out on their own, and
+the owner can delete one: a whole-file `Write` of `schedule.json` or `watches.json` needs a `Read`
+of it earlier in the same turn (or maintenance session) that is still current. The turn remembers
+the hash she read; a missing file counts as read when she read it missing. Otherwise: `error:
+watches.json already exists; Read it first (Write replaces the whole file)`, or `error:
+watches.json changed since you read it (a watch matched or timed out); Read it again` (`… (a
+reminder fired)` for `schedule.json`). `Edit` works on the current file and needs no Read; a Bash
+change set has its own "changed while the command ran" check. Whatever writes the file, an entry
+of a `once` watch that already matched (`once-<id>-<timeout>` in the fired list) is refused:
+`watches.json entry w1: it already matched once and was removed; leave it out`, and the scheduler
+never routes a timeout for such a watch. `WatchFor` and `ScheduleWake` read and write the file
+under one hold of her home lock; their check errors name the tool (`error: WatchFor: unknown place
+nowhere/#x; see places.md`). A side file (`watch-ids.json`, `schedule-ids.json`) that exists but
+does not parse is kept as `<name>.corrupt-<ms>`, replaced by an empty one with `recoveredAt`, and
+the owner is told (`home-side:<id>:<name>`); a reminder or watch timeout due before `recoveredAt`
+may have fired already and is removed without a wake.
+
+**Read's output (review B2, B3).** A `Read` result is cut at 100,000 characters (about 25k tokens),
+on a line break near the end: `(cut at N characters; pass offset and limit to read on)` (`pages`
+for a PDF). A picture already shown this epoch is not shown again: `[image: you've already seen
+this picture; the text in it: …]`. Outside her life (nightly maintenance, a forget's notes scrub:
+the tool context's `mode: "session"`) an image is always its OCR text, and her life's image state
+(shown keys, the epoch's inline caps) is never touched. The maintenance session's first message
+lists every file of her home (pictures and large files too), at most 200, then "… and N more; use
+`ls -R`"; forget's steps 3–5 read home text files up to 64 MiB (Bash can make them larger than
+`Write`'s 256 KiB).
+
 **Change sets (§16.3.5, §16.9).** Writes (whole contents), deletes and new folders; a rename is a
 delete plus a write. The host checks every path, `places.md`, her two special files (once, on the
 result), the limits and case collisions on the result, and that nothing changed under her since the
 command started (size and mtime against the starting manifest: `error: ~/x changed while the
 command ran; run it again`). Writes identical to the disk are skipped. A non-empty set writes the
 intent (the life loop does not, `Bash` is not `sideEffect` there) and
-`life/pending-changes/<toolCallId>.json` (contents base64), applies it, removes it; boot repair
-finishes a journal before anything else and the repaired call reads `[interrupted by a restart] the
-command ran and its changes were saved`.
+`life/pending-changes/<toolCallId>.json` (contents base64), applies it, and renames it
+`<toolCallId>.applied`, a marker kept until her next change set (by then the call's done line is
+written); boot repair finishes a journal before anything else and the repaired call reads
+`[interrupted by a restart] the command ran and its changes were saved`, also when only the marker
+is there. A journal's paths are taken under her current slug (she may be renamed between a crash
+and the next boot).
 
 **Her files (§16.2).**
 - Slug: her name lower-cased, ASCII-folded, other characters `-`; `me` when nothing is left.
 - Downloads: `/tmp/<handle segments without #>/<ref>-<file name>` (`-2`, `-3` for the same name twice
   in one message); DM handles give `/tmp/dm/<name>/`. Downloaded kinds: png/jpeg/gif/webp, PDF, and
   text by MIME type or a fixed extension list; ≤10 per `ReadMessages` call; dedupe by attachment id
-  and path while the file still has the downloaded hash; the OCR hint is cut at 40 characters.
+  and path while the file still has the downloaded hash; the OCR hint is cut at 40 characters. The
+  10 go to the newest messages first; an older file past them reads `[file: x · 2 KB · not
+  downloaded (too many in one read; read fewer)]`. A video is `[video: clip.mp4 · 1.9 MB · not
+  downloaded]`.
 - Side files (outside her folders): `life/watch-ids.json` (id counter, the hash of the file they
   belong to, each watch's resolved bindings and recent fire times, the timeouts already routed,
   newest 100), `life/schedule-ids.json` (id counter, occurrences already routed, newest 100),
@@ -1839,19 +1940,22 @@ command ran and its changes were saved`.
   `Read` reads files ≤ 10 MiB; text: first 2,000 lines, lines cut at 2,000 characters, `cat -n`
   numbering (6 wide, tab); PDF: pages 1–20 by default, at most 50 per call, text extraction
   (`unpdf` 1.8.1, PDF.js) in its own worker (256 MiB, 20 s); images inline only when the route has
-  image input, the image is ≤ 3.75 MiB and new this epoch, within the epoch caps; a later look is
-  its OCR text. The bytes go into the image cache as `file:<sha256>` and are pinned for the epoch;
+  image input, the image is ≤ 3.75 MiB and new this epoch, within the epoch caps; a later look says
+  she has already seen it, with its OCR text. The bytes go into the image cache as `file:<sha256>` and are pinned for the epoch;
   a picture from a DM is also recorded in that DM's image index, so a forget purges it.
-- `SendMessage`: at most 10 paths in, `life.send.maxFiles` attached (4), each ≤ 10 MiB; private
-  files are `~/MEMORY.md`, every file it links to (Markdown links, relative to her home),
-  `schedule.json`, `watches.json`, `places.md`.
+- `SendMessage`: at most 10 paths in, `life.send.maxFiles` attached (4; at 0 the tool has no
+  `files` and its text does not mention attaching), each ≤ 10 MiB and ≤ 10 MiB together (Discord's
+  limit for one message without boosts; a 40005 "request entity too large" from Discord reads
+  `the files are too large for Discord here; send fewer or smaller ones`); private files are
+  `~/MEMORY.md`, every file it links to, `schedule.json`, `watches.json`, `places.md` (see "Names as
+  the disk compares them").
 - `places.md` is rewritten when it would change: at most once a minute by the scheduler, at every
   turn start, and when a folded wake brings a new place mid-turn (N2).
 
 **Reminders and watches (§16.4, §16.5).**
 - Times are whole local minutes. `ScheduleWake`'s window is 5 minutes to 30 days (`in_minutes` is
   checked as given; `at` gets one minute of slack for rounding); `WatchFor`'s timeout is now +
-  `timeout_minutes`, rounded up to the next whole minute. A write keeps an unchanged past `at` or
+  `timeout_minutes`, rounded to the nearest whole minute. A write keeps an unchanged past `at` or
   timeout; a changed one must be in the window (`timeout` ≤ 7 days, one minute of slack).
 - New entries without an id get the next `r<n>`/`w<n>` and only then is the file rewritten (in the
   canonical one-entry-per-line form); `Write` then says `; new entries got ids`.
@@ -1866,12 +1970,21 @@ command ran and its changes were saved`.
   notification shows the due time: `reminder (Sat 14:20): "<note>"`.
 
 **DM redaction (§14.4).** `ReadMessages`/`SendMessage`/`React` on a DM place record it as before. A
-file is from a DM when it is under `/tmp/dm/` or its hash was downloaded from a DM place; `Read`,
-`SendMessage` attaching it, and `Bash` reading or writing it record a DM call (the DM's place key,
-or `dm_file`); a `Bash` command that names `/tmp/dm` does too.
+file is from a DM when it is under `/tmp/dm/` (any spelling) or its hash was downloaded from a DM
+place; `Read`, `Write` and `Edit` of it, `SendMessage` attaching it, and `Bash` touching it record a
+DM call (the DM's place key, or `dm_file`). For `Bash` "touching" is any path the worker served,
+stat'ed or listed (a `find`, `ls -R` or glob over `/tmp` counts), deleted or moved, a written file
+from a DM, or output naming `/tmp/dm/` or a DM file's path; a command that names `/tmp/dm` does too.
+A watch bound to a DM makes `watches.json` private for the owner's views: without `includePrivate`
+the API (and the assistant's `read_file`) answers a redacted copy (that watch's note and bindings
+`[private chat redacted]`, `redacted: true`, read-only), refuses to replace or delete the file, and
+refuses a file that does not read whole and may name a DM.
 
 **Forget (§16.9).** Step 1 runs when the forget is prepared (also when the rest waits for the DM
-rate limit) and again inside the scrub: the person's provenance entries (their DM, and for an
+rate limit) and again under her life lock once her running turn is aborted (or, rate limited, once
+it ends): a Bash command running during step 1 may save a copy after it, whose provenance entry is
+already gone, so the forgotten hashes are kept as tombstones for that second run. Then inside the
+scrub: the person's provenance entries (their DM, and for an
 owner forget or `/forget everything` their attachments anywhere), every file in her folders with
 one of those hashes, and `/tmp/dm/<handle>/` of their DM. Results report `removedFiles`. The forget
 limits text adds the cropped-copy sentence.
@@ -1881,10 +1994,18 @@ limits text adds the cropped-copy sentence.
 moves `notes/` to `home/` (both present: `notes/` to the archive), converts the L2 files
 (expired watches dropped; a watch whose place has no handle any more dropped), archives the
 originals, and marks a life whose epoch snapshot lists an L2 tool with a pending epoch start of
-reason `reset` (her summary carries over; old logs keep their 7 days).
+reason `tools`, summarised with the retired calls as text (§16.13; a failed summary falls back to
+the reset: her summary carries over, old logs keep their 7 days).
 
-**Prompt and tools.** Tool descriptions are stored in the epoch snapshot and are part of the
-harness hash (the `Bash` text depends on `life.bash.python`). Maintenance flattens image results
+**Prompt and tools.** Tool descriptions and input schemas are stored in the epoch snapshot and are
+part of the harness hash; they follow the configuration: the `Bash` text depends on
+`life.bash.python` and its `timeout_ms` limit on `life.bash.maxTimeoutMs`, `SendMessage`'s `files`
+on `life.send.maxFiles`, and "saved in /tmp for a week" (in `<life>` and `ReadMessages`) on
+`life.tmp.retentionDays`. During catch-up a watch matches a message by the message's own time, so
+one posted before the watch's timeout still matches when it is handled later. Boot repair counts
+an interrupted `Write` of `schedule.json`/`watches.json` as done when the file holds the same
+entries with ids set aside (another file only when equal), and an interrupted `ScheduleWake` or
+`WatchFor` only for an entry with its note at the time it asked for (within 90 s). Maintenance flattens image results
 to text and lists her files in its first message.
 
 **API, CLI, dashboard, assistant (§16.11).** A file's URL is her path without the leading slash

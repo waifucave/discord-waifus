@@ -45,7 +45,13 @@ simulated Bash (nothing she runs can reach the host or the network):
   or cancels them by editing the files); `places.md` lists her rooms and private chats and is kept
   up to date by the app (read-only).
 - **`/tmp`**: files people sent (ReadMessages downloads attachments there) and scratch files, each
-  deleted 7 days after it was last written.
+  deleted `life.tmp.retentionDays` days (7 by default) after it was last written.
+
+Limits: her home holds `life.home.maxBytes`, `life.home.maxFiles` files and `life.home.maxFolders`
+folders; `/tmp` holds `life.tmp.maxBytes` and `life.tmp.maxFiles` files. One Bash command may save
+at most 5,000 files and folders at once, and is stopped (nothing saved) when the host's memory
+grows past `life.bash.maxMemoryMb` while it runs. Names are compared as a case-insensitive disk
+does: `~/Memory.md` is `~/MEMORY.md`.
 
 To look at them: Dashboard → Life (a file browser for her home and `/tmp` with a text editor and
 image previews, and her reminders and watches with delete buttons), `waifus files <id> [path]
@@ -57,7 +63,8 @@ column, and nothing is saved), and a file changed since it was read is a conflic
 
 Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`)
 are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
-a DM is shown without its words. Over Remote Access, and for the dashboard assistant, they stay
+a DM is shown without its words, and `watches.json` itself then reads as a redacted, read-only copy
+(changing or deleting it needs the reveal on the host). Over Remote Access, and for the dashboard assistant, they stay
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
 click on its secure dashboard card applies.
 
