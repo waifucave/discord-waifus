@@ -6,20 +6,20 @@
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
---- tool call read_messages (call_1_read_messages) ---
+--- tool call ReadMessages (call_1_ReadMessages) ---
 {"place":"dm/kevin"}
 === 2 user ===
---- tool result call_1_read_messages ---
+--- tool result call_1_ReadMessages ---
 dm/kevin (DM with Kevin)
 [14:00 #a0] Kevin: hey aria
 [14:00 #a1] Kevin: my exam got moved to friday, i'm so nervous
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
---- tool call send_message (call_1_send_message) ---
+--- tool call SendMessage (call_1_SendMessage) ---
 {"place":"dm/kevin","text":"good luck on friday!! you've got this"}
 === 4 user ===
---- tool result call_1_send_message ---
+--- tool result call_1_SendMessage ---
 sent #a2
 --- text ---
 [Sat 24 Oct 14:00 · awake]

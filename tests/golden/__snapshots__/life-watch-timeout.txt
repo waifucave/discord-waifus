@@ -1,0 +1,33 @@
+=== 0 user ===
+--- text ---
+<notifications>
+- mention · bake-club/#general · from Kevin · "<@Aria> can you watch the tarts? 12 minutes"
+</notifications>
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 1 assistant ===
+--- tool call WatchFor (call_1_WatchFor) ---
+{"when":[],"note":"the tarts come out of the oven","timeout_minutes":12}
+=== 2 user ===
+--- tool result call_1_WatchFor ---
+watching w1 until Sat 24 Oct 14:13 (in ~/watches.json)
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 3 assistant ===
+--- tool call SendMessage (call_1_SendMessage) ---
+{"place":"bake-club/#general","text":"on it, timer set"}
+=== 4 user ===
+--- tool result call_1_SendMessage ---
+sent #a0
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 5 assistant ===
+--- text ---
+(sent)
+=== 6 user ===
+--- text ---
+<notifications>
+- watch timed out · your note: "the tarts come out of the oven"
+</notifications>
+--- text ---
+[Sat 24 Oct 14:13 · awake]
