@@ -121,9 +121,9 @@ const APP: SettingGroup = {
 const WAIFU: SettingGroup = {
   id: "waifu",
   title: "Waifu",
-  summary: "One character: persona, style, model, schedule, wake-on-name, daily budget and DM settings.",
+  summary: "One character: persona, style, model, schedule, wake-on-name, daily budget, DM settings and her bot's Discord profile.",
   description:
-    "`user/waifus/<id>/waifu.json`. Writes are partial and need the revision you read (the CLI sends it; a stale one is a 409). Changes to what her prompt contains take effect at her next turn through a compaction.",
+    "`user/waifus/<id>/waifu.json`. Writes are partial and need the revision you read (the CLI sends it; a stale one is a 409). Changes to what her prompt contains take effect at her next turn through a compaction. Her Discord profile (username, bio, nicknames, and the avatar and banner uploaded with POST /api/waifus/:waifuId/assets/pfp|banner) is synced to her own bot when it connects and after every change; GET /api/waifus/:waifuId/discord-profile shows the sync status.",
   target: { kind: "id", idName: "waifuId", idKind: "safe-id", example: "aria" },
   storage: "user/waifus/<waifuId>/waifu.json",
   list: { method: "GET", path: "/api/waifus" },
@@ -140,6 +140,9 @@ const WAIFU: SettingGroup = {
     persona: { help: "Who she is: voice, history, quirks, relationships.", example: "Aria is a sunny baker who loves lemon tarts." },
     model: { help: "Her model: {providerId, modelId, effort?} from GET /api/models (or `provider/model[@effort]` on the command line). Contributor variants share prompts for training; pick one only on purpose.", leaf: true, nullUnset: true, example: "anthropic/claude-haiku-5-5" },
     botId: { help: "Her own Discord bot (a discord-bots entry id). Without one she cannot post or receive DMs.", nullUnset: true, example: "aria" },
+    username: { help: "Her bot's Discord username, set on her own bot by the app (2–32 characters, no @ # : ``` and not containing \"discord\" or \"clyde\"; Discord allows about 2 changes an hour). Unset: her displayName, then her name. Her name stays what she is called in prompts and wake words. null unsets it.", nullUnset: true, example: "Aria" },
+    bio: { help: "Her bot's About Me: synced to the Discord application's description (at most 400 characters; some Discord views show only about the first 190). Unset: the app leaves the description alone. null unsets it.", nullUnset: true, example: "Sunny baker. Ask me about lemon tarts." },
+    nicknames: { help: "Per-server nickname overrides for her bot: a JSON object of server (guild) id → nickname (1–32 characters), replaced whole on write. Needs the Change Nickname permission in that server (else a warning). Removing an entry clears the nickname the app set. null removes all.", leaf: true, nullUnset: true, example: '{"123456789012345678":"Ari"}' },
     "availability.sleep.enabled": { help: "She sleeps every day in this window: every wake but the owner's waits for the morning.", example: "true" },
     "availability.sleep.start": { help: "When her sleep starts (local time).", unit: "HH:mm", example: "23:00" },
     "availability.sleep.end": { help: "When her sleep ends (local time).", unit: "HH:mm", example: "07:00" },

@@ -16,6 +16,7 @@ import { LifeLogKindSchema, WakeReasonSchema } from "./life.js";
 import { partialWithoutDefaults } from "./partial.js";
 import { ChannelThreadsModeSchema } from "./threads.js";
 import { FORGET_JOB_PARTS } from "../constants/forget.js";
+import { DISCORD_PROFILE_FIELDS } from "../constants/discordProfile.js";
 
 // Request bodies and response shapes of the HTTP API (Living cast spec §14.1). These schemas are the
 // one source of the API's shapes: the routes parse bodies with them, tests parse responses with
@@ -338,7 +339,7 @@ export const HerFileResponseSchema = z.object({
   /** `~/places.md` (kept up to date by the app) or a redacted watches.json: writes are refused. */
   readOnly: z.literal(true).optional(),
   /** `~/schedule.json` / `~/watches.json`: every write is checked (§16.4, §16.5). */
-  special: z.enum(["schedule", "watches"]).optional(),
+  special: z.enum(["schedule", "watches", "profile"]).optional(),
   private: z.literal(true).optional(),
   /**
    * `~/watches.json` with a watch bound to a private chat, read without `includePrivate`: the text
@@ -536,3 +537,59 @@ export const OwnerNoticesResponseSchema = z.object({
   /** Enabled waifus linked to a bot that cannot log in for her: missing, turned off, or without a token. */
   waifusWithoutBot: z.array(z.object({ waifuId: z.string(), reason: z.enum(["bot_missing", "bot_disabled", "bot_no_token"]) }))
 });
+
+// ---- Discord profile sync (Living cast §17) -------------------------------------------------------
+
+export const DiscordProfileFieldSchema = z.enum(DISCORD_PROFILE_FIELDS);
+
+export const DISCORD_PROFILE_STATES = [
+  "no_bot", // she has no botId
+  "bot_missing", // her botId names no waifu-bot entry (or names the House bot)
+  "shared_bot", // another waifu uses the same bot: the app never edits it
+  "offline", // her bot is not connected (or the Discord runtime is not running)
+  "synced",
+  "pending",
+  "rate_limited",
+  "error"
+] as const;
+export type DiscordProfileState = (typeof DISCORD_PROFILE_STATES)[number];
+
+export const DiscordProfileWarningSchema = z.object({
+  code: z.enum(["missing_permission", "not_in_server", "username_fallback_invalid"]),
+  guildId: z.string().optional(),
+  message: z.string()
+});
+
+const DiscordProfileImageSchema = z.object({
+  contentType: z.string(),
+  bytes: z.number().int().nonnegative(),
+  /** This exact image is what her bot shows, as far as the app knows. */
+  synced: z.boolean()
+});
+
+/** `GET /api/waifus/:waifuId/discord-profile` and `POST …/discord-profile/sync`. */
+export const DiscordProfileStatusSchema = z.object({
+  waifuId: z.string(),
+  botId: z.string().nullable(),
+  state: z.enum(DISCORD_PROFILE_STATES),
+  /** The username the app wants her bot to have and where it comes from (unset: displayName, then name). */
+  username: z.object({
+    value: z.string().nullable(),
+    source: z.enum(["username", "displayName", "name"]).nullable()
+  }),
+  bio: z.string().nullable(),
+  nicknames: z.record(z.string(), z.string()),
+  images: z.object({ avatar: DiscordProfileImageSchema.nullable(), banner: DiscordProfileImageSchema.nullable() }),
+  /** What her connected bot shows now (absent while it is offline). `bannerSet` null: not known. */
+  current: z.object({ username: z.string(), avatarSet: z.boolean(), bannerSet: z.boolean().nullable() }).optional(),
+  pendingFields: z.array(DiscordProfileFieldSchema),
+  lastSyncedAt: IsoDateStringSchema.optional(),
+  lastAttemptAt: IsoDateStringSchema.optional(),
+  /** The earliest time a rate-limited field is tried again. */
+  retryAfter: IsoDateStringSchema.optional(),
+  retryAfterByField: z.record(z.string(), IsoDateStringSchema),
+  lastError: z.string().optional(),
+  warnings: z.array(DiscordProfileWarningSchema)
+});
+export type DiscordProfileStatus = z.infer<typeof DiscordProfileStatusSchema>;
+export type DiscordProfileWarning = z.infer<typeof DiscordProfileWarningSchema>;

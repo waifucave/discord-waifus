@@ -104,7 +104,8 @@ describe("her files", { timeout: 30_000 }, () => {
 
     const list = HerFilesListResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/files" })).json());
     expect(list).toMatchObject({ root: "home", dir: "/home/ella", display: "~", parent: null, includePrivate: false, redacted: 1 });
-    expect(list.entries.map((entry) => entry.name)).toEqual(["people", "cake.png", PRIVATE_FILE_NAME]);
+    // profile.json is written from her config when she is created (spec §17.1).
+    expect(list.entries.map((entry) => entry.name)).toEqual(["people", "cake.png", PRIVATE_FILE_NAME, "profile.json"]);
     expect(list.entries[2]).toMatchObject({ kind: "file", private: true, redacted: true });
     expect(list.entries[2]!.path).toBeUndefined();
     expect(JSON.stringify(list)).not.toContain("kept-menu");

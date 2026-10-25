@@ -43,7 +43,12 @@ simulated Bash (nothing she runs can reach the host or the network):
   (one line per note, copied into her prompt at each epoch start); `schedule.json` holds her
   reminders and `watches.json` her watches (she sets them with ScheduleWake and WatchFor and changes
   or cancels them by editing the files); `places.md` lists her rooms and private chats and is kept
-  up to date by the app (read-only).
+  up to date by the app (read-only); `profile.json` is her Discord profile (`name` shown read-only,
+  `username`, `bio`, `nicknames` keyed by server as her places name it, like `bake-club`): the
+  same values as her waifu config, so her edit changes her config (and her bot), and a dashboard
+  edit rewrites the file. A bad edit (Discord's username rules, a bio over 400 characters, a nickname
+  over 32, an unknown server, a changed `name`) is refused and nothing changes; it can't be deleted
+  and nightly maintenance never changes it.
 - **`/tmp`**: files people sent (ReadMessages downloads attachments there) and scratch files, each
   deleted `life.tmp.retentionDays` days (7 by default) after it was last written.
 

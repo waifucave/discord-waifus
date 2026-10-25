@@ -20,7 +20,8 @@ const PERMISSIONS = {
   USE_EXTERNAL_EMOJIS: 1n << 18n,
   EMBED_LINKS: 1n << 14n,
   ATTACH_FILES: 1n << 15n,
-  SEND_MESSAGES_IN_THREADS: 1n << 38n
+  SEND_MESSAGES_IN_THREADS: 1n << 38n,
+  CHANGE_NICKNAME: 1n << 26n
 } as const;
 
 export type BotKind = "house" | "waifu";
@@ -40,7 +41,9 @@ const PERMISSIONS_BY_KIND: Record<BotKind, Array<{ flag: PermissionName; label: 
     { flag: "ADD_REACTIONS", label: "Add Reactions" },
     { flag: "ATTACH_FILES", label: "Attach Files" },
     { flag: "USE_EXTERNAL_EMOJIS", label: "Use External Emojis" },
-    { flag: "EMBED_LINKS", label: "Embed Links" }
+    { flag: "EMBED_LINKS", label: "Embed Links" },
+    // Her per-server nickname overrides (Living cast §17); without it the dashboard warns.
+    { flag: "CHANGE_NICKNAME", label: "Change Nickname" }
   ]
 };
 

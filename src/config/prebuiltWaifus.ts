@@ -5,8 +5,9 @@ import { WaifuConfig } from "../shared/schemas/domain.js";
  * cast spec §11.5). Existing installs keep whatever was seeded before. `bio` is her Discord "About
  * Me" text in her own voice (at most 190 characters) and `username` her bot account's styled
  * Discord username (2–32 characters, Discord's username rules); `name` stays the plain name used in
- * prompts, name wakes and the detector. Neither is part of `WaifuConfig` yet, so the seeder leaves
- * both out of `waifu.json`. `wakeOnName` is off for names that are common words in chat.
+ * prompts, name wakes and the detector. The seeder writes both into `waifu.json` (`WaifuConfig`'s
+ * `bio` and `username`, synced to her own bot, spec §17). `wakeOnName` is off for names that are
+ * common words in chat.
  *
  * Several names are anime character names. These waifus are not those characters: each just picked
  * the name as her handle, and her persona owes nothing to the character.

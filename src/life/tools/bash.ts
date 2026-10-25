@@ -11,7 +11,15 @@ import { z } from "zod";
 import { MAX_CHANGE_ENTRIES, runBash } from "../bash/runner.js";
 import { checkEnvFor } from "../home/index.js";
 import { HomeError, type HomeStore } from "../home/homeStore.js";
-import { isDmFolderPath, parseVirtual, pathKey } from "../home/pathRules.js";
+import { isDmFolderPath, parseVirtual, pathKey, PROFILE_FILE, specialJsonFile } from "../home/pathRules.js";
+import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
+
+/** A write or delete that would change `~/profile.json` (a delete of her whole home included). */
+function touchesProfile(virtual: string, slug: string): boolean {
+  const p = parseVirtual(virtual, slug);
+  if (!p) return false;
+  return specialJsonFile(p) === "profile" || (p.root === "home" && p.segments.length === 0);
+}
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
 import { noteDmFile, storeOf } from "./files.js";
@@ -109,6 +117,11 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     return { content: lines.join("\n"), isError: true };
   }
   if (changes.writes.length + changes.deletes.length + changes.dirs.length === 0) return { content: lines.join("\n") };
+  // Her profile is not changed while she tidies (spec §17.1).
+  if (ctx.mode === "session" && [...changes.writes.map((write) => write.path), ...changes.deletes].some((virtual) => touchesProfile(virtual, store.slug))) {
+    lines.push(`error: changes not saved: ${PROFILE_TIDY_REFUSED.replace(/^error:\s*/u, "")}`);
+    return { content: lines.join("\n"), isError: true };
+  }
   // A non-empty change set is a side effect (§16.9): intent first, done after.
   const argsDigest = createHash("sha256").update(JSON.stringify(input ?? {})).digest("hex").slice(0, 32);
   const intent = { turnId: ctx.turn.id, toolCallId: ctx.toolCallId, tool: "Bash", argsDigest };
@@ -123,6 +136,7 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     if (summary.length > 0) lines.push(summary.join("; "));
     // Her special files changed under her own hand: what she read of them is current again.
     for (const write of changes.writes) ctx.turn.readHashes?.delete(pathKey(write.path));
+    if (applied.profileChanged !== undefined) lines.push(`${PROFILE_FILE}: ${await profileSavedNote(deps, ctx.waifu.id, applied.profileChanged)}`);
     return { content: lines.join("\n") };
   } catch (error) {
     if (!(error instanceof HomeError)) throw error;

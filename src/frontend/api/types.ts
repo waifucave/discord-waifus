@@ -8,6 +8,7 @@ import type { z } from "zod";
 import type {
   CreateWaifuBodySchema,
   DetectorConfigResponseSchema,
+  DiscordProfileStatusSchema,
   ForgetJobsResponseSchema,
   HerFileDeleteResponseSchema,
   HerFileEntrySchema,
@@ -363,6 +364,9 @@ export type CreateWaifuBody = z.input<typeof CreateWaifuBodySchema>;
 // `model`/`botId` accept explicit `null` on write to mean "unset" (a bare `undefined` field is
 // dropped by JSON.stringify and is indistinguishable from "field omitted, leave untouched").
 export type UpdateWaifuBody = z.input<typeof UpdateWaifuBodySchema> & { revision: number };
+
+/** `GET /api/waifus/:id/discord-profile` (Living cast §17). */
+export type DiscordProfileStatus = z.output<typeof DiscordProfileStatusSchema>;
 
 export type ServerConfig = SharedServerConfig;
 export type ChannelConfig = SharedServerConfig["channels"][string];

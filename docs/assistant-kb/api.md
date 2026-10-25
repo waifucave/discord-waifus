@@ -127,6 +127,8 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | PUT | `/api/waifus/:waifuId` | Change a waifu's settings (partial; revision required). | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/banner` | Upload her banner image. | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/pfp` | Upload her avatar image. | `waifu` |
+| GET | `/api/waifus/:waifuId/discord-profile` | Her bot's Discord profile sync: wanted username, bio, nicknames and images, pending fields, rate-limit retry time, warnings. | `waifu` |
+| POST | `/api/waifus/:waifuId/discord-profile/sync` | Sync her profile to her bot now (rate-limited fields keep waiting); returns the status. | `waifu` |
 | GET | `/api/waifus/:waifuId/files` | List a folder of her home or /tmp (?root=home\|tmp&dir; files from private chats are named only with a local includePrivate=1). | `life` |
 | DELETE | `/api/waifus/:waifuId/files/*` | Delete one of her files (?expectedHash). | `life` |
 | GET | `/api/waifus/:waifuId/files/*` | One of her files: JSON with the text for a text file, ?raw=1 for the bytes (a DM file needs a local includePrivate=1). | `life` |

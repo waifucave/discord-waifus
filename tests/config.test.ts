@@ -256,7 +256,7 @@ describe("data root and config", () => {
     await expect(access(firstPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("seeds the whole default cast without the Discord-only bio and username", async () => {
+  it("seeds the whole default cast with her Discord bio and username (Living cast §17)", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await ensureDataLayout(root);
@@ -268,8 +268,8 @@ describe("data root and config", () => {
       expect(seeded.persona).toBe(waifu.persona);
       expect(seeded.verbosity).toBe(waifu.verbosity);
       expect(seeded.wakeOnName).toBe(waifu.wakeOnName ?? true);
-      expect(seeded).not.toHaveProperty("bio");
-      expect(seeded).not.toHaveProperty("username");
+      expect(seeded.bio).toBe(waifu.bio);
+      expect(seeded.username).toBe(waifu.username);
     }
   });
 

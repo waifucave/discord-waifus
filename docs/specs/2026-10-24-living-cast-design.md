@@ -1306,7 +1306,8 @@ Power, Saber, and Rem ("REM sleep", the band); Sora, Mio, Alia and the rest keep
 match whole words after NFKC and case folding, so "C.C." wakes on "c.c." (not "cc" or "C.C"
 without the last dot) and "Zero Two" on "zero two" with any spacing (not "zerotwo" or "02"). Each
 entry also carries a `bio` (Discord "About Me", ≤190 characters) and a styled Discord `username`
-(2–32 characters, Discord's username rules); `name` stays the plain name used in prompts, name
+(2–32 characters, Discord's username rules); the seeder writes both into `waifu.json` (her `bio`
+and `username`, synced to her own bot, §17), and `name` stays the plain name used in prompts, name
 wakes and the detector.
 
 ## 12. Testing and acceptance
@@ -2176,3 +2177,101 @@ expectedHash?}` goes through the same store as `Write` (`expectedHash: null`: mu
 `DELETE` takes `expectedHash` too. The assistant's `write_file` (and any file `PUT`/`DELETE` from
 the assistant) needs its confirmation card; its text is capped at 16 KB. The CLI's reveal flag is
 `--private`, as for `waifus life`.
+
+## 17. Discord profile sync (owner request, 2026-10-25)
+
+Each waifu's own bot carries her profile; the app sets it, so the Developer Portal step for name,
+avatar, banner and description is optional (the bot guide says so; creating the application, the
+token and the intents stay required).
+
+**Config** (`WaifuConfigSchema`, rules in the zod-free `src/shared/constants/discordProfile.ts`).
+`username`: her bot's Discord username, trimmed, 2–32 characters, no `@`, `#`, `:`, ` ``` `, not
+containing "discord" or "clyde" (case-insensitive), not `everyone`/`here`. Unset: her `displayName`,
+then her `name`, whichever passes the rules (neither: the username is left alone with a
+`username_fallback_invalid` warning). Her `name` stays her identity in prompts, wake on name and the
+detector. `bio` (at most 400 characters, Discord's application description limit; some views show
+only ~190): synced to the application description; unset leaves the description alone.
+`nicknames`: guild id → nickname (1–32 characters), replaced whole on write. Each takes `null` to
+unset, like `botId`. The registry, CLI (`waifus set waifu:<id> username …`), `/api/help`, the KB
+and the assistant's `update_waifu` cover them. Seeding carries a prebuilt waifu's `username` and
+`bio` into her first record (`prebuiltWaifuRecord` in `src/config/layout.ts`).
+
+**Sync** (`src/discord/profileSync.ts`, `DiscordProfileSync`, owned by `CastRuntime`). Triggers:
+every connected waifu bot when the runtime starts, a waifu bot's (re)login (`onWaifuBotReady`, also
+after a retry or a DM-intent re-login), and in the background after `PUT /api/waifus/:id`,
+`link-bot` and an avatar/banner upload. Runs are serialized per bot. A bot is edited only when it is
+a waifu-bot entry (never the House bot's id, never a waifu entry logged in as the House bot's
+Discord account), exactly one waifu has it as `botId`, and it is connected; everything else is a
+clean no-op. Operations go through her bot's client (`waifuBotProfile(botId)`): username, avatar and
+banner in one `PATCH /users/@me` (images as data URIs), the bio with `PATCH /applications/@me
+{description}`, nicknames with `PATCH /guilds/{id}/members/@me {nick}`. Only differing fields are
+sent: the username against `client.user.username`; an image when its sha256 differs from the last
+upload or Discord's avatar/banner hash differs from the one that upload produced; the bio against
+the fetched description; a nickname against her member's nickname (removing an override clears
+only a nickname the app set). The record per bot (`app/discord-profile-sync.json`: Discord user id,
+image content hash → Discord hash, bio, the nicknames set, pending fields, per-field retry times,
+last error, warnings) survives restarts; a different Discord account behind the entry starts over.
+
+**Rate limits.** Waifu clients set `rest.rejectOnRateLimit` for `PATCH /users/@me` and
+`PATCH /applications/@me`, so a limited edit fails at once instead of discord.js sleeping inside the
+request. A `RateLimitError` or 429 records `retryAfter` for the fields sent; Discord's username
+limit (400 / 50035 `USERNAME_RATE_LIMIT`, no retry time) records one hour for `username` only, and
+the images of the same request are sent again on their own. A field waiting for its retry time is
+not sent by any trigger (reconnects included); a timer per bot retries at the earliest time.
+Missing Change Nickname (permission check, or 50013) is a `missing_permission` warning, never an
+error; a nickname for a server her bot is not in is `not_in_server`. The waifu invite now asks for
+Change Nickname.
+
+**Images.** `POST /api/waifus/:id/assets/pfp|banner` take PNG, JPEG, WebP or GIF up to 8 MB (the
+route's body limit is raised to match); the bytes must be the declared type (magic-byte check).
+
+**API and dashboard.** `GET /api/waifus/:waifuId/discord-profile` (`DiscordProfileStatusSchema`:
+`state` = `synced` | `pending` | `rate_limited` | `error` | `offline` | `no_bot` | `bot_missing` |
+`shared_bot`, the wanted username and its source, bio, nicknames, image info with `synced`, the
+bot's current username/avatar/banner when online, `pendingFields` computed live against the bot,
+`retryAfter`, `retryAfterByField`, `lastSyncedAt`, `lastError`, `warnings`); without a runtime it
+reads the record and says `offline`. `POST …/discord-profile/sync` syncs now (rate-limited fields
+keep waiting) and answers the status. The Cast editor's "Discord profile" section
+(`WaifuDiscordProfileFields.tsx`, wording in `utils/discordProfile.ts`) edits the three fields
+(saved with Save), uploads the images at once and shows the status line, e.g. "Username change
+waiting for Discord's rate limit (try again in 34 min)".
+
+### 17.1 `~/profile.json`: her profile as her own file (owner addition, 2026-10-25)
+
+Her profile is also a file in her home that she reads and changes with Read, Write, Edit and Bash:
+
+```json
+{
+  "name": "Aria",
+  "username": "Ari ✨",
+  "bio": "Sunny baker. Ask me about lemon tarts.",
+  "nicknames": { "bake-club": "Ari" }
+}
+```
+
+- **One source of truth.** The file and her config's `username`, `bio` and `nicknames` say the same
+  thing. Her write is checked (`src/life/home/profileFile.ts`, a special file in `homeStore.ts`
+  like `schedule.json`/`watches.json`) and then saved to her config (under her home lock, then her
+  waifu lock; a Bash change set journals it with the files). A dashboard, CLI or HTTP change rewrites
+  the file (`rewriteProfileFile` after `POST`/`PUT /api/waifus/…`); the turn start and the
+  scheduler's housekeeping rewrite it too when it is missing or says something else, keeping her own
+  layout while it agrees. Her stale whole-file Write gets "profile.json changed since you read it
+  (your profile was changed for you); Read it again", as for her other special files.
+- **Checks** (nothing is saved on an error): strict JSON with line and column; one object with only
+  `name`, `username`, `bio`, `nicknames`; `name` is her plain name, shown for reference and refused
+  if changed (it stays her identity in prompts, wake on name and the detector); `username` by
+  Discord's rules (null or "" = her display name); `bio` at most 400 characters (null or "" = the
+  app leaves the description alone); a nickname 1–32 characters. Nickname keys are servers as her
+  places name them (the part of a room handle before `/#`, like `bake-club`; a server's name or id
+  works too); an unknown server is refused with examples from her servers. The file renders a
+  server by that slug, or by its id when the slug is ambiguous or unknown. It can't be deleted.
+- **After a valid change** the profile sync runs and the tool result says what happens, from the
+  live sync status: "saved; Discord will show the new username shortly", "saved; Discord allows only
+  about 2 username changes an hour, so your new username shows in ~34 min; it's already on its way,
+  don't change it again before then", "saved; Discord shows it once you're back online", or that
+  she has no Discord account of her own (or shares one). An unchanged profile says so.
+- **Not shared, not tidied.** profile.json is never attached by SendMessage (with MEMORY.md and the
+  other system files), the forget scrub leaves it alone, and in a session outside her life (nightly
+  maintenance, a forget's notes scrub) Write, Edit and Bash refuse to change it.
+- **Prompt.** `<life>` gains one sentence: "Your Discord profile is in profile.json: you may change
+  your username, bio and server nicknames when you want to, sparingly."

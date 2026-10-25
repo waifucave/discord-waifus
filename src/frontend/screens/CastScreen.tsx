@@ -9,6 +9,7 @@ import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyle
 import { Notice } from "../components/Notice";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
 import { WaifuDmFields, WaifuLifeFields } from "../components/WaifuLifeFields";
+import { WaifuDiscordProfileFields } from "../components/WaifuDiscordProfileFields";
 import { waifuDirty, waifuPatch, waifuProblems } from "./castEdit";
 
 export function CastScreen({
@@ -301,6 +302,9 @@ function CharacterEditor({
               <span className="field-hint">Set up or link her bot in Settings → App (Discord bots).</span>
             </div>
           </div>
+        )}
+        {!creating && remote.data && (
+          <WaifuDiscordProfileFields waifuId={remote.data.id} revision={remote.data.revision} draft={draft} onChange={set} />
         )}
 
         <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 240px" }}>

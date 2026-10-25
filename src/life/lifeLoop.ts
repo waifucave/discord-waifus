@@ -18,7 +18,7 @@
 
 import { isDmPlaceKey } from "./lifeView.js";
 import { withPlaceRecord } from "./placeRecorder.js";
-import { refreshPlacesFile } from "./home/index.js";
+import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { createHash } from "node:crypto";
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
@@ -472,6 +472,10 @@ export class Life {
     // Her places file is current at every turn start (§16.6; unchanged content is not rewritten).
     await refreshPlacesFile(deps, waifu).catch((error: unknown) => {
       deps.logger.warn("Could not refresh places.md", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
+    // And her profile file says what her config says (§17.1; her own layout kept while it agrees).
+    await homeStoreFor(deps, waifu).writeProfileFromConfig().catch((error: unknown) => {
+      deps.logger.warn("Could not refresh profile.json", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
     });
     const turnId = newTurnId();
     const selfIds = await selfAuthorIds(deps.storage, waifu);

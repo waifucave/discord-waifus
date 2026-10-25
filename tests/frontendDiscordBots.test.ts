@@ -137,7 +137,8 @@ describe("intent and permission lists match what the gateway uses", () => {
           PermissionFlagsBits.AddReactions |
           PermissionFlagsBits.AttachFiles |
           PermissionFlagsBits.UseExternalEmojis |
-          PermissionFlagsBits.EmbedLinks
+          PermissionFlagsBits.EmbedLinks |
+          PermissionFlagsBits.ChangeNickname
       )
     );
     expect(permissionBitsFor("house")).toBe(String(PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory));
@@ -146,8 +147,10 @@ describe("intent and permission lists match what the gateway uses", () => {
   it("the House bot is not asked for Administrator and never needs to post; a waifu can post, react and attach", () => {
     expect(permissionListFor("house")).toEqual(["View Channels", "Read Message History"]);
     expect(permissionListFor("waifu")).toEqual(
-      expect.arrayContaining(["Send Messages", "Send Messages in Threads", "Add Reactions", "Attach Files", "Read Message History"])
+      expect.arrayContaining(["Send Messages", "Send Messages in Threads", "Add Reactions", "Attach Files", "Read Message History", "Change Nickname"])
     );
+    // The House bot never sets a nickname of its own.
+    expect(permissionListFor("house")).not.toContain("Change Nickname");
   });
 
   it("builds the invite from the typed id, with the right scopes", () => {

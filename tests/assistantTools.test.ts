@@ -213,7 +213,7 @@ describe("assistant tools", () => {
       await home.files.writeBytes(home.path("tmp", ["dm", "kevin", "a7-menu.txt"]), Buffer.from("secret brownies"));
 
       const listed = JSON.parse(await executeAssistantTool(ctx, "list_files", JSON.stringify({ waifuId: "momo" })));
-      expect(listed.entries.map((entry: { name: string }) => entry.name)).toEqual(["people"]);
+      expect(listed.entries.map((entry: { name: string }) => entry.name)).toEqual(["people", "profile.json"]); // profile.json: written from her config (spec 17.1)
       const dm = await executeAssistantTool(ctx, "list_files", JSON.stringify({ waifuId: "momo", root: "tmp", dir: "dm" }));
       expect(dm).toContain("[private chat redacted]");
       expect(dm).not.toContain("kevin");

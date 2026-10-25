@@ -513,7 +513,7 @@ function readMessagesDescription(retentionDays: number): string {
 
 const SEND_DESCRIPTION =
   "Send a message to a place. This is the only way anyone sees what you write. Keep it like a chat message; send several if you have several things to say. Use <@Name> to mention someone who is there.";
-const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to, schedule.json, watches.json and places.md can't be attached.";
+const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to, schedule.json, watches.json, places.md and profile.json can't be attached.";
 
 /** SendMessage's input schema; `files` (at most `maxFiles`) only when attaching is on. */
 function sendSchema(maxFiles: number): Record<string, unknown> {

@@ -3,6 +3,13 @@ import { ServerDetectorOverrideSchema } from "./detector.js";
 import { CURRENT_SCHEMA_VERSION, IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 import { WaifuDmSettingsSchema, defaultWaifuDmSettings } from "./dm.js";
 import { ChannelThreadsModeSchema } from "./threads.js";
+import {
+  DISCORD_BIO_MAX,
+  DISCORD_NICKNAME_MAX,
+  DISCORD_USERNAME_MAX,
+  DISCORD_USERNAME_MIN,
+  discordUsernameProblem
+} from "../constants/discordProfile.js";
 
 // A winter catalog provider id (`anthropic`, `openrouter`, …). Unknown ids are rejected at API
 // write time — see src/api/writeValidation.ts's assertKnownProvider, which checks the installed
@@ -169,6 +176,35 @@ export type WaifuLifeSettings = z.infer<typeof WaifuLifeSettingsSchema>;
 export const WAIFU_VERBOSITIES = ["terse", "chatty", "expressive"] as const;
 export type WaifuVerbosity = (typeof WAIFU_VERBOSITIES)[number];
 
+/** Her bot's Discord username (Living cast §17): trimmed, 2–32 characters, Discord's word rules. */
+export const DiscordUsernameSchema = z
+  .string()
+  .trim()
+  .min(DISCORD_USERNAME_MIN, `A Discord username is ${DISCORD_USERNAME_MIN} to ${DISCORD_USERNAME_MAX} characters.`)
+  .max(DISCORD_USERNAME_MAX, `A Discord username is ${DISCORD_USERNAME_MIN} to ${DISCORD_USERNAME_MAX} characters.`)
+  .superRefine((value, ctx) => {
+    const problem = discordUsernameProblem(value);
+    if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+  });
+
+/** Per-server nickname overrides of her bot: guild id → nickname (1–32 characters). */
+export const WaifuNicknamesSchema = z
+  .record(
+    z.string(),
+    z
+      .string()
+      .trim()
+      .min(1, `A server nickname is 1 to ${DISCORD_NICKNAME_MAX} characters.`)
+      .max(DISCORD_NICKNAME_MAX, `A server nickname is 1 to ${DISCORD_NICKNAME_MAX} characters.`)
+  )
+  .superRefine((value, ctx) => {
+    for (const key of Object.keys(value)) {
+      if (!/^\d{17,20}$/u.test(key)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `Nickname keys are Discord server (guild) ids; "${key.slice(0, 40)}" is not one.` });
+      }
+    }
+  });
+
 export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -180,6 +216,22 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
   model: OptionalModelChoiceSchema,
   botId: z
     .union([z.string(), z.null()])
+    .optional()
+    .transform((value) => value ?? undefined),
+  // Living cast §17: her Discord profile, synced to her own bot. `username` is only her Discord
+  // account name (unset: displayName, then name); her `name` stays the identity in prompts, wake on
+  // name and the detector. `bio` becomes the application description (About Me). `nicknames`
+  // overrides her nickname per server. Explicit `null` on write unsets each.
+  username: z
+    .union([DiscordUsernameSchema, z.null()])
+    .optional()
+    .transform((value) => value ?? undefined),
+  bio: z
+    .union([z.string().max(DISCORD_BIO_MAX, `Her bio is at most ${DISCORD_BIO_MAX} characters (Discord's limit).`), z.null()])
+    .optional()
+    .transform((value) => value ?? undefined),
+  nicknames: z
+    .union([WaifuNicknamesSchema, z.null()])
     .optional()
     .transform((value) => value ?? undefined),
   availability: WaifuAvailabilitySchema,

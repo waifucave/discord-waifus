@@ -15,7 +15,7 @@ import {
 import { RemoteAccessConfigV1Schema } from "../shared/schemas/remoteLifecycle.js";
 import { remoteStatePaths } from "../remote/paths.js";
 import { resolveDataPath } from "./paths.js";
-import { PREBUILT_WAIFUS } from "./prebuiltWaifus.js";
+import { PREBUILT_WAIFUS, type PrebuiltWaifu } from "./prebuiltWaifus.js";
 import { discardOwnedEmptyMetadataFile, protectNewPrivateMetadataFile } from "../storage/privateMetadataFile.js";
 
 const DATA_LAYOUT_DIRS = [
@@ -223,6 +223,20 @@ async function writeJsonIfMissing(filePath: string, content: unknown, privateMet
   await writeIfMissing(filePath, JSON.stringify(content, null, 2) + "\n", privateMetadata);
 }
 
+/**
+ * A prebuilt waifu's first `waifu.json`. Her Discord `username` and `bio` (Living cast §17) are
+ * carried over when the prebuilt entry has them, so her own bot is set up from them once linked.
+ */
+export function prebuiltWaifuRecord(waifu: PrebuiltWaifu & { username?: string; bio?: string }) {
+  const { username, bio, ...rest } = waifu;
+  return WaifuConfigSchema.parse({
+    ...createRevisionedBase(),
+    ...rest,
+    ...(username !== undefined ? { username } : {}),
+    ...(bio !== undefined ? { bio } : {})
+  });
+}
+
 async function seedPrebuiltWaifusOnce(dataRoot: string): Promise<void> {
   const markerPath = resolveDataPath(dataRoot, "user", "waifus", ".prebuilt-seed.json");
   try {
@@ -236,15 +250,8 @@ async function seedPrebuiltWaifusOnce(dataRoot: string): Promise<void> {
   }
 
   await Promise.all(
-    // `bio` and `username` are not waifu config fields (yet): they stay out of waifu.json.
-    PREBUILT_WAIFUS.map(({ bio: _bio, username: _username, ...waifu }) =>
-      writeJsonIfMissing(
-        resolveDataPath(dataRoot, "user", "waifus", waifu.id, "waifu.json"),
-        WaifuConfigSchema.parse({
-          ...createRevisionedBase(),
-          ...waifu
-        })
-      )
+    PREBUILT_WAIFUS.map((waifu) =>
+      writeJsonIfMissing(resolveDataPath(dataRoot, "user", "waifus", waifu.id, "waifu.json"), prebuiltWaifuRecord(waifu))
     )
   );
 

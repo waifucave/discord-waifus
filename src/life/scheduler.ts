@@ -260,6 +260,7 @@ export class Scheduler {
     if (nowMs - (this.placesAt.get(waifu.id) ?? -Infinity) >= PLACES_REFRESH_MS) {
       this.placesAt.set(waifu.id, nowMs);
       await refreshPlacesFile(deps, waifu);
+      await homeStoreFor(deps, waifu).writeProfileFromConfig();
       await homeStoreFor(deps, waifu).resyncWatches(checkEnvFor(deps, waifu.id));
     }
     if (nowMs - (this.tmpAt.get(waifu.id) ?? -Infinity) >= TMP_SWEEP_MS) {

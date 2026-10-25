@@ -18,9 +18,14 @@ five-waifu cast you create six applications total (1 House bot + 5 waifus).
 4. Copy the **Application ID** as well.
 5. Invite: OAuth2 → URL Generator. House bot: scopes `bot` + `applications.commands`, permissions View Channels and
    Read Message History. Waifu bot: scope `bot`, permissions View Channels, Send Messages, Send Messages in Threads,
-   Read Message History, Add Reactions, Attach Files, Use External Emojis, Embed Links. Open the generated URL and add
+   Read Message History, Add Reactions, Attach Files, Use External Emojis, Embed Links, Change Nickname (for her
+   per-server nicknames). Open the generated URL and add
    it to your server. The dashboard's guide (Settings → App → Discord bots) builds this link from the Application ID
    you paste into it.
+
+A waifu bot's name, avatar, banner and description need no portal step: the app sets them from her
+profile (`username`, the uploaded avatar/banner, `bio`, `nicknames`; see waifus.md "Discord
+profile") once her bot connects.
 
 ## In the app
 
