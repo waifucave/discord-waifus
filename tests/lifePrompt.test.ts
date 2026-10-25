@@ -195,6 +195,10 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
     });
     let step = 0;
     let folded: Promise<void> | undefined;
+    // The interrupted call is in flight once the server answers it with a hang: abort only then
+    // (a fixed number of polls ran out on a loaded machine, so the hang came after the abort).
+    let hangStarted!: () => void;
+    const hanging = new Promise<void>((resolve) => (hangStarted = resolve));
     server.next = (body) => {
       if (isMaintenance(body)) return { text: "nothing to tidy" };
       step += 1;
@@ -206,12 +210,15 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
       if (step === 2) return { thinking: "a cake", toolCalls: [{ name: "list_places", input: {} }] };
       if (step === 3) return { thinking: "answering", toolCalls: [{ name: "send_message", input: { place: "bake-club/#general", text: "that cake looks great" } }] };
       // The next call hangs until the owner pauses her.
-      if (step === 4) return { hang: true };
+      if (step === 4) {
+        hangStarted();
+        return { hang: true };
+      }
       return { thinking: "back again", text: "(done)" };
     };
     await enqueueWake(w.storage, "aria", { id: "w-cake", reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: "900000000000000776", preview: "look at my cake", at: new Date(w.clock.ms).toISOString() });
     const running = w.cast.life("aria").runNow();
-    for (let tries = 0; server.exchanges.length < 4 && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    await hanging;
     await folded;
     w.cast.life("aria").abort("pause");
     await running;

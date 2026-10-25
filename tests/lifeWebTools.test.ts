@@ -187,7 +187,9 @@ describe("web_fetch tool", () => {
   });
 });
 
-describe("web_fetch's own policy path (review F14)", () => {
+// Disk-bound (two counter files written atomically per refused URL): about 1–3 s alone, up to 4× slower when the whole suite
+// runs in parallel workers; the default 10 s timeout was too tight there.
+describe("web_fetch's own policy path (review F14)", { timeout: 30_000 }, () => {
   it("refuses every private form as not public, and every malformed one as not an address, before any request", async () => {
     const calls: TransportCall[] = [];
     // Each name answers its own private address (a host resolving to ::ffff:0:10.0.0.1 included):

@@ -60,7 +60,9 @@ async function forgetBy(w: LifeWorld, how: (typeof SEQUENCES)[number]): Promise<
   expect(compareSnowflakes((await readDmFloor(w.storage, KEVIN, "aria"))!, floor!)).toBeGreaterThan(0);
 }
 
-describe("a forgotten DM after a restart", () => {
+// Disk-bound (atomic JSON writes per step): about 1–3 s alone, up to 4× slower when the whole suite
+// runs in parallel workers; the default 10 s timeout was too tight there.
+describe("a forgotten DM after a restart", { timeout: 30_000 }, () => {
   for (const how of SEQUENCES) {
     it(`${how}: the old messages are not readable when the person writes again`, async () => {
       const w = await lifeWorld(roots, { scripts: [reader] });
@@ -102,7 +104,7 @@ describe("a forgotten DM after a restart", () => {
   }
 });
 
-describe("an unfinished owner forget (review F1, F8)", () => {
+describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () => {
   const PERSON = "300000000000000077";
   const OTHER = "300000000000000088";
 

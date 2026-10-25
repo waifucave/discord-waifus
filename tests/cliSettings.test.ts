@@ -90,14 +90,16 @@ async function seed(app: FastifyInstance): Promise<void> {
 }
 
 describe("waifus set/get round-trip over the real API", () => {
-  it("every writable key of every group is settable and readable through the CLI and HTTP, with a value other than its default", async () => {
+  // One test per group (each about 1–3 s alone): a single test over all ~90 keys took 30–60 s when
+  // the whole suite ran in parallel workers.
+  it.each(SETTING_GROUPS.map((group) => group.id))("every writable key of group %s is settable and readable through the CLI and HTTP, with a value other than its default", async (groupId) => {
     const { app, root } = await makeApp();
     await seed(app);
     const host = remoteAccessTransport(injectTransport(app));
     // A provider's label rides along with its key; the key comes from the environment, never argv.
     expect((await cli(root, host, ["set", "provider:anthropic", "apiKey", "--from-env", "ANTHROPIC_TEST_KEY"], { env: { ANTHROPIC_TEST_KEY: "sk-ant-test-0123456789abcdef" } })).code).toBe(0);
     const failures: string[] = [];
-    for (const group of SETTING_GROUPS) {
+    for (const group of SETTING_GROUPS.filter((candidate) => candidate.id === groupId)) {
       const target = TARGETS[group.id];
       expect(target, group.id).toBeDefined();
       expect(ADAPTERS[group.id], group.id).toBeDefined();

@@ -117,7 +117,9 @@ async function archivedRoot(): Promise<string> {
   return root;
 }
 
-describe("the archive scrub (D-b)", () => {
+// Disk-bound (atomic JSON writes per step): about 1–3 s alone, up to 4× slower when the whole suite
+// runs in parallel workers; the default 10 s timeout was too tight there.
+describe("the archive scrub (D-b)", { timeout: 30_000 }, () => {
   it("the owner's forget-user scrubs the whole archive: records by or about him, by id or a name only he has", async () => {
     const root = await archivedRoot();
     const before = await readFile(path.join(root, A, "providers.json"), "utf8");

@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeState } from "../src/backend/runtime.js";
@@ -297,10 +297,12 @@ describe("waifus remote lifecycle", () => {
         const runtime = state(process.pid, root);
         handoffWrite = (async () => {
           await mkdir(paths.runtimeRoot, { recursive: true, mode: 0o700 });
-          await writeFile(paths.startupHandoff, `${JSON.stringify({ runtime, bootstrapUrl })}\n`, {
-            mode: 0o600
-          });
-          await chmod(paths.startupHandoff, 0o644);
+          // The too-broad file appears at once (renamed into place): writing it 0600 and widening
+          // it after left a window in which a loaded machine's CLI read the safe version first.
+          const temp = `${paths.startupHandoff}.tmp`;
+          await writeFile(temp, `${JSON.stringify({ runtime, bootstrapUrl })}\n`, { mode: 0o644 });
+          await chmod(temp, 0o644);
+          await rename(temp, paths.startupHandoff);
         })();
         return { pid: process.pid, unref: vi.fn() };
       },
