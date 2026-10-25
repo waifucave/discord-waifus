@@ -7,6 +7,7 @@ import {
   parseEventCursor
 } from "../src/frontend/api/eventCursor.js";
 import {
+  EventFeedGoneError,
   ResumableEventFeed,
   SseParser
 } from "../src/frontend/api/resumableEventFeed.js";
@@ -92,6 +93,48 @@ describe("ResumableEventFeed", () => {
 
     expect(browserFetch).toHaveBeenCalledOnce();
     expect(errors).toEqual([]);
+  });
+
+  it("stops at a 404 (a conversation the restarted host no longer has) instead of retrying", async () => {
+    const errors: unknown[] = [];
+    let requests = 0;
+    const feed = new ResumableEventFeed({
+      url: "/api/assistant/conversations/gone/stream",
+      reconnectDelayMs: 0,
+      fetchImpl: async () => {
+        requests += 1;
+        if (requests > 3) feed.close();
+        return new Response(JSON.stringify({ error: "NotFound" }), { status: 404 });
+      },
+      onEvent: () => undefined,
+      onError: (error) => {
+        errors.push(error);
+      }
+    });
+    feed.start();
+    await feed.settled();
+    expect(requests).toBe(1);
+    expect(feed.running).toBe(false);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(EventFeedGoneError);
+    expect((errors[0] as EventFeedGoneError).status).toBe(404);
+  });
+
+  it("keeps retrying other failures", async () => {
+    let requests = 0;
+    const feed = new ResumableEventFeed({
+      url: "/api/events",
+      reconnectDelayMs: 0,
+      fetchImpl: async () => {
+        requests += 1;
+        if (requests >= 3) feed.close();
+        return new Response("", { status: 503 });
+      },
+      onEvent: () => undefined
+    });
+    feed.start();
+    await feed.settled();
+    expect(requests).toBe(3);
   });
 
   it("uses same-origin fetch, decodes fragmented UTF-8, suppresses duplicates, and reconnects with an exact cursor", async () => {

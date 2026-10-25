@@ -100,6 +100,20 @@ export class SseParser {
   }
 }
 
+/**
+ * The stream's resource is gone (HTTP 404, e.g. an assistant conversation the restarted host no
+ * longer has): retrying cannot help, so the feed stops and reports this once.
+ */
+export class EventFeedGoneError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Event stream returned HTTP ${status}; the feed stopped.`);
+    this.name = "EventFeedGoneError";
+    this.status = status;
+  }
+}
+
 class RestartFeedError extends Error {
   constructor() {
     super("Restarting event feed after a cursor discontinuity.");
@@ -165,6 +179,11 @@ export class ResumableEventFeed {
           cache: "no-store",
           signal
         });
+        if (response.status === 404) {
+          await response.body?.cancel().catch(() => undefined);
+          await this.options.onError?.(new EventFeedGoneError(response.status));
+          return;
+        }
         if (!response.ok) {
           immediateRetry = await this.options.onResponseError?.(response) === true;
           await response.body?.cancel().catch(() => undefined);

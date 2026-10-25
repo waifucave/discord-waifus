@@ -120,11 +120,12 @@ export function registerAssistantRoutes(
     const { id } = request.params as { id: string };
     const owner = conversationOwner(request.principal);
     const conversation = store.get(id, owner);
-    if (!conversation) {
-      reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
-      return;
+    // A tab open across a restart asks for a conversation the new process doesn't have.
+    if (!conversation || !store.eventStream(id, owner)) {
+      return reply.code(404).send({ error: "NotFound", message: "Unknown conversation." });
     }
     sendAssistantEventStream({ request, reply, id, owner, store, options });
+    return reply;
   });
 
   registerAssistantActionRoutes(app, actions, options);

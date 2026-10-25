@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, openAssistantEventStream } from "../api/client";
 import { latestEventCursor } from "../api/eventCursor";
-import type { ResumableEventFeed } from "../api/resumableEventFeed";
+import { EventFeedGoneError, type ResumableEventFeed } from "../api/resumableEventFeed";
 import type { AssistantEvent, AssistantStoredMessage } from "../api/types";
 
 const STORAGE_KEY = "assistant-conversation";
@@ -72,6 +72,15 @@ export function useAssistantChat(open: boolean) {
         onReset: () => {
           preserveInitialEmptySnapshot = false;
           setItems([]);
+          setBusy(false);
+        },
+        onError: (error) => {
+          // The host restarted and no longer has this conversation: forget it (the next message
+          // starts a new one) instead of asking for it again every second.
+          if (!(error instanceof EventFeedGoneError) || conversationRef.current !== conversationId) return;
+          conversationRef.current = undefined;
+          sessionStorage.removeItem(STORAGE_KEY);
+          if (sourceRef.current === source) sourceRef.current = undefined;
           setBusy(false);
         },
         onEvent: (message) => {

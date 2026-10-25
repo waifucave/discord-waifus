@@ -63,15 +63,26 @@ export function installUpdateActivity(app: FastifyInstance, activity: UpdateActi
   };
   app.addHook("onRoute", options => {
     const handler = options.handler;
-    options.handler = async function(request, reply) {
+    // Keeps the handler's own shape: a synchronous handler stays synchronous. Wrapped in an async
+    // function, one that calls reply.send() and returns nothing resolved to undefined while the
+    // async onSend hooks were still running, and Fastify sent the reply a second time
+    // (ERR_HTTP_HEADERS_SENT).
+    options.handler = function(request, reply) {
       const lease = leases.get(request);
       if (lease) lease.started = true;
-      try { return await handler.call(this, request, reply); }
-      finally {
+      const handled = () => {
         const lease = leases.get(request);
         if (lease) lease.handled = true;
         finish(request);
+      };
+      let result: unknown;
+      try { result = handler.call(this, request, reply); }
+      catch (error) { handled(); throw error; }
+      if (result !== null && typeof result === "object" && typeof (result as PromiseLike<unknown>).then === "function") {
+        return Promise.resolve(result as PromiseLike<unknown>).finally(handled);
       }
+      handled();
+      return result;
     };
   });
   app.addHook("onRequest", async (request, reply) => {

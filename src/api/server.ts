@@ -356,7 +356,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       return;
     }
     const unknownError = error as Error;
+    // The route pattern (never the URL itself: ids and query strings stay out of the log).
     logger.error("Unhandled API error", redactSecrets({
+      method: request.method,
+      route: request.routeOptions?.url ?? "(no route)",
       message: unknownError.message,
       stack: unknownError.stack
     }));
