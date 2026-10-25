@@ -125,6 +125,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | DELETE | `/api/waifus/:waifuId` | Delete a waifu and her bot (revision required; a bot another waifu uses stays). | `waifu` |
 | GET | `/api/waifus/:waifuId` | One waifu's settings. | `waifu` |
 | PUT | `/api/waifus/:waifuId` | Change a waifu's settings (partial; revision required). | `waifu` |
+| GET | `/api/waifus/:waifuId/assets/:kind` | Her avatar (pfp) or banner image as saved here, uploaded or imported from her bot (404 when none). | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/banner` | Upload her banner image. | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/pfp` | Upload her avatar image. | `waifu` |
 | GET | `/api/waifus/:waifuId/discord-profile` | Her bot's Discord profile sync: wanted username, bio, nicknames and images, pending fields, rate-limit retry time, warnings. | `waifu` |

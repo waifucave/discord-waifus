@@ -374,12 +374,12 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "update_waifu",
     description:
-      "Update fields on an existing waifu. Pass only the fields to change under `changes`. " +
+      "Update fields on an existing waifu. Pass only the fields to change under `changes`; everything else is kept as it is. " +
       "`model` is {providerId, modelId, effort?} from list_models (null unsets it). Style fields: `verbosity` (terse | chatty | expressive, how long her messages are), " +
       "`customInstructions` (extra prompt text, max 4000 chars) and `scheduleInPrompt` (boolean, whether her " +
       "schedule is mentioned in the prompt). Discord profile fields, synced to her own bot by the app: `username` (her bot's " +
       "Discord username, 2–32 chars, no @ # : ``` and not containing 'discord' or 'clyde'; Discord allows about 2 changes an hour; " +
-      "unset = her displayName, her `name` stays her identity in prompts and wake words), `bio` (her About Me, the application " +
+      "unset leaves her bot's current name alone, her `name` stays her identity in prompts and wake words), `bio` (her About Me, the application " +
       "description, max 400 chars) and `nicknames` (object of server id → nickname, 1–32 chars, replaced whole); null unsets each. " +
       "GET /api/waifus/:id/discord-profile shows whether the sync is done or waiting for a rate limit. " +
       "The prompt layout editor no longer exists; there is nothing to send for it. " +

@@ -68,6 +68,7 @@ export const ROUTE_HELP: Readonly<Record<string, RouteHelpEntry>> = Object.freez
   "POST /api/waifus/:waifuId/link-bot": { summary: "Create or link her Discord bot entry.", topic: "bot" },
   "POST /api/waifus/:waifuId/assets/pfp": { summary: "Upload her avatar image.", topic: "waifu" },
   "POST /api/waifus/:waifuId/assets/banner": { summary: "Upload her banner image.", topic: "waifu" },
+  "GET /api/waifus/:waifuId/assets/:kind": { summary: "Her avatar (pfp) or banner image as saved here, uploaded or imported from her bot (404 when none).", topic: "waifu" },
   "GET /api/waifus/:waifuId/discord-profile": { summary: "Her bot's Discord profile sync: wanted username, bio, nicknames and images, pending fields, rate-limit retry time, warnings.", topic: "waifu" },
   "POST /api/waifus/:waifuId/discord-profile/sync": { summary: "Sync her profile to her bot now (rate-limited fields keep waiting); returns the status.", topic: "waifu" },
   "GET /api/waifus/:waifuId/life": { summary: "Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally).", topic: "life" },

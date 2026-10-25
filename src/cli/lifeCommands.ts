@@ -112,7 +112,7 @@ function statusLines(status: LifeStatus): string[] {
   const model = status.model ? `${status.model.providerId}/${status.model.modelId}${status.model.effort ? `@${status.model.effort}` : ""}` : "(none)";
   const lines = [
     `${status.displayName} (${status.waifuId})${status.enabled ? "" : " [disabled]"}`,
-    `  model:        ${model}${status.hasBot ? "" : "  (speaks through the House bot)"}`,
+    `  model:        ${model}${status.hasBot ? "" : "  (no bot: she cannot post until she has one)"}`,
     `  state:        ${availability}; ${status.status === "turn" ? "mid-turn" : "idle"}${status.runtime.paused ? "; cast paused" : ""}${status.runtime.running ? "" : "; Discord offline"}`,
     `  life:         ${status.started ? `epoch ${status.epoch} since ${status.epochStartedAt}, ${status.logLines} log lines` : "not started yet"}`,
     `  last turn:    ${status.lastTurnEndedAt ?? "never"}${status.failedTurnAt ? `  (last failed turn ${status.failedTurnAt})` : ""}`,

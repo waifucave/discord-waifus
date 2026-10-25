@@ -127,7 +127,7 @@ export class WakeRouter {
     if (deps.isPaused()) return "dropped";
     if (context.guildId && (await this.serverPaused(context.guildId))) return "dropped";
     const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
-    if (!waifu?.enabled) return "dropped";
+    if (!waifu?.enabled || !waifu.botId) return "dropped";
     // 2. DM rate limit
     if (wake.reason === "dm" && context.dmUserId) {
       const limits = await readDmLimit(deps.storage, context.dmUserId, waifuId);

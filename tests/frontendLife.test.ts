@@ -49,11 +49,12 @@ describe("Life timeline", () => {
   });
 
   it("names her state from her status", () => {
-    const base = { enabled: true, model: { providerId: "anthropic", modelId: "claude-haiku-5-5" }, runtime: { running: true, busy: false, paused: false }, status: "idle" as const };
+    const base = { enabled: true, hasBot: true, model: { providerId: "anthropic", modelId: "claude-haiku-5-5" }, runtime: { running: true, busy: false, paused: false }, status: "idle" as const };
     expect(stateLabel({ ...base, availability: { state: "awake" } }).word).toBe("Awake");
     expect(stateLabel({ ...base, availability: { state: "asleep", until: "07:00" } })).toMatchObject({ word: "Asleep", detail: "until 07:00" });
     expect(stateLabel({ ...base, status: "turn", availability: { state: "awake" } }).word).toBe("Mid-turn");
     expect(stateLabel({ ...base, model: null, availability: { state: "awake" } }).word).toBe("No model");
+    expect(stateLabel({ ...base, hasBot: false, availability: { state: "awake" } }).word).toBe("No bot");
   });
 
   it("recent sends and wakes come from the host log and never name a DM's person", () => {

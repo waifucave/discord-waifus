@@ -70,8 +70,9 @@ export function usd(value: number | null | undefined, digits = 2): string {
 }
 
 /** awake · asleep until 07:00 · busy (exam) until 12:00 — plus mid-turn. */
-export function stateLabel(status: Pick<LifeStatus, "availability" | "status" | "runtime" | "enabled" | "model">): { word: string; detail: string; hue: "mint" | "sky" | "butter" | "lavender" | "peach" } {
+export function stateLabel(status: Pick<LifeStatus, "availability" | "status" | "runtime" | "enabled" | "model" | "hasBot">): { word: string; detail: string; hue: "mint" | "sky" | "butter" | "lavender" | "peach" } {
   if (!status.enabled) return { word: "Benched", detail: "disabled", hue: "butter" };
+  if (!status.hasBot) return { word: "No bot", detail: "she needs her own Discord bot to post", hue: "butter" };
   if (!status.model) return { word: "No model", detail: "she stays quiet until she has one", hue: "butter" };
   if (status.status === "turn") return { word: "Mid-turn", detail: "thinking and acting now", hue: "lavender" };
   const availability = status.availability;

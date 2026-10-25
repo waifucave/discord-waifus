@@ -460,6 +460,18 @@ export const api = {
       body: new Uint8Array(await file.arrayBuffer()),
       headers: { "content-type": file.type }
     }),
+  /** Her avatar or banner as saved here (uploaded, or imported from her bot); null when she has none. */
+  waifuImage: async (id: string, kind: "pfp" | "banner", signal?: AbortSignal): Promise<Blob | null> => {
+    const res = await fetch(`${BASE}/api/waifus/${encodeURIComponent(id)}/assets/${kind}`, {
+      method: "GET",
+      headers: await browserSecurityHeaders("GET"),
+      credentials: "same-origin",
+      signal
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new ApiError(res.status, { error: `HTTP ${res.status}` });
+    return res.blob();
+  },
   deleteWaifu: (id: string, revision: number) =>
     request<void>("DELETE", `/api/waifus/${encodeURIComponent(id)}`, {
       body: { revision }

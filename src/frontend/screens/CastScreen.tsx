@@ -32,6 +32,30 @@ export function previousModelFor(warnings: readonly ModelWarning[] | undefined, 
 
 /* ================= mosaic ================= */
 
+/** Her avatar as saved here (uploaded, or imported from her bot's Discord profile); nothing when she has none. */
+function WaifuAvatar({ id, size }: { id: string; size: number }) {
+  const [url, setUrl] = useState<string>();
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    api
+      .waifuImage(id, "pfp", controller.signal)
+      .then((blob) => {
+        if (!blob) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setUrl(undefined);
+    };
+  }, [id]);
+  if (!url) return null;
+  return <img src={url} alt="" width={size} height={size} style={{ borderRadius: "50%", objectFit: "cover", flex: "none" }} />;
+}
+
 function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const bots = useApi<DiscordBotsFile>((s) => api.discordBots(s), []);
@@ -40,9 +64,10 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
   const botIds = new Set((bots.data?.waifus ?? []).map((b) => b.id));
   const notices = runtime.data?.models?.warnings;
 
-  const talking = cast.filter((w) => w.enabled && w.model).length;
-  // A waifu without her own bot cannot post (the House bot only reads); a link to a missing bot needs setup.
-  const unconfigured = cast.filter((w) => !w.model || (w.botId !== undefined && !botIds.has(w.botId))).length;
+  // A waifu without her own bot cannot post (the House bot only reads), so she needs setup.
+  const needsSetup = (w: (typeof cast)[number]) => !w.model || !w.botId || !botIds.has(w.botId);
+  const talking = cast.filter((w) => w.enabled && !needsSetup(w)).length;
+  const unconfigured = cast.filter(needsSetup).length;
 
   return (
     <div className="screen">
@@ -63,7 +88,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
         >
           {cast.map((waifu, index) => {
             const hue = characterHue(index);
-            const missing = !waifu.model || (waifu.botId !== undefined && !botIds.has(waifu.botId));
+            const missing = needsSetup(waifu);
             const previous = previousModelFor(notices, waifu.id);
             const wide = index === 0;
             return (
@@ -78,7 +103,10 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                 onClick={() => onNavigate("cast", undefined, waifu.id)}
               >
                 <div>
-                  <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                    <WaifuAvatar id={waifu.id} size={wide ? 64 : 44} />
+                    <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
+                  </span>
                   <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
                     {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · own bot" : " · no bot yet"}
                   </div>
@@ -89,7 +117,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                   )}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-                  <span className="t-micro">{waifu.enabled ? (waifu.model ? "ready" : "no model") : "disabled"}</span>
+                  <span className="t-micro">{!waifu.enabled ? "disabled" : !waifu.model ? "no model" : !waifu.botId ? "no bot" : "ready"}</span>
                   {missing && <span className="chip butter">needs setup</span>}
                 </div>
               </button>

@@ -252,7 +252,8 @@ export class Intake {
     const out: WaifuConfig[] = [];
     for (const id of ids) {
       const waifu = await readWaifu(this.deps.storage, id).catch(() => undefined);
-      if (waifu?.enabled) out.push(waifu);
+      // Without her own bot she cannot post, so nothing wakes her.
+      if (waifu?.enabled && waifu.botId) out.push(waifu);
     }
     return out;
   }

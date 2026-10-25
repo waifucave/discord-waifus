@@ -87,6 +87,7 @@ import {
   discordProfileStatus,
   PROFILE_IMAGE_EXT_BY_MIME,
   PROFILE_IMAGE_MAX_BYTES,
+  readWaifuProfileImage,
   sniffImageMime,
   writeWaifuProfileImage
 } from "../discord/profileSync.js";
@@ -855,6 +856,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     const saved = await saveWaifuAsset(options.dataRoot, request, reply, waifuId, "banner");
     syncDiscordProfile(waifuId);
     return saved;
+  });
+
+  // Her avatar or banner as saved here (uploaded, or imported from her bot); 404 when she has none.
+  app.get("/api/waifus/:waifuId/assets/:kind", async (request, reply) => {
+    const { waifuId } = parseIdParam(request.params, "waifuId");
+    const kind = z.enum(["pfp", "banner"]).parse((request.params as { kind?: string }).kind);
+    const image = await readWaifuProfileImage(options.dataRoot, waifuId, kind);
+    if (!image) return reply.code(404).send({ error: "NotFound", message: `Waifu ${waifuId} has no ${kind}.` });
+    return reply.header("content-type", image.contentType).header("cache-control", "no-cache").header("etag", `"${image.hash}"`).send(image.bytes);
   });
 
   app.get("/api/waifus/:waifuId/discord-profile", async (request) => {
