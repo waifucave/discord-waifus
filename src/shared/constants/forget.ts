@@ -16,7 +16,7 @@ export const FORGET_LIMITS = [
   "Discord history itself is not deleted (the bot can't delete other people's messages), and whatever she already said in rooms stays there.",
   "Usage-ledger lines and app logs stay (they hold ids only, never text).",
   "Cached guild images, and any DM image no image index recorded, stay until the disk cache expires them (discord.images.diskCacheTtlHours, 168 hours by default).",
-  "Anything outside this host, and the 15-minute web page cache, are not touched.",
+  "Anything outside this host, and the web page cache (life.webFetch.cacheMinutes, 15 minutes by default), are not touched.",
   "Name matching is best effort: a name someone else also has is only listed for review, never removed."
 ] as const;
 

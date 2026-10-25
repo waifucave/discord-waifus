@@ -354,7 +354,7 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   the DM counts without deleting or scrubbing. Not covered: Discord history itself, what she
   already said in rooms, usage-ledger lines and app logs (ids only), cached guild images, and any
   DM image no image index recorded, until the disk cache expires them (168 hours by default), data
-  outside this host, and the 15-minute web page cache.
+  outside this host, and the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by default).
 
 - `GET /api/people/forget-jobs` — `{jobs: [{userId, at, pending: [{part, error?, failures, retried}]}]}`:
   owner forgets with parts still to run (or given up).

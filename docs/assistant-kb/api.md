@@ -189,7 +189,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   retry at the next start, at most three tries, then an owner notice lists them
   (`GET /api/people/forget-jobs`). Not covered: Discord history, what she already said, ids in
   usage and log lines, cached guild images and any DM image no image index recorded (until the
-  168-hour disk cache expires them), the 15-minute web cache. Audited `people.forget`.
+  168-hour disk cache expires them), the web page cache (`life.webFetch.cacheMinutes`). Audited `people.forget`.
 - `GET /api/dms?waifuId&userId&limit` lists DM conversations (never message text);
   `GET /api/dms/:waifuId/:userId` is one DM's state and rate limit;
   `POST /api/dms/:waifuId/:userId/forget {confirm: true, scope: "conversation" | "all", dryRun?}`

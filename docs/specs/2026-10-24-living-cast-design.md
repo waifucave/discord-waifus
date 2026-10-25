@@ -823,7 +823,7 @@ Limits of the scrub, stated to the owner in the dashboard: Discord history itsel
 (the bot can't delete other people's messages), and whatever she already said in rooms stays there.
 Also kept: usage-ledger lines and app logs (ids only, never text), cached guild images, and any DM
 image no image index recorded, until the disk cache expires them (`discord.images.diskCacheTtlHours`, 168
-hours by default), anything outside this host, and the 15-minute web page cache. Name matching is best effort:
+hours by default), anything outside this host, and the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by default). Name matching is best effort:
 shared names are only listed for review.
 
 Unreadable forget records fail closed: an unreadable `forgotten.json` hides every human message's

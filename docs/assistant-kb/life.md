@@ -44,11 +44,12 @@ summary, queue and notes. Forget is a best-effort scrub:
 - Usage-ledger lines and app logs stay (they hold ids only, never text).
 - Cached guild images, and any DM image no image index recorded, stay until the disk cache expires
   them (`discord.images.diskCacheTtlHours`, 168 hours by default).
-- Anything outside this host, and the 15-minute web page cache, are not touched.
+- Anything outside this host, and the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by
+  default), are not touched.
 - Name matching is best effort: a name someone else also has is only listed for review.
 
-A part that fails is retried at the next start, at most three times; then it shows as an owner
-notice (Home, `waifus doctor`).
+A part that fails runs again at the next start, three tries in total (the request's run counts as
+the first); then it is given up and shows as an owner notice (Home, `waifus doctor`).
 
 ## Costs
 

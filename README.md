@@ -304,7 +304,7 @@ reasoning efforts and its price, and nothing above **$10 per million output toke
 | --------------- | ----------------------------------------------- |
 | 🟠 **Anthropic** | Claude Haiku 5.5, Claude Sonnet 5.5            |
 | 🟢 **OpenAI**    | GPT-6 Luna, GPT-6.1 Sol                         |
-| 🔵 **DeepSeek**  | DeepSeek Flash                                  |
+| 🔵 **DeepSeek**  | DeepSeek V4.1 Flash                             |
 | 🟣 **Meta**      | Muse Spark 1.3 (contributor variant)            |
 | ⚪ **OpenRouter** | the same models through one OpenRouter key    |
 
@@ -330,7 +330,7 @@ summary, queue and notes. A DM user can also use `/forget` in their DM with a wa
 - Usage-ledger lines and app logs stay (they hold ids only, never text).
 - Cached guild images, and any DM image no image index recorded, stay until the disk cache expires
   them (`discord.images.diskCacheTtlHours`, 168 hours by default).
-- Anything outside this host, and the 15-minute web page cache, are not touched.
+- Anything outside this host, and the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by default), are not touched.
 - Name matching is best effort: a name someone else also has is only listed for review
   (**Life → Needs review**).
 
