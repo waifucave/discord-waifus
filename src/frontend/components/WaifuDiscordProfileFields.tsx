@@ -39,7 +39,6 @@ export function WaifuDiscordProfileFields({
   const knownServers = servers.data?.servers ?? [];
   const setNicknames = (entries: Array<[string, string]>) =>
     onChange({ nicknames: entries.length ? Object.fromEntries(entries) : undefined });
-  const fallbackName = (draft.displayName || draft.name || "").trim();
   const bioLength = (draft.bio ?? "").length;
 
   const upload = async (kind: "pfp" | "banner", file: File | undefined) => {
@@ -101,11 +100,11 @@ export function WaifuDiscordProfileFields({
             className="input"
             maxLength={DISCORD_USERNAME_MAX}
             value={draft.username ?? ""}
-            placeholder={fallbackName || "her display name"}
+            placeholder="unchanged"
             onChange={(e) => onChange({ username: e.target.value === "" ? undefined : e.target.value })}
           />
           <span className="field-hint">
-            Her bot's account name. Empty = her display name. Discord allows about two changes an hour. Her name above stays what she is called in chat.
+            Her bot's account name. Empty = leave her bot's current name. Discord allows about two changes an hour. Her name above stays what she is called in chat.
             {status.data?.current ? ` Now: ${status.data.current.username}.` : ""}
           </span>
         </div>

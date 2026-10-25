@@ -219,7 +219,7 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .optional()
     .transform((value) => value ?? undefined),
   // Living cast §17: her Discord profile, synced to her own bot. `username` is only her Discord
-  // account name (unset: displayName, then name); her `name` stays the identity in prompts, wake on
+  // account name (unset: left alone on Discord); her `name` stays the identity in prompts, wake on
   // name and the detector. `bio` becomes the application description (About Me). `nicknames`
   // overrides her nickname per server. Explicit `null` on write unsets each.
   username: z

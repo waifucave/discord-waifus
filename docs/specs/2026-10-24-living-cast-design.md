@@ -2178,9 +2178,8 @@ token and the intents stay required).
 
 **Config** (`WaifuConfigSchema`, rules in the zod-free `src/shared/constants/discordProfile.ts`).
 `username`: her bot's Discord username, trimmed, 2–32 characters, no `@`, `#`, `:`, ` ``` `, not
-containing "discord" or "clyde" (case-insensitive), not `everyone`/`here`. Unset: her `displayName`,
-then her `name`, whichever passes the rules (neither: the username is left alone with a
-`username_fallback_invalid` warning). Her `name` stays her identity in prompts, wake on name and the
+containing "discord" or "clyde" (case-insensitive), not `everyone`/`here`. Unset leaves her bot's
+current Discord username alone, so a bot named in the Developer Portal keeps that name. Her `name` stays her identity in prompts, wake on name and the
 detector. `bio` (at most 400 characters, Discord's application description limit; some views show
 only ~190): synced to the application description; unset leaves the description alone.
 `nicknames`: guild id → nickname (1–32 characters), replaced whole on write. Each takes `null` to

@@ -572,7 +572,7 @@ export const DiscordProfileStatusSchema = z.object({
   waifuId: z.string(),
   botId: z.string().nullable(),
   state: z.enum(DISCORD_PROFILE_STATES),
-  /** The username the app wants her bot to have and where it comes from (unset: displayName, then name). */
+  /** The username the app wants her bot to have and where it comes from (unset: left alone). */
   username: z.object({
     value: z.string().nullable(),
     source: z.enum(["username", "displayName", "name"]).nullable()

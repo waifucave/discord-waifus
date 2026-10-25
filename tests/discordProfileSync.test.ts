@@ -147,13 +147,10 @@ describe("profile schema", () => {
     expect("bio" in parse({}).data!).toBe(false);
   });
 
-  it("falls back to her display name, then her name, for the bot username", () => {
+  it("syncs her username only when one is set; unset leaves the bot's name alone", () => {
     expect(desiredUsername({ username: "Ari", displayName: "Aria", name: "aria" })).toMatchObject({ value: "Ari", source: "username" });
-    expect(desiredUsername({ displayName: "Aria", name: "aria" })).toMatchObject({ value: "Aria", source: "displayName" });
-    expect(desiredUsername({ displayName: "Discord Aria", name: "aria" })).toMatchObject({ value: "aria", source: "name" });
-    const none = desiredUsername({ displayName: "A", name: "B" });
-    expect(none.value).toBeNull();
-    expect(none.warning?.code).toBe("username_fallback_invalid");
+    const unset = desiredUsername({ displayName: "Aria", name: "aria" });
+    expect(unset).toEqual({ value: null, source: null });
   });
 
   it("sniffs the image type from its bytes", () => {
@@ -379,7 +376,7 @@ describe("DiscordProfileSync", () => {
     await writeBots(storage, ["aria"]);
     await writeWaifu(storage, { id: "aria", name: "Aria", botId: "aria" });
     const status = await discordProfileStatus({ storage, waifuId: "aria" });
-    expect(status).toMatchObject({ state: "offline", botId: "aria", username: { value: "Aria", source: "displayName" }, bio: null });
+    expect(status).toMatchObject({ state: "offline", botId: "aria", username: { value: null, source: null }, bio: null });
     expect(await discordProfileStatus({ storage, waifuId: "nobody" })).toBeUndefined();
   });
 });

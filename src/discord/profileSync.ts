@@ -144,21 +144,13 @@ export type DesiredUsername = {
   warning?: DiscordProfileWarning;
 };
 
-/** Her `username`, else her displayName, else her name (the first that Discord would accept). */
+/**
+ * Her `username`; unset leaves her bot's Discord username alone (an existing bot keeps the name its
+ * owner gave it in the Developer Portal).
+ */
 export function desiredUsername(waifu: Pick<WaifuConfig, "username" | "displayName" | "name">): DesiredUsername {
   if (waifu.username) return { value: waifu.username.trim(), source: "username" };
-  for (const source of ["displayName", "name"] as const) {
-    const candidate = waifu[source]?.trim();
-    if (candidate && !discordUsernameProblem(candidate)) return { value: candidate, source };
-  }
-  return {
-    value: null,
-    source: null,
-    warning: {
-      code: "username_fallback_invalid",
-      message: "Her display name and name are not valid Discord usernames, so her bot's username is left alone. Set a username."
-    }
-  };
+  return { value: null, source: null };
 }
 
 export type DesiredProfile = {
