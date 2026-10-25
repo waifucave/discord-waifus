@@ -1,7 +1,7 @@
 import type { DiscordBotsFile } from "./schemas/domain.js";
 
 /**
- * A waifu's `botId` references a discord-bots entry by its config id (e.g. "riko"), while
+ * A waifu's `botId` references a discord-bots entry by its config id (e.g. "juno"), while
  * Discord message authorIds and guild-member userIds carry the bot user's snowflake (=== the
  * entry's applicationId). Resolve a bot reference to every id that can stand for that bot, so
  * self-recognition and member lookups work regardless of which id space a caller compares

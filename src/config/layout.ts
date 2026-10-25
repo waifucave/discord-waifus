@@ -236,7 +236,8 @@ async function seedPrebuiltWaifusOnce(dataRoot: string): Promise<void> {
   }
 
   await Promise.all(
-    PREBUILT_WAIFUS.map((waifu) =>
+    // `bio` and `username` are not waifu config fields (yet): they stay out of waifu.json.
+    PREBUILT_WAIFUS.map(({ bio: _bio, username: _username, ...waifu }) =>
       writeJsonIfMissing(
         resolveDataPath(dataRoot, "user", "waifus", waifu.id, "waifu.json"),
         WaifuConfigSchema.parse({
