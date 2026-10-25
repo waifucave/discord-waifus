@@ -12,7 +12,7 @@ Everything configurable on a character: persona, style, model, schedule, DMs.
 - `enabled` — master switch.
 - `model` — `{providerId, modelId, effort?}`, a route from the curated list (`GET /api/models`);
   `effort` must be one the route lists. `null` unsets it.
-- `botId` — which Discord bot entry (Settings → App → Discord bots) she speaks through.
+- `botId` — which Discord bot entry (Settings → App → Discord bots) she posts with (without one she cannot post).
 - `availability` — optional sleep window and busy blocks.
 - `verbosity` — `terse` (default; one short line), `chatty` (one to three lines) or `expressive`
   (up to a short paragraph). One setting drives the prompt wording, the length validator and the

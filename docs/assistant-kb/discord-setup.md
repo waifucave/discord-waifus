@@ -12,12 +12,15 @@ five-waifu cast you create six applications total (1 House bot + 5 waifus).
 ## Per application (Discord Developer Portal)
 
 1. https://discord.com/developers/applications → New Application (name it for the character).
-2. Bot tab → enable **Message Content Intent** (required) and **Server Members Intent**.
+2. Bot tab → privileged intents. **House bot only:** enable **Message Content Intent** (required) and, if you turn on
+   `discord.guildMembersIntent`, **Server Members Intent**. A waifu bot needs no privileged intent.
 3. Reset Token → copy it. Tokens are shown once by Discord and stored write-only here.
 4. Copy the **Application ID** as well.
-5. Invite: OAuth2 → URL Generator → scope `bot`, permissions: View Channels, Send Messages,
-   Read Message History, Add Reactions, Use External Emojis. Open the generated URL and add it
-   to your server.
+5. Invite: OAuth2 → URL Generator. House bot: scopes `bot` + `applications.commands`, permissions View Channels and
+   Read Message History. Waifu bot: scope `bot`, permissions View Channels, Send Messages, Send Messages in Threads,
+   Read Message History, Add Reactions, Attach Files, Use External Emojis, Embed Links. Open the generated URL and add
+   it to your server. The dashboard's guide (Settings → App → Discord bots) builds this link from the Application ID
+   you paste into it.
 
 ## In the app
 

@@ -266,10 +266,10 @@ waifus update --github
 
 You'll create **one Discord application for the House bot** (it reads the rooms and hosts the owner's
 `/wake` and `/print` commands) and, if you like, **one application per waifu** so each has her own
-name and avatar. A waifu without her own bot speaks through the House bot. Then, in the dashboard:
+name and avatar. A waifu needs her own bot to post: the House bot only reads and never speaks for her. Then, in the dashboard:
 
 1. 🔑 **Settings → Providers**: add at least one model provider key.
-2. 🤖 **Settings → App → Discord bots**: add the House bot's Application ID and token (and each waifu bot's).
+2. 🤖 **Settings → App → Discord bots**: pick a bot and follow the interactive guide, pasting its Application ID and token right into the step that produces them (the House bot first, then each waifu's).
 3. 🎭 **Cast**: create each waifu — persona, model and effort, her bot, schedule, budget and DMs.
 4. 📨 Invite the bots to your server, then in **Rooms** pick the waifus for each channel.
 5. 👀 **Life** shows what each waifu is doing; **Home** shows who is awake and anything that needs you.
@@ -279,18 +279,16 @@ this for you.
 
 ### Required gateway intents
 
-Enable these for each bot in the Discord Developer Portal:
+Only the **House bot** reads the rooms, so only its application needs privileged intents in the Developer Portal:
 
 ```text
-GUILDS
-GUILD_MESSAGES
-GUILD_MESSAGE_REACTIONS
-MESSAGE_CONTENT
+MESSAGE CONTENT INTENT   (required)
+SERVER MEMBERS INTENT    (only if you turn on discord.guildMembersIntent)
 ```
 
-> ⚠️ **`MESSAGE_CONTENT`** must be enabled in the Developer Portal so the waifus can read full channel context.
-
-DMs need no privileged intent: turn on **Cast → Direct messages** for a waifu with her own bot.
+The non-privileged intents (Guilds, Guild Messages, Guild Message Reactions, Guild Expressions) are requested
+automatically. A **waifu bot** only posts, reacts and attaches files, so it needs no privileged intent. DMs need
+none either: turn on **Cast → Direct messages** for a waifu with her own bot.
 
 ---
 

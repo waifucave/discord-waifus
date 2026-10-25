@@ -40,7 +40,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
   const notices = runtime.data?.models?.warnings;
 
   const talking = cast.filter((w) => w.enabled && w.model).length;
-  // A waifu without her own bot speaks through the House bot; a link to a missing bot needs setup.
+  // A waifu without her own bot cannot post (the House bot only reads); a link to a missing bot needs setup.
   const unconfigured = cast.filter((w) => !w.model || (w.botId !== undefined && !botIds.has(w.botId))).length;
 
   return (
@@ -79,7 +79,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                 <div>
                   <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
                   <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
-                    {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · own bot" : " · via the House bot"}
+                    {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · own bot" : " · no bot yet"}
                   </div>
                   {previous && (
                     <div className="t-micro t-mute" style={{ marginTop: 4, textTransform: "none", letterSpacing: "0.04em" }}>
@@ -291,14 +291,14 @@ function CharacterEditor({
             <div className="fcell">
               <label className="field-label">Discord bot</label>
               <select className="select" value={draft.botId ?? ""} onChange={(e) => set({ botId: e.target.value || undefined })}>
-                <option value="">— none: she speaks through the House bot —</option>
+                <option value="">— none: she cannot post until she has a bot —</option>
                 {(bots.data?.waifus ?? []).map((bot) => (
                   <option key={bot.id} value={bot.id}>
                     {bot.displayName} ({bot.id})
                   </option>
                 ))}
               </select>
-              <span className="field-hint">Manage bot applications in Settings → App.</span>
+              <span className="field-hint">Set up or link her bot in Settings → App (Discord bots).</span>
             </div>
           </div>
         )}

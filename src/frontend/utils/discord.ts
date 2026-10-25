@@ -1,68 +1,108 @@
 // Discord permission and intent helpers.
 // Numeric values verified against https://docs.discord.com/developers/topics/permissions
-// and https://docs.discord.com/developers/events/gateway (intents).
+// and https://docs.discord.com/developers/events/gateway (intents), and pinned to discord.js'
+// PermissionFlagsBits by tests/frontendDiscordBots.test.ts.
+//
+// What each bot kind really does in 3.0 (src/discord/client.ts, `discordClientOptions`):
+// - The House bot is the one that READS: it logs in with Guilds, Guild Messages, Guild Message
+//   Reactions, Guild Expressions and the privileged Message Content intent (plus the privileged
+//   Server Members intent only when `discord.guildMembersIntent` is on). It fetches message
+//   history over REST, runs the owner slash commands and joins threads. It never posts.
+// - A waifu bot only WRITES: it posts (including in threads), attaches files, reacts and shows
+//   typing. It logs in with Guilds alone (plus the two non-privileged Direct Message intents when
+//   she takes DMs). It needs no privileged intent.
 
 const PERMISSIONS = {
-  ADMINISTRATOR: 8,
-  VIEW_CHANNEL: 1024,
-  SEND_MESSAGES: 2048,
-  READ_MESSAGE_HISTORY: 65536,
-  ADD_REACTIONS: 64,
-  USE_EXTERNAL_EMOJIS: 262144,
-  EMBED_LINKS: 16384,
-  ATTACH_FILES: 32768,
-  USE_APPLICATION_COMMANDS: 2147483648
+  VIEW_CHANNEL: 1n << 10n,
+  SEND_MESSAGES: 1n << 11n,
+  READ_MESSAGE_HISTORY: 1n << 16n,
+  ADD_REACTIONS: 1n << 6n,
+  USE_EXTERNAL_EMOJIS: 1n << 18n,
+  EMBED_LINKS: 1n << 14n,
+  ATTACH_FILES: 1n << 15n,
+  SEND_MESSAGES_IN_THREADS: 1n << 38n
 } as const;
 
 export type BotKind = "house" | "waifu";
 
-function permissionBitsFor(kind: BotKind): number {
-  if (kind === "house") {
-    return Number(BigInt(PERMISSIONS.ADMINISTRATOR) | BigInt(PERMISSIONS.USE_APPLICATION_COMMANDS));
-  }
-  const base =
-    PERMISSIONS.VIEW_CHANNEL |
-    PERMISSIONS.SEND_MESSAGES |
-    PERMISSIONS.READ_MESSAGE_HISTORY |
-    PERMISSIONS.ADD_REACTIONS |
-    PERMISSIONS.USE_EXTERNAL_EMOJIS |
-    PERMISSIONS.EMBED_LINKS |
-    PERMISSIONS.ATTACH_FILES;
-  return base;
+type PermissionName = keyof typeof PERMISSIONS;
+
+const PERMISSIONS_BY_KIND: Record<BotKind, Array<{ flag: PermissionName; label: string }>> = {
+  house: [
+    { flag: "VIEW_CHANNEL", label: "View Channels" },
+    { flag: "READ_MESSAGE_HISTORY", label: "Read Message History" }
+  ],
+  waifu: [
+    { flag: "VIEW_CHANNEL", label: "View Channels" },
+    { flag: "SEND_MESSAGES", label: "Send Messages" },
+    { flag: "SEND_MESSAGES_IN_THREADS", label: "Send Messages in Threads" },
+    { flag: "READ_MESSAGE_HISTORY", label: "Read Message History" },
+    { flag: "ADD_REACTIONS", label: "Add Reactions" },
+    { flag: "ATTACH_FILES", label: "Attach Files" },
+    { flag: "USE_EXTERNAL_EMOJIS", label: "Use External Emojis" },
+    { flag: "EMBED_LINKS", label: "Embed Links" }
+  ]
+};
+
+/** The OAuth2 `permissions` integer. BigInt: Send Messages in Threads is bit 38. */
+export function permissionBitsFor(kind: BotKind): string {
+  return PERMISSIONS_BY_KIND[kind].reduce((bits, entry) => bits | PERMISSIONS[entry.flag], 0n).toString();
 }
 
 export function permissionListFor(kind: BotKind): string[] {
-  if (kind === "house") {
-    return ["Administrator", "Use Application Commands (slash)"];
-  }
-  const names = [
-    "View Channel",
-    "Send Messages",
-    "Read Message History",
-    "Add Reactions",
-    "Use External Emojis",
-    "Embed Links",
-    "Attach Files"
-  ];
-  return names;
+  return PERMISSIONS_BY_KIND[kind].map((entry) => entry.label);
 }
 
-export function intentListFor(_kind: BotKind): Array<{ name: string; privileged: boolean; required: boolean; note?: string }> {
+/** Flag names and bit values, exported for the test that pins them to discord.js. */
+export function permissionFlagsFor(kind: BotKind): Array<{ flag: string; bit: bigint }> {
+  return PERMISSIONS_BY_KIND[kind].map((entry) => ({ flag: entry.flag, bit: PERMISSIONS[entry.flag] }));
+}
+
+export type IntentInfo = {
+  /** What the Developer Portal calls it (a toggle), or the gateway flag for automatic ones. */
+  name: string;
+  /** Needs the Developer Portal toggle (privileged intents only). */
+  portalToggle: boolean;
+  privileged: boolean;
+  required: boolean;
+  note?: string;
+};
+
+/**
+ * The intents a bot of this kind uses. `portalToggle` entries are the ones the owner has to
+ * switch on in the Developer Portal; the rest are requested by the app at login and need nothing.
+ */
+export function intentListFor(kind: BotKind): IntentInfo[] {
+  if (kind === "house") {
+    return [
+      {
+        name: "MESSAGE CONTENT INTENT",
+        portalToggle: true,
+        privileged: true,
+        required: true,
+        note: "The House bot reads every message in the rooms and hands it to the waifus. Without this, Discord sends it empty messages and nobody replies."
+      },
+      {
+        name: "SERVER MEMBERS INTENT",
+        portalToggle: true,
+        privileged: true,
+        required: false,
+        note: "Only if you turn on discord.guildMembersIntent (Settings) for full member lists and live join/leave events. Otherwise leave it off: names are learned from messages. If the app asks for it and the portal toggle is off, Discord refuses the login and the House bot reconnects without it, with a warning."
+      },
+      { name: "GUILDS", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
+      { name: "GUILD_MESSAGES", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
+      { name: "GUILD_MESSAGE_REACTIONS", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
+      { name: "GUILD_EXPRESSIONS", portalToggle: false, privileged: false, required: true, note: "Requested automatically (server emoji and stickers)." }
+    ];
+  }
   return [
-    { name: "GUILDS", privileged: false, required: true },
-    { name: "GUILD_MESSAGES", privileged: false, required: true },
-    { name: "GUILD_MESSAGE_REACTIONS", privileged: false, required: true },
+    { name: "GUILDS", portalToggle: false, privileged: false, required: true, note: "Requested automatically." },
     {
-      name: "MESSAGE_CONTENT",
-      privileged: true,
-      required: true,
-      note: "Without this, the bot receives empty message content except for DMs, mentions, and message-context targets."
-    },
-    {
-      name: "GUILD_MEMBERS",
-      privileged: true,
+      name: "DIRECT_MESSAGES + DIRECT_MESSAGE_REACTIONS",
+      portalToggle: false,
+      privileged: false,
       required: false,
-      note: "Only required if you want full member list refreshes for mention resolution. Member cache also works opportunistically from recent messages."
+      note: "Requested automatically, only when she takes DMs (her dm.allowDms setting). Not privileged: there is no portal toggle."
     }
   ];
 }
@@ -71,13 +111,13 @@ export function intentListFor(_kind: BotKind): Array<{ name: string; privileged:
  * Build an OAuth2 invite URL.
  * https://docs.discord.com/developers/topics/oauth2
  * - bot scope is required for the bot to join.
- * - applications.commands is required to register slash commands.
+ * - applications.commands is required to register slash commands (the House bot's /wake, /print).
  */
 export function buildInviteUrl(applicationId: string, kind: BotKind, guildId?: string): string {
   const params = new URLSearchParams();
-  params.set("client_id", applicationId);
+  params.set("client_id", applicationId.trim());
   params.set("scope", kind === "house" ? "bot applications.commands" : "bot");
-  params.set("permissions", String(permissionBitsFor(kind)));
+  params.set("permissions", permissionBitsFor(kind));
   if (guildId) {
     params.set("guild_id", guildId);
     params.set("disable_guild_select", "true");

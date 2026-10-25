@@ -116,7 +116,7 @@ instead of retrying. Top up the account; no restart is needed.
 - forget scrubs still queued for a waifu (they run when her life next starts or at nightly
   maintenance);
 - a waifu linked to a Discord bot that is missing, turned off or has no token (her sends fail;
-  a waifu with no bot linked speaks through the House bot instead).
+  a waifu with no bot linked cannot post at all: the House bot never speaks for her).
 
 Review lines are not owner notices: a waifu's review lines (names someone else also has, which a
 forget only lists) show as a "review" chip on her Life tile and as a count on Home. Life screen →
