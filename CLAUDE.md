@@ -55,7 +55,8 @@ lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume,
 an author of the burst is typing there (6 s per typing event, from the House bot's and DM bots' raw
 `TYPING_START` packets), capped at 10 s / 60 s from the first message; a human message's
 mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu,
-previewing the author's newest message), watches and waifu-authored messages route at once,
+previewing the author's newest message), room watches and waifu-authored messages route at once,
+a DM's watch matches ride on its `dm` wake after the DM hold (one `dm, watch` line), and
 everything else goes to the addressee detector in `detector/`) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
 per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**

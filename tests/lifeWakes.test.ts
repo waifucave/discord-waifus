@@ -5,8 +5,8 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
-import { renderNotifications } from "../src/life/notifications.js";
-import { newWakeId } from "../src/life/wakeQueue.js";
+import { morningBatch, renderNotifications } from "../src/life/notifications.js";
+import { newWakeId, withDeferred } from "../src/life/wakeQueue.js";
 import { updateDmLimit } from "../src/orchestration/dm/dmStore.js";
 import { DetectorHistoryFileSchema } from "../src/shared/schemas/detector.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
@@ -154,6 +154,58 @@ describe("wake reasons (§4.1, §4.2)", () => {
     expect(wake).toMatchObject({ reason: "watch", watchId: "w1", matched: "brownie", note: "Mina wanted brownie tips", fromName: "Kevin" });
     await say(w, "my brownie came out great", { authorId: ELLA_BOT, authorName: "Ella", bot: true });
     expect((await queued(w, "ella")).immediate).toHaveLength(1);
+  });
+
+  it("a watch matching a DM rides on its DM wake: one line, one wake (§16.5)", async () => {
+    const w = await world();
+    const hello = w.discord.post(dmOf("ella"), "hi!");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: hello.id, createdAt: hello.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [] }));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "ask how his exam went", when: [{ from: "Kevin", words: ["exam"] }] }]));
+    const message = w.discord.post(dmOf("ella"), "the exam went great btw");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+    // Nothing at once: the watch waits for the DM's hold.
+    await w.cast.settle();
+    expect((await queued(w, "ella")).immediate).toEqual([]);
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    const wakes = (await queued(w, "ella")).immediate;
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ reason: "dm", reasons: ["dm", "watch"], watchId: "w1", matched: "exam", note: "ask how his exam went", messageId: message.id });
+    const view = { handle: () => "dm/kevin", unread: () => undefined, timeZone: "UTC" };
+    expect(renderNotifications({ wakes }, view)).toContain('- dm, watch · dm/kevin · "exam" · from Kevin · "the exam went great btw" · your note: "ask how his exam went"');
+    // A once-watch is gone after its match.
+    expect(JSON.parse((await (await import("./lifeFixtures.js")).homeOf(w, "ella").read("watches.json")) ?? "[]")).toEqual([]);
+  });
+
+  it("deferred while she sleeps, a DM wake with a watch keeps its note for the morning batch", async () => {
+    const at = "2026-10-24T14:00:00.000Z";
+    const wake = { id: "w1", reason: "dm" as const, reasons: ["dm" as const, "watch" as const], watchId: "w3", matched: "exam", note: "his exam", placeKey: "dm_k_ella", fromUserId: KEVIN, fromName: "Kevin", at };
+    const queue = withDeferred({ immediate: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as never, wake, "sleep", new Date(at));
+    expect(queue.deferred.items).toEqual([wake]);
+    expect(queue.deferred.places["dm_k_ella"]).toMatchObject({ dms: 1 });
+    const view = { handle: () => "dm/kevin", unread: () => undefined, timeZone: "UTC" };
+    const lines = morningBatch({ reason: "sleep", since: new Date(at), until: new Date(at), places: [{ placeKey: "dm_k_ella", kind: "dm", name: "Kevin", mentions: 0, messages: 1 }], items: queue.deferred.items }, view);
+    expect(lines).toContain('  · watch matched · dm/kevin · "exam" · from Kevin · your note: "his exam"');
+  });
+
+  it("a DM dropped by its rate limit still brings her watch match", async () => {
+    const w = await world({ waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "", sleepNotice: "" } }] });
+    const hello = w.discord.post(dmOf("ella"), "hi!");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: hello.id, createdAt: hello.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [] }));
+    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "his exam", when: [{ from: "Kevin", words: ["exam"] }] }]));
+    const at = w.clock.now().toISOString();
+    await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, replyTimestamps: [at] }));
+    const message = w.discord.post(dmOf("ella"), "exam done!");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    expect((await queued(w, "ella")).immediate).toMatchObject([{ reason: "watch", watchId: "w1", note: "his exam", matched: "exam" }]);
   });
 
   it("a DM wakes her 2.5 s after the last message (timer reset), capped at 60 s", async () => {

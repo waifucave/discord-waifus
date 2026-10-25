@@ -15,7 +15,8 @@
 // you think about…" is one wake previewing the question. Watches and waifu-authored messages are
 // routed at once. Messages by other waifus only wake through mention, role, reply-to-her and watch;
 // her own never wake her. DMs wake her `dmMs` after the user's last message, held the same way while
-// they type (capped at `dmMaxWaitMs`).
+// they type (capped at `dmMaxWaitMs`); a watch matching a DM message rides on that DM wake (one wake
+// per message).
 // Edits wake nobody except a newly added mention of her in a human message under 2 minutes old
 // (once); a deleted message she had read becomes a pending notice (§10.3).
 
@@ -46,7 +47,7 @@ import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
 import type { ForgottenPerson } from "../orchestration/dm/forgotten.js";
 import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
-import { fireWatches } from "./watches.js";
+import { fireWatches, type FiredWatch } from "./watches.js";
 import { homeStoreFor } from "./home/index.js";
 import { TypingHolds, type HoldTiming } from "./intakeHold.js";
 import { newWakeId } from "./wakeQueue.js";
@@ -658,28 +659,76 @@ export class Intake {
   private async fireDm(waifuId: string, userId: string, burst: DmBurst): Promise<void> {
     const deps = this.deps;
     const conversation: ConversationRef = { kind: "dm", waifuId, userId };
+    const placeKey = conversationKey(conversation);
     const newestId = [...burst.messageIds].sort(compareIds).pop()!;
     const message = await this.findMessage(conversation, newestId);
     // Unreadable forget records fail closed here too: the DM's preview and name are hidden (F11).
     const records = await this.forgetRecords();
     const removed = records.unreadable || (message ? isRemovedMessage(message, records.forgotten) : false);
-    const wake: Wake = {
-      id: newWakeId(),
-      reason: "dm",
-      placeKey: conversationKey(conversation),
-      fromUserId: userId,
-      fromName: removed ? "someone" : (burst.userName ?? message?.authorName ?? "someone"),
-      messageId: newestId,
-      ...(message ? { preview: messagePreview(message, EMPTY_GUILD_DIRECTORY, deps.timeZone, { removed }) } : {}),
-      ...(burst.messageIds.length > 1 ? { count: burst.messageIds.length } : {}),
-      at: deps.now().toISOString()
-    };
     try {
-      await this.o.router.route(waifuId, wake, { dmUserId: userId });
-      this.mark(conversationKey(conversation), burst.messageIds);
+      // Her watches on these messages ride on the DM wake (§16.5, one wake per message): one line
+      // `dm, watch · …` and one turn, matched after the DM's own hold, not at once.
+      const fired = await this.dmWatches(waifuId, conversation, burst, records);
+      const [first, ...more] = fired;
+      const wake: Wake = {
+        id: newWakeId(),
+        reason: "dm",
+        ...(first ? { reasons: ["dm", "watch"] as WakeReason[], watchId: first.watch.id, matched: first.matched, note: first.watch.note } : {}),
+        placeKey,
+        fromUserId: userId,
+        fromName: removed ? "someone" : (burst.userName ?? message?.authorName ?? "someone"),
+        messageId: newestId,
+        ...(message ? { preview: messagePreview(message, EMPTY_GUILD_DIRECTORY, deps.timeZone, { removed }) } : {}),
+        ...(burst.messageIds.length > 1 ? { count: burst.messageIds.length } : {}),
+        at: deps.now().toISOString()
+      };
+      const outcome = await this.o.router.route(waifuId, wake, { dmUserId: userId });
+      // A watch is her own intention: when the DM itself is dropped (its rate limit), the match still
+      // reaches her as a plain watch wake. Further watches matching the same burst join its line.
+      const watchWake = (entry: FiredWatch): Wake => ({
+        id: newWakeId(),
+        reason: "watch",
+        watchId: entry.watch.id,
+        matched: entry.matched,
+        note: entry.watch.note,
+        placeKey,
+        fromUserId: userId,
+        fromName: wake.fromName!,
+        messageId: newestId,
+        at: wake.at
+      });
+      for (const entry of outcome === "dropped" ? fired : more) await this.o.router.route(waifuId, watchWake(entry), {});
+      this.mark(placeKey, burst.messageIds);
     } finally {
-      this.release(conversationKey(conversation), burst.messageIds, "routing");
+      this.release(placeKey, burst.messageIds, "routing");
     }
+  }
+
+  /** Her watches that fire for a DM burst's messages (once-watches removed, fires recorded). */
+  private async dmWatches(
+    waifuId: string,
+    conversation: ConversationRef,
+    burst: DmBurst,
+    records: { forgotten: ForgottenPerson[]; unreadable: boolean }
+  ): Promise<FiredWatch[]> {
+    const deps = this.deps;
+    const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
+    if (!waifu) return [];
+    const placeKey = conversationKey(conversation);
+    const now = deps.now();
+    const fired: FiredWatch[] = [];
+    for (const id of [...burst.messageIds].sort(compareIds)) {
+      const raw = await this.findMessage(conversation, id);
+      if (!raw) continue;
+      const removed = records.unreadable || isRemovedMessage(raw, records.forgotten);
+      const text = removed ? "(removed)" : (renderDiscordMessage(raw, EMPTY_GUILD_DIRECTORY, deps.timeZone)?.body ?? "");
+      const hits = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own: false, createdAt: raw.createdAt }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }).catch((error: unknown) => {
+        deps.logger.warn("Life DM watch check failed", { waifuId, message: error instanceof Error ? error.message : String(error) });
+        return [] as FiredWatch[];
+      });
+      for (const hit of hits) if (!fired.some((entry) => entry.watch.id === hit.watch.id)) fired.push(hit);
+    }
+    return fired;
   }
 
   /** Fires every pending DM wake now (tests; the boot catch-up after a long pause). */

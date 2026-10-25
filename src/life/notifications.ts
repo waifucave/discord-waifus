@@ -181,7 +181,8 @@ export function morningBatch(
   for (const item of o.items) {
     if (item.reason === "reminder") {
       lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
-    } else if (item.reason === "watch") {
+    } else if (item.reason === "watch" || item.reasons?.includes("watch")) {
+      // A DM wake that carried a watch match (§16.5) shows the match here; its DM counts above.
       const parts = ["watch matched"];
       if (item.placeKey) parts.push(view.handle(item.placeKey));
       if (item.matched) parts.push(quote(item.matched));

@@ -86,8 +86,8 @@ are archived by migration (§11.2).
 | `name` | Her name, display name or server nickname (each at least 3 characters) appears as a whole word in a human message | Direct. Off when `waifu.wakeOnName` is false (for names that are common words). Never applied to messages written by waifus. |
 | `role` | A role her bot member holds is mentioned | Direct. |
 | `everyone` | `@everyone` / `@here` in a channel where she is cast | Direct. |
-| `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. |
-| `dm` | A DM to her bot, `discord.debounce.dmMs` (2.5 s) after the user's last message | Timer resets on each message and is held while they type (§4.2); capped at `discord.debounce.dmMaxWaitMs` (default 60 s). |
+| `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. In a DM it rides on the `dm` wake (§16.5). |
+| `dm` | A DM to her bot, `discord.debounce.dmMs` (2.5 s) after the user's last message | Timer resets on each message and is held while they type (§4.2); capped at `discord.debounce.dmMaxWaitMs` (default 60 s). A watch matching the DM joins this wake (`dm, watch`). |
 | `detector` | The addressee detector chose her, chose "anyone" and the draw picked her, or chose "all" | §4.3. An `all` wake carries `forAll` and reads "for all of you" (§4.7). |
 | `reminder` | One of her `schedule_wake` entries came due | Carries her own note. |
 | `morning` | Her sleep window ended with deferred wakes | One batched summary (§4.7). |
@@ -137,9 +137,10 @@ must not feel slow):
   that wake previews the newest message in the burst by the person who woke her, so "@Lumi"
   followed by "what do you think about…" is one notification previewing the question (its ref is
   the question's). Several shared wakes (`everyone`, a shared `role`) are staggered as in §4.1.
-- **Not held**: watches (they fire per their own rules, at once), messages by waifus (routed at
+- **Not held**: room watches (they fire per their own rules, at once), messages by waifus (routed at
   once), edits that add a mention (§10.3), and the boot or resume catch-up (§5.7: a room's caught-up
-  burst fires right after its messages are taken; nobody is typing an old message).
+  burst fires right after its messages are taken; nobody is typing an old message). A watch
+  matching a DM message waits for the DM's hold and rides on its `dm` wake (§16.5).
 
 Why these values: Discord's own typing indicator lasts about 10 s and its client repeats the
 typing event while someone keeps typing (and again on the first keystroke after a send, which is
@@ -293,7 +294,8 @@ One text block in a user turn, followed by the time line (§5.4):
   buffer when the conversation is trusted; a message found in neither gets no ref), so refs stay
   in message order; a send likewise gives the messages before it their refs before its own.
 - Labels: each reason has one label (`mention`, `your name`, `maybe for you` for `detector`, …);
-  a `detector` wake with `forAll` reads `for all of you`.
+  a `detector` wake with `forAll` reads `for all of you`. A DM wake that carries a watch match
+  reads `dm, watch · dm/<handle> · "<matched>" · from … · your note: "…"`.
 - `morning`:
 
 ```
@@ -1823,7 +1825,12 @@ unchanged; an unknown handle returns `error: unknown place; see ~/places.md`. `W
   matched earlier is already gone and never times out. Sleep defers it to `morning`.
 - **Matching**: `once` (default true) removes the watch at its first match; otherwise it fires at
   most once per 10 minutes and `life.maxWatchFiresPerDay` (24) times a day until its timeout. One
-  wake per message (D-c) is unchanged.
+  wake per message (D-c) is unchanged. In a room a match is routed at once. **In a DM** (owner
+  request 2026-10-25) her watches are matched when the DM's hold fires (§4.2) and ride on its `dm`
+  wake: one wake, one line (`dm, watch · dm/<handle> · … · your note: …`), one turn. Further watches
+  matching the same DM burst are queued with it and join that line; when the DM wake is dropped (its
+  rate limit) the match still reaches her as a plain `watch` wake. Deferred for sleep, the DM wake
+  keeps the note and the morning batch lists the match.
 - **Editing**: like `schedule.json`: change, delete or add entries; checked on every write (fields,
   `timeout` in the future and ≤ 7 days ahead, names resolvable, ≤ 10 watches, ids unique).
 
