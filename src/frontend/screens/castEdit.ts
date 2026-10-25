@@ -1,8 +1,12 @@
 // The Cast editor's save (overhaul spec §11.0 "writes send only what changed"): the top-level keys
-// whose value differs from the stored waifu, plus her revision. `model` and `botId` send `null` to
-// unset (a missing field keeps the stored value).
+// whose value differs from the stored waifu, plus her revision. `model`, `botId` and the Discord
+// profile fields (`username`, `bio`, `nicknames`, Living cast §17) send `null` to unset (a missing
+// field keeps the stored value).
 
 import type { UpdateWaifuBody, WaifuConfig } from "../api/types";
+import { DISCORD_BIO_MAX, discordNicknameProblem, discordUsernameProblem } from "../../shared/constants/discordProfile";
+
+const NULL_UNSETS = new Set<string>(["model", "botId", "username", "bio", "nicknames"]);
 
 const EDITABLE = [
   "name",
@@ -11,6 +15,9 @@ const EDITABLE = [
   "enabled",
   "model",
   "botId",
+  "username",
+  "bio",
+  "nicknames",
   "availability",
   "verbosity",
   "customInstructions",
@@ -30,7 +37,7 @@ export function waifuPatch(remote: WaifuConfig, draft: Partial<WaifuConfig>): Up
     if (!(key in draft)) continue;
     const next = draft[key];
     if (same(next, remote[key])) continue;
-    body[key] = (key === "model" || key === "botId") && next === undefined ? null : next;
+    body[key] = NULL_UNSETS.has(key) && next === undefined ? null : next;
   }
   return body as UpdateWaifuBody;
 }
@@ -60,5 +67,15 @@ export function waifuProblems(draft: Partial<WaifuConfig>): string[] {
   if (limit && (!Number.isInteger(limit.windowMinutes) || limit.windowMinutes < 1 || limit.windowMinutes > 10080)) problems.push("DM window: 1 to 10080 minutes.");
   if ((draft.dm?.limitNotice ?? "").length > 300) problems.push("The limit notice is at most 300 characters.");
   if ((draft.dm?.sleepNotice ?? "").length > 300) problems.push("The sleep notice is at most 300 characters.");
+  if (draft.username !== undefined) {
+    const problem = discordUsernameProblem(draft.username);
+    if (problem) problems.push(problem);
+  }
+  if ((draft.bio ?? "").length > DISCORD_BIO_MAX) problems.push(`Her bio is at most ${DISCORD_BIO_MAX} characters.`);
+  for (const [guildId, nick] of Object.entries(draft.nicknames ?? {})) {
+    if (!/^\d{17,20}$/u.test(guildId)) problems.push("A nickname's server id is a 17–20 digit Discord id.");
+    const problem = discordNicknameProblem(nick);
+    if (problem) problems.push(problem);
+  }
   return [...new Set(problems)];
 }

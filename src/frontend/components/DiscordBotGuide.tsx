@@ -90,7 +90,7 @@ export function DiscordBotGuide({
                 Discord Developer Portal <ExternalLinkIcon className="icon" style={iconSm} />
               </ContextExternalLink>{" "}
               and click <strong>New Application</strong>. Name it <code>{selected.suggestedName}</code>
-              {isWaifu ? ", her display name, so the bot posts under the right name" : ""}.
+              {isWaifu ? ", her display name (the app keeps the bot's username in line with her profile)" : ""}.
               <div className="field-hint" style={{ marginTop: 4 }}>
                 The name can be anything you like. For a test copy of the bot, add a suffix such as{" "}
                 <code>{selected.suggestedName} Test</code>.
@@ -101,18 +101,27 @@ export function DiscordBotGuide({
 
         <Step
           num={2}
-          title="Set name, avatar, and (optional) banner"
+          title={isWaifu ? "Name, avatar, banner and bio (optional)" : "Set name and avatar (optional)"}
           body={
-            <>
-              On the <strong>General Information</strong> page set:
-              <ul style={ul}>
-                <li><strong>NAME</strong> — what Discord shows next to the bot's messages.</li>
-                <li><strong>APP ICON</strong> — square image. Becomes the bot's avatar.</li>
-                <li><strong>DESCRIPTION</strong> — shown on the bot's profile.</li>
-              </ul>
-              Discord hosts each bot's avatar and banner; set them in the Discord Developer Portal.
-              The uploads here only change the local dashboard preview.
-            </>
+            isWaifu ? (
+              <>
+                Nothing to do here: <strong>the app sets these for you from her profile</strong>. Once her bot
+                connects, it gets her username (or her display name), the avatar and banner you upload in
+                Cast → her page → Discord profile, her bio as the bot's description, and any per-server
+                nicknames. Changes there are applied again automatically.
+                <div className="field-hint" style={{ marginTop: 4 }}>
+                  Discord allows only about two username changes an hour; the app waits and retries on its
+                  own. You can still set them in the Developer Portal, but the app replaces them with her
+                  profile the next time it syncs.
+                </div>
+              </>
+            ) : (
+              <>
+                On the <strong>General Information</strong> page you can set a <strong>NAME</strong>,{" "}
+                <strong>APP ICON</strong> (the bot's avatar) and <strong>DESCRIPTION</strong>. The House bot
+                never posts, so this is only how it looks in the member list.
+              </>
+            )
           }
         />
 

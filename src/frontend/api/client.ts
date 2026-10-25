@@ -15,6 +15,7 @@ import type {
   ForgetJobsResponse,
   CreateWaifuBody,
   DetectorConfigResponse,
+  DiscordProfileStatus,
   DetectorHistoryEntry,
   DetectorModelsResponse,
   HelpTopic,
@@ -228,7 +229,10 @@ async function sendRequest<T>(
   let headers: Record<string, string> = { ...init?.headers };
   if (idempotencyKey) headers[IDEMPOTENCY_HEADER] = idempotencyKey;
   let body: BodyInit | undefined;
-  if (init?.body !== undefined) {
+  if (init?.body instanceof Uint8Array) {
+    // Raw bytes (an image upload): the caller sets the content type.
+    body = init.body as unknown as BodyInit;
+  } else if (init?.body !== undefined) {
     headers["content-type"] = "application/json";
     body = JSON.stringify(init.body);
   }
@@ -445,6 +449,17 @@ export const api = {
     request<WaifuConfig>("POST", "/api/waifus", { body }),
   updateWaifu: (id: string, body: UpdateWaifuBody) =>
     request<WaifuConfig>("PUT", `/api/waifus/${encodeURIComponent(id)}`, { body }),
+  /** Her bot's Discord profile sync status (Living cast §17). */
+  discordProfile: (id: string, signal?: AbortSignal) =>
+    request<DiscordProfileStatus>("GET", `/api/waifus/${encodeURIComponent(id)}/discord-profile`, { signal }),
+  syncDiscordProfile: (id: string) =>
+    request<DiscordProfileStatus>("POST", `/api/waifus/${encodeURIComponent(id)}/discord-profile/sync`),
+  /** Her avatar (`pfp`) or banner: PNG, JPEG, WebP or GIF, at most 8 MB. */
+  uploadWaifuImage: async (id: string, kind: "pfp" | "banner", file: File) =>
+    request<{ ok: true; kind: string; contentType: string; bytes: number }>("POST", `/api/waifus/${encodeURIComponent(id)}/assets/${kind}`, {
+      body: new Uint8Array(await file.arrayBuffer()),
+      headers: { "content-type": file.type }
+    }),
   deleteWaifu: (id: string, revision: number) =>
     request<void>("DELETE", `/api/waifus/${encodeURIComponent(id)}`, {
       body: { revision }

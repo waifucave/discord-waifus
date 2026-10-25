@@ -193,6 +193,8 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
     "transactional",
     "waifu.asset.banner.write"
   ),
+  safe("/api/waifus/:waifuId/discord-profile"),
+  mutation("POST", "/api/waifus/:waifuId/discord-profile/sync", "reconciled", "waifu.discord_profile.sync"),
   safe("/api/servers"),
   safe("/api/servers/:guildId"),
   mutation("PUT", "/api/servers/:guildId", "transactional", "server.update"),

@@ -82,6 +82,12 @@ import {
   preconditionRequired
 } from "./errors.js";
 import { mergeConfiguredBotsIntoMembers } from "../discord/memberCache.js";
+import {
+  discordProfileStatus,
+  PROFILE_IMAGE_EXT_BY_MIME,
+  PROFILE_IMAGE_MAX_BYTES,
+  sniffImageMime
+} from "../discord/profileSync.js";
 import { DirectoryTransportError, GuildDirectory, type DirectoryKind } from "../discord/guildDirectory.js";
 import { assertKnownProvider, assertModelChoiceValid } from "./writeValidation.js";
 import { BrowserSecurity, type BrowserSecurityOptions } from "./browserSecurity.js";
@@ -164,12 +170,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const ASSET_EXT_BY_MIME: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif"
-};
+const ASSET_EXT_BY_MIME = PROFILE_IMAGE_EXT_BY_MIME;
 
 /**
  * Gateway P6 Task 4: after a `{...current, ...patch}` merge, an explicitly-unset field (the
@@ -386,6 +387,18 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     statusResponse(options.runtime, request.principal, options.dataRoot)
   );
 
+  const currentCast = () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
+  // Living cast §17: her bot's profile follows her config and images (in the background).
+  const syncDiscordProfile = (waifuId: string) => currentCast()?.syncDiscordProfile?.(waifuId);
+  const waifuDiscordProfile = async (waifuId: string) => {
+    const cast = currentCast();
+    const status = cast?.discordProfiles
+      ? await cast.discordProfiles.status(waifuId)
+      : await discordProfileStatus({ storage, waifuId });
+    if (!status) throw notFound(`Waifu ${waifuId} is not configured.`);
+    return status;
+  };
+
   const reconcileDmIntents = async () => {
     const cast = options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
     if (!cast) return;
@@ -409,7 +422,6 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return { scope, dismissed: await clearModelWarnings(options.dataRoot, scope) };
   });
 
-  const currentCast = () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
   /** Live owner notices: permission warnings, Living cast notices, forget parts given up. */
   const liveNotices = async (): Promise<string[]> => {
     const cast = currentCast();
@@ -720,6 +732,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (pickedModel) await clearModelWarnings(options.dataRoot, `waifu:${waifuId}`);
     // Intents are fixed at login (spec 9.1): re-log only bots whose DM intents changed.
     await reconcileDmIntents();
+    syncDiscordProfile(waifuId);
     return saved;
   });
 
@@ -763,6 +776,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     });
     const entry = bots.waifus.find((bot) => bot.id === id);
     await reconcileDmIntents();
+    syncDiscordProfile(id);
     return {
       linked: savedWaifu.botId === id,
       botId: id,
@@ -797,16 +811,35 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return reply.status(204).send();
   });
 
-  app.post("/api/waifus/:waifuId/assets/pfp", async (request, reply) => {
+  // Her avatar and banner: kept locally and synced to her own bot (Living cast §17).
+  const assetBodyLimit = { bodyLimit: PROFILE_IMAGE_MAX_BYTES + 1024 };
+  app.post("/api/waifus/:waifuId/assets/pfp", assetBodyLimit, async (request, reply) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     await readWaifu(storage, waifuId);
-    return saveWaifuAsset(options.dataRoot, request, reply, waifuId, "pfp");
+    const saved = await saveWaifuAsset(options.dataRoot, request, reply, waifuId, "pfp");
+    syncDiscordProfile(waifuId);
+    return saved;
   });
 
-  app.post("/api/waifus/:waifuId/assets/banner", async (request, reply) => {
+  app.post("/api/waifus/:waifuId/assets/banner", assetBodyLimit, async (request, reply) => {
     const { waifuId } = parseIdParam(request.params, "waifuId");
     await readWaifu(storage, waifuId);
-    return saveWaifuAsset(options.dataRoot, request, reply, waifuId, "banner");
+    const saved = await saveWaifuAsset(options.dataRoot, request, reply, waifuId, "banner");
+    syncDiscordProfile(waifuId);
+    return saved;
+  });
+
+  app.get("/api/waifus/:waifuId/discord-profile", async (request) => {
+    const { waifuId } = parseIdParam(request.params, "waifuId");
+    return waifuDiscordProfile(waifuId);
+  });
+
+  // Sync now (rate-limited fields still wait for their retry time); answers with the new status.
+  app.post("/api/waifus/:waifuId/discord-profile/sync", async (request) => {
+    const { waifuId } = parseIdParam(request.params, "waifuId");
+    await readWaifu(storage, waifuId);
+    await currentCast()?.discordProfiles.syncWaifu(waifuId);
+    return waifuDiscordProfile(waifuId);
   });
 
   app.get("/api/servers", async () => ({ servers: await listServers(storage) }));
@@ -1432,8 +1465,17 @@ async function saveWaifuAsset(
   if (body.byteLength === 0) {
     throw badRequest("Asset upload body is empty.");
   }
-  if (body.byteLength > 8 * 1024 * 1024) {
+  if (body.byteLength > PROFILE_IMAGE_MAX_BYTES) {
     throw badRequest("Asset upload is too large. Maximum size is 8 MB.");
+  }
+  // The bytes must be the image the header says (Discord refuses anything else when it is synced).
+  const sniffed = sniffImageMime(body);
+  if (sniffed !== contentType) {
+    throw badRequest(
+      sniffed
+        ? `Asset upload says ${contentType} but the bytes are ${sniffed}.`
+        : "Asset upload is not a PNG, JPEG, WebP or GIF image."
+    );
   }
   const dir = resolveDataPath(dataRoot, "user", "waifus", waifuId);
   await mkdir(dir, { recursive: true });

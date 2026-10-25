@@ -38,6 +38,7 @@ import type { ForgetScrubResult } from "../life/forget.js";
 import { sharedModelClient } from "../models/client.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
 import { withThreadChannels } from "./stores/threads.js";
+import { DiscordProfileSync } from "../discord/profileSync.js";
 
 export type { CastRuntimeOptions } from "./runtimeShared.js";
 export { currentlyDoingForWaifu } from "./timeOfDay.js";
@@ -66,6 +67,8 @@ export class CastRuntime {
   readonly conversations: ConversationMessageCache;
   /** Every life on this host (Living cast spec §3). */
   readonly cast: LivingCast;
+  /** Her own bot's Discord profile, kept equal to her config (Living cast §17). */
+  readonly discordProfiles: DiscordProfileSync;
   private unsubscribes: Array<() => void> = [];
   private readonly background = new Set<Promise<unknown>>();
   private stopping = false;
@@ -85,6 +88,7 @@ export class CastRuntime {
     this.usageLedger = options.usageLedger ?? sharedUsageLedger(options.storage.dataRoot);
     this.providerAlerts = options.providerAlerts ?? sharedProviderAlerts(options.storage.dataRoot);
     const appConfig = options.appConfig ?? DEFAULT_APP_CONFIG;
+    this.discordProfiles = new DiscordProfileSync({ storage: options.storage, discord: () => this.options.discord, logger: options.logger });
     this.cast = new LivingCast({
       storage: options.storage,
       logger: options.logger,
@@ -147,10 +151,22 @@ export class CastRuntime {
       discord.onDirectoryEvent?.((event) => {
         if (event.type === "roleUpsert" || event.type === "roleDelete" || event.type === "guildDelete") this.cast.onRolesChanged(event.guildId);
         else if (event.type === "memberUpsert" && (discord.ownAuthorIds?.() ?? []).includes(event.member.userId)) this.cast.onRolesChanged(event.guildId);
-      })
+      }),
+      // §17: a waifu bot that (re)connects gets her profile; the ones already online are synced below.
+      discord.onWaifuBotReady?.((event) => void this.discordProfiles.syncBot(event.botId))
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (discord.listGuilds) await syncGuilds(this.options);
     await this.cast.start();
+    void this.discordProfiles.syncAll().catch((error: unknown) => {
+      this.options.logger.warn("Discord profile sync failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
+  /** After a write to her profile fields, her images or her bot link (§17); runs in the background. */
+  syncDiscordProfile(waifuId: string): void {
+    void this.discordProfiles.syncWaifu(waifuId).catch((error: unknown) => {
+      this.options.logger.warn("Discord profile sync failed", { waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
   }
 
   /** After an explicit user resume: the life catch-up (§5.7) and queued wakes. */
@@ -162,6 +178,7 @@ export class CastRuntime {
     this.stopping = true;
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.unsubscribes = [];
+    await this.discordProfiles.stop();
     await this.settleBackground();
     await this.cast.stop();
     await this.options.ocr?.dispose?.();

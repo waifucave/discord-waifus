@@ -33,6 +33,7 @@ import { compareIds, pageMessagesSince, toRawDiscordMessage, withoutAuthors, typ
 import type { ConversationRef } from "../orchestration/context/keys.js";
 import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
 import { ApplicationOwners, ownerIdsOf, type ApplicationOwnerLike, type OwnerCheck } from "./applicationOwners.js";
+import type { BotProfileHandle, BotProfileUser } from "./profileSync.js";
 import type {
   DiscordConnectionScope,
   DiscordConversationEvent,
@@ -189,6 +190,15 @@ export interface DiscordGatewayFacade {
   reconcileDmIntents?(): Promise<{ relogged: string[] }>;
   /** Per waifu bot: the waifu whose DMs it carries and whether its live session has DM intents. */
   dmIntentStatus?(): DiscordDmIntentStatus[];
+  /**
+   * Living cast §17: a connected waifu bot's profile operations (username, avatar, banner,
+   * application description, own nicknames). Never returned for the House bot.
+   */
+  waifuBotProfile?(botId: string): BotProfileHandle | undefined;
+  /** Ids of the waifu bots connected now (§17: profile sync after a connect). */
+  connectedWaifuBotIds?(): string[];
+  /** A waifu bot finished logging in (also after a retry or a DM-intent re-login). */
+  onWaifuBotReady?(listener: (event: { botId: string }) => void): () => void;
   listGuilds?(): Promise<Array<{ guildId: string; name: string }>>;
   fetchChannelMetadata?(input: {
     guildId: string;
@@ -432,6 +442,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly dmListeners = new Set<DiscordDirectMessageListener>();
   private readonly typingListeners = new Set<DiscordTypingListener>();
   private readonly dmForgetListeners = new Set<DiscordDmForgetCommandListener>();
+  private readonly waifuReadyListeners = new Set<(event: { botId: string }) => void>();
 
   constructor(private readonly options: DiscordJsGatewayOptions) {
     this.owners =
@@ -629,6 +640,33 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       displayName: bot.displayName,
       kind
     });
+    if (kind === "waifu") {
+      for (const listener of this.waifuReadyListeners) this.dispatchTo(listener, { botId: bot.id });
+    }
+  }
+
+  // ---- her profile (Living cast §17) -------------------------------------------------------------
+
+  onWaifuBotReady(listener: (event: { botId: string }) => void): () => void {
+    this.waifuReadyListeners.add(listener);
+    return () => this.waifuReadyListeners.delete(listener);
+  }
+
+  connectedWaifuBotIds(): string[] {
+    return (this.options.waifus ?? [])
+      .map((bot) => bot.id)
+      .filter((botId) => botId !== this.options.house.id && this.clients.has(botId));
+  }
+
+  waifuBotProfile(botId: string): BotProfileHandle | undefined {
+    if (botId === this.options.house.id) return undefined;
+    if (!(this.options.waifus ?? []).some((bot) => bot.id === botId)) return undefined;
+    const client = this.clients.get(botId);
+    if (!client?.user) return undefined;
+    // The same Discord account as the House bot (one token in two entries): never edited.
+    const houseUserId = this.clients.get(this.options.house.id)?.user?.id;
+    if (houseUserId && houseUserId === client.user.id) return undefined;
+    return discordJsProfileHandle(client as Client<true>);
   }
 
   private scheduleBotRetry(entry: ConnectableBot, generation: number): void {
@@ -1749,6 +1787,43 @@ export function threadInfoOf(channel: unknown): DiscordThreadInfo | undefined {
   return { parentId: c.parentId, name: c.name ?? "", kind, archived: c.archived === true, locked: c.locked === true };
 }
 
+/** Rate limits on PATCH /users/@me and PATCH /applications/@me reject instead of waiting (§17). */
+export function profileEditRateLimitFilter(data: { method: string; route: string }): boolean {
+  return data.method.toUpperCase() === "PATCH" && (data.route === "/users/@me" || data.route === "/applications/@me");
+}
+
+/** Her bot's profile operations over discord.js (Living cast §17). */
+export function discordJsProfileHandle(client: Client<true>): BotProfileHandle {
+  const userOf = (user: { id: string; username: string; avatar: string | null; banner?: string | null }): BotProfileUser => ({
+    id: user.id,
+    username: user.username,
+    avatar: user.avatar,
+    ...(user.banner !== undefined ? { banner: user.banner } : {})
+  });
+  return {
+    user: () => userOf(client.user),
+    editUser: async (patch) => userOf(await client.user.edit(patch)),
+    fetchApplicationDescription: async () => (await client.application.fetch()).description ?? "",
+    editApplicationDescription: async (description) => {
+      await client.application.edit({ description });
+    },
+    guilds: () =>
+      [...client.guilds.cache.values()].map((guild) => {
+        const me = guild.members.me;
+        return {
+          guildId: guild.id,
+          nickname: me?.nickname ?? null,
+          canChangeNickname: me ? me.permissions.has(PermissionFlagsBits.ChangeNickname) : false
+        };
+      }),
+    setNickname: async (guildId, nick) => {
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) throw new Error("Her bot is not in this server.");
+      await guild.members.editMe({ nick });
+    }
+  };
+}
+
 function discordClientOptions(kind: DiscordBotKind, o: { guildMembersIntent?: boolean; dm?: boolean } = {}): ClientOptions {
   if (kind === "house") {
     return {
@@ -1775,6 +1850,9 @@ function discordClientOptions(kind: DiscordBotKind, o: { guildMembersIntent?: bo
       ? [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages, GatewayIntentBits.DirectMessageReactions, GatewayIntentBits.DirectMessageTyping]
       : [GatewayIntentBits.Guilds],
     ...(o.dm ? { partials: [Partials.Channel, Partials.Message, Partials.Reaction] } : {}),
+    // Living cast §17: a rate-limited profile edit fails at once with its retry time (recorded and
+    // retried later) instead of discord.js waiting, possibly for an hour, inside the request.
+    rest: { rejectOnRateLimit: profileEditRateLimitFilter },
     makeCache: Options.cacheWithLimits({
       MessageManager: 0,
       ReactionManager: 0,
