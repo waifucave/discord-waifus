@@ -10,7 +10,7 @@
 //      reason for anyone, the burst (channel debounce `serverMs`/`serverMaxWaitMs`) goes to the
 //      addressee detector.
 // Messages by other waifus only wake through mention, role, reply-to-her and watch; her own never
-// wake her. DMs wake her 30 s after the user's last message (`dmMs`, capped at `dmMaxWaitMs`).
+// wake her. DMs wake her 15 s after the user's last message (`dmMs`, capped at `dmMaxWaitMs`).
 // Edits wake nobody except a newly added mention of her in a human message under 2 minutes old
 // (once); a deleted message she had read becomes a pending notice (§10.3).
 
@@ -514,7 +514,7 @@ export class Intake {
 
   // ---- DMs ------------------------------------------------------------------------------------------
 
-  /** A human's DM: DM state updated now; the `dm` wake 30 s after their last message (cap 180 s). */
+  /** A human's DM: DM state updated now; the `dm` wake 15 s after their last message (cap 180 s). */
   async onDirectMessage(event: DiscordDirectMessageEvent): Promise<void> {
     if (this.closed || this.seen.has(event.messageId)) return;
     const deps = this.deps;

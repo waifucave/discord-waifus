@@ -163,7 +163,7 @@ describe("Phase 5 settings", () => {
   it("defaults discord.debounce and discord.dm and accepts partial updates without defaults", () => {
     const config = AppConfigSchema.parse({});
     // Living cast §11.3: the DM quiet timer is 30 s, capped at 180 s (max 300 s).
-    expect(config.discord.debounce).toEqual({ serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 30000, dmMaxWaitMs: 180000 });
+    expect(config.discord.debounce).toEqual({ serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 15000, dmMaxWaitMs: 180000 });
     expect(config.discord.dm).toEqual({ resumeWindowMinutes: 60 });
     expect(UpdateAppConfigBodySchema.parse({ discord: { debounce: { serverMs: 0 } } })).toEqual({ discord: { debounce: { serverMs: 0 } } });
     expect(() => UpdateAppConfigBodySchema.parse({ discord: { debounce: { dmMaxWaitMs: 300001 } } })).toThrow();

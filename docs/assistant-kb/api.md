@@ -283,7 +283,7 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/riko \
   starts (restart to be sure). Whatever `maxBytes` allows, an image is only sent inline when it is
   at most 3.75 MiB (3,932,160 bytes, the most that stays under Anthropic's 5 MB per-image limit
   once base64-encoded); a larger one is shown as its OCR text or `[image]`.
-- **Living cast settings**: `discord.debounce` (`dmMs` 30 s quiet timer, `dmMaxWaitMs` 180 s cap
+- **Living cast settings**: `discord.debounce` (`dmMs` 15 s quiet timer, `dmMaxWaitMs` 180 s cap
   for DM wakes), `discord.dm.resumeWindowMinutes` (the boot catch-up window), `life.*` (turn,
   context, image, send, wake, watch and maintenance limits; `life.webFetch.*` for page reading),
   `search.*` (web search caps; 0 disables) and `detector.target`. DMs and their rate limit are

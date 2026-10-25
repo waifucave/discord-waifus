@@ -68,7 +68,7 @@ const APP: SettingGroup = {
     "discord.memberListRefreshHours": { help: "How often full member lists are refreshed (0 = never).", unit: "hours", ...live, example: "24" },
     "discord.debounce.serverMs": { help: "Quiet time before a burst of server messages goes to the addressee detector.", unit: "ms", ...live, example: "1200" },
     "discord.debounce.serverMaxWaitMs": { help: "A burst goes to the detector after at most this long.", unit: "ms", ...live, example: "4000" },
-    "discord.debounce.dmMs": { help: "A DM wakes her this long after the person's last message (each message restarts the timer).", unit: "ms", ...live, example: "30000" },
+    "discord.debounce.dmMs": { help: "A DM wakes her this long after the person's last message (each message restarts the timer).", unit: "ms", ...live, example: "15000" },
     "discord.debounce.dmMaxWaitMs": { help: "A DM wakes her after at most this long, however often the person keeps writing.", unit: "ms", ...live, example: "180000" },
     "discord.dm.resumeWindowMinutes": { help: "At start, messages that arrived while the host was down wake her only when they are at most this old (older ones stay readable).", unit: "minutes", ...live, example: "60" },
     "models.allowed": { help: "The curated model routes waifus and the assistant may use (winter route keys such as anthropic/claude-sonnet-5-5). Routes the installed catalog lacks are hidden.", leaf: true, ...reload, example: '["anthropic/claude-haiku-5-5","openai/gpt-6-luna"]' },

@@ -303,7 +303,7 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     // config.toml (§11.2) loads, with the moved values.
     const config = AppConfigSchema.parse(parseToml(migrated.get("config.toml")!));
     expect(config.life).toMatchObject({ maintenanceHourLocal: 4, maxInlineImagesPerEpoch: 20, maxConcurrentTurns: 6 });
-    expect(config.discord.debounce).toMatchObject({ dmMs: 30_000, dmMaxWaitMs: 180_000 });
+    expect(config.discord.debounce).toMatchObject({ dmMs: 15_000, dmMaxWaitMs: 180_000 });
     const rawConfig = parseToml(migrated.get("config.toml")!) as Record<string, Record<string, unknown>>;
     expect(rawConfig).not.toHaveProperty("memory");
     expect(rawConfig.discord).not.toHaveProperty("deletedMessages");

@@ -74,7 +74,7 @@ const DiscordImagesConfigSchema = z
   })
   .default({ ...DEFAULT_DISCORD_IMAGES });
 // Debounce (spec 9.2, Living cast §4.1, §4.2): the channel debounce batches a burst for the
-// addressee detector only; the DM timer is the `dm` wake's quiet period (30 s after the user's last
+// addressee detector only; the DM timer is the `dm` wake's quiet period (15 s after the user's last
 // message, capped at `dmMaxWaitMs`).
 const DEBOUNCE_FIELDS = {
   serverMs: z.number().int().min(0).max(30_000),
@@ -82,7 +82,7 @@ const DEBOUNCE_FIELDS = {
   dmMs: z.number().int().min(0).max(120_000),
   dmMaxWaitMs: z.number().int().min(0).max(300_000)
 };
-export const DEFAULT_DEBOUNCE = { serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 30_000, dmMaxWaitMs: 180_000 };
+export const DEFAULT_DEBOUNCE = { serverMs: 1200, serverMaxWaitMs: 4000, dmMs: 15_000, dmMaxWaitMs: 180_000 };
 const DiscordDebounceConfigSchema = z
   .object({
     serverMs: DEBOUNCE_FIELDS.serverMs.default(DEFAULT_DEBOUNCE.serverMs),

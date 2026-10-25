@@ -153,7 +153,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
     expect((await queued(w, "aria")).immediate).toHaveLength(1);
   });
 
-  it("a DM wakes her 30 s after the last message (timer reset), capped at 180 s", async () => {
+  it("a DM wakes her 15 s after the last message (timer reset), capped at 180 s", async () => {
     const w = await world();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const dm = async (text: string) => {
@@ -161,18 +161,18 @@ describe("wake reasons (§4.1, §4.2)", () => {
       await w.cast.onDirectMessage({ waifuId: "aria", botId: "aria-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     };
     await dm("hey");
-    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(12_000);
     await dm("quick question");
-    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(12_000);
     expect(await reasons(w, "aria")).toEqual([]);
-    await vi.advanceTimersByTimeAsync(6_000);
+    await vi.advanceTimersByTimeAsync(4_000);
     await w.cast.settle();
     const wake = (await queued(w, "aria")).immediate[0];
     expect(wake).toMatchObject({ reason: "dm", placeKey: `dm_${KEVIN}_aria`, fromName: "Kevin", count: 2, preview: "quick question" });
-    // A user who keeps writing every 20 s is answered after 180 s at the latest.
-    for (let index = 0; index < 9; index += 1) {
+    // A user who keeps writing every 10 s is answered after 180 s at the latest.
+    for (let index = 0; index < 18; index += 1) {
       await dm(`msg ${index}`);
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(10_000);
     }
     await w.cast.settle();
     expect((await queued(w, "aria")).immediate.length).toBe(2);

@@ -87,7 +87,7 @@ are archived by migration (§11.2).
 | `role` | A role her bot member holds is mentioned | Direct. |
 | `everyone` | `@everyone` / `@here` in a channel where she is cast | Direct. |
 | `watch` | One of her `watch_for` bindings matched (§6.5) | Carries her own note. |
-| `dm` | A DM to her bot, 30 s after the user's last message | Timer resets on each message; capped at `discord.debounce.dmMaxWaitMs` (default 180 s). |
+| `dm` | A DM to her bot, 15 s after the user's last message | Timer resets on each message; capped at `discord.debounce.dmMaxWaitMs` (default 180 s). |
 | `detector` | The addressee detector chose her, or chose "anyone" and the draw picked her | §4.3. |
 | `reminder` | One of her `schedule_wake` entries came due | Carries her own note. |
 | `morning` | Her sleep window ended with deferred wakes | One batched summary (§4.7). |
@@ -1063,7 +1063,7 @@ Registered before the schema stamp; idempotent; re-run safe.
 | `living-cast-archive-director-v1` | Moves to `user/.archive/living-cast/`: `user/orchestrator/`, `user/stage-manager/`, `user/reviewer/`, every guild's orchestrator/stage-manager/reviewer histories and `sessions/`, and every `user/conversations/*/ledger.json` and `contexts/` (refs stay). Shutdown-persisted wakes in old session files are not converted. |
 | `living-cast-dm-state-v1` | DM `pending*` (a DM in flight at upgrade) becomes an immediate `dm` wake in that waifu's queue; `recentRuns` dropped. |
 | `living-cast-server-fields-v1` | Drops `orchestratorMode`, `stageManagerEnabled`, `contextWindows`, `memoryInjectionLimit`, `tools`, `compaction` from server files. `oneShot.target` becomes a per-server detector override **only** if the server was in one-shot mode and its target differs from the old default; otherwise removed. |
-| `living-cast-app-config-v1` | `memory.dreamHourLocal` → `life.maintenanceHourLocal`; `memory.maxInlineImagesPerEpoch` → `life.maxInlineImagesPerEpoch`; `discord.dm.maxConcurrentRuns` → `life.maxConcurrentTurns`; other `memory.*` dropped; `discord.deletedMessages.redactRecent` dropped. Widens `discord.debounce.dmMaxWaitMs` to max 300000 and sets `dmMs` 30000 / `dmMaxWaitMs` 180000 if they still hold the old defaults. |
+| `living-cast-app-config-v1` | `memory.dreamHourLocal` → `life.maintenanceHourLocal`; `memory.maxInlineImagesPerEpoch` → `life.maxInlineImagesPerEpoch`; `discord.dm.maxConcurrentRuns` → `life.maxConcurrentTurns`; other `memory.*` dropped; `discord.deletedMessages.redactRecent` dropped. Widens `discord.debounce.dmMaxWaitMs` to max 300000 and sets `dmMs` 15000 / `dmMaxWaitMs` 180000 if they still hold the old defaults. |
 
 Implementation notes (L2): the steps run in the order of the table, after `living-cast-models-v1`
 and before the stamp (`LIVING_CAST_L2_STEP_IDS` in `migrations.ts`). Moved values are clamped into
@@ -1106,7 +1106,7 @@ repaired, as before; the point is that the repaired file is then converted.
 | `life.webFetch.directMaxChars` / `maxBytes` / `timeoutMs` / `maxRedirects` / `cacheMinutes` | 2000 / 5242880 / 20000 / 5 / 15 |
 | `models.allowed` / `models.maxOutputUsdPerMTok` | §9.2 / 10 |
 | `detector.target` | the old one-shot default target |
-| `discord.debounce.dmMs` / `dmMaxWaitMs` | 30000 / 180000 |
+| `discord.debounce.dmMs` / `dmMaxWaitMs` | 15000 / 180000 |
 | `discord.dm.resumeWindowMinutes` | 60 (now the boot catch-up window) |
 | Waifu: `model`, `life.dailyBudgetUsd` (none), `dm.sleepNotice` (""), `wakeOnName` (true) | |
 
@@ -1213,7 +1213,7 @@ them):
   limit merging; loop guard when enabled limits wakes only.
 - **Sleep**: every reason deferred except `owner`; one `morning` batch that lists every reminder and
   watch note.
-- **DMs**: 30 s timer reset by each message and the 180 s cap; D11 send permissions.
+- **DMs**: 15 s timer reset by each message and the 180 s cap; D11 send permissions.
 - **Detector**: mapping, weighted draw, fallback, history, benchmark cases
   (`npm run benchmark:decisions -- --suite=addressee`, offline checks in
   `tests/decisionAddressee.test.ts`).
@@ -1264,7 +1264,7 @@ an ignored one 1.
 | Muse contributor | ≈ $0.001 | ≈ $0.01 |
 
 - Latency for a mention and reply: about 8–20 s warm (2 s coalesce, two model calls, typing), plus
-  3–10 s cold. DMs add the 30 s quiet timer. Today's path is about 4–10 s.
+  3–10 s cold. DMs add the 15 s quiet timer. Today's path is about 4–10 s.
 - A user spamming mentions is bounded by `life.maxWakesPerUserPerHour`; without a budget, a waifu
   on Sonnet can still cost several dollars an hour in a very busy room.
 
