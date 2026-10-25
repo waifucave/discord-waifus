@@ -82,7 +82,7 @@ describe("ReadMessages never inlines images (§16.3.1)", () => {
     expect(line).not.toBeNull();
     const look = await lifeTool("Read")!.run({ file_path: line![1] }, ctx);
     expect(kinds(look.content)).toEqual(["text", "life_image"]);
-    expect(textOf(look.content)).toMatch(/^\/tmp\/bake-club\/general\/[0-9a-z]+-cake-9001\.png: image \(\d+ B\)$/u);
+    expect(textOf(look.content)).toMatch(/^\/tmp\/bake-club\/general\/[0-9a-z]+-cake-9001\.png: png 4x4, \d+ B$/u);
     expect(modes(look.content)).toEqual(["inline"]);
   });
 });

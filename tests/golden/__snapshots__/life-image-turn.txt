@@ -22,7 +22,7 @@ bake-club/#general (Bake Club › #general)
 === 4 user ===
 --- tool result call_1_Read ---
 --- text ---
-/tmp/bake-club/general/a1-tart.png: image (74 B)
+/tmp/bake-club/general/a1-tart.png: png 6x4, 74 B
 --- image image/png · 74 bytes · 5e3e7c4fef75 ---
 --- text ---
 [Sat 24 Oct 14:00 · awake]

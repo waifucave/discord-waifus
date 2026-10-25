@@ -148,7 +148,7 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 function bashDescription(python: boolean): string {
-  return `Run a bash command in your own folders: your home (~, where you start) and /tmp. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read). There is no internet and nothing outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
+  return `Run a bash command in your own folders: your home (~, where you start) and /tmp. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read; Read gives a picture's size in pixels, and crop boxes are in those pixels, so look at an edited picture before you send it). There is no internet and nothing outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
 }
 
 /** Bash's input schema; the timeout's limit as configured (`life.bash.maxTimeoutMs`). */

@@ -283,6 +283,19 @@ function detectFormat(bytes: Uint8Array): Format | null {
   return null;
 }
 
+/** A picture's format and pixel size from its header, without decoding it (null when unknown). */
+export function imageSize(bytes: Uint8Array): { format: Format; width: number; height: number } | null {
+  const format = detectFormat(bytes);
+  let size: { width: number; height: number } | null = null;
+  if (format === "png" && bytes.length >= 24) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    size = { width: view.getUint32(16), height: view.getUint32(20) };
+  } else if (format === "jpeg") size = jpegDimensions(bytes);
+  else if (format === "gif" && bytes.length >= 10) size = { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
+  else if (format === "webp") size = webpHeader(bytes);
+  return format && size ? { format, width: size.width, height: size.height } : null;
+}
+
 const FORMAT_NAMES: Record<Format, string> = { png: "PNG", jpeg: "JPEG", gif: "GIF", webp: "WebP" };
 
 function decodeImage(bytes: Uint8Array, name: string): Decoded {

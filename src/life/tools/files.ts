@@ -20,6 +20,7 @@ import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
 import { pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { notePlace } from "../placeRecorder.js";
+import { imageSize } from "../bash/imageCommand.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 import { parseInput, toolError, type LifeResultBlock, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
@@ -124,7 +125,9 @@ async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: s
   // their OCR text like any image the DM showed (§7.5).
   const conversationKey = dmOrigin?.startsWith("dm_") && dmOrigin !== "dm_file" ? dmOrigin : undefined;
   const attachment = { key, url: key, filename: p.segments[p.segments.length - 1]!, contentType: mimeType, bytes: data.length, ...(conversationKey ? { conversationKey } : {}) };
-  const header = `${p.display}: image (${sizeText(data.length)})`;
+  // Her pixel size, so a crop she plans in `image` lands where she means it.
+  const size = imageSize(data);
+  const header = size ? `${p.display}: ${size.format} ${size.width}x${size.height}, ${sizeText(data.length)}` : `${p.display}: image (${sizeText(data.length)})`;
   const cache = deps.images;
   if (cache?.put) await cache.put(key, { mimeType, data }, conversationKey ? { conversationKey } : {}).catch(() => undefined);
   // Outside her life (maintenance, a scrub) a picture is only its text: her life's image state,
