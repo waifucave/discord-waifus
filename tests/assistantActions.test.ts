@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { readDmLimit, readDmState, updateDmLimit, updateDmState } from "../src/orchestration/dm/dmStore.js";
 import type { AssistantModelClient } from "../src/api/assistant/service.js";
@@ -802,6 +803,39 @@ describe("assistant action API", () => {
     expect((await readDmLimit(storage, userId, "yuki")).replyTimestamps).toHaveLength(0);
     const audit = await auditStore.list();
     expect(audit.some((record) => record.action === "people.forget")).toBe(true);
+  });
+
+  it("write_file proposes a confirmation card with the file and its text, and writes only once confirmed", async () => {
+    let toolResult = "";
+    const state: FakeRemoteState = { authorized: true, enabled: false, updateInputs: [], approvalInputs: [], invitationActors: [], pairingRequest: undefined };
+    const { app, storage } = await makeActionApp(
+      scriptedToolPipeline("write_file", { waifuId: "yuki", path: "people/kevin.md", text: "# Kevin\nlikes tea\n" }, (value) => {
+        toolResult = value;
+      }),
+      state
+    );
+    expect((await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "yuki", name: "Yuki", displayName: "Yuki" } })).statusCode).toBe(201);
+    const file = storage.dataPath("user/waifus/yuki/home/people/kevin.md");
+
+    await createRemoteActionConversation(app);
+    const proposed = JSON.parse(toolResult) as { status: string; actionId: string; category: string };
+    expect(proposed).toMatchObject({ status: "confirmation_required", category: "waifu_file_write" });
+    await expect(readFile(file, "utf8")).rejects.toThrow();
+
+    const detailTarget = `/api/assistant/actions/${proposed.actionId}`;
+    const detail = await dispatchInternal(app, remotePrincipal({ method: "GET", canonicalTarget: detailTarget }), undefined, { method: "GET", url: detailTarget });
+    expect(detail.json().summary).toContain("Create ~/people/kevin.md in yuki's folders");
+    expect(detail.json().summary).toContain("likes tea");
+
+    const confirmTarget = `${detailTarget}/confirm`;
+    const confirmed = await dispatchInternal(app, remotePrincipal({ method: "POST", canonicalTarget: confirmTarget }), undefined, {
+      method: "POST",
+      url: confirmTarget,
+      headers: { "idempotency-key": bytes32(0x93) }
+    });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    expect(confirmed.json()).toMatchObject({ status: "completed", category: "waifu_file_write", message: "The file was saved." });
+    expect(await readFile(file, "utf8")).toBe("# Kevin\nlikes tea\n");
   });
 
   it("forget_dm proposes a confirmation card with dry-run counts and forgets the DM only once confirmed", async () => {

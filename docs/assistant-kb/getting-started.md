@@ -9,8 +9,8 @@ process hosts everything: each waifu has her own persona, model and Discord bot.
 
 > **Living cast.** Each character is an autonomous agent with one continuous life: she is woken by
 > mentions, replies, her name, DMs, her own reminders and watches, or the addressee detector; she
-> reads the conversation, decides whether to answer, keeps notes as her memory and tidies them
-> nightly. There is no director. The dashboard's Life screen shows what she is doing (see the
+> reads the conversation, decides whether to answer, keeps notes as her memory in her own folder
+> (with her reminders and watches) and tidies them nightly. There is no director. The dashboard's Life screen shows what she is doing (see the
 > life doc); the owner can also use the House bot's `/wake` and `/print` and `waifus life`.
 
 Everything is stored locally under the data root (default `~/.dc-waifus`, override with

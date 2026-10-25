@@ -68,6 +68,7 @@ import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
 import { registerDmRoutes } from "./dms.js";
 import { registerLifeRoutes } from "./lifeRoutes.js";
+import { registerHomeRoutes } from "./homeRoutes.js";
 import { registerCastRoutes } from "./castRoutes.js";
 import { registerHelpRoutes } from "./help.js";
 import { computeDmEligibility } from "../orchestration/dm/dmStore.js";
@@ -884,6 +885,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
   });
   // Living cast §14.1: lives, usage, search, the detector, forget jobs and owner notices.
   registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused });
+  // Living cast §16.11: her files, reminders and watches.
+  registerHomeRoutes(app, { storage, cast: () => currentCast()?.cast });
   registerCastRoutes(app, { storage, dataRoot: options.dataRoot, isPaused: () => options.runtime.paused, liveNotices, applyConfigPatch });
   registerHelpRoutes(app);
 

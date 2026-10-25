@@ -67,6 +67,33 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
     topic: "life"
   },
   {
+    name: "files",
+    summary: "Her files: list a folder of her home or /tmp, or print a text file.",
+    usage: ["waifus files WAIFU [PATH] [--root tmp] [--private]", "waifus files aria people/kevin.md", "waifus files aria --root tmp"],
+    description:
+      "PATH is her path (/home/aria/people/kevin.md, /tmp/x.png), ~-based, or relative to her home (to /tmp with --root tmp); without one, her home (or /tmp) is listed. A text file is printed as it is; anything else is described (open images and PDFs in the dashboard). Files from private chats are listed without their names and open only with --private, on the host itself.",
+    flags: [
+      { name: "--root", value: "home|tmp", help: "Which folder a relative PATH (or no PATH) means (default home)." },
+      { name: "--private", help: "Include files from private chats (local only)." }
+    ],
+    topic: "life"
+  },
+  {
+    name: "schedule",
+    summary: "Her reminders (~/schedule.json), in the host's time zone.",
+    usage: ["waifus schedule WAIFU"],
+    description: "To change or remove one, edit her schedule.json (dashboard → Life) or use DELETE /api/waifus/:id/schedule/:rid.",
+    topic: "life"
+  },
+  {
+    name: "watches",
+    summary: "Her watches (~/watches.json): what each waits for and when it times out.",
+    usage: ["waifus watches WAIFU [--private]"],
+    description: "A watch bound to a private chat is shown without its words unless --private is given (on the host itself only).",
+    flags: [{ name: "--private", help: "Include watches bound to private chats (local only)." }],
+    topic: "life"
+  },
+  {
     name: "forget",
     summary: "Forget a Discord user everywhere (best-effort scrub); asks for confirmation unless --yes.",
     usage: ["waifus forget USER_ID [--yes] [--dry-run]"],

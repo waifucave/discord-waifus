@@ -1,12 +1,12 @@
-// Dispatch for the settings and life commands (`list get set unset wake life forget usage`) and the
-// registry-driven `waifus help`. They share one context: the data root, `--json`, the output streams
-// and the verified host connection (looked up once, on first use).
+// Dispatch for the settings and life commands (`list get set unset wake life forget usage files
+// schedule watches`) and the registry-driven `waifus help`. They share one context: the data root,
+// `--json`, the output streams and the verified host connection (looked up once, on first use).
 
 import { commandSpec, GLOBAL_FLAGS } from "../shared/settings/commands.js";
 import { suggestTopics } from "../shared/settings/topics.js";
 import { CliFailure, defaultIo, EXIT, runCli, usageError, type CliContext, type CliIo, type ExitCode } from "./cliContext.js";
 import { connectHost, type HostTransport } from "./hostClient.js";
-import { forgetCommand, lifeCommand, usageCommand, wakeCommand } from "./lifeCommands.js";
+import { filesCommand, forgetCommand, lifeCommand, scheduleCommand, usageCommand, wakeCommand, watchesCommand } from "./lifeCommands.js";
 import { flagBoolean, flagString, type ParsedCli } from "./parser.js";
 import { getCommand, helpCommand, listCommand, setCommand, unsetCommand } from "./settingsCommands.js";
 import type { ProcessIdentityProbe } from "../storage/instanceLock.js";
@@ -79,6 +79,15 @@ export async function runOwnerCommand(parsed: ParsedCli, dataRoot: string, o: Ow
         return wakeCommand(ctx, args);
       case "life":
         return lifeCommand(ctx, args, { log: flagBoolean(flags, "log"), private: flagBoolean(flags, "private"), ...(flagString(flags, "limit") !== undefined ? { limit: flagString(flags, "limit")! } : {}) });
+      case "files": {
+        if (flags["root"] === true) throw usageError("--root needs a value: home or tmp.");
+        const root = flagString(flags, "root");
+        return filesCommand(ctx, args, { private: flagBoolean(flags, "private"), ...(root !== undefined ? { root } : {}) });
+      }
+      case "schedule":
+        return scheduleCommand(ctx, args);
+      case "watches":
+        return watchesCommand(ctx, args, { private: flagBoolean(flags, "private") });
       case "forget":
         return forgetCommand(ctx, args, { yes: flagBoolean(flags, "yes"), dryRun: flagBoolean(flags, "dryRun") });
       case "usage": {

@@ -20,7 +20,7 @@ export function forgetSummary(result: ForgetUserResult): string[] {
     lines.push(
       life.queued
         ? `${life.waifuId}: scrub queued.`
-        : `${life.waifuId}: ${life.removedLines} log line(s) and ${life.removedSentences} sentence(s) removed${life.removedNotes !== undefined ? `, ${life.removedNotes} note(s)` : ""}${life.needsReview.length ? `; ${life.needsReview.length} line(s) to review` : ""}.`
+        : `${life.waifuId}: ${life.removedLines} log line(s) and ${life.removedSentences} sentence(s) removed${life.removedNotes !== undefined ? `, ${life.removedNotes} note(s)` : ""}${life.removedFiles ? `, ${life.removedFiles} file(s)` : ""}${life.needsReview.length ? `; ${life.needsReview.length} line(s) to review` : ""}.`
     );
   }
   if (result.livesQueued?.length) lines.push(`Life scrubs queued until each life next starts: ${result.livesQueued.join(", ")}.`);
@@ -71,7 +71,7 @@ export function ForgetPersonPanel({ onForgotten }: { onForgotten?: () => void } 
       <div className="t-title" style={{ marginBottom: 6 }}>Forget a person</div>
       <p className="t-small" style={{ lineHeight: 1.5, margin: "0 0 8px" }}>
         Removes a Discord user from every DM, the member lists and the archive, and scrubs every waifu&apos;s life,
-        summary, queue and notes. Forget is a best-effort scrub:
+        summary, queue and files. Forget is a best-effort scrub:
       </p>
       <ul className="t-small t-mute" style={{ lineHeight: 1.5, margin: "0 0 12px", paddingLeft: 18 }}>
         {FORGET_LIMITS.map((line) => (
@@ -128,7 +128,7 @@ export function ForgetPersonPanel({ onForgotten }: { onForgotten?: () => void } 
             </p>
           ))}
           <p className="t-small t-mute" style={{ marginTop: 10 }}>
-            Then every waifu&apos;s life and notes are scrubbed. This cannot be undone.
+            Then every waifu&apos;s life and files are scrubbed. This cannot be undone.
           </p>
         </ConfirmDialog>
       )}

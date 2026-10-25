@@ -1,0 +1,233 @@
+// Her own computer over HTTP (Living cast spec §16.11): listing her folders, reading a file as JSON
+// or raw bytes, writing under her Write tool's checks (places.md refused, broken JSON refused with
+// line and column, revision by content hash), deleting, and her reminders and watches with delete.
+// A file from a private chat is named and opened only with a local includePrivate=1 (D14): over
+// Remote Access and for the dashboard assistant it stays redacted. Temp data roots, Discord offline.
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { createApiServer } from "../src/api/server.js";
+import { dispatchInternal } from "../src/api/internalDispatch.js";
+import { createLocalRequestPrincipal, createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
+import { createRuntimeState } from "../src/backend/runtime.js";
+import { ensureDataLayout } from "../src/config/layout.js";
+import { HomeStore, homeLimitsOf, sha256 } from "../src/life/home/homeStore.js";
+import { localMinuteText } from "../src/life/home/specialFiles.js";
+import { lifePaths } from "../src/life/paths.js";
+import { hostTimeZone } from "../src/orchestration/context/timeFormat.js";
+import {
+  HerFileDeleteResponseSchema,
+  HerFileResponseSchema,
+  HerFilesListResponseSchema,
+  HerFileWriteResponseSchema,
+  PlanEntryDeleteResponseSchema,
+  PRIVATE_FILE_NAME,
+  ScheduleResponseSchema,
+  WatchesResponseSchema
+} from "../src/shared/schemas/api.js";
+import { AppConfigSchema } from "../src/shared/schemas/config.js";
+import { StorageService } from "../src/storage/storageService.js";
+import { makeTempRoot, removeTempRoot } from "./testUtils.js";
+
+const roots: string[] = [];
+const apps: FastifyInstance[] = [];
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.close()));
+  for (const root of roots.splice(0)) await removeTempRoot(root);
+});
+
+const KEVIN = "300000000000000003";
+const DM_KEY = `dm_${KEVIN}_aria`;
+const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001", "hex");
+const bytes16 = (value: number) => Buffer.alloc(16, value).toString("base64url");
+
+function remote() {
+  return createRemoteRequestPrincipal({
+    kind: "remote_device",
+    stableId: "remote:travel-mac",
+    deviceId: "travel-mac",
+    peerFingerprint: bytes16(0x21),
+    transportSessionId: bytes16(0x22),
+    trustEpoch: "9"
+  });
+}
+
+async function world() {
+  const root = await makeTempRoot();
+  roots.push(root);
+  await ensureDataLayout(root);
+  const storage = new StorageService(root);
+  const runtime = createRuntimeState({
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    packageVersion: "3.0.0-test",
+    port: 3888,
+    dataRoot: root,
+    mode: "test",
+    paused: false,
+    discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
+    queues: { active: 0, configuredGuilds: 0 }
+  });
+  const app = await createApiServer({ dataRoot: root, runtime, storage, remoteTrust: { isAuthorized: () => true } });
+  apps.push(app);
+  expect((await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "aria", name: "Aria", displayName: "Aria" } })).statusCode).toBe(201);
+  const home = new HomeStore(storage, "aria", "aria", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+  return { root, storage, app, home };
+}
+
+/** A DM download in /tmp/dm/kevin and a copy of it in her home (same bytes: private by hash). */
+async function dmFiles(w: Awaited<ReturnType<typeof world>>) {
+  const menu = Buffer.from("Kevin's secret menu: brownies\n");
+  const saved = await w.home.saveDownload(w.home.path("tmp", ["dm", "kevin", "a7-menu.txt"]), menu, {
+    placeKey: DM_KEY,
+    messageId: "1",
+    authorId: KEVIN,
+    attachmentId: "9",
+    downloadedAt: new Date().toISOString()
+  });
+  expect(saved).toBe(true);
+  await w.home.files.writeBytes(w.home.path("home", ["kept-menu.txt"]), menu);
+}
+
+describe("her files", () => {
+  it("lists folders first, reads text as JSON and images as raw bytes, never naming a DM file without a local reveal", async () => {
+    const w = await world();
+    const put = await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/home/aria/people/kevin.md", payload: { text: "# Kevin\nlikes lemon cake\n" } });
+    expect(put.statusCode).toBe(200);
+    const written = HerFileWriteResponseSchema.parse(put.json());
+    expect(written).toMatchObject({ path: "/home/aria/people/kevin.md", display: "~/people/kevin.md", created: true, hash: sha256("# Kevin\nlikes lemon cake\n") });
+    await w.home.files.writeBytes(w.home.path("home", ["cake.png"]), PNG);
+    await dmFiles(w);
+
+    const list = HerFilesListResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files" })).json());
+    expect(list).toMatchObject({ root: "home", dir: "/home/aria", display: "~", parent: null, includePrivate: false, redacted: 1 });
+    expect(list.entries.map((entry) => entry.name)).toEqual(["people", "cake.png", PRIVATE_FILE_NAME]);
+    expect(list.entries[2]).toMatchObject({ kind: "file", private: true, redacted: true });
+    expect(list.entries[2]!.path).toBeUndefined();
+    expect(JSON.stringify(list)).not.toContain("kept-menu");
+    expect(list.usage.maxFiles).toBeGreaterThan(0);
+
+    const tmp = HerFilesListResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files?root=tmp&dir=dm" })).json());
+    expect(tmp.entries).toEqual([expect.objectContaining({ name: PRIVATE_FILE_NAME, kind: "dir", private: true, redacted: true })]);
+    expect(JSON.stringify(tmp)).not.toContain("kevin");
+    expect((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files?root=tmp&dir=dm/kevin" })).json()).toMatchObject({ error: "PrivateContentLocalOnly" });
+    const revealed = HerFilesListResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files?root=tmp&dir=dm/kevin&includePrivate=1" })).json());
+    expect(revealed.entries).toEqual([expect.objectContaining({ name: "a7-menu.txt", path: "/tmp/dm/kevin/a7-menu.txt", private: true })]);
+
+    const note = HerFileResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files/~/people/kevin.md" })).json());
+    expect(note).toMatchObject({ kind: "text", text: "# Kevin\nlikes lemon cake\n", hash: written.hash });
+    const image = HerFileResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files/home/aria/cake.png" })).json());
+    expect(image).toMatchObject({ kind: "image", contentType: "image/png" });
+    expect(image.text).toBeUndefined();
+    const raw = await w.app.inject({ method: "GET", url: "/api/waifus/aria/files/home/aria/cake.png?raw=1" });
+    expect(raw.statusCode).toBe(200);
+    expect(raw.headers["content-type"]).toBe("image/png");
+    expect(raw.headers["x-content-type-options"]).toBe("nosniff");
+    expect(raw.rawPayload.equals(PNG)).toBe(true);
+
+    // A DM file (by folder or by hash): 403 without the reveal, and always over Remote Access.
+    for (const url of ["/api/waifus/aria/files/tmp/dm/kevin/a7-menu.txt", "/api/waifus/aria/files/home/aria/kept-menu.txt"]) {
+      const hidden = await w.app.inject({ method: "GET", url });
+      expect(hidden.statusCode).toBe(403);
+      expect(hidden.body).not.toContain("brownies");
+      expect((await w.app.inject({ method: "GET", url: `${url}?includePrivate=1` })).json()).toMatchObject({ private: true, text: "Kevin's secret menu: brownies\n" });
+      const remoteAsk = await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: `${url}?includePrivate=1` });
+      expect(remoteAsk.statusCode).toBe(403);
+      expect(remoteAsk.json()).toMatchObject({ error: "PrivateContentLocalOnly" });
+      const assistantAsk = await dispatchInternal(w.app, createLocalRequestPrincipal(), { conversationId: "c1" }, { method: "GET", url: `${url}?includePrivate=1` });
+      expect(assistantAsk.statusCode).toBe(403);
+    }
+    const remoteList = await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/aria/files" });
+    expect(remoteList.statusCode).toBe(200);
+    expect(remoteList.body).not.toContain("kept-menu");
+    // Paths outside her folders are refused.
+    expect((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files/etc/passwd" })).statusCode).toBe(400);
+    expect((await w.app.inject({ method: "GET", url: "/api/waifus/aria/files/home/aria/../../etc/passwd" })).statusCode).toBe(400);
+    expect((await w.app.inject({ method: "GET", url: "/api/waifus/nobody/files" })).statusCode).toBe(404);
+  });
+
+  it("writes under her Write tool's checks: places.md refused, broken JSON refused with line and column, hash revisions", async () => {
+    const w = await world();
+    const places = await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/home/aria/places.md", payload: { text: "mine now" } });
+    expect(places.statusCode).toBe(400);
+    expect(places.json()).toMatchObject({ error: "ReadOnlyFile", message: expect.stringContaining("places.md") });
+
+    const broken = await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/watches.json", payload: { text: '[\n  {"timeout": "2026-10-25 18:00", "note": "x", "when": []}\n  {"note": "y"}\n]' } });
+    expect(broken.statusCode).toBe(400);
+    expect(broken.json()).toMatchObject({ error: "InvalidFile", message: expect.stringMatching(/^watches\.json line 3, column 3: /u) });
+    expect(broken.body).not.toContain(w.root);
+    expect((await w.home.files.inspect(w.home.home("watches.json"))).kind).toBe("missing");
+
+    const first = HerFileWriteResponseSchema.parse((await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/plans.md", payload: { text: "bake", expectedHash: null } })).json());
+    expect((await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/plans.md", payload: { text: "again", expectedHash: null } })).statusCode).toBe(409);
+    const stale = await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/plans.md", payload: { text: "x", expectedHash: sha256("not it") } });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ error: "Conflict" });
+    const second = HerFileWriteResponseSchema.parse((await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/plans.md", payload: { text: "bake more", expectedHash: first.hash } })).json());
+    expect(second.created).toBe(false);
+    expect((await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/big.md", payload: { text: "x".repeat(300 * 1024) } })).statusCode).toBe(413);
+
+    // A new reminder gets its id when saved (the file is rewritten).
+    const at = localMinuteText(new Date(Date.now() + 2 * 3_600_000), hostTimeZone());
+    const schedule = HerFileWriteResponseSchema.parse((await w.app.inject({ method: "PUT", url: "/api/waifus/aria/files/~/schedule.json", payload: { text: JSON.stringify([{ at, note: "flyer" }]) } })).json());
+    expect(schedule.rewritten).toBe(true);
+
+    expect((await w.app.inject({ method: "DELETE", url: `/api/waifus/aria/files/~/plans.md?expectedHash=${first.hash}` })).statusCode).toBe(409);
+    const deleted = await w.app.inject({ method: "DELETE", url: `/api/waifus/aria/files/~/plans.md?expectedHash=${second.hash}` });
+    expect(HerFileDeleteResponseSchema.parse(deleted.json())).toEqual({ waifuId: "aria", deleted: true });
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/files/~/plans.md" })).statusCode).toBe(404);
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/files/~/places.md" })).statusCode).toBe(400);
+
+    // DM files are written or deleted only with the local reveal; the assistant needs its card.
+    await dmFiles(w);
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/files/~/kept-menu.txt" })).statusCode).toBe(403);
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/files/~/kept-menu.txt?includePrivate=1" })).statusCode).toBe(200);
+    const unconfirmed = await dispatchInternal(w.app, createLocalRequestPrincipal(), { conversationId: "c1" }, { method: "PUT", url: "/api/waifus/aria/files/~/a.md", payload: { text: "hi" } });
+    expect(unconfirmed.statusCode).toBe(403);
+    expect(unconfirmed.json()).toMatchObject({ error: "AssistantConfirmationRequired" });
+  });
+});
+
+describe("her reminders and watches", () => {
+  it("lists them parsed, redacts a watch bound to a DM, and deletes one entry by rewriting the file", async () => {
+    const w = await world();
+    const zone = hostTimeZone();
+    const soon = localMinuteText(new Date(Date.now() + 2 * 3_600_000), zone);
+    const later = localMinuteText(new Date(Date.now() + 5 * 3_600_000), zone);
+    await w.home.files.writeBytes(w.home.home("schedule.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, note: "flyer" }, { id: "r2", at: later, repeat: "daily", note: "water plants" }])));
+    await w.home.files.writeBytes(
+      w.home.home("watches.json"),
+      Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: later, once: true, note: "Kevin's exam result", when: [{ place: "dm/kevin", words: ["exam"] }] }]))
+    );
+    await mkdir(path.dirname(w.storage.dataPath(lifePaths.watchIds("aria"))), { recursive: true });
+    await writeFile(w.storage.dataPath(lifePaths.watchIds("aria")), JSON.stringify({ nextId: 3, watches: { w2: { bindings: [{ placeKey: DM_KEY, words: ["exam"] }], fires: [] } } }));
+
+    const schedule = ScheduleResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/schedule" })).json());
+    expect(schedule.entries.map((entry) => entry.id)).toEqual(["r1", "r2"]);
+    expect(schedule.unreadable).toBeUndefined();
+
+    const watches = WatchesResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/watches" })).json());
+    expect(watches.entries[0]).toMatchObject({ id: "w1", note: "tea", when: [] });
+    expect(watches.entries[1]).toMatchObject({ id: "w2", private: true, note: PRIVATE_FILE_NAME, when: [{ place: PRIVATE_FILE_NAME, words: [PRIVATE_FILE_NAME] }] });
+    expect(JSON.stringify(watches)).not.toContain("exam");
+    const open = WatchesResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/aria/watches?includePrivate=1" })).json());
+    expect(open.entries[1]).toMatchObject({ note: "Kevin's exam result", when: [{ place: "dm/kevin", words: ["exam"] }] });
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/aria/watches?includePrivate=1" })).statusCode).toBe(403);
+
+    expect(PlanEntryDeleteResponseSchema.parse((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/schedule/r1" })).json())).toEqual({ waifuId: "aria", removed: "r1" });
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/schedule/r1" })).statusCode).toBe(404);
+    expect((await w.home.readSchedule(zone)).map((entry) => entry.id)).toEqual(["r2"]);
+
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/watches/w2" })).json()).toEqual({ waifuId: "aria", removed: "w2" });
+    const after = await w.home.readWatches(zone);
+    expect(after.entries.map((entry) => entry.id)).toEqual(["w1"]);
+    expect(after.ids.watches["w2"]).toBeUndefined();
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/watches/w9" })).statusCode).toBe(404);
+
+    // A hand-broken file: listed as unreadable, and nothing is rewritten.
+    await w.home.files.writeBytes(w.home.home("schedule.json"), Buffer.from(`[{"id": "r2", "at": "${later}", "note": "x"},]`));
+    expect((await w.app.inject({ method: "GET", url: "/api/waifus/aria/schedule" })).json()).toMatchObject({ unreadable: true });
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/aria/schedule/r2" })).statusCode).toBe(409);
+  });
+});

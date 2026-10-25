@@ -6,7 +6,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ForgetPersonPanel, forgetSummary } from "../src/frontend/components/ForgetPersonPanel.js";
 import { TurnCell } from "../src/frontend/screens/LifeScreen.js";
-import { blockRow, castEvents, groupByTurn, matchingReveal, mergeTimeline, PRIVATE_HIDDEN, settledAll, stateLabel } from "../src/frontend/screens/lifeView.js";
+import { blockRow, breadcrumbs, castEvents, fileSize, groupByTurn, matchingReveal, mergeTimeline, PRIVATE_HIDDEN, settledAll, stateLabel, watchWhenText } from "../src/frontend/screens/lifeView.js";
+import { FileRow, ReminderList, WatchList } from "../src/frontend/screens/LifeFiles.js";
+import { PRIVATE_FILE_NAME } from "../src/shared/constants/files.js";
 import { ConfirmDialog } from "../src/frontend/components/ConfirmDialog.js";
 import { detectorChoiceOf, detectorPatch } from "../src/frontend/screens/RoomsScreen.js";
 import { waifuPatch, waifuProblems } from "../src/frontend/screens/castEdit.js";
@@ -237,6 +239,49 @@ describe("review: dashboard fixes", () => {
     expect(html.indexOf("Keep")).toBeLessThan(html.indexOf("Reset<"));
     // The forget panel's id field has a label.
     expect(renderToStaticMarkup(createElement(ForgetPersonPanel))).toMatch(/<label[^>]*for="([^"]+)"[\s\S]*<input[^>]*id="\1"/u);
+  });
+});
+
+describe("her files, reminders and watches (§16.11)", () => {
+  it("a DM file the server left unnamed stays unnamed and cannot be opened", () => {
+    const hidden = renderToStaticMarkup(createElement(FileRow, { entry: { name: PRIVATE_FILE_NAME, kind: "file", size: 30, modified: AT, private: true, redacted: true }, onOpen: () => undefined }));
+    expect(hidden).toContain(PRIVATE_FILE_NAME);
+    expect(hidden).toContain("private chat");
+    expect(hidden).not.toContain("<button");
+    const plain = renderToStaticMarkup(createElement(FileRow, { entry: { name: "people", path: "/home/aria/people", kind: "dir", size: 0, modified: AT }, onOpen: () => undefined }));
+    expect(plain).toContain("people/");
+    expect(plain).toContain("folder");
+    expect(fileSize(1234)).toBe("1.2 KB");
+  });
+
+  it("walks back from a folder to her home or /tmp", () => {
+    expect(breadcrumbs({ root: "home", dir: "/home/aria/people/friends", display: "~/people/friends" })).toEqual([
+      { label: "~", dir: "/home/aria" },
+      { label: "people", dir: "/home/aria/people" },
+      { label: "friends", dir: "/home/aria/people/friends" }
+    ]);
+    expect(breadcrumbs({ root: "tmp", dir: "/tmp", display: "/tmp" })).toEqual([{ label: "/tmp", dir: "/tmp" }]);
+  });
+
+  it("lists reminders and watches with delete buttons; a private watch shows only that it is private", () => {
+    const reminders = renderToStaticMarkup(createElement(ReminderList, { data: { waifuId: "aria", timeZone: "UTC", entries: [{ id: "r4", at: "2026-10-25 18:00", repeat: "daily", note: "check the flyer" }] }, onDelete: () => undefined }));
+    expect(reminders).toContain("check the flyer");
+    expect(reminders).toContain("daily");
+    expect(reminders).toContain("delete");
+    const watches = {
+      waifuId: "aria",
+      timeZone: "UTC",
+      includePrivate: false,
+      entries: [
+        { id: "w3", timeout: "2026-10-25 18:00", once: true, note: "tea", when: [] },
+        { id: "w4", timeout: "2026-10-25 19:00", once: true, note: PRIVATE_FILE_NAME, when: [{ place: PRIVATE_FILE_NAME }], private: true as const }
+      ]
+    };
+    const html = renderToStaticMarkup(createElement(WatchList, { data: watches, includePrivate: false, onDelete: () => undefined }));
+    expect(html).toContain("timer · tea");
+    expect(html).toContain(PRIVATE_HIDDEN);
+    expect(html).toContain("private chat");
+    expect(watchWhenText({ when: [{ place: "bake-club/#general", from: "Mina", words: ["brownie"] }] })).toBe("in bake-club/#general · from Mina · words: brownie");
   });
 });
 

@@ -60,16 +60,26 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |
 | `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of nightly maintenance for a waifu with no sleep window (with one, it runs 30 minutes into her sleep). |
 | `life.webFetch.model` | string | `""` | Route for reading long web pages ("" = the cheapest offered route with a key; name a contributor route here to allow one). |
-| `life.webFetch.maxPerWaifuPerDay` | integer 0–500 | `20` | Pages one waifu may fetch per day (0 = no web_fetch). |
-| `life.webFetch.maxPerTurn` | integer 0–20 | `3` | Pages she may fetch in one turn (0 = no web_fetch). |
+| `life.webFetch.maxPerWaifuPerDay` | integer 0–500 | `20` | Pages one waifu may fetch per day (0 = no WebFetch). |
+| `life.webFetch.maxPerTurn` | integer 0–20 | `3` | Pages she may fetch in one turn (0 = no WebFetch). |
 | `life.webFetch.directMaxChars` | integer 0–20000 [characters] | `2000` | A page this short is given to her as is; longer ones are read by one digest call. |
 | `life.webFetch.maxBytes` | integer 65536–10485760 [bytes] | `5242880` | Largest page downloaded. |
 | `life.webFetch.timeoutMs` | integer 2000–60000 [ms] | `20000` | Time limit for one page. |
 | `life.webFetch.maxRedirects` | integer 0–10 | `5` | Redirects followed (each hop is checked against private addresses). |
 | `life.webFetch.cacheMinutes` | integer 0–1440 [minutes] | `15` | Fetched pages are cached this long. |
-| `search.maxPerSecond` | integer 0–10 | `2` | Web searches started per second, host-wide (paced, not refused; 0 = no web_search). |
-| `search.maxPerDay` | integer 0–10000 | `50` | Web searches per day, host-wide (0 = no web_search). The optional Exa key is the `exa` provider credential, not config. |
-| `search.maxPerWaifuPerDay` | integer 0–10000 | `20` | Web searches one waifu may make per day (0 = no web_search). |
+| `life.home.maxBytes` | integer 1048576–1073741824 [bytes] | `52428800` | Her home folder (her notes, reminders, watches and anything she keeps) may hold at most this much; a write past it is refused. |
+| `life.home.maxFiles` | integer 10–20000 | `2000` | Files her home folder may hold. |
+| `life.tmp.maxBytes` | integer 1048576–2147483648 [bytes] | `209715200` | Her /tmp (downloads and scratch files) may hold at most this much; the oldest files there are deleted when a download would not fit. |
+| `life.tmp.retentionDays` | integer 1–90 [days] | `7` | Files in her /tmp are deleted this many days after they were last written (her home is never touched). |
+| `life.attachments.maxBytes` | integer 65536–52428800 [bytes] | `10485760` | Largest attachment ReadMessages downloads into her /tmp (images, PDFs and text files; larger ones are only listed). |
+| `life.send.maxFiles` | integer 0–10 | `4` | Files she may attach to one message (0 = none). |
+| `life.bash.enabled` | boolean | `true` | Offer her the simulated Bash (just-bash over a copy of her two folders; never a real program, no network). Off: the tool is not offered. |
+| `life.bash.python` | boolean | `true` | Let her Bash run python3 (CPython compiled to WebAssembly, inside the same isolation). |
+| `life.bash.maxTimeoutMs` | integer 1000–300000 [ms] | `60000` | The longest one Bash command may run (she asks for up to this; the default is 10 seconds). The worker is terminated at the limit and nothing is saved. |
+| `life.bash.maxOutputChars` | integer 1000–100000 [characters] | `16000` | Bash output she sees (the rest is cut). |
+| `search.maxPerSecond` | integer 0–10 | `2` | Web searches started per second, host-wide (paced, not refused; 0 = no WebSearch). |
+| `search.maxPerDay` | integer 0–10000 | `50` | Web searches per day, host-wide (0 = no WebSearch). The optional Exa key is the `exa` provider credential, not config. |
+| `search.maxPerWaifuPerDay` | integer 0–10000 | `20` | Web searches one waifu may make per day (0 = no WebSearch). |
 | `detector.target` | string | `openrouter:cloudflare/clef` | The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:cloudflare/clef, openai:gpt-6-luna or laya:english; "" turns it off (then a first message in 10 minutes or a question wakes one waifu at random). Also GET/PUT /api/detector/config. |
 | `updates.enabled` | boolean | `false` | Install newer patch releases automatically when every managed process is idle (global npm installs only). (local-only write) |
 | `updates.checkIntervalMinutes` | integer 15–1440 [minutes] | `60` | How often npm is checked for a newer patch release. (local-only write) |
@@ -224,7 +234,7 @@ CLI: `waifus get remote-access [KEY]`, `waifus set remote-access KEY VALUE`, `wa
 
 ### A waifu's life (`life`)
 
-Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (notes, plans and queued wakes stay).
+Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app) and /tmp (files people sent, deleted 7 days after the last write). The files routes list, read, write and delete them under the same checks as her Write tool (places.md refused, the JSON files checked with line and column; revision by content hash, expectedHash). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a watch bound to a DM is redacted the same way.
 
 - `GET /api/waifus/:waifuId/life` — Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally).
 - `GET /api/waifus/:waifuId/life/log` — Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1).
@@ -233,13 +243,24 @@ Each waifu is an autonomous agent with one continuous life: wakes arrive as noti
 - `POST /api/waifus/:waifuId/life/reset` — Reset her short-term memory: a fresh epoch, no summary ({confirm: true}).
 - `GET /api/waifus/:waifuId/life/needs-review` — Forget review lines for the owner.
 - `DELETE /api/waifus/:waifuId/life/needs-review/:itemId` — Dismiss a review line.
+- `GET /api/waifus/:waifuId/files` — List a folder of her home or /tmp (?root=home|tmp&dir; files from private chats are named only with a local includePrivate=1).
+- `GET /api/waifus/:waifuId/files/*` — One of her files: JSON with the text for a text file, ?raw=1 for the bytes (a DM file needs a local includePrivate=1).
+- `PUT /api/waifus/:waifuId/files/*` — Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md refused).
+- `DELETE /api/waifus/:waifuId/files/*` — Delete one of her files (?expectedHash).
+- `GET /api/waifus/:waifuId/schedule` — Her reminders (~/schedule.json), parsed.
+- `DELETE /api/waifus/:waifuId/schedule/:reminderId` — Remove one reminder from her schedule.json.
+- `GET /api/waifus/:waifuId/watches` — Her watches (~/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1.
+- `DELETE /api/waifus/:waifuId/watches/:watchId` — Remove one watch from her watches.json.
 
 - `waifus life <waifu> [--log] [--private]`
 - `waifus wake <waifu> [note]`
+- `waifus files <waifu> [path] [--root tmp] [--private]`
+- `waifus schedule <waifu>`
+- `waifus watches <waifu> [--private]`
 
 ### Forget a person (`forget`)
 
-POST /api/people/:userId/forget {confirm: true, dryRun?} deletes the person's DMs with every waifu, removes them from member lists and the archive, and scrubs every life (her summary, queued wakes and plans, and her notes, then a verification pass). A part that fails answers 202 with `pending` and runs again at the next start (given up after 3 tries, with an owner notice). Review lines (names someone else shares) are kept per waifu for the owner.
+POST /api/people/:userId/forget {confirm: true, dryRun?} deletes the person's DMs with every waifu, removes them from member lists and the archive, and scrubs every life (her summary, queued wakes, her reminders and watches, and every text file in her home, then a verification pass; her downloads of the person's files and copies of them are deleted). A part that fails answers 202 with `pending` and runs again at the next start (given up after 3 tries, with an owner notice). Review lines (names someone else shares) are kept per waifu for the owner.
 
 - `POST /api/people/:userId/forget` — Forget a Discord user everywhere ({confirm: true, dryRun?}; 202 with pending parts).
 - `GET /api/people/forget-jobs` — Owner forgets that have not finished, part by part.
@@ -299,6 +320,9 @@ DC_WAIFUS_HOME overrides the data root (default ~/.dc-waifus). DC_WAIFUS_LAYA_PY
 - `waifus unset TARGET KEY [KEY…] [--yes]` · `waifus unset waifu:aria life.dailyBudgetUsd` — Reset keys: a key that takes null is cleared, any other key goes back to its default.
 - `waifus wake WAIFU [NOTE…]` — Wake a waifu now, with an optional note she sees (an owner wake skips sleep and budget).
 - `waifus life WAIFU [--log] [--limit N] [--private]` — A waifu's life: status, queue and today's cost; --log adds the recent life log.
+- `waifus files WAIFU [PATH] [--root tmp] [--private]` · `waifus files aria people/kevin.md` · `waifus files aria --root tmp` — Her files: list a folder of her home or /tmp, or print a text file.
+- `waifus schedule WAIFU` — Her reminders (~/schedule.json), in the host's time zone.
+- `waifus watches WAIFU [--private]` — Her watches (~/watches.json): what each waits for and when it times out.
 - `waifus forget USER_ID [--yes] [--dry-run]` — Forget a Discord user everywhere (best-effort scrub); asks for confirmation unless --yes.
 - `waifus usage [--from DAY] [--to DAY] [--by KEY[,KEY]] [--waifu ID] [--tz ZONE]` — Model calls and cost from the usage ledger, by local day (or another grouping).
 - `waifus start [--host 127.0.0.1] [--port 3888] [--data-root PATH]` — Start the host in the background (dashboard, API and Discord).

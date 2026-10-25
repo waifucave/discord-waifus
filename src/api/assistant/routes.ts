@@ -386,6 +386,7 @@ function actionReceiptMessage(category: string): string {
   if (category === "people_forget") return "The user was forgotten.";
   if (category === "dm_forget") return "The DM conversation was forgotten.";
   if (category === "app_config_host") return "The host settings were changed.";
+  if (category === "waifu_file_write") return "The file was saved.";
   return "The confirmed assistant action completed.";
 }
 

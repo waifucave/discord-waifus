@@ -1,11 +1,16 @@
-// `waifus wake | life | forget | usage` (Living cast §14.2): over the real API on a temp data root
-// (Discord offline, so wakes queue and forget scrubs wait for each life's next start). The life log
-// leaves DM content out unless --private; forget confirms or needs --yes and states the scrub limits.
+// `waifus wake | life | forget | usage | files | schedule | watches` (Living cast §14.2, §16.11): over
+// the real API on a temp data root (Discord offline, so wakes queue and forget scrubs wait for each
+// life's next start). The life log and her DM files leave DM content out unless --private; forget
+// confirms or needs --yes and states the scrub limits.
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { HomeStore, homeLimitsOf } from "../src/life/home/homeStore.js";
+import { localMinuteText } from "../src/life/home/specialFiles.js";
 import { appendLifeLog, updateLifeState } from "../src/life/lifeStore.js";
+import { hostTimeZone } from "../src/orchestration/context/timeFormat.js";
+import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { FORGET_LIMITS } from "../src/shared/constants/forget.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { cli, injectTransport, makeCliApp } from "./cliFixtures.js";
@@ -117,5 +122,53 @@ describe("waifus usage", () => {
     expect((await cli(root, null, ["usage", "--by", "colour"], { now })).code).toBe(2);
     expect((await cli(root, null, ["usage", "--from", "yesterday"], { now })).code).toBe(2);
     expect((await cli(root, null, ["usage", "--tz", "Mars/Base"], { now })).code).toBe(2);
+  });
+});
+
+describe("waifus files / schedule / watches", () => {
+  it("lists her folders, prints a text file, and leaves a DM file unnamed unless --private", async () => {
+    const { root, host, storage } = await world();
+    const home = new HomeStore(storage, "aria", "aria", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+    await home.files.writeBytes(home.path("home", ["people", "kevin.md"]), Buffer.from("# Kevin\nlikes lemon cake\n"));
+    await home.files.writeBytes(home.path("tmp", ["dm", "kevin", "a7-menu.txt"]), Buffer.from("secret brownies"));
+    await home.files.writeBytes(home.path("tmp", ["bake-club", "general", "k3-cake.png"]), Buffer.from("89504e470d0a1a0a00", "hex"));
+
+    const list = await cli(root, host, ["files", "aria"]);
+    expect(list.code).toBe(0);
+    expect(list.out).toContain("~ (her home");
+    expect(list.out).toContain("people/");
+    const note = await cli(root, host, ["files", "aria", "people/kevin.md"]);
+    expect(note.out).toBe("# Kevin\nlikes lemon cake");
+    expect((await cli(root, host, ["files", "aria", "/home/aria/people"])).out).toContain("kevin.md");
+    expect((await cli(root, host, ["files", "aria", "bake-club/general/k3-cake.png", "--root", "tmp"])).out).toContain("an image");
+
+    const dm = await cli(root, host, ["files", "aria", "dm", "--root", "tmp"]);
+    expect(dm.out).toContain("[private chat redacted]");
+    expect(dm.out).not.toContain("kevin");
+    const refused = await cli(root, host, ["files", "aria", "/tmp/dm/kevin/a7-menu.txt"]);
+    expect(refused.code).toBe(4);
+    expect(refused.err).not.toContain("brownies");
+    expect((await cli(root, host, ["files", "aria", "/tmp/dm/kevin/a7-menu.txt", "--private"])).out).toBe("secret brownies");
+
+    expect((await cli(root, host, ["files", "aria", "nothing.md"])).code).toBe(4);
+    expect((await cli(root, host, ["files", "aria", "x", "--root", "etc"])).code).toBe(2);
+    expect((await cli(root, null, ["files", "aria"])).code).toBe(3);
+  });
+
+  it("prints her reminders and watches, a DM-bound watch without its words unless --private", async () => {
+    const { root, host, storage } = await world();
+    const home = new HomeStore(storage, "aria", "aria", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+    const soon = localMinuteText(new Date(Date.now() + 2 * 3_600_000), hostTimeZone());
+    expect((await cli(root, host, ["schedule", "aria"])).out).toContain("no reminders");
+    await home.files.writeBytes(home.home("schedule.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, repeat: "daily", note: "water the plants" }])));
+    await home.files.writeBytes(home.home("watches.json"), Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: soon, once: true, note: "his exam", when: [{ place: "dm/kevin", words: ["exam"] }] }])));
+    const schedule = await cli(root, host, ["schedule", "aria"]);
+    expect(schedule.out).toMatch(/r1\s+.*\(daily\)\s+water the plants/u);
+    const watches = await cli(root, host, ["watches", "aria"]);
+    expect(watches.out).toContain("timer");
+    expect(watches.out).toContain("[private chat redacted]");
+    expect(watches.out).not.toContain("exam");
+    expect((await cli(root, host, ["watches", "aria", "--private"])).out).toContain("his exam");
+    expect(JSON.parse((await cli(root, host, ["watches", "aria", "--json"])).out)).toMatchObject({ ok: true, includePrivate: false });
   });
 });

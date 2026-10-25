@@ -1,24 +1,34 @@
-// `waifus wake | life | forget | usage` (Living cast spec §14.2): a waifu's life from the command
-// line, over the running host's API (usage reads the ledger directly, so it works offline too).
+// `waifus wake | life | forget | usage | files | schedule | watches` (Living cast spec §14.2,
+// §16.11): a waifu's life from the command line, over the running host's API (usage reads the
+// ledger directly, so it works offline too).
 // Life-log rendering is generic over tool names: a call prints its name and arguments as given.
 
 import { FORGET_LIMITS_TEXT } from "../shared/constants/forget.js";
+import { herFileUrl, herPathInput } from "../shared/constants/files.js";
 import type {
+  HerFileResponseSchema,
+  HerFilesListResponseSchema,
   LifeLogResponseSchema,
   LifeStatusResponseSchema,
   PeopleForgetResponseSchema,
-  WakeResponseSchema
+  ScheduleResponseSchema,
+  WakeResponseSchema,
+  WatchesResponseSchema
 } from "../shared/schemas/api.js";
 import type { z } from "zod";
 import { localDayKey } from "../life/clock.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { assertTimeZone, parseGroupBy, shiftDay, usageReport, UsageQueryError, type UsageReport } from "../orchestration/usageReport.js";
-import { call, CliFailure, EXIT, requireHost, usageError, type CliContext, type ExitCode } from "./cliContext.js";
+import { call, CliFailure, EXIT, httpFailure, requireHost, usageError, type CliContext, type ExitCode } from "./cliContext.js";
 
 type LifeStatus = z.output<typeof LifeStatusResponseSchema>;
 type LifeLog = z.output<typeof LifeLogResponseSchema>;
 type WakeResult = z.output<typeof WakeResponseSchema>;
 type ForgetResult = z.output<typeof PeopleForgetResponseSchema>;
+type FilesList = z.output<typeof HerFilesListResponseSchema>;
+type HerFile = z.output<typeof HerFileResponseSchema>;
+type Schedule = z.output<typeof ScheduleResponseSchema>;
+type Watches = z.output<typeof WatchesResponseSchema>;
 
 const SAFE_ID = /^[A-Za-z0-9._:-]+$/u;
 const SNOWFLAKE = /^\d{17,20}$/u;
@@ -159,7 +169,7 @@ function forgetSummary(result: ForgetResult): string[] {
   ];
   if (result.archive) lines.push(`  archive: ${result.archive.removed} of ${result.archive.files} file(s) scrubbed${result.archive.unreadable ? `, ${result.archive.unreadable} unreadable` : ""}.`);
   for (const life of result.lives ?? []) {
-    lines.push(`  ${life.waifuId}: ${life.queued ? "scrub queued" : `${life.removedLines} log line(s), ${life.removedSentences} sentence(s)${life.removedNotes !== undefined ? `, ${life.removedNotes} note(s)` : ""} removed`}${life.needsReview.length ? `; ${life.needsReview.length} line(s) to review` : ""}`);
+    lines.push(`  ${life.waifuId}: ${life.queued ? "scrub queued" : `${life.removedLines} log line(s), ${life.removedSentences} sentence(s)${life.removedNotes !== undefined ? `, ${life.removedNotes} note(s)` : ""}${life.removedFiles ? `, ${life.removedFiles} file(s)` : ""} removed`}${life.needsReview.length ? `; ${life.needsReview.length} line(s) to review` : ""}`);
   }
   if (result.livesQueued?.length) lines.push(`  life scrubs queued (they run when each life next starts): ${result.livesQueued.join(", ")}`);
   for (const pending of result.pending ?? []) {
@@ -237,5 +247,104 @@ export async function usageCommand(
   if (report.totals.failedCalls) ctx.out(`  ${report.totals.failedCalls} failed or aborted call(s) included`);
   if (report.skippedLines) ctx.out(`  ${report.skippedLines} unreadable ledger line(s) skipped`);
   if (report.groupsCapped) ctx.out("  over 1000 groups: the rest are added up under (other)");
+  return EXIT.ok;
+}
+
+// ---- her files, reminders and watches (§16.11) -----------------------------------------------------
+
+function sizeLabel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function listingLines(list: FilesList): string[] {
+  const where = list.root === "home" ? "her home" : "/tmp";
+  const limit = `${sizeLabel(list.usage.bytes)} of ${sizeLabel(list.usage.maxBytes)}${list.usage.maxFiles !== undefined ? `, ${list.usage.files} of ${list.usage.maxFiles} files` : `, ${list.usage.files} files`}`;
+  const lines = [`${list.display} (${where}: ${limit})`];
+  if (list.entries.length === 0) lines.push("  (empty)");
+  const width = Math.min(48, Math.max(8, ...list.entries.map((entry) => entry.name.length + (entry.kind === "dir" ? 1 : 0))));
+  for (const entry of list.entries) {
+    const name = `${entry.name}${entry.kind === "dir" && !entry.redacted ? "/" : ""}`;
+    const size = entry.kind === "dir" ? "folder" : sizeLabel(entry.size);
+    lines.push(`  ${name.padEnd(width)}  ${size.padStart(9)}  ${entry.modified}${entry.private ? "  (private chat)" : ""}`);
+  }
+  if (list.redacted > 0) lines.push(`(${list.redacted} entr${list.redacted === 1 ? "y" : "ies"} from private chats left unnamed; --private shows them on this computer)`);
+  return lines;
+}
+
+/** `waifus files WAIFU [PATH] [--root home|tmp] [--private]`: list a folder, or print a text file. */
+export async function filesCommand(ctx: CliContext, args: readonly string[], o: { root?: string; private?: boolean }): Promise<ExitCode> {
+  const waifuId = waifuIdArg(args[0]);
+  if (args.length > 2) throw usageError("waifus files takes one waifu and at most one path.");
+  if (o.root !== undefined && o.root !== "home" && o.root !== "tmp") throw usageError("--root is home or tmp.");
+  const input = herPathInput(args[1], (o.root as "home" | "tmp" | undefined) ?? "home");
+  const host = await requireHost(ctx);
+  const privateQuery = o.private ? "includePrivate=1" : "";
+  const listFolder = async (dir: string): Promise<ExitCode> => {
+    const query = new URLSearchParams({ dir });
+    if (o.private) query.set("includePrivate", "1");
+    const { body } = await call<FilesList>(host, { method: "GET", path: `/api/waifus/${encodeURIComponent(waifuId)}/files?${query.toString()}` }, `Listing ${dir}`);
+    if (ctx.json) ctx.out(JSON.stringify({ ok: true, ...body }, null, 2));
+    else for (const line of listingLines(body)) ctx.out(line);
+    return EXIT.ok;
+  };
+  if (input === "~" || input === "/tmp" || input.endsWith("/")) return listFolder(input.replace(/(.)\/+$/u, "$1"));
+  const response = await host({ method: "GET", path: `${herFileUrl(waifuId, input)}${privateQuery ? `?${privateQuery}` : ""}` });
+  const code = (response.body as { error?: unknown } | undefined)?.error;
+  if (response.status === 400 && code === "IsFolder") return listFolder(input);
+  if (response.status < 200 || response.status >= 300) throw httpFailure(response, `Reading ${input}`);
+  const file = response.body as HerFile;
+  if (ctx.json) {
+    ctx.out(JSON.stringify({ ok: true, ...file }, null, 2));
+    return EXIT.ok;
+  }
+  if (file.text !== undefined) {
+    ctx.out(file.text.replace(/\n$/u, ""));
+    return EXIT.ok;
+  }
+  const what = file.kind === "text" ? "a text file too large to print here" : file.kind === "binary" ? "not a text file" : `${file.kind === "image" ? "an image" : "a PDF"}; open it in the dashboard (Life → her files)`;
+  ctx.out(`${file.display}: ${sizeLabel(file.size)}, ${what}.`);
+  return EXIT.ok;
+}
+
+/** `waifus schedule WAIFU`: her reminders. */
+export async function scheduleCommand(ctx: CliContext, args: readonly string[]): Promise<ExitCode> {
+  const waifuId = waifuIdArg(args[0]);
+  if (args.length > 1) throw usageError("waifus schedule takes one waifu.");
+  const host = await requireHost(ctx);
+  const { body } = await call<Schedule>(host, { method: "GET", path: `/api/waifus/${encodeURIComponent(waifuId)}/schedule` }, `Reading ${waifuId}'s reminders`);
+  if (ctx.json) {
+    ctx.out(JSON.stringify({ ok: true, ...body }, null, 2));
+    return EXIT.ok;
+  }
+  ctx.out(body.entries.length === 0 ? `${waifuId} has no reminders.` : `${waifuId}'s reminders (${body.timeZone}):`);
+  for (const entry of body.entries) ctx.out(`  ${entry.id.padEnd(5)} ${entry.at}${entry.repeat ? ` (${entry.repeat})` : ""}  ${oneLine(entry.note, 200)}`);
+  if (body.unreadable) ctx.out("  ~/schedule.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
+  return EXIT.ok;
+}
+
+/** `waifus watches WAIFU [--private]`: her watches. */
+export async function watchesCommand(ctx: CliContext, args: readonly string[], o: { private?: boolean }): Promise<ExitCode> {
+  const waifuId = waifuIdArg(args[0]);
+  if (args.length > 1) throw usageError("waifus watches takes one waifu.");
+  const host = await requireHost(ctx);
+  const { body } = await call<Watches>(host, { method: "GET", path: `/api/waifus/${encodeURIComponent(waifuId)}/watches${o.private ? "?includePrivate=1" : ""}` }, `Reading ${waifuId}'s watches`);
+  if (ctx.json) {
+    ctx.out(JSON.stringify({ ok: true, ...body }, null, 2));
+    return EXIT.ok;
+  }
+  ctx.out(body.entries.length === 0 ? `${waifuId} has no watches.` : `${waifuId}'s watches (${body.timeZone}):`);
+  for (const entry of body.entries) {
+    const waits = entry.when.length === 0
+      ? "timer"
+      : entry.when
+          .map((binding) => [binding.place && `in ${binding.place}`, binding.from && `from ${binding.from}`, binding.words?.length && `words ${binding.words.join(", ")}`, binding.any_message && "any message"].filter(Boolean).join(" "))
+          .join(" | ");
+    ctx.out(`  ${entry.id.padEnd(5)} until ${entry.timeout}${entry.once ? "" : " (repeats)"}  ${waits}  · ${oneLine(entry.note, 200)}${entry.private ? "  (private chat)" : ""}`);
+  }
+  const hidden = body.entries.filter((entry) => entry.private && !body.includePrivate).length;
+  if (hidden > 0) ctx.out(`(${hidden} watch(es) bound to private chats shown without their words; --private shows them on this computer)`);
+  if (body.unreadable) ctx.out("  ~/watches.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
   return EXIT.ok;
 }

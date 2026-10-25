@@ -10,6 +10,7 @@ import {
   TrustedDeviceSummaryV1Schema
 } from "../../shared/schemas/remoteLifecycle.js";
 import { FORGET_LIMITS_TEXT } from "../../shared/constants/forget.js";
+import { herFileUrl, herPathInput } from "../../shared/constants/files.js";
 import { listDocs, readDoc, searchDocs } from "../docsKb.js";
 import { dispatchInternal } from "../internalDispatch.js";
 import type {
@@ -82,6 +83,12 @@ const NO_ARGS = { type: "object", properties: {}, additionalProperties: false } 
 
 /** get_setting_help answers are cut here (overhaul spec §10.7). */
 const SETTING_HELP_MAX_CHARS = 12_000;
+
+/** read_file answers are cut here. */
+const ASSISTANT_FILE_TEXT_MAX_CHARS = 20_000;
+/** write_file's text travels in the confirmation card, which holds at most 32 KB. */
+export const ASSISTANT_WRITE_MAX_BYTES = 16 * 1024;
+const ASSISTANT_WRITE_PREVIEW_CHARS = 1_500;
 
 /** The most usage groups one `get_usage` answer carries (the costliest; the rest are counted). */
 export const ASSISTANT_USAGE_MAX_GROUPS = 40;
@@ -540,7 +547,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Propose forgetting a Discord user everywhere on this host (Living cast §7.5): their DMs with every waifu, DM " +
       "state and cached DM images, member lists, the archive, and a best-effort scrub of every waifu's life log, " +
-      "summary and notes (a name someone else also has is only listed for review). Destructive: it runs only if the " +
+      "summary and her files (a name someone else also has is only listed for review). Destructive: it runs only if the " +
       "user accepts the separate secure dashboard confirmation card, which states what a forget cannot remove.",
     parameters: {
       type: "object",
@@ -560,7 +567,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
         summary:
           `Forget Discord user ${discordUserId}: delete ${counts.dmContexts} DM conversation${counts.dmContexts === 1 ? "" : "s"}, ` +
           `${counts.dmStates} DM state${counts.dmStates === 1 ? "" : "s"} and ${counts.cachedImages} cached image${counts.cachedImages === 1 ? "" : "s"}, ` +
-          `and scrub them from every waifu's life and notes. ${FORGET_LIMITS_TEXT}`,
+          `and scrub them from every waifu's life and files. ${FORGET_LIMITS_TEXT}`,
         resource: { type: "discord_user", identifier: discordUserId },
         operation: {
           kind: "exact_http",
@@ -992,6 +999,109 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
           payload: typeof args.note === "string" && args.note.trim() ? { note: args.note.trim().slice(0, 500) } : {}
         })
       ).body
+  },
+  {
+    name: "list_files",
+    description:
+      "List a folder of a waifu's own computer (Living cast §16): her home (`/home/<name>`, `~`: her notes in any " +
+      "layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app) " +
+      "or /tmp (files people sent, deleted 7 days after the last write). Entries have name, path, kind, size and " +
+      "modified time. Files from private chats are never shown to you: they appear as `[private chat redacted]`.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        root: { type: "string", enum: ["home", "tmp"], description: "Default home." },
+        dir: { type: "string", description: "A folder below the root (`people`), or a path from an entry." }
+      },
+      required: ["waifuId"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const query = new URLSearchParams();
+      if (args.root === "home" || args.root === "tmp") query.set("root", args.root);
+      if (typeof args.dir === "string" && args.dir.trim()) query.set("dir", args.dir.trim());
+      const suffix = query.toString();
+      return (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/files${suffix ? `?${suffix}` : ""}` })).body;
+    }
+  },
+  {
+    name: "read_file",
+    description:
+      "Read one of a waifu's files by path (`~/people/kevin.md`, `/home/<name>/MEMORY.md`, `/tmp/…`; a relative path " +
+      "is under her home). Text files come back with their text and a hash; images and PDFs only with their size and " +
+      "type (the owner opens them in the dashboard). Files from private chats are refused.",
+    parameters: {
+      type: "object",
+      properties: { waifuId: { type: "string" }, path: { type: "string" } },
+      required: ["waifuId", "path"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const result = await inject(ctx, { method: "GET", url: herFileUrl(String(args.waifuId), herPathInput(String(args.path ?? ""))) });
+      if (result.status !== 200) return result.body;
+      const file = JSON.parse(result.body) as { text?: string } & Record<string, unknown>;
+      if (typeof file.text === "string" && file.text.length > ASSISTANT_FILE_TEXT_MAX_CHARS) {
+        return JSON.stringify({ ...file, text: `${file.text.slice(0, ASSISTANT_FILE_TEXT_MAX_CHARS)}\n… (cut)`, cut: true });
+      }
+      return result.body;
+    }
+  },
+  {
+    name: "write_file",
+    description:
+      "Propose creating or replacing a text file in a waifu's folders (the whole new text). It runs only if the user " +
+      "accepts the separate secure dashboard confirmation card, which shows the file and the start of the text; the " +
+      "same checks as her own Write tool apply when it runs (places.md is refused; schedule.json and watches.json " +
+      "must stay valid JSON in her format). At most 16 KB; larger edits are for the dashboard's editor.",
+    parameters: {
+      type: "object",
+      properties: {
+        waifuId: { type: "string" },
+        path: { type: "string", description: "`~/people/kevin.md`, `/tmp/x.txt`, or relative to her home." },
+        text: { type: "string", description: "The whole new content." }
+      },
+      required: ["waifuId", "path", "text"],
+      additionalProperties: false
+    },
+    execute: async (ctx, args) => {
+      const waifuId = String(args.waifuId);
+      const text = typeof args.text === "string" ? args.text : "";
+      if (Buffer.byteLength(text, "utf8") > ASSISTANT_WRITE_MAX_BYTES) {
+        return JSON.stringify({ error: `At most ${ASSISTANT_WRITE_MAX_BYTES / 1024} KB through a confirmation card; ask the owner to edit the file in the dashboard (Life → her files).` });
+      }
+      const herPath = herPathInput(String(args.path ?? ""));
+      const target = herFileUrl(waifuId, herPath);
+      // The current revision, so the card replaces exactly what it shows (a change meanwhile is a conflict).
+      const current = await inject(ctx, { method: "GET", url: target });
+      if (current.status !== 200 && current.status !== 404) return current.body;
+      const existing = current.status === 200 ? (JSON.parse(current.body) as { hash?: string; display?: string; kind?: string; readOnly?: boolean }) : undefined;
+      if (existing?.readOnly) return JSON.stringify({ error: "places.md is kept up to date by the app and can't be changed." });
+      if (existing && existing.kind !== "text") return JSON.stringify({ error: "That file isn't a text file; it can't be replaced with text." });
+      const shown = existing?.display ?? herPath;
+      const preview = text.length > ASSISTANT_WRITE_PREVIEW_CHARS ? `${text.slice(0, ASSISTANT_WRITE_PREVIEW_CHARS)}\n…` : text;
+      const action = await actionController(ctx).propose({
+        category: "waifu_file_write",
+        summary: `${existing ? "Replace" : "Create"} ${shown} in ${waifuId}'s folders (${Buffer.byteLength(text, "utf8")} bytes):\n${preview || "(empty file)"}`,
+        resource: { type: "waifu_file", identifier: `${waifuId}:${shown}`.slice(0, 256) },
+        operation: { kind: "exact_http", method: "PUT", canonicalTarget: target, payload: { text, expectedHash: existing?.hash ?? null } }
+      });
+      return confirmationResult(action);
+    }
+  },
+  {
+    name: "list_schedule",
+    description: "A waifu's reminders (her ~/schedule.json): id, local time, repeat and her note. She manages them herself; read-only here.",
+    parameters: { type: "object", properties: { waifuId: { type: "string" } }, required: ["waifuId"], additionalProperties: false },
+    execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/schedule` })).body
+  },
+  {
+    name: "list_watches",
+    description:
+      "A waifu's watches (her ~/watches.json): what each waits for (place, person, words; none = a timer) and when it " +
+      "times out. A watch bound to a private chat is shown without its words.",
+    parameters: { type: "object", properties: { waifuId: { type: "string" } }, required: ["waifuId"], additionalProperties: false },
+    execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/watches` })).body
   },
   {
     name: "get_usage",

@@ -9,6 +9,8 @@ import { dispatchInternal } from "../src/api/internalDispatch.js";
 import type { AssistantActionProposal } from "../src/api/assistant/actions.js";
 import { randomBytes } from "node:crypto";
 import { conversationOwner } from "../src/api/assistant/conversations.js";
+import { HomeStore, homeLimitsOf } from "../src/life/home/homeStore.js";
+import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 let roots: string[] = [];
@@ -33,8 +35,9 @@ async function makeApp() {
     discord: { connected: false, houseConnected: false, waifuBotCount: 0, warnings: [] },
     queues: { active: 0, configuredGuilds: 0 }
   });
-  const app = await createApiServer({ dataRoot: root, runtime, storage: new StorageService(root) });
-  return { app, root };
+  const storage = new StorageService(root);
+  const app = await createApiServer({ dataRoot: root, runtime, storage });
+  return { app, root, storage };
 }
 
 function localToolContext(app: Awaited<ReturnType<typeof makeApp>>["app"]) {
@@ -85,6 +88,11 @@ describe("assistant tools", () => {
       "forget_person",
       "get_life",
       "wake_waifu",
+      "list_files",
+      "read_file",
+      "write_file",
+      "list_schedule",
+      "list_watches",
       "get_usage",
       "get_setting_help",
       "update_app_config",
@@ -179,6 +187,68 @@ describe("assistant tools", () => {
       expect(after.http).toEqual({ ...before.http, port: 4000 });
       expect(after.frontend.staticDir).toBeUndefined();
       expect(after.updates.enabled).toBe(before.updates.enabled);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("her files: list_files and read_file never show a DM file; write_file only proposes a card with the exact PUT", async () => {
+    const { app, storage } = await makeApp();
+    try {
+      const proposals: AssistantActionProposal[] = [];
+      const ctx = {
+        ...localToolContext(app),
+        delegation: { conversationId: "conversation-1", toolCallId: "call-1" },
+        actions: {
+          propose: async (proposal: AssistantActionProposal) => {
+            proposals.push(proposal);
+            return { version: 1 as const, actionId: "action-1", category: proposal.category, summary: proposal.summary, expiresAt: "2026-10-25T12:00:00.000Z" };
+          },
+          cancelOwnedInvitation: async () => undefined
+        }
+      };
+      await executeAssistantTool(ctx, "create_waifu", JSON.stringify({ id: "momo", name: "Momo" }));
+      const home = new HomeStore(storage, "momo", "momo", () => homeLimitsOf(AppConfigSchema.parse({}).life));
+      await home.files.writeBytes(home.path("home", ["people", "kevin.md"]), Buffer.from("# Kevin\nlikes lemon cake\n"));
+      await home.files.writeBytes(home.path("tmp", ["dm", "kevin", "a7-menu.txt"]), Buffer.from("secret brownies"));
+
+      const listed = JSON.parse(await executeAssistantTool(ctx, "list_files", JSON.stringify({ waifuId: "momo" })));
+      expect(listed.entries.map((entry: { name: string }) => entry.name)).toEqual(["people"]);
+      const dm = await executeAssistantTool(ctx, "list_files", JSON.stringify({ waifuId: "momo", root: "tmp", dir: "dm" }));
+      expect(dm).toContain("[private chat redacted]");
+      expect(dm).not.toContain("kevin");
+      const read = JSON.parse(await executeAssistantTool(ctx, "read_file", JSON.stringify({ waifuId: "momo", path: "people/kevin.md" })));
+      expect(read).toMatchObject({ text: "# Kevin\nlikes lemon cake\n", includePrivate: false });
+      const secret = await executeAssistantTool(ctx, "read_file", JSON.stringify({ waifuId: "momo", path: "/tmp/dm/kevin/a7-menu.txt" }));
+      expect(secret).toContain("PrivateContentLocalOnly");
+      expect(secret).not.toContain("brownies");
+      expect(JSON.parse(await executeAssistantTool(ctx, "list_schedule", JSON.stringify({ waifuId: "momo" })))).toMatchObject({ entries: [] });
+      expect(JSON.parse(await executeAssistantTool(ctx, "list_watches", JSON.stringify({ waifuId: "momo" })))).toMatchObject({ entries: [], includePrivate: false });
+
+      const proposed = JSON.parse(await executeAssistantTool(ctx, "write_file", JSON.stringify({ waifuId: "momo", path: "~/people/kevin.md", text: "# Kevin\nlikes lemon cake and tea\n" })));
+      expect(proposed).toMatchObject({ status: "confirmation_required", category: "waifu_file_write" });
+      expect(proposals[0]!.summary).toContain("Replace ~/people/kevin.md");
+      expect(proposals[0]!.operation).toEqual({ kind: "exact_http", method: "PUT", canonicalTarget: "/api/waifus/momo/files/~/people/kevin.md", payload: { text: "# Kevin\nlikes lemon cake and tea\n", expectedHash: read.hash } });
+      // Nothing changes until the owner's click; the click's request carries the card's id.
+      expect(await home.files.readText(home.path("home", ["people", "kevin.md"]))).toBe("# Kevin\nlikes lemon cake\n");
+      const putAs = (pendingActionId: string | undefined, payload: Record<string, unknown>) =>
+        dispatchInternal(app, LOCAL_REQUEST_PRINCIPAL, { conversationId: "conversation-1", ...(pendingActionId ? { pendingActionId } : {}) }, {
+          method: "PUT",
+          url: "/api/waifus/momo/files/~/people/kevin.md",
+          headers: { "idempotency-key": randomBytes(32).toString("base64url") },
+          payload
+        });
+      expect((await putAs(undefined, { text: "x" })).statusCode).toBe(403);
+      const operation = proposals[0]!.operation as { payload: Record<string, unknown> };
+      expect((await putAs("action-1", operation.payload)).statusCode).toBe(200);
+      expect(await home.files.readText(home.path("home", ["people", "kevin.md"]))).toBe("# Kevin\nlikes lemon cake and tea\n");
+
+      expect(JSON.parse(await executeAssistantTool(ctx, "write_file", JSON.stringify({ waifuId: "momo", path: "notes.md", text: "x".repeat(20 * 1024) }))).error).toContain("16 KB");
+      expect(await executeAssistantTool(ctx, "write_file", JSON.stringify({ waifuId: "momo", path: "/tmp/dm/kevin/a7-menu.txt", text: "x" }))).toContain("PrivateContentLocalOnly");
+      expect(proposals).toHaveLength(1);
+      const created = JSON.parse(await executeAssistantTool(ctx, "write_file", JSON.stringify({ waifuId: "momo", path: "ideas.md", text: "bake sale" })));
+      expect(created.status).toBe("confirmation_required");
+      expect(proposals[1]!.operation).toMatchObject({ canonicalTarget: "/api/waifus/momo/files/~/ideas.md", payload: { text: "bake sale", expectedHash: null } });
     } finally {
       await app.close();
     }

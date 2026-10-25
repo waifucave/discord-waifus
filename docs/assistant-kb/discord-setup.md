@@ -79,7 +79,7 @@ the user writes again. Counters survive restarts and a user's `/forget`.
 In DMs her bot offers `/forget what:<this conversation|everything about me>`, answered privately
 with a 30-second Confirm button. "this conversation" deletes the DM transcript and rewrites her
 summary without it; "everything" also deletes the DM state and scrubs that user from her life,
-notes and her part of the archive. Either runs at once at most once per 6 hours per user; a later
+her files and her part of the archive. Either runs at once at most once per 6 hours per user; a later
 request inside that window is queued for her nightly maintenance and never interrupts her. Neither
 resets the rate limit. The owner's full forget is `POST /api/people/:userId/forget`.
 

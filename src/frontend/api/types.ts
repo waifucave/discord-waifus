@@ -9,6 +9,12 @@ import type {
   CreateWaifuBodySchema,
   DetectorConfigResponseSchema,
   ForgetJobsResponseSchema,
+  HerFileDeleteResponseSchema,
+  HerFileEntrySchema,
+  HerFileResponseSchema,
+  HerFilesListResponseSchema,
+  HerFileWriteBodySchema,
+  HerFileWriteResponseSchema,
   LifeCompactResponseSchema,
   LifeLogBlockSchema,
   LifeLogLineViewSchema,
@@ -21,14 +27,19 @@ import type {
   NeedsReviewResponseSchema,
   OwnerNoticesResponseSchema,
   PeopleForgetResponseSchema,
+  PlanEntryDeleteResponseSchema,
   ProviderCredentialsBodySchema,
+  ReminderViewSchema,
+  ScheduleResponseSchema,
   SearchUsageResponseSchema,
   UpdateAssistantConfigBodySchema,
   UpdateChannelBodySchema,
   UpdateServerBodySchema,
   UpdateWaifuBodySchema,
   UsageResponseSchema,
-  WakeResponseSchema
+  WakeResponseSchema,
+  WatchesResponseSchema,
+  WatchViewSchema
 } from "../../shared/schemas/api";
 import type { AppConfig as SharedAppConfig, UpdateAppConfigBody as SharedUpdateAppConfigBody } from "../../shared/schemas/config";
 import type { CompactionSettings as SharedCompactionSettings } from "../../shared/schemas/compaction";
@@ -362,6 +373,19 @@ export type LifeResetResult = z.output<typeof LifeResetResponseSchema>;
 export type NeedsReviewItem = z.output<typeof NeedsReviewItemSchema>;
 export type NeedsReviewResponse = z.output<typeof NeedsReviewResponseSchema>;
 export type NeedsReviewDismissResponse = z.output<typeof NeedsReviewDismissResponseSchema>;
+
+// --- Her files, reminders and watches (Living cast §16.11) ---
+export type HerFileEntry = z.output<typeof HerFileEntrySchema>;
+export type HerFilesList = z.output<typeof HerFilesListResponseSchema>;
+export type HerFile = z.output<typeof HerFileResponseSchema>;
+export type HerFileWriteBody = z.input<typeof HerFileWriteBodySchema>;
+export type HerFileWriteResult = z.output<typeof HerFileWriteResponseSchema>;
+export type HerFileDeleteResult = z.output<typeof HerFileDeleteResponseSchema>;
+export type ReminderView = z.output<typeof ReminderViewSchema>;
+export type ScheduleResponse = z.output<typeof ScheduleResponseSchema>;
+export type WatchView = z.output<typeof WatchViewSchema>;
+export type WatchesResponse = z.output<typeof WatchesResponseSchema>;
+export type PlanEntryDeleteResult = z.output<typeof PlanEntryDeleteResponseSchema>;
 
 /** `GET /api/logs`: newest first. */
 export type LogsResponse = { entries: Array<{ time: string; level: string; message: string; context?: unknown }> };

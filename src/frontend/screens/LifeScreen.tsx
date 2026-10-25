@@ -8,6 +8,7 @@ import { FootRow, HeadRow } from "./scaffold";
 import { Notice } from "../components/Notice";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ForgetPersonPanel } from "../components/ForgetPersonPanel";
+import { HerFilesPanel, PlansPanel } from "./LifeFiles";
 import { blockRow, groupByTurn, lineLabel, matchingReveal, mergeTimeline, settledAll, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
 
 const LOG_PAGE = 100;
@@ -366,6 +367,10 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
           )}
         </div>
 
+        {/* Keyed by the reveal: an open DM file or folder never survives turning it off. */}
+        <PlansPanel key={`plans-${String(includePrivate)}`} waifuId={waifuId} includePrivate={includePrivate} />
+        <HerFilesPanel key={`files-${String(includePrivate)}`} waifuId={waifuId} includePrivate={includePrivate} />
+
         <ForgetPersonPanel onForgotten={refreshAll} />
         <div className="cell growcell" />
       </div>
@@ -387,8 +392,8 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
           }}
         >
           <p className="t-small">
-            She starts a fresh epoch with no summary of what happened before. Her notes, plans and queued wakes stay; the old log
-            is kept for 7 days.
+            She starts a fresh epoch with no summary of what happened before. Her files (notes, reminders and watches) and
+            queued wakes stay; the old log is kept for 7 days.
           </p>
         </ConfirmDialog>
       )}

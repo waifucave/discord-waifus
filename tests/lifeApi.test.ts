@@ -89,12 +89,12 @@ async function seedPrivateLife(w: LifeWorld): Promise<void> {
       nativeState: { secret: "opaque" },
       content: [
         { type: "text", text: "He sounds nervous." },
-        { type: "tool_use", id: "c1", name: "send_message", input: { place: "dm/kevin", text: "you've got this" } }
+        { type: "tool_use", id: "c1", name: "SendMessage", input: { place: "dm/kevin", text: "you've got this" } }
       ]
     }),
     line(2, "tool_results", "t1", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "sent #a1" }] }),
     line(3, "notifications", "t2", { role: "user", content: [{ type: "text", text: '- mention · bake-club/#general · from Mina · "cake?"' }] }),
-    line(4, "assistant", "t2", { role: "assistant", content: [{ type: "tool_use", id: "c2", name: "send_message", input: { place: "bake-club/#general", text: "lemon cake!" } }] }),
+    line(4, "assistant", "t2", { role: "assistant", content: [{ type: "tool_use", id: "c2", name: "SendMessage", input: { place: "bake-club/#general", text: "lemon cake!" } }] }),
     line(5, "tool_results", "t2", { role: "user", content: [{ type: "tool_result", tool_use_id: "c2", content: "sent #a2" }] })
   ]);
   await enqueueWake(w.storage, "aria", { id: "w-dm", reason: "dm", placeKey: `dm_${KEVIN}_aria`, fromName: "Kevin", preview: "can we talk privately", at: AT });

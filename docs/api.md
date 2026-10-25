@@ -340,10 +340,13 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   what is at or below the forget's floor and time (a chat he started since stays). After three
   failures a part is given up (`retried: false`) and `GET /api/runtime` lists an owner notice in
   `discord.warnings` until he is forgotten again. If the job cannot even be saved, every part is
-  listed with `retried: false`. Then each life's scrub (also when a part failed): her summary rewritten without him, his
-  wakes, watches, reminders, DM cursor and handle removed, her notes cleaned by a notes session,
-  notes that are his deleted whole, a new epoch, then a verification pass. The response adds
-  `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes, needsReview: [{ where, line,
+  listed with `retried: false`. Then each life's scrub (also when a part failed): her files from him
+  deleted by content hash (his downloads in her `/tmp`, copies she moved or made with `cp`, and his
+  DM's download folder), her summary rewritten without him, his wakes and watches removed (her
+  reminders naming him keep their time with the note `(removed)`), DM cursor and handle removed,
+  every text file of her home cleaned by a notes session, notes that are his deleted whole, a new
+  epoch, then a verification pass. The response adds
+  `lives`: `[{ waifuId, removedLines, removedSentences, removedNotes?, removedFiles?, needsReview: [{ where, line,
   private? }], queued? }]`; review lines are also kept in `user/waifus/<id>/life/needs-review.json`.
   A private review line (D14: from her summary or queue, a watch bound to a DM, or naming a DM
   place) is always `[private chat redacted]` in this response; read it with
@@ -354,7 +357,8 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   the DM counts without deleting or scrubbing. Not covered: Discord history itself, what she
   already said in rooms, usage-ledger lines and app logs (ids only), cached guild images, and any
   DM image no image index recorded, until the disk cache expires them (168 hours by default), data
-  outside this host, and the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by default).
+  outside this host, the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by default), and
+  files she made from his attachments (a cropped copy), which can't be traced back to him.
 
 - `GET /api/people/forget-jobs` — `{jobs: [{userId, at, pending: [{part, error?, failures, retried}]}]}`:
   owner forgets with parts still to run (or given up).
@@ -393,8 +397,8 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   changed), or **202** `{state: "running"}` after 10 seconds (it finishes on its own). An epoch a
   forget or a deferred reset left pending starts instead, with nothing summarised. **409** without a
   live cast or while it is stopping (`RuntimeOffline`), without a model or before her life started.
-- `POST /api/waifus/:waifuId/life/reset` `{confirm: true}` — a fresh epoch with no summary (notes,
-  plans, queued wakes and intake cursors stay; the old log is kept 7 days) → `{epoch, deferred}`
+- `POST /api/waifus/:waifuId/life/reset` `{confirm: true}` — a fresh epoch with no summary (her
+  files, queued wakes and intake cursors stay; the old log is kept 7 days) → `{epoch, deferred}`
   (`deferred`: she has no model now; the epoch starts at her next turn, as a reset). **409** without a
   live cast or while it is stopping (`RuntimeOffline`).
 - `GET /api/waifus/:waifuId/life/needs-review[?includePrivate=1]` → `{waifuId, includePrivate,
@@ -403,6 +407,57 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   `[private chat redacted]` unless the request is local and says `includePrivate=1` (403
   `PrivateContentLocalOnly` over Remote Access and for the assistant); its `id` is the same either
   way. `DELETE …/needs-review/:itemId` dismisses one → `{waifuId, dismissed}`.
+
+## Her files, reminders and watches
+
+Each waifu has her own folders (spec §16): her home `/home/<slug>` (`~`; on disk
+`user/waifus/<id>/home/`: her notes, `MEMORY.md`, `schedule.json`, `watches.json` and the read-only
+`places.md` the app keeps) and `/tmp` (`user/waifus/<id>/tmp/`: downloads and scratch files, each
+deleted 7 days after it was last written). Paths are her paths, never host paths; links are never
+listed, read or written through. Every write passes the same path rules, limits and checks as her
+Write tool.
+
+- `GET /api/waifus/:waifuId/files?root=home|tmp&dir=&includePrivate` — one folder (`dir` is below
+  the root, or a full `/home/…`, `/tmp/…` or `~/…` path) → `{waifuId, root, dir, display, parent,
+  entries: [{name, path?, kind: "file" | "dir", size, modified, private?, redacted?}], redacted,
+  usage: {bytes, files, maxBytes, maxFiles?}, includePrivate}`, folders first.
+- `GET /api/waifus/:waifuId/files/<path>` — the URL carries her path without its leading slash
+  (`…/files/home/aria/people/kevin.md`, `…/files/tmp/bake-club/general/k3-cake.png`, or
+  `…/files/~/plans.md`) → `{waifuId, path, display, kind: "text" | "image" | "pdf" | "binary",
+  contentType, size, modified, hash, text?, tooLarge?, readOnly?, special?, private?,
+  includePrivate}`. `text` is set for a UTF-8 text file up to 1 MiB; `hash` (sha256) is the
+  revision. With `?raw=1` it answers the bytes instead: images (PNG, JPEG, GIF, WebP, recognised by
+  their first bytes, never by name) inline with their type, anything else as an
+  `application/octet-stream` attachment, always with `X-Content-Type-Options: nosniff` and a
+  sandboxing `Content-Security-Policy`. A folder is 400 `IsFolder`.
+- `PUT /api/waifus/:waifuId/files/<path>` `{text, expectedHash?}` — creates or replaces a text file
+  (folders made as needed). `expectedHash` is the `hash` last read (409 `Conflict` when the file
+  changed; `null` = it must not exist yet; left out = last writer wins) → `{waifuId, path, display,
+  hash, size, created, rewritten}`. Refusals carry her store's own message: `places.md` 400
+  `ReadOnlyFile`; a `schedule.json` or `watches.json` that fails its check 400 `InvalidFile`
+  (`watches.json line 7, column 3: expected "," or "]"`, `watches.json entry w3: timeout is in the
+  past`; nothing is saved); over 256 KiB or a full home/`/tmp` 413 `HomeLimit`; replacing a binary
+  file 400 `NotTextFile`; a name that differs from another only by case 409 `NameCollision`.
+  `rewritten`: new reminder or watch entries got their ids. A request from the dashboard assistant
+  is refused (403 `AssistantConfirmationRequired`) unless it carries the pending action id of the
+  owner's click on its confirmation card.
+- `DELETE /api/waifus/:waifuId/files/<path>?expectedHash=` — removes one file (folders are 400) →
+  `{waifuId, deleted: true}` (no path: Remote Access keeps mutation answers a day); 404 when it
+  does not exist; same assistant rule as `PUT`.
+- **DM files (D14)**: a file downloaded from a DM, a copy of one (same content), and anything under
+  `/tmp/dm/` is private. A listing keeps the entry with `private: true, redacted: true`, the name
+  `[private chat redacted]` and no `path`; reading, writing or deleting it, or listing a folder under
+  `/tmp/dm/<handle>/`, needs `includePrivate=1`, which only a request on the host itself may send
+  (otherwise **403** `PrivateContentLocalOnly`; always for Remote Access and the assistant).
+- `GET /api/waifus/:waifuId/schedule` → `{waifuId, timeZone, entries: [{id, at, repeat?, note}],
+  unreadable?}` (`at` local time in the host's zone; `unreadable`: the file does not parse whole).
+  `DELETE /api/waifus/:waifuId/schedule/:reminderId` → `{waifuId, removed}` (404 when absent, 409
+  when the file does not read cleanly).
+- `GET /api/waifus/:waifuId/watches[?includePrivate=1]` → `{waifuId, timeZone, includePrivate,
+  entries: [{id, timeout, once, note, when: [{place?, from?, words?, any_message?}], private?}],
+  unreadable?}`. A watch bound to a DM (a binding resolved to a DM place, or naming one) is
+  `private: true` and its note, places, names and words read `[private chat redacted]` without a
+  local reveal. `DELETE /api/waifus/:waifuId/watches/:watchId` → `{waifuId, removed}`.
 
 ## Usage, search and the detector
 

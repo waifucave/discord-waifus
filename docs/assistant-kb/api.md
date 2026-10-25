@@ -127,6 +127,10 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | PUT | `/api/waifus/:waifuId` | Change a waifu's settings (partial; revision required). | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/banner` | Upload her banner image. | `waifu` |
 | POST | `/api/waifus/:waifuId/assets/pfp` | Upload her avatar image. | `waifu` |
+| GET | `/api/waifus/:waifuId/files` | List a folder of her home or /tmp (?root=home\|tmp&dir; files from private chats are named only with a local includePrivate=1). | `life` |
+| DELETE | `/api/waifus/:waifuId/files/*` | Delete one of her files (?expectedHash). | `life` |
+| GET | `/api/waifus/:waifuId/files/*` | One of her files: JSON with the text for a text file, ?raw=1 for the bytes (a DM file needs a local includePrivate=1). | `life` |
+| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md refused). | `life` |
 | GET | `/api/waifus/:waifuId/life` | Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally). | `life` |
 | POST | `/api/waifus/:waifuId/life/compact` | Summarise her life now (between turns). | `life` |
 | GET | `/api/waifus/:waifuId/life/log` | Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1). | `life` |
@@ -134,7 +138,11 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | DELETE | `/api/waifus/:waifuId/life/needs-review/:itemId` | Dismiss a review line. | `forget` |
 | POST | `/api/waifus/:waifuId/life/reset` | Reset her short-term memory: a fresh epoch, no summary ({confirm: true}). | `life` |
 | POST | `/api/waifus/:waifuId/link-bot` | Create or link her Discord bot entry. | `bot` |
+| GET | `/api/waifus/:waifuId/schedule` | Her reminders (~/schedule.json), parsed. | `life` |
+| DELETE | `/api/waifus/:waifuId/schedule/:reminderId` | Remove one reminder from her schedule.json. | `life` |
 | POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips sleep and budget). | `life` |
+| GET | `/api/waifus/:waifuId/watches` | Her watches (~/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1. | `life` |
+| DELETE | `/api/waifus/:waifuId/watches/:watchId` | Remove one watch from her watches.json. | `life` |
 
 <!-- /generated:routes -->
 
@@ -174,17 +182,44 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   and budget) → `{outcome: queued | deferred | quiet | dropped | queued_offline}` (Discord offline:
   the wake waits in her queue). `POST …/life/compact` summarises her life now (409 without a live
   cast or without a model; after 10 s it answers 202 `{state: "running"}` and finishes on its own).
-  `POST …/life/reset {confirm: true}` starts a fresh epoch with no summary (her notes, plans and
-  queued wakes stay). `GET …/life/needs-review` lists lines a forget could not remove for sure
+  `POST …/life/reset {confirm: true}` starts a fresh epoch with no summary (her files and queued
+  wakes stay). `GET …/life/needs-review` lists lines a forget could not remove for sure
   (lines from private chats, her summary or her queue read `[private chat redacted]` unless the
   owner reveals them on the host); `DELETE …/life/needs-review/:itemId` dismisses one.
+- **Her files** (`life` topic; spec §16.11): her home `/home/<name>` (`~`: notes, `MEMORY.md`,
+  `schedule.json`, `watches.json`, the read-only `places.md`) and `/tmp` (downloads, deleted 7 days
+  after the last write). `GET /api/waifus/:id/files?root=home|tmp&dir=` lists one folder →
+  `{root, dir, display, parent, entries: [{name, path, kind: file|dir, size, modified, private?,
+  redacted?}], redacted, usage: {bytes, files, maxBytes, maxFiles?}, includePrivate}` (folders
+  first; links never listed). A file's URL is its path without the leading slash
+  (`/api/waifus/aria/files/home/aria/people/kevin.md`, `…/files/tmp/x.png`, or `…/files/~/notes.md`):
+  `GET` answers JSON `{path, display, kind: text|image|pdf|binary, contentType, size, modified,
+  hash, text?, tooLarge?, readOnly?, special?, private?}` (`text` for a UTF-8 file up to 1 MiB);
+  `?raw=1` answers the bytes (images by their magic bytes, inline; anything else as an attachment;
+  `nosniff`, sandboxed). `PUT {text, expectedHash?}` writes a text file under her Write tool's checks:
+  `places.md` 400 `ReadOnlyFile`, a broken `schedule.json`/`watches.json` 400 `InvalidFile` with
+  the line and column (nothing saved), over 256 KiB or a full home 413 `HomeLimit`, a binary file
+  400 `NotTextFile`, a name differing only by case 409 `NameCollision`; `expectedHash` is the `hash`
+  last read (mismatch 409 `Conflict`; `null` = must not exist yet) → `{path, display, hash, size,
+  created, rewritten}` (`rewritten`: new reminder or watch entries got their ids). `DELETE
+  …/files/<path>?expectedHash=` → `{deleted: true}`. A file from a private chat (a DM download, a
+  copy of one by content, anything under `/tmp/dm/`) is listed as `[private chat redacted]`
+  without a path, and reading, writing or deleting it (or listing a folder under `/tmp/dm/`) needs
+  a local `includePrivate=1` (else 403 `PrivateContentLocalOnly`). The assistant's writes need its
+  confirmation card (403 `AssistantConfirmationRequired` otherwise). `GET /api/waifus/:id/schedule`
+  → `{timeZone, entries: [{id, at, repeat?, note}], unreadable?}`; `GET …/watches` → `{timeZone,
+  entries: [{id, timeout, once, note, when: [{place?, from?, words?, any_message?}], private?}],
+  unreadable?, includePrivate}` (a watch bound to a DM reads `[private chat redacted]` unless a local
+  `includePrivate=1`). `DELETE …/schedule/:rid` and `…/watches/:wid` remove one entry by rewriting
+  the file (404 when absent, 409 when the file does not read cleanly).
 - `POST /api/people/:userId/forget` `{confirm: true, dryRun?}`: the owner's forget of one Discord
   user, best effort: every DM with them (conversations, DM state, cached DM images; rate-limit
   counters reset to their forget floor), a `forgotten.json` record, server member lists, the Living
   cast archive, their entries in the captured traffic, then each waifu's life scrub (summary, wakes,
-  reminders, notes, a new epoch, verification). Returns counts (`dmContexts`, `dmStates`,
+  reminders, watches, the text files in her home, the files the person sent her, a new epoch,
+  verification). Returns counts (`dmContexts`, `dmStates`,
   `dmLimits`, `cachedImages`, `memberLists`, `archive`) and `lives: [{waifuId, removedLines,
-  removedSentences, removedNotes, needsReview, queued?}]` (Discord offline: `livesQueued`). A part
+  removedSentences, removedNotes?, removedFiles?, needsReview, queued?}]` (Discord offline: `livesQueued`). A part
   that failed makes it 202 with `pending: [{part, error, failures, retried}]`; unfinished parts
   retry at the next start, at most three tries, then an owner notice lists them
   (`GET /api/people/forget-jobs`). Not covered: Discord history, what she already said, ids in

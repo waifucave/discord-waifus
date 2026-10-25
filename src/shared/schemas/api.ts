@@ -269,6 +269,142 @@ export const LifeResetResponseSchema = z.object({
   deferred: z.boolean()
 });
 
+// ---- her files, reminders and watches (§16.11) ------------------------------------------------------
+
+/** Her two folders: `/home/<slug>` (her home, `~`) and `/tmp` (downloads, deleted 7 days after the last write). */
+export const HER_ROOTS = ["home", "tmp"] as const;
+
+export { PRIVATE_FILE_NAME } from "../constants/files.js";
+
+const ContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+
+export const HerFileEntrySchema = z.object({
+  /** The file's name, or `[private chat redacted]` for a private one without `includePrivate`. */
+  name: z.string(),
+  /** Her path (`/home/aria/people/kevin.md`, `/tmp/x.png`); left out when the entry is redacted. */
+  path: z.string().optional(),
+  kind: z.enum(["file", "dir"]),
+  size: z.number().int().nonnegative(),
+  modified: IsoDateStringSchema,
+  /** From a private chat: a download from a DM (or a copy of one), or a folder under `/tmp/dm/`. */
+  private: z.literal(true).optional(),
+  /** The name and path were left out (D14): reveal them locally with `includePrivate=1`. */
+  redacted: z.literal(true).optional()
+});
+
+export const HerFilesListResponseSchema = z.object({
+  waifuId: z.string(),
+  root: z.enum(HER_ROOTS),
+  /** The folder listed, as her path (`/home/aria/people`), and as she reads it (`~/people`). */
+  dir: z.string(),
+  display: z.string(),
+  /** The folder above, or null at the root. */
+  parent: z.string().nullable(),
+  /** Folders first, then files, by name. Links are never listed. */
+  entries: z.array(HerFileEntrySchema),
+  includePrivate: z.boolean(),
+  /** Entries whose name was left out. */
+  redacted: z.number().int().nonnegative(),
+  /** The whole root: bytes and files, and its limits (`maxFiles` for her home only). */
+  usage: z.object({ bytes: z.number().int().nonnegative(), files: z.number().int().nonnegative(), maxBytes: z.number().int().positive(), maxFiles: z.number().int().positive().optional() })
+});
+
+export const HER_FILE_KINDS = ["text", "image", "pdf", "binary"] as const;
+
+/**
+ * `GET /api/waifus/:id/files/<path>` (JSON). `text` is set for a UTF-8 text file up to 1 MiB; anything
+ * else (images, PDFs, larger files) is fetched with `?raw=1`, which answers the bytes with their type.
+ */
+export const HerFileResponseSchema = z.object({
+  waifuId: z.string(),
+  path: z.string(),
+  display: z.string(),
+  kind: z.enum(HER_FILE_KINDS),
+  /** The type `?raw=1` answers with. */
+  contentType: z.string(),
+  size: z.number().int().nonnegative(),
+  modified: IsoDateStringSchema,
+  /** sha256 of the bytes: the revision a PUT or DELETE sends back as `expectedHash`. */
+  hash: ContentHashSchema.optional(),
+  text: z.string().optional(),
+  /** A text file too large to show here (fetch it with `?raw=1`). */
+  tooLarge: z.literal(true).optional(),
+  /** `~/places.md`: kept up to date by the app; writes are refused. */
+  readOnly: z.literal(true).optional(),
+  /** `~/schedule.json` / `~/watches.json`: every write is checked (§16.4, §16.5). */
+  special: z.enum(["schedule", "watches"]).optional(),
+  private: z.literal(true).optional(),
+  includePrivate: z.boolean()
+});
+
+/** `PUT /api/waifus/:id/files/<path>`: a text file, under the same checks as her Write tool. */
+export const HerFileWriteBodySchema = z.object({
+  text: z.string(),
+  /** The `hash` last read; `null` = the file must not exist yet. Left out: last writer wins. */
+  expectedHash: ContentHashSchema.nullable().optional()
+});
+
+export const HerFileWriteResponseSchema = z.object({
+  waifuId: z.string(),
+  path: z.string(),
+  display: z.string(),
+  hash: ContentHashSchema,
+  size: z.number().int().nonnegative(),
+  created: z.boolean(),
+  /** The app rewrote what was sent (new reminder or watch entries got their ids). */
+  rewritten: z.boolean()
+});
+
+/** `DELETE /api/waifus/:id/files/<path>`: no path in the answer (Remote Access keeps mutation answers a day). */
+export const HerFileDeleteResponseSchema = z.object({ waifuId: z.string(), deleted: z.literal(true) });
+
+export const ReminderViewSchema = z.object({
+  id: z.string(),
+  /** Local time in the host's zone, `2026-10-25 18:00`. */
+  at: z.string(),
+  repeat: z.enum(["daily", "weekly"]).optional(),
+  note: z.string()
+});
+
+export const ScheduleResponseSchema = z.object({
+  waifuId: z.string(),
+  timeZone: z.string(),
+  entries: z.array(ReminderViewSchema),
+  /** `~/schedule.json` does not read cleanly (fix it in the file editor); `entries` holds what did. */
+  unreadable: z.literal(true).optional()
+});
+
+export const WatchBindingViewSchema = z.object({
+  place: z.string().optional(),
+  from: z.string().optional(),
+  words: z.array(z.string()).optional(),
+  any_message: z.boolean().optional()
+});
+
+export const WatchViewSchema = z.object({
+  id: z.string(),
+  /** Local time in the host's zone. */
+  timeout: z.string(),
+  once: z.boolean(),
+  /** `[private chat redacted]` for a private watch without `includePrivate`. */
+  note: z.string(),
+  /** Empty: a timer. A private watch's names, words and places read `[private chat redacted]`. */
+  when: z.array(WatchBindingViewSchema),
+  /** Bound to a private chat (D14). */
+  private: z.literal(true).optional()
+});
+
+export const WatchesResponseSchema = z.object({
+  waifuId: z.string(),
+  timeZone: z.string(),
+  includePrivate: z.boolean(),
+  entries: z.array(WatchViewSchema),
+  unreadable: z.literal(true).optional()
+});
+
+/** `DELETE …/schedule/:rid` and `…/watches/:wid`: the id removed. */
+export const PlanEntryDeleteResponseSchema = z.object({ waifuId: z.string(), removed: z.string() });
+
 // ---- responses: search, usage, detector -------------------------------------------------------------
 
 export const SearchUsageResponseSchema = z.object({
@@ -343,6 +479,7 @@ export const ForgetScrubResultSchema = z.object({
   removedLines: z.number().int().nonnegative(),
   removedSentences: z.number().int().nonnegative(),
   removedNotes: z.number().int().nonnegative().optional(),
+  removedFiles: z.number().int().nonnegative().optional(),
   needsReview: z.array(ReviewLineSchema),
   /** Queued as a pending scrub: it runs at her next start or nightly maintenance. */
   queued: z.boolean().optional()

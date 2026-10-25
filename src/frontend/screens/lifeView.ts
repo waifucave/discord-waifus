@@ -3,7 +3,7 @@
 // tools need no change here. Content from private chats arrives already left out by the server
 // (D14); a redacted block only says so.
 
-import type { LifeLogBlock, LifeLogLineView, LifeStatus, LogsResponse } from "../api/types";
+import type { HerFileEntry, HerFilesList, LifeLogBlock, LifeLogLineView, LifeStatus, LogsResponse, WatchView } from "../api/types";
 
 export const PRIVATE_HIDDEN = "From a private chat: hidden";
 
@@ -173,4 +173,41 @@ export function wakeOutcomeText(outcome: string): string {
     default:
       return outcome;
   }
+}
+
+/* ---- her files, reminders and watches (§16.11) ---- */
+
+/** "1.2 KB" — sizes as her own tools show them. */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** The folders from the root to the listed one, each with the path to list it (`~` › `people`). */
+export function breadcrumbs(list: Pick<HerFilesList, "root" | "dir" | "display">): Array<{ label: string; dir: string }> {
+  const rootLabel = list.root === "home" ? "~" : "/tmp";
+  const rel = list.display === rootLabel ? "" : list.display.slice(rootLabel.length + 1);
+  const segments = rel ? rel.split("/") : [];
+  const rootDir = segments.length === 0 ? list.dir : list.dir.slice(0, list.dir.length - rel.length - 1);
+  const out = [{ label: rootLabel, dir: rootDir }];
+  segments.forEach((segment, index) => out.push({ label: segment, dir: `${rootDir}/${segments.slice(0, index + 1).join("/")}` }));
+  return out;
+}
+
+/** One entry's second column: a folder, or its size. */
+export function entryDetail(entry: Pick<HerFileEntry, "kind" | "size">): string {
+  return entry.kind === "dir" ? "folder" : fileSize(entry.size);
+}
+
+/** What a watch waits for, in words: a timer, or each binding's place, person and words. */
+export function watchWhenText(watch: Pick<WatchView, "when">): string {
+  if (watch.when.length === 0) return "timer";
+  return watch.when
+    .map((binding) =>
+      [binding.place && `in ${binding.place}`, binding.from && `from ${binding.from}`, binding.words?.length ? `words: ${binding.words.join(", ")}` : "", binding.any_message ? "any message" : ""]
+        .filter(Boolean)
+        .join(" · ")
+    )
+    .join(" or ");
 }

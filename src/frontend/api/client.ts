@@ -18,6 +18,11 @@ import type {
   DetectorHistoryEntry,
   DetectorModelsResponse,
   HelpTopic,
+  HerFile,
+  HerFileDeleteResult,
+  HerFilesList,
+  HerFileWriteBody,
+  HerFileWriteResult,
   LifeCompactResult,
   LifeLog,
   LifeResetResult,
@@ -26,11 +31,14 @@ import type {
   NeedsReviewDismissResponse,
   NeedsReviewResponse,
   OwnerNotices,
+  PlanEntryDeleteResult,
+  ScheduleResponse,
   SearchUsage,
   UpdateAppConfigBody,
   UsageGroupKey,
   UsageResponse,
   WakeResult,
+  WatchesResponse,
   DiscordBotsFile,
   ModelsResponse,
   OperationAccepted,
@@ -55,6 +63,7 @@ import type {
   WaifusResponse
 } from "./types";
 import { parseClientContext } from "../state/clientContext";
+import { herFileUrl } from "../../shared/constants/files";
 import {
   ResumableEventFeed,
   type ResumableEventFeedOptions
@@ -474,6 +483,53 @@ export const api = {
     request<NeedsReviewResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
   dismissNeedsReview: (waifuId: string, itemId: string) =>
     request<NeedsReviewDismissResponse>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review/${encodeURIComponent(itemId)}`),
+
+  // Her files, reminders and watches (Living cast §16.11). DM files need `includePrivate` (host only).
+  herFiles: (waifuId: string, query: { root: "home" | "tmp"; dir?: string; includePrivate: boolean }, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ root: query.root });
+    if (query.dir) params.set("dir", query.dir);
+    if (query.includePrivate) params.set("includePrivate", "1");
+    return request<HerFilesList>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/files?${params.toString()}`, { signal });
+  },
+  herFile: (waifuId: string, path: string, includePrivate: boolean, signal?: AbortSignal) =>
+    request<HerFile>("GET", `${herFileUrl(waifuId, path)}${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
+  /** The file's bytes (an image to preview); her bytes are never rendered as a page. */
+  herFileBytes: async (waifuId: string, path: string, includePrivate: boolean, signal?: AbortSignal): Promise<Blob> => {
+    const params = new URLSearchParams({ raw: "1" });
+    if (includePrivate) params.set("includePrivate", "1");
+    const res = await fetch(`${BASE}${herFileUrl(waifuId, path)}?${params.toString()}`, {
+      method: "GET",
+      headers: await browserSecurityHeaders("GET"),
+      credentials: "same-origin",
+      signal
+    });
+    if (!res.ok) {
+      let body: ApiErrorBody;
+      try {
+        body = (await res.json()) as ApiErrorBody;
+      } catch {
+        body = { error: `HTTP ${res.status}` };
+      }
+      throw new ApiError(res.status, body);
+    }
+    return res.blob();
+  },
+  writeHerFile: (waifuId: string, path: string, body: HerFileWriteBody, includePrivate: boolean) =>
+    request<HerFileWriteResult>("PUT", `${herFileUrl(waifuId, path)}${includePrivate ? "?includePrivate=1" : ""}`, { body }),
+  deleteHerFile: (waifuId: string, path: string, expectedHash: string | undefined, includePrivate: boolean) => {
+    const params = new URLSearchParams();
+    if (expectedHash) params.set("expectedHash", expectedHash);
+    if (includePrivate) params.set("includePrivate", "1");
+    const qs = params.toString();
+    return request<HerFileDeleteResult>("DELETE", `${herFileUrl(waifuId, path)}${qs ? `?${qs}` : ""}`);
+  },
+  schedule: (waifuId: string, signal?: AbortSignal) => request<ScheduleResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/schedule`, { signal }),
+  deleteReminder: (waifuId: string, reminderId: string) =>
+    request<PlanEntryDeleteResult>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/schedule/${encodeURIComponent(reminderId)}`),
+  watches: (waifuId: string, includePrivate: boolean, signal?: AbortSignal) =>
+    request<WatchesResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/watches${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
+  deleteWatch: (waifuId: string, watchId: string) =>
+    request<PlanEntryDeleteResult>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/watches/${encodeURIComponent(watchId)}`),
 
   // Usage, search, detector
   usage: (query: { from?: string; to?: string; groupBy?: UsageGroupKey[]; waifuId?: string; tz?: string }, signal?: AbortSignal) => {

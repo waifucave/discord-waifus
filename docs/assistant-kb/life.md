@@ -29,16 +29,44 @@ it stays hidden.
 - **Wake**: an owner wake with an optional note she sees. It skips her sleep and budget. With
   Discord offline it waits in her queue.
 - **Compact**: summarise her life now and start a new epoch. Needs Discord connected and a model.
-- **Reset**: start a fresh epoch with no summary. Her notes, plans and queued wakes stay; the old
-  log is kept for 7 days.
+- **Reset**: start a fresh epoch with no summary. Her files (notes, reminders and watches) and
+  queued wakes stay; the old log is kept for 7 days.
 - **Needs review**: after a forget, lines that mention a name someone else also has are listed per
   waifu instead of being removed. Check each one and dismiss it.
+
+## Her own computer: files, reminders and watches
+
+Each waifu has her own small, isolated machine. She works in it with Read, Write, Edit and a
+simulated Bash (nothing she runs can reach the host or the network):
+
+- **Her home** `/home/<name>` (`~`): her notes, in any layout she likes; `MEMORY.md` is her index
+  (one line per note, copied into her prompt at each epoch start); `schedule.json` holds her
+  reminders and `watches.json` her watches (she sets them with ScheduleWake and WatchFor and changes
+  or cancels them by editing the files); `places.md` lists her rooms and private chats and is kept
+  up to date by the app (read-only).
+- **`/tmp`**: files people sent (ReadMessages downloads attachments there) and scratch files, each
+  deleted 7 days after it was last written.
+
+To look at them: Dashboard → Life (a file browser for her home and `/tmp` with a text editor and
+image previews, and her reminders and watches with delete buttons), `waifus files <id> [path]
+[--root tmp]`, `waifus schedule <id>`, `waifus watches <id>`, or the routes `GET /api/waifus/:id/files`,
+`GET|PUT|DELETE /api/waifus/:id/files/<path>`, `GET /api/waifus/:id/schedule` and `/watches`. A save
+from the dashboard or the API passes the same checks as her own Write tool: `places.md` is refused,
+`schedule.json` and `watches.json` must stay valid (a broken one is refused with its line and
+column, and nothing is saved), and a file changed since it was read is a conflict.
+
+Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`)
+are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
+a DM is shown without its words. Over Remote Access, and for the dashboard assistant, they stay
+hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
+click on its secure dashboard card applies.
 
 ## Forgetting a person
 
 `POST /api/people/:userId/forget`, `waifus forget <userId>` or the Life screen's forget form removes
 a Discord user from every DM, the member lists, the archive, and scrubs every waifu's life log,
-summary, queue and notes. Forget is a best-effort scrub:
+summary, queue and files (her notes and every other text file in her home, her reminders and
+watches, and the files the person sent her). Forget is a best-effort scrub:
 
 - Discord history itself is not deleted, and whatever she already said in rooms stays there.
 - Usage-ledger lines and app logs stay (they hold ids only, never text).
@@ -47,6 +75,8 @@ summary, queue and notes. Forget is a best-effort scrub:
 - Anything outside this host, and the web page cache (`life.webFetch.cacheMinutes`, 15 minutes by
   default), are not touched.
 - Name matching is best effort: a name someone else also has is only listed for review.
+- Files she downloaded from them, and exact copies, are deleted; files she made from someone's
+  attachment (for example a cropped copy) can't be traced back to them.
 
 A part that fails runs again at the next start, three tries in total (the request's run counts as
 the first); then it is given up and shows as an owner notice (Home, `waifus doctor`).

@@ -32,8 +32,10 @@ at upgrade; writes that still send them are accepted and ignored.
 ## How she runs
 
 > **Living cast.** She lives one continuous life: wakes (mentions, replies, her name, DMs, her
-> reminders and watches, the addressee detector), reads before answering, may stay quiet, keeps
-> notes (`user/waifus/<id>/notes/`, `MEMORY.md` as the index) and tidies them nightly. She sleeps in
+> reminders and watches, the addressee detector), reads before answering, may stay quiet, and keeps
+> notes in her own folder (her home `/home/<name>`, backed by `user/waifus/<id>/home/`, with
+> `MEMORY.md` as the index and her reminders and watches in `schedule.json` and `watches.json`;
+> files people send land in her `/tmp`), tidying them nightly. See the life doc. She sleeps in
 > her sleep window (wakes are held for a morning summary), stops at her daily budget
 > (`life.dailyBudgetUsd`) and can search and read the web.
 
