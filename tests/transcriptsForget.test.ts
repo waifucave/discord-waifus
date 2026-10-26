@@ -13,7 +13,7 @@ import { dispatchInternal } from "../src/api/internalDispatch.js";
 import { createLocalRequestPrincipal, createRemoteRequestPrincipal } from "../src/api/requestPrincipal.js";
 import { createRuntimeState } from "../src/backend/runtime.js";
 import { ensureDataLayout } from "../src/config/layout.js";
-import { forgetPersonInHerTranscripts } from "../src/life/transcripts/forget.js";
+import { forgetPersonInHerTranscripts, lineCarriesPerson } from "../src/life/transcripts/forget.js";
 import { addTranscriptLine, listTranscriptDays, readTranscriptDay, settleTranscripts, updateTranscriptAccess, type TranscriptLine } from "../src/life/transcripts/store.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { dmFloorAt } from "../src/orchestration/dm/dmStore.js";
@@ -97,6 +97,17 @@ describe("the owner's forget-user (§18.5)", () => {
     expect(await texts(w.root, ROOM_KEY)).toEqual(["the oven is ready"]);
     expect(await listTranscriptDays(w.root, DM_KEY)).toEqual([]);
     expect(await pendingForgetJobs(w.storage)).toEqual([]);
+  });
+});
+
+describe("which lines carry the person (§18.5, §7.5 matching)", () => {
+  it("a name in the text as a whole word; an author only by the whole name", () => {
+    const o = { userId: KEVIN, names: ["Kevin"], at: new Date(BASE + 60 * 60_000) };
+    const other = { authorId: "300000000000000099" };
+    expect(lineCarriesPerson(line(1, { ...other, author: "Kevin's Mom", text: "dinner is ready" }), o)).toBe(false);
+    expect(lineCarriesPerson(line(1, { ...other, author: "Kev", text: "Kevinator wins" }), o)).toBe(false);
+    expect(lineCarriesPerson(line(1, { ...other, author: "Mina", text: "ask Kevin" }), o)).toBe(true);
+    expect(lineCarriesPerson(line(1, { ...other, author: "kevin", text: "hi" }), o)).toBe(true);
   });
 });
 

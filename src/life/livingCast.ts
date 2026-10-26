@@ -543,10 +543,14 @@ export class LivingCast {
   private async maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void> {
     // Aborted while it waited for her life lock (a shutdown, a pause, a reload): nothing starts (N1).
     if (signal.aborted) return;
-    const model = lifeModelOf(this.deps, waifu);
-    if (!model) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
-    if (pending.length > 0 && !signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
+    // Pending scrubs rewrite her summary with her own model; without it they wait, and so does the
+    // dream (it must never read what a waiting forget removes). With none pending, she dreams with
+    // `life.dreamModel` even when her own model is unavailable.
+    if (pending.length > 0) {
+      if (!lifeModelOf(this.deps, waifu)) return;
+      if (!signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
+    }
     if (signal.aborted) return;
     await runDream(this.deps, { waifu, signal });
   }

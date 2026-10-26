@@ -5,7 +5,7 @@
 // stale page ever writes them again.
 
 import { conversationKey, parseConversationKey } from "../../orchestration/context/keys.js";
-import { hasNoWordBoundaries, isWeakName, namesSomeone } from "../text.js";
+import { foldName, hasNoWordBoundaries, isWeakName, namesSomeone } from "../text.js";
 import {
   dropAccessConversations,
   forgetTranscriptAtOrBelow,
@@ -28,7 +28,8 @@ export function lineCarriesPerson(line: TranscriptLine, o: { userId: string; nam
   if (line.authorId === o.userId && Date.parse(line.at) <= o.at.getTime()) return true;
   if (line.mentions?.includes(o.userId)) return true;
   if (line.text.includes(o.userId)) return true;
-  return o.names.some((name) => namesSomeone(line.text, name) || namesSomeone(line.author, name));
+  // The text names them as a whole word (§7.5); an author only by the whole name ("Kevin's Mom" is not Kevin).
+  return o.names.some((name) => namesSomeone(line.text, name) || foldName(line.author) === foldName(name));
 }
 
 /**

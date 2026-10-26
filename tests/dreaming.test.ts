@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DREAM_INSTRUCTION, dreamSystem, dreamWindow, readDreamCursor, runDream } from "../src/life/dream.js";
 import { readMaintenanceReports } from "../src/life/lifeStore.js";
 import { settleTranscripts } from "../src/life/transcripts/store.js";
+import { TranscriptView } from "../src/life/transcripts/view.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
-import { closeWorlds, homeOf, lifeWorld, ROOM_KEY, script, seedTranscript, toolTurn } from "./lifeFixtures.js";
+import { closeWorlds, homeOf, lifeWorld, MINA_USER, ROOM_KEY, script, seedTranscript, toolTurn, writeWaifuConfig } from "./lifeFixtures.js";
+import { queuePendingScrub, readPendingScrubs, removePendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -44,7 +46,10 @@ describe("the dream window (§18.4)", () => {
     const failed = await runDream(w.cast.deps, { waifu });
     expect(failed).toMatchObject({ ok: false, sessions: 1 });
     expect((await readDreamCursor(w.storage, "ella")).conversations[ROOM_KEY]!.id).toBe(ids[0]);
-    expect(openingText(w.anthropic.calls[0]!.request)).toContain("the lines after 12:00");
+    // Where the window starts is a line number (several lines can share a minute).
+    expect(openingText(w.anthropic.calls[0]!.request)).toContain("from line 3 on, after the 12:00 line");
+    const rendered = (await new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: "UTC", now: w.clock.now }).read(["bake-club", "general", "2026-10-24.md"]))!;
+    expect(rendered.split("\n")[2]).toContain("fresh news");
 
     const done = await runDream(w.cast.deps, { waifu });
     expect(done).toMatchObject({ ok: true, sessions: 1, lines: 1 });
@@ -128,6 +133,22 @@ describe("big windows and the dream model", () => {
     expect(openingText(w.anthropic.calls[1]!.request)).toContain("2026-10-24.md");
     // The first session finished: its day is covered; the failed second one is read again next time.
     expect((await readDreamCursor(w.storage, "ella")).conversations[ROOM_KEY]!.id).toBe(ids[59]);
+  });
+
+  it("with her own model unavailable, she still dreams with life.dreamModel (unless a forget scrub waits)", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("ok")) });
+    await seedTranscript(w, [{ text: "hello" }]);
+    w.setConfig((config) => ({ ...config, life: { ...config.life, dreamModel: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } }));
+    await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot", model: { providerId: "anthropic", modelId: "no-such-model" } });
+    const waifu = await readWaifu(w.storage, "ella");
+    const maintain = (signal: AbortSignal) => (w.cast as unknown as { maintain(waifu: unknown, signal: AbortSignal): Promise<void> }).maintain(waifu, signal);
+    // A forget scrub waiting for her model: no dream either.
+    await queuePendingScrub(w.storage, "ella", MINA_USER, w.clock.now(), { source: "owner_forget", names: ["Mina"], sharedNames: [] });
+    await maintain(new AbortController().signal);
+    expect(w.ledger.lines).toEqual([]);
+    await removePendingScrubs(w.storage, "ella", await readPendingScrubs(w.storage, "ella"));
+    await maintain(new AbortController().signal);
+    expect(w.ledger.lines.at(-1)).toMatchObject({ purpose: "maintenance", modelId: "claude-haiku-5-5" });
   });
 
   it("uses life.dreamModel when it is set, else her own model", async () => {

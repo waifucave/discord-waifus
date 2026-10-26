@@ -36,7 +36,7 @@ export function dreamSystem(waifu: Pick<WaifuConfig, "name">): string {
 
 export const DREAM_INSTRUCTION = [
   "[system] She is asleep: time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day.",
-  "1. Read the dream window below: only the lines after the time given for each file.",
+  "1. Read the dream window below: in each file, only the lines from the line number given (as Read numbers them).",
   "2. Add memories from the window only: new people, places, facts, plans, how things felt. Write them as her notes, in her voice and the layout her notes already use, and add a line to MEMORY.md for each new note.",
   "3. Check every note against the window. Change a fact only when the window clearly says otherwise (the newest wins) and keep everything else exactly as it is. Never delete or change a note because the window doesn't mention it. You may grep older transcript days to confirm a fact the window touches, but add nothing from before the window.",
   "4. Keep MEMORY.md short and its links valid; merge duplicates you notice.",
@@ -98,6 +98,8 @@ export type DreamChunk = {
   lines: TranscriptLine[];
   /** Lines before this one in the same file (the window starts in the middle of the day). */
   after?: TranscriptLine;
+  /** Where the window starts in the rendered file, as Read numbers its lines (with `after`). */
+  fromLine?: number;
   chars: number;
 };
 
@@ -130,7 +132,16 @@ export async function dreamWindow(deps: Pick<LifeDeps, "storage" | "timeZone" | 
       if (lines.length === 0) continue;
       const before = all.filter((line) => !afterCursor(line, mark, start));
       const text = renderTranscriptDay({ handle: folder.handle, day, lines, waifuId: waifu.id, timeZone: deps.timeZone, refs: new Map() });
-      chunks.push({ folder, day, path: transcriptsVirtual([...folder.segments, `${day}.md`]), lines, ...(before.length > 0 ? { after: before[before.length - 1]! } : {}), chars: text.length });
+      // The header, then one rendered line per transcript line plus one per line break in its text.
+      const fromLine = 2 + before.reduce((sum, line) => sum + 1 + (line.text.replace(/\r\n/gu, "\n").match(/\n/gu)?.length ?? 0), 0);
+      chunks.push({
+        folder,
+        day,
+        path: transcriptsVirtual([...folder.segments, `${day}.md`]),
+        lines,
+        ...(before.length > 0 ? { after: before[before.length - 1]!, fromLine } : {}),
+        chars: text.length
+      });
     }
   }
   chunks.sort((a, b) => compareLines(a.lines[0]!, b.lines[0]!));
@@ -167,7 +178,8 @@ export function windowText(chunks: readonly DreamChunk[], o: { start: string; ti
   const total = chunks.reduce((sum, chunk) => sum + chunk.lines.length, 0);
   const lines = [`The dream window starts ${dayTimeText(new Date(o.start), o.timeZone)}. Read these transcript files (${total} line${total === 1 ? "" : "s"} in all):`];
   for (const chunk of chunks) {
-    const where = chunk.after ? `the lines after ${clockText(new Date(chunk.after.at), o.timeZone)}` : "the whole file";
+    // A line number, not a time: several lines can share a minute (unambiguous where the window starts).
+    const where = chunk.after ? `from line ${chunk.fromLine ?? 2} on, after the ${clockText(new Date(chunk.after.at), o.timeZone)} line` : "the whole file";
     lines.push(`- ${chunk.path} (${where}, ${chunk.lines.length} line${chunk.lines.length === 1 ? "" : "s"})`);
   }
   if (o.more) lines.push("(The rest of the window comes in a later session: only these files now.)");
