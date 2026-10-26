@@ -2538,3 +2538,26 @@ turn and the epoch change as "rested (her own summary)". Tests: the notice fires
 turn, not mid-turn, and before queued wakes; refused tools in the rest turn; accepted summary → new
 epoch with only the summary; short/empty/failed → auto-compaction; off switch; cache prefix
 unchanged in the rest turn (cache simulation); goldens for the notice and the new epoch's opening.
+
+## 20. One notification line per message (owner request, 2026-10-26)
+
+A burst (§4.2 holds) or several queued wakes for one place are still **one wake** (guards, the
+per-user wake limit, wake ids and "one wake per message" are unchanged), but the notification shows
+**one line per message**, in message order, instead of one line previewing only the newest:
+
+```
+- dm, dm/winter · from Winter · #k3 "can you write me a poem about rain"
+- dm, dm/winter · from Winter · #k4 "and bring the cat pic"
+```
+
+- The held wake keeps every message of the burst (id, author name, preview; the intake already
+  collects them in `messages`) instead of only the newest; queued wakes for the same place append
+  theirs. Each line has its reason label, place handle, author and `#ref` + 60-character preview
+  (`PREVIEW_CHARS` unchanged).
+- At most `life.notificationLinesPerPlace` (default 8) lines per place: the newest ones; when more
+  were held, the first line of the place says `+N earlier` (and the `N unread` count stays on the
+  place's last line only when unread messages are not all shown).
+- Watch matches, notes, chime-in and `@everyone` labels go on the line of the message they belong to.
+- Mid-turn folding (§4.2) and the morning batch use the same per-message lines.
+- D14 redaction of DM lines works per line, as today. Goldens for the DM burst, the room burst and a
+  folded mid-turn arrival.
