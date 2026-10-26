@@ -59,6 +59,9 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches may fire per day. |
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |
 | `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of her nightly dream (and queued forget scrubs) for a waifu with no sleep window (with one, it runs 30 minutes into her sleep). |
+| `life.restNotice` | boolean | `true` | Near the compaction trigger she gets a rest notice after her turn and writes her own summary; her new epoch starts from it alone (her files stay). Off: compaction summarises for her, as before. |
+| `life.restNoticeRatio` | number 0.5–0.99 | `0.85` | The rest notice comes when her last request reaches this share of the compaction trigger (compaction.triggerRatio × her budget). |
+| `life.restSummaryMinChars` | integer 0–5000 [characters] | `200` | A rest summary shorter than this counts as ignored: compaction summarises for her right away. |
 | `life.dreamModel` | JSON |  | The model of her nightly dream (the memory keeper that adds the day's memories to her notes and checks them against her transcripts): {providerId, modelId, effort?} from GET /api/models (or `provider/model[@effort]` on the command line). Unset (null): her own model. See `waifus help dreaming`. |
 | `life.dreamMaxRounds` | integer 5–200 | `60` | At most this many tool rounds in one dream session. |
 | `life.dreamWindowMaxChars` | integer 20000–2000000 [characters] | `200000` | When what was said since her last dream is longer than this, the dream runs in several sessions (oldest days first), each moving her dream cursor for what it covered. |

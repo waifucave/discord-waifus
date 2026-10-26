@@ -10,6 +10,17 @@ wakes in her queue. She handles them one turn at a time: she reads, decides what
 what she sends reaches people. Her life is split into epochs: when it grows long, compaction
 summarises it into her `<life_so_far>` and a new epoch starts with her last few turns kept.
 
+**Resting.** Before that happens she summarises herself. When her last request reaches
+`life.restNoticeRatio` (default 0.85) of the compaction trigger, the turn after the running one is
+a rest turn: a notice tells her that her context will be reset to the summary she writes now, that
+her home, `/tmp` and `/transcripts` stay as they are, and to write it clearly. In that turn she can
+use her files, Bash, reminders and watches, but SendMessage, React, WebSearch and WebFetch answer
+"finish your summary first". Queued wakes wait until after it. If her final reply is at least
+`life.restSummaryMinChars` (default 200) characters, a new epoch starts from that summary alone
+(Life shows "rested (her own summary)"); a shorter reply, a failed turn or a cap means compaction
+summarises for her as before. One rest notice per epoch. `life.restNotice = false` turns it off
+(her time line then warns her that her memory is nearly full, as before).
+
 ## Seeing it
 
 - Dashboard → Life: her status (awake, asleep or busy; idle or mid-turn), her queue, today's cost

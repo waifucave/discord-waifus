@@ -254,7 +254,10 @@ const LIFE_FIELDS = {
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
   maintenanceHourLocal: z.number().int().min(0).max(23),
   dreamMaxRounds: z.number().int().min(5).max(200),
-  dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000)
+  dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000),
+  restNotice: z.boolean(),
+  restNoticeRatio: z.number().min(0.5).max(0.99),
+  restSummaryMinChars: z.number().int().min(0).max(5_000)
 };
 // The dream's model (spec §18.4): a route GET /api/models offers, with an optional effort; unset = her model.
 export const DreamModelSchema = z.object({
@@ -277,7 +280,10 @@ export const DEFAULT_LIFE_CONFIG = {
   maxWaifuTriggeredTurns: 0,
   maintenanceHourLocal: 5,
   dreamMaxRounds: 60,
-  dreamWindowMaxChars: 200_000
+  dreamWindowMaxChars: 200_000,
+  restNotice: true,
+  restNoticeRatio: 0.85,
+  restSummaryMinChars: 200
 };
 export const LifeConfigSchema = z
   .object({
@@ -296,6 +302,9 @@ export const LifeConfigSchema = z
     dreamModel: DreamModelSchema.optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
     dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.default(DEFAULT_LIFE_CONFIG.dreamWindowMaxChars),
+    restNotice: LIFE_FIELDS.restNotice.default(DEFAULT_LIFE_CONFIG.restNotice),
+    restNoticeRatio: LIFE_FIELDS.restNoticeRatio.default(DEFAULT_LIFE_CONFIG.restNoticeRatio),
+    restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.default(DEFAULT_LIFE_CONFIG.restSummaryMinChars),
     webFetch: WebFetchConfigSchema,
     home: HomeConfigSchema,
     tmp: TmpConfigSchema,
@@ -437,6 +446,9 @@ export const UpdateAppConfigBodySchema = z.object({
     dreamModel: DreamModelSchema.strict().nullable().optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.optional(),
     dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.optional(),
+    restNotice: LIFE_FIELDS.restNotice.optional(),
+    restNoticeRatio: LIFE_FIELDS.restNoticeRatio.optional(),
+    restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.optional(),
     webFetch: z.object({
       model: WEB_FETCH_FIELDS.model.optional(),
       maxPerWaifuPerDay: WEB_FETCH_FIELDS.maxPerWaifuPerDay.optional(),

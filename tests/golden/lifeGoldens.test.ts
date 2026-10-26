@@ -5,7 +5,8 @@
 // each file is the request as the model would see it.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectorQuestion } from "../../src/life/detector/decider.js";
-import { updateLifeState } from "../../src/life/lifeStore.js";
+import { readLifeState, updateLifeState } from "../../src/life/lifeStore.js";
+import { lifeBudget } from "../../src/life/request.js";
 import { buildWebFetchDigestRequest } from "../../src/life/web/index.js";
 import { writeWaifuConfig } from "../lifeFixtures.js";
 import { textTurn } from "../modelFakes.js";
@@ -146,6 +147,30 @@ describe("Living cast goldens", () => {
     await w.cast.scheduler.tick();
     const request = w.anthropic.calls[1]!.request;
     await expect(serializeRequest(request)).toMatchFileSnapshot("./__snapshots__/life-dream.txt");
+  });
+
+  it("the rest notice and the epoch her own summary opens (§19)", async () => {
+    const summary = "Bake Club #general, Sat 24 Oct around 14:00: Kevin asked if I'm coming Saturday and said they need someone on dessert. I said yes and that I'm bringing lemon tarts. Mina was preheating the oven. Nothing else open; I want to check the lemon supply before Saturday.";
+    const w = await lifeWorld(roots, {
+      waifus: [ELLA],
+      scripts: [...wakeTurn(), () => toolTurn([{ name: "Write", input: { file_path: "~/places/bake-club.md", content: "# Bake Club\n- Saturday bake sale: I'm on dessert (lemon tarts)\n" } }]), () => textTurn(summary), () => textTurn("(nothing to send)")]
+    });
+    await seedNotes(w);
+    await mention(w, "are you coming saturday? we need someone on dessert");
+    await w.cast.life("ella").runNow();
+    // Her last request reached 0.9 of the compaction trigger: the rest notice is due (§19.2).
+    const route = (await readLifeState(w.storage, "ella")).modelRoute!;
+    const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === route.providerId && entry.modelId === route.modelId)!;
+    const tokens = Math.round(0.9 * w.config.compaction.triggerRatio * lifeBudget(model, w.config.life.maxContextTokens));
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastRequestTokens: tokens }));
+    await w.cast.life("ella").runNow();
+    const rest = w.anthropic.calls[3]!.request;
+    const before = w.anthropic.calls[2]!.request.messages.length;
+    await expect(`(system, tools and the turns before: see life-system-prompt.txt and life-wake-turn.txt; ${before} earlier messages)\n${serializeMessages(rest.messages, before)}\n`).toMatchFileSnapshot("./__snapshots__/life-rest-notice.txt");
+    await mention(w, "did you get lemons?");
+    await w.cast.life("ella").runNow();
+    const opening = w.anthropic.calls[5]!.request;
+    await expect(serializeRequest(opening, { tools: false })).toMatchFileSnapshot("./__snapshots__/life-rest-epoch.txt");
   });
 
   it("a compaction request (her persona changed: the old epoch is summarised first)", async () => {

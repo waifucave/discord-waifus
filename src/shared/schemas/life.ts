@@ -115,6 +115,11 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
     .object({ at: IsoDateStringSchema, reason: z.string(), summarized: z.boolean(), fromEpoch: z.number().int().positive() })
     .optional(),
   compactionPausedUntil: IsoDateStringSchema.optional(),
+  /**
+   * The rest turn she had in this epoch (§19.2: at most one per epoch). Should the compaction after
+   * an ignored one be interrupted, the next cycle compacts, leaving this turn out.
+   */
+  restTurn: z.object({ epoch: z.number().int().positive(), turnId: z.string() }).optional(),
   /** A forget scrub wrote the summary; the new epoch starts after the scrub (§7.5 step 2). */
   pendingEpochStart: z.boolean().optional(),
   /**

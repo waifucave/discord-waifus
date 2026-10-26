@@ -9,17 +9,28 @@
 // the prefix or breakpoint layout, not a reason to loosen the target. CACHE_HIT_TRACE=1 prints a row
 // per request.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+/** The request size the life loop sees: forced only to bring the rest notice on (§19). */
+const estimate = vi.hoisted(() => ({ value: undefined as number | undefined }));
+vi.mock("../../src/life/request.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/life/request.js")>();
+  return { ...real, estimateRequest: (...args: Parameters<typeof real.estimateRequest>) => estimate.value ?? real.estimateRequest(...args) };
+});
+
+import { REST_NOTICE } from "../../src/life/lifeLoop.js";
 import { readLifeState } from "../../src/life/lifeStore.js";
+import { lifeBudget } from "../../src/life/request.js";
 import { closeWorlds, type LifeWorld } from "../lifeFixtures.js";
 import { removeTempRoot } from "../testUtils.js";
-import { AnthropicCacheSim, ONE_HOUR_MS, readRatio, tally, type CacheUsage, type WireBlock } from "./anthropicCacheSim.js";
+import { AnthropicCacheSim, ONE_HOUR_MS, readRatio, tally, type CacheUsage, type WireBlock, type WireBody } from "./anthropicCacheSim.js";
 import type { Exchange, FakeAnthropic } from "./fakeAnthropic.js";
 import { dmWake, isCompaction, isMaintenance, lifeTurn, realAnthropicWorld, roomWake } from "./lifeWire.js";
 
 const roots: string[] = [];
 const servers: FakeAnthropic[] = [];
 afterEach(async () => {
+  estimate.value = undefined;
   await closeWorlds();
   await Promise.all(servers.splice(0).map((server) => server.close()));
   for (const root of roots.splice(0)) await removeTempRoot(root);
@@ -98,5 +109,38 @@ describe("cache-hit targets (§12)", { timeout: 120_000 }, () => {
     const { ratio, calls } = await scenario({ place: "room", wakes: 10, gapMinutes: (index) => gaps[index % gaps.length]!, chatter: 8 });
     expect(calls).toBeGreaterThanOrEqual(25);
     expect(ratio).toBeGreaterThanOrEqual(0.75);
+  });
+});
+
+describe("the rest turn (§19.3)", { timeout: 120_000 }, () => {
+  it("keeps the cached prefix: same tools and system, the turn before it read from cache", async () => {
+    const { w, server } = await realAnthropicWorld(roots, servers);
+    const isRest = (body: WireBody) => JSON.stringify(body.messages[body.messages.length - 1]).includes(REST_NOTICE.slice(0, 60));
+    const turn = lifeTurn(() => "bake-club/#general");
+    server.next = (body) => {
+      if (!isRest(body) && !JSON.stringify(body.messages.slice(-1)).includes("saturday.md")) return turn(body);
+      if (isRest(body)) return { thinking: "Let me keep the plan.", toolCalls: [{ name: "Write", input: { file_path: "~/saturday.md", content: "Saturday: lemon tarts\n" } }] };
+      estimate.value = undefined;
+      return { text: "Bake Club #general: Kevin asked what to bake next; I said lemon tarts. ".repeat(6) };
+    };
+    for (let index = 0; index < 3; index += 1) {
+      await roomWake(w, `question ${index}: what should we bake next?`, 4);
+      w.clock.advance(2 * 60_000);
+    }
+    const route = (await readLifeState(w.storage, "ella")).modelRoute!;
+    const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === route.providerId && entry.modelId === route.modelId)!;
+    const budget = lifeBudget(model, w.config.life.maxContextTokens);
+    estimate.value = Math.round(0.9 * w.config.compaction.triggerRatio * budget);
+    await roomWake(w, "last question: lemon or lime?", 4);
+    trace("rest", server.exchanges);
+    const at = server.exchanges.findIndex((exchange) => isRest(exchange.body));
+    expect(at).toBeGreaterThan(0);
+    const before = server.exchanges[at - 1]!;
+    const rest = server.exchanges[at]!;
+    expect(rest.body.tools).toEqual(before.body.tools);
+    expect(rest.body.system).toEqual(before.body.system);
+    // Everything up to her last call is read from cache; only the notice is new.
+    expect(rest.usage.read).toBeGreaterThanOrEqual(0.9 * rest.usage.total);
+    expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "rest" });
   });
 });

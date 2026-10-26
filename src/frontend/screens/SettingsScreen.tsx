@@ -676,6 +676,7 @@ export const LIFE_LIMIT_GROUPS: readonly LifeGroup[] = [
   { title: "Sending", hint: "What she may send in one turn.", paths: ["life.maxSendsPerTurn", "life.maxSendPlacesPerTurn", "life.send.maxFiles"] },
   { title: "Wakes", hint: "How often people, watches and other waifus may wake her.", paths: ["life.maxWakesPerUserPerHour", "life.maxWatchFiresPerDay", "life.maxWaifuTriggeredTurns"] },
   { title: "Context and images", hint: "How long her life gets before compaction, and the pictures she sees as images.", paths: ["life.maxLogMessages", "life.maxContextTokens", "life.maxInlineImagesPerEpoch", "life.maxInlineImageBytesPerEpoch"], columns: 2 },
+  { title: "Rest before her memory fills", hint: "Near the compaction trigger she writes her own summary in a turn of her own; a new epoch starts from it alone.", paths: ["life.restNotice", "life.restNoticeRatio", "life.restSummaryMinChars"] },
   { title: "Her home folder", hint: "Her notes, reminders, watches and anything she keeps.", paths: ["life.home.maxBytes", "life.home.maxFiles", "life.home.maxFolders"] },
   { title: "/tmp and downloads", hint: "Files people sent her and her scratch files.", paths: ["life.tmp.maxBytes", "life.tmp.maxFiles", "life.tmp.retentionDays", "life.attachments.maxBytes"], columns: 2 },
   { title: "Simulated Bash", hint: "just-bash over a copy of her two folders: never a real program, no network.", paths: ["life.bash.enabled", "life.bash.python", "life.bash.maxTimeoutMs", "life.bash.maxOutputChars", "life.bash.maxMemoryMb"] },
