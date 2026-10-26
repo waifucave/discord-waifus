@@ -4,7 +4,7 @@
 // or below its floor, removed lines never come back from a REST catch-up, and a DM transcript is
 // listed unnamed and opened only with a local includePrivate=1 (never over Remote Access or for the
 // dashboard assistant).
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
@@ -152,6 +152,8 @@ describe("DM transcripts over HTTP (D14)", () => {
     expect(root.entries.map((entry: { name: string }) => entry.name).sort()).toEqual(["dm", "server-0001"]);
     const room = (await w.app.inject({ method: "GET", url: "/api/waifus/ella/files?dir=/transcripts/server-0001/channel-0002" })).json();
     expect(room.entries).toMatchObject([{ name: "2026-10-24.md", kind: "file", path: "/transcripts/server-0001/channel-0002/2026-10-24.md" }]);
+    // A listing gives the stored size (no day is rendered to list a folder).
+    expect(room.entries[0].size).toBe((await stat(path.join(w.root, "user", "transcripts", ROOM_KEY, "2026-10-24.jsonl"))).size);
     const day = (await w.app.inject({ method: "GET", url: "/api/waifus/ella/files/transcripts/server-0001/channel-0002/2026-10-24.md" })).json();
     expect(day).toMatchObject({ kind: "text", readOnly: true });
     // The host's time zone renders the clock.

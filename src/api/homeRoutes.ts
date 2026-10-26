@@ -261,7 +261,8 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const view = transcriptsOf(waifuId);
     // A private chat's folder (or `dm`, which names the people she has private chats with).
     if (!includePrivate && (await view.isPrivate(segments))) throw privateRefused();
-    const entries = await view.readdir(segments, { sizes: true });
+    // Stored sizes, as Bash lists them: a listing never renders every day (a day's read gives its own).
+    const entries = await view.readdir(segments);
     if (!entries) {
       if (await view.stat(segments)) throw new ApiError(400, `${transcriptsVirtual(segments)} is a file, not a folder`, undefined, "NotFolder");
       throw notFound(`${transcriptsVirtual(segments)} doesn't exist`);

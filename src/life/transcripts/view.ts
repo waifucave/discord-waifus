@@ -153,6 +153,7 @@ export function renderTranscriptDay(o: {
 export class TranscriptView {
   private folders: Promise<TranscriptFolder[]> | undefined;
   private readonly rendered = new Map<string, Promise<{ text: string; mtimeMs: number } | undefined>>();
+  private readonly refs = new Map<string, Promise<Map<string, string>>>();
   private static readonly KEEP = 16;
 
   constructor(private readonly o: TranscriptViewOptions) {}
@@ -192,8 +193,11 @@ export class TranscriptView {
     return isDir ? { kind: "dir", size: 0, mtimeMs: 0 } : undefined;
   }
 
-  /** A folder's entries (undefined when it is not a folder). Files report their rendered size. */
-  async readdir(segments: readonly string[], o: { sizes?: boolean } = {}): Promise<TranscriptEntry[] | undefined> {
+  /**
+   * A folder's entries (undefined when it is not a folder). A day reports its stored size (no day
+   * is rendered to list a folder); `stat` and `read` give the rendered one.
+   */
+  async readdir(segments: readonly string[]): Promise<TranscriptEntry[] | undefined> {
     const prefix = segments.join("/");
     const folders = await this.list();
     const dirs = new Set<string>();
@@ -205,13 +209,8 @@ export class TranscriptView {
         found = true;
         for (const day of await this.days(folder)) {
           const name = `${day}.md`;
-          if (o.sizes) {
-            const rendered = await this.render(folder, day);
-            if (rendered) entries.push({ name, kind: "file", size: Buffer.byteLength(rendered.text), mtimeMs: rendered.mtimeMs });
-          } else {
-            const info = await transcriptDayStat(this.o.storage.dataRoot, folder.key, day);
-            entries.push({ name, kind: "file", size: info?.size ?? 0, mtimeMs: info?.mtimeMs ?? 0 });
-          }
+          const info = await transcriptDayStat(this.o.storage.dataRoot, folder.key, day);
+          entries.push({ name, kind: "file", size: info?.size ?? 0, mtimeMs: info?.mtimeMs ?? 0 });
         }
         continue;
       }
@@ -263,6 +262,19 @@ export class TranscriptView {
     return (await this.days(folder)).includes(day) ? { folder, day } : undefined;
   }
 
+  /** A conversation's refs, read once per view. */
+  private refsOf(key: string): Promise<Map<string, string>> {
+    let refs = this.refs.get(key);
+    if (!refs) {
+      refs = readConversationRefs(this.o.storage, key as ConversationKey).then(
+        (file) => new Map(Object.entries(file.refs)),
+        () => new Map<string, string>()
+      );
+      this.refs.set(key, refs);
+    }
+    return refs;
+  }
+
   private render(folder: TranscriptFolder, day: string): Promise<{ text: string; mtimeMs: number } | undefined> {
     const id = `${folder.key}/${day}`;
     let cached = this.rendered.get(id);
@@ -280,10 +292,7 @@ export class TranscriptView {
     if (!info) return undefined;
     const all = await readTranscriptDay(dataRoot, folder.key, day);
     const lines = folder.dm || !folder.intervals ? all : all.filter((line) => insideIntervals(folder.intervals!, line.at));
-    const refs = await readConversationRefs(this.o.storage, folder.key as ConversationKey).then(
-      (file) => new Map(Object.entries(file.refs)),
-      () => new Map<string, string>()
-    );
+    const refs = await this.refsOf(folder.key);
     return { text: renderTranscriptDay({ handle: folder.handle, day, lines, waifuId: this.o.waifuId, timeZone: this.o.timeZone, refs }), mtimeMs: info.mtimeMs };
   }
 }
