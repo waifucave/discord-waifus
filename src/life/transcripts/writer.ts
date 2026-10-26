@@ -6,8 +6,11 @@
 // cast), so a waifu added later never sees what was said before she arrived and one removed keeps
 // what she saw. A DM is written for the waifu whose DM it is. Lines older than the store
 // (`store.json` `startedAt`: no backfill before the feature), a forgotten person's messages from
-// before their forget, ids a forget or a Discord delete removed and DM lines at or below a forget
-// floor are never written. Edits replace a line (marked edited); deletes remove it.
+// before their forget and the lines from before it that mention them (by id: a REST catch-up after a
+// forget cannot bring them back), ids a forget or a Discord delete removed and DM lines at or below a
+// forget floor are never written. Edits replace a line (marked edited); deletes remove it. Access
+// intervals open and close at the time of the oldest message in the event (catch-up after downtime
+// never shows a removed waifu what was said after she left).
 
 import type { ConversationCacheEvent } from "../../discord/conversationCache.js";
 import { snowflakeTime } from "../../discord/refStore.js";
@@ -23,11 +26,14 @@ import type { LifeDeps } from "../deps.js";
 import { isRemovedMessage, selfAuthorIds } from "../people.js";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
+import { lineCarriesPerson } from "./forget.js";
 import {
   addTranscriptLine,
   deleteTranscriptLines,
   editTranscriptLine,
   listAccessWaifuIds,
+  listTranscriptDays,
+  readTranscriptDay,
   readTranscriptAccess,
   reconcileRoomAccess,
   transcriptsStartedAt,
@@ -130,13 +136,25 @@ export class TranscriptWriter {
   }
 
   /** Opens and closes access intervals for a room when its cast differs from what we last saw. */
-  private async reconcile(key: string, cast: readonly string[], at: Date): Promise<void> {
+  private async reconcile(key: string, cast: readonly string[], at: { open: Date; close: Date }): Promise<void> {
     const known = this.lastCast.get(key);
     if (known && known.length === cast.length && known.every((id, index) => id === cast[index])) return;
     // First time in this process: who has an open interval there is read from the access files.
     const open = known ?? (await this.openWaifus(key));
     await reconcileRoomAccess(this.deps.storage.dataRoot, key, cast, at, open);
     this.lastCast.set(key, [...cast]);
+  }
+
+  /** Just after the newest line of a conversation (the last time it was written for anyone), else `fallback`. */
+  private async lastWrittenAt(key: string, fallback: Date): Promise<Date> {
+    const days = await listTranscriptDays(this.deps.storage.dataRoot, key);
+    const day = days[days.length - 1];
+    if (!day) return fallback;
+    const lines = await readTranscriptDay(this.deps.storage.dataRoot, key, day);
+    const last = lines[lines.length - 1];
+    if (!last) return fallback;
+    const at = Date.parse(last.at) + 1;
+    return Number.isFinite(at) && at < fallback.getTime() ? new Date(at) : fallback;
   }
 
   private async openWaifus(key: string): Promise<string[]> {
@@ -148,7 +166,11 @@ export class TranscriptWriter {
     return out;
   }
 
-  /** Every room with a cast (and every room someone still has an open interval in) reconciled now. */
+  /**
+   * Every room with a cast (and every room someone still has an open interval in) reconciled. A cast
+   * change found here happened while the app was down, at some time we do not know: intervals change
+   * at the last moment anything was written (the store's newest line there), else now.
+   */
   async reconcileAll(): Promise<void> {
     const now = this.deps.now();
     const casts = new Map<string, string[]>();
@@ -178,7 +200,7 @@ export class TranscriptWriter {
     }
     for (const [key, cast] of casts) {
       this.lastCast.delete(key);
-      await this.reconcile(key, cast, now);
+      await this.reconcile(key, cast, { open: now, close: await this.lastWrittenAt(key, now) });
     }
   }
 
@@ -240,7 +262,7 @@ export class TranscriptWriter {
   }
 
   /** Whether lines of this conversation are kept: a DM always, a room while some waifu is cast there. */
-  private async kept(conversation: ConversationRef, at: Date): Promise<boolean> {
+  private async kept(conversation: ConversationRef, at: { open: Date; close: Date }): Promise<boolean> {
     if (conversation.kind === "dm") return true;
     const key = conversationKey(conversation);
     const cast = await this.castOf(conversation.guildId, conversation.channelId);
@@ -252,20 +274,23 @@ export class TranscriptWriter {
     if (messages.length === 0) return;
     const key = conversationKey(conversation);
     const now = this.deps.now();
-    // An interval a live message opens starts no later than the message (it was sent before it arrived).
+    // A waifu newly cast sees from now (from a live message, no later than it was sent); one no longer
+    // cast loses the room from the oldest message of the event on.
     const first = messages.reduce((min, message) => Math.min(min, Date.parse(message.createdAt)), Number.POSITIVE_INFINITY);
-    const at = source === "live" && Number.isFinite(first) ? new Date(Math.min(now.getTime(), first)) : now;
-    if (!(await this.kept(conversation, at))) return;
+    const oldest = Number.isFinite(first) ? new Date(Math.min(now.getTime(), first)) : now;
+    if (!(await this.kept(conversation, { open: source === "live" ? oldest : now, close: oldest }))) return;
     const startedAt = await transcriptsStartedAt(this.deps.storage.dataRoot, now);
     const forgotten = await this.forgottenPeople();
     const authors = await this.authorMap();
     for (const message of messages) {
       const own = authors.has(message.authorId);
       // Unreadable forget records: a gap fill (old messages) waits; live messages are new.
-      if (!own && forgotten === "unreadable" && source === "fill") continue;
+      if (forgotten === "unreadable" && source === "fill") continue;
       if (!own && forgotten !== "unreadable" && isRemovedMessage(message, forgotten)) continue;
       const line = await this.lineOf(conversation, message);
       if (!line) continue;
+      // A line from before a forget that mentions the forgotten person (anyone's, hers too).
+      if (forgotten !== "unreadable" && forgotten.some((person) => Date.parse(line.at) <= Date.parse(person.at) && lineCarriesPerson(line, { userId: person.userId, names: [], at: new Date(person.at) }))) continue;
       await addTranscriptLine(this.env, key, line, { startedAt });
     }
   }

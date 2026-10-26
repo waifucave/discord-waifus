@@ -26,6 +26,7 @@ import { TranscriptView } from "../src/life/transcripts/view.js";
 import { TranscriptWriter } from "../src/life/transcripts/writer.js";
 import { conversationKey, type ConversationRef } from "../src/orchestration/context/keys.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
+import { recordForgottenPerson } from "../src/orchestration/dm/forgotten.js";
 import { ServerConfigSchema } from "../src/shared/schemas/domain.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import { CHANNEL, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, type LifeWorld } from "./lifeFixtures.js";
@@ -216,6 +217,38 @@ describe("the transcript store", () => {
     expect(await text("mina")).not.toContain("before Mina");
     expect(await text("mina")).toContain("Mina is here");
     expect(await text("mina")).toContain("Ella left");
+  });
+
+  it("a removal while the app was down closes her interval at the last line written, not at the restart", async () => {
+    const { w, writer } = await world();
+    await setCast(w, ["ella", "mina"]);
+    await feed(writer, create(ROOM, w.discord.post(ROOM, "both here")));
+    await writer.close();
+    // Down for an hour: Ella was taken out of the room meanwhile, and people kept talking.
+    w.clock.advance(30 * 60_000);
+    const during = w.discord.post(ROOM, "said while the app was down");
+    w.clock.advance(30 * 60_000);
+    await setCast(w, ["mina"]);
+    const restarted = new TranscriptWriter(w.cast.deps);
+    await restarted.start();
+    await feed(restarted, { type: "page", conversation: ROOM, messages: [during] });
+    const text = async (waifuId: string) => (await new TranscriptView({ storage: w.storage, waifuId, timeZone: "UTC", now: w.clock.now }).read(["bake-club", "general", "2026-10-24.md"])) ?? "";
+    expect(await text("mina")).toContain("said while the app was down");
+    expect(await text("ella")).toContain("both here");
+    expect(await text("ella")).not.toContain("said while the app was down");
+  });
+
+  it("a catch-up never writes a line from before a forget that mentions the forgotten person", async () => {
+    const { w, writer } = await world();
+    const before = w.discord.post(ROOM, `<@${KEVIN}> passed his exam`, { authorId: MINA_USER, authorName: "Mina", mentions: { [KEVIN]: "Kevin" } });
+    const plain = w.discord.post(ROOM, "the oven is ready", { authorId: MINA_USER, authorName: "Mina" });
+    w.clock.advance(60_000);
+    await recordForgottenPerson(w.storage, KEVIN, w.clock.now());
+    writer.noteForget();
+    w.clock.advance(60_000);
+    const after = w.discord.post(ROOM, `<@${KEVIN}> welcome back`, { authorId: MINA_USER, authorName: "Mina", mentions: { [KEVIN]: "Kevin" } });
+    await feed(writer, { type: "page", conversation: ROOM, messages: [before, plain, after] });
+    expect((await readTranscriptDay(w.root, ROOM_KEY, "2026-10-24")).map((line) => line.text)).toEqual(["the oven is ready", "@Kevin welcome back"]);
   });
 
   it("shows a DM only to the waifu whose DM it is", async () => {

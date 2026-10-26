@@ -568,18 +568,24 @@ export async function updateTranscriptAccess(dataRoot: string, waifuId: string, 
  * The cast of a room conversation right now: an interval opens (at `at`) for every cast waifu
  * without an open one, and closes (at `at`) for every waifu with an open one who is no longer cast.
  */
-export async function reconcileRoomAccess(dataRoot: string, key: string, castWaifuIds: readonly string[], at: Date, known: readonly string[]): Promise<void> {
+/**
+ * Opens an interval for each waifu cast and without one (at `open`), closes the open interval of each
+ * waifu no longer cast (at `close`, never before it began).
+ */
+export async function reconcileRoomAccess(dataRoot: string, key: string, castWaifuIds: readonly string[], at: Date | { open: Date; close: Date }, known: readonly string[]): Promise<void> {
+  const openAt = at instanceof Date ? at : at.open;
+  const closeAt = at instanceof Date ? at : at.close;
   const cast = new Set(castWaifuIds);
   for (const waifuId of new Set([...castWaifuIds, ...known])) {
     await updateTranscriptAccess(dataRoot, waifuId, (access) => {
       const intervals = access.conversations[key] ?? [];
       const open = intervals.find((interval) => interval.to === undefined);
       if (cast.has(waifuId) && !open) {
-        access.conversations[key] = [...intervals, { from: at.toISOString() }];
+        access.conversations[key] = [...intervals, { from: openAt.toISOString() }];
         return access;
       }
       if (!cast.has(waifuId) && open) {
-        open.to = at.toISOString();
+        open.to = new Date(Math.max(Date.parse(open.from), closeAt.getTime())).toISOString();
         return access;
       }
       return undefined;
