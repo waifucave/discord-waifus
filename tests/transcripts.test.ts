@@ -1,7 +1,7 @@
 // Transcripts (Living cast spec §18.2, §18.3, §18.7): the shared store fed by the conversation
 // cache's events, access intervals, DM isolation, her read-only `/transcripts` through Read and
 // Bash (mounted lazily, never copied), and the write refusals.
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConversationCacheEvent } from "../src/discord/conversationCache.js";
@@ -12,6 +12,10 @@ import { homeStoreFor } from "../src/life/home/index.js";
 import type { ToolContext } from "../src/life/tools/types.js";
 import {
   addTranscriptLine,
+  deleteTranscriptLines,
+  DELETED_MEMORY_MS,
+  forgetTranscriptAtOrBelow,
+  scrubTranscriptLines,
   listTranscriptDays,
   readTranscriptAccess,
   readTranscriptDay,
@@ -118,6 +122,61 @@ describe("the transcript store", () => {
     expect(lines.map((line) => line.text)).toEqual(["one", "two", "three"]);
     const raw = await readFile(path.join(w.root, "user", "transcripts", ROOM_KEY, "2026-10-24.jsonl"), "utf8");
     expect(raw.trim().split("\n")).toHaveLength(3);
+  });
+
+  it("an update that is not an edit (an embed unfurl, a pin) changes nothing; an edit stays marked", async () => {
+    const { w, writer } = await world();
+    const hello = w.discord.post(ROOM, "look https://example.com");
+    await feed(writer, create(ROOM, hello));
+    const file = path.join(w.root, "user", "transcripts", ROOM_KEY, "2026-10-24.jsonl");
+    const before = await stat(file);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await feed(writer, { type: "update", conversation: ROOM, message: { ...hello, pinned: true } as never, source: "gateway" });
+    expect((await stat(file)).mtimeMs).toBe(before.mtimeMs);
+    expect((await readTranscriptDay(w.root, ROOM_KEY, "2026-10-24"))[0]!.edited).toBeUndefined();
+    await feed(writer, { type: "update", conversation: ROOM, message: { ...hello, content: "look at this", editedAt: new Date(w.clock.ms).toISOString() }, source: "gateway" });
+    // A later unfurl of the edited message keeps its mark.
+    await feed(writer, { type: "update", conversation: ROOM, message: { ...hello, content: "look at this" }, source: "gateway" });
+    expect((await readTranscriptDay(w.root, ROOM_KEY, "2026-10-24"))[0]).toMatchObject({ text: "look at this", edited: true });
+  });
+
+  it("after a torn last line, the next line starts on its own line", async () => {
+    const { w } = await world();
+    const env = { dataRoot: w.root, timeZone: "UTC" };
+    const line = (id: string, minute: number) => ({ id, at: `2026-10-24T12:${String(minute).padStart(2, "0")}:00.000Z`, authorId: KEVIN, author: "Kevin", text: `line ${id}` });
+    expect(await addTranscriptLine(env, ROOM_KEY, line("1", 1))).toBe("added");
+    const file = path.join(w.root, "user", "transcripts", ROOM_KEY, "2026-10-24.jsonl");
+    // A crash in the middle of the next append.
+    await writeFile(file, `${await readFile(file, "utf8")}{"id":"2","at":"2026-10-24T12:0`);
+    expect(await addTranscriptLine(env, ROOM_KEY, line("3", 3))).toBe("added");
+    expect((await readTranscriptDay(w.root, ROOM_KEY, "2026-10-24")).map((entry) => entry.id)).toEqual(["1", "3"]);
+    expect(await addTranscriptLine(env, ROOM_KEY, line("3", 3))).toBe("exists");
+  });
+
+  it("a Discord delete is remembered a day, a forget for good; a DM floor keeps the ids above it", async () => {
+    const { w } = await world();
+    const env = { dataRoot: w.root, timeZone: "UTC" };
+    const line = (id: string) => ({ id, at: "2026-10-24T12:00:00.000Z", authorId: KEVIN, author: "Kevin", text: `line ${id}` });
+    await addTranscriptLine(env, ROOM_KEY, line("10"));
+    await addTranscriptLine(env, ROOM_KEY, line("20"));
+    await deleteTranscriptLines(env, ROOM_KEY, ["10"]);
+    await scrubTranscriptLines(env, ROOM_KEY, (entry) => entry.id === "20");
+    expect(await addTranscriptLine(env, ROOM_KEY, line("10"))).toBe("skipped");
+    expect(await addTranscriptLine(env, ROOM_KEY, line("20"))).toBe("skipped");
+    const meta = path.join(w.root, "user", "transcripts", ROOM_KEY, "meta.json");
+    const stored = JSON.parse(await readFile(meta, "utf8")) as { removed: string[]; deleted: Record<string, string> };
+    expect(stored.removed).toEqual(["20"]);
+    // A day later the delete is forgotten (a message that came back is Discord's again); the forget is not.
+    await writeFile(meta, JSON.stringify({ ...stored, deleted: { "10": new Date(Date.now() - DELETED_MEMORY_MS - 1_000).toISOString() } }));
+    expect(await addTranscriptLine(env, ROOM_KEY, line("10"))).toBe("added");
+    expect(await addTranscriptLine(env, ROOM_KEY, line("20"))).toBe("skipped");
+    // A DM floor below a forgotten id keeps it.
+    const dmKey = conversationKey(dmOf("ella"));
+    await addTranscriptLine(env, dmKey, line("30"));
+    await scrubTranscriptLines(env, dmKey, (entry) => entry.id === "30");
+    await forgetTranscriptAtOrBelow(env, dmKey, "25");
+    expect(await addTranscriptLine(env, dmKey, line("30"))).toBe("skipped");
+    expect(await addTranscriptLine(env, dmKey, line("24"))).toBe("skipped");
   });
 
   it("splits days in the host time zone and writes nothing from before the store started", async () => {

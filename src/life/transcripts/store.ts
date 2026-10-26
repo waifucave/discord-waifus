@@ -3,15 +3,18 @@
 //
 //   user/transcripts/store.json                      {startedAt}: no line older than this is written
 //   user/transcripts/<conversationKey>/<day>.jsonl   one line per message, days in the host time zone
-//   user/transcripts/<conversationKey>/meta.json     {floor?, removed?}: a DM forget floor and the ids a
-//                                                    forget or a Discord delete removed (never written again)
+//   user/transcripts/<conversationKey>/meta.json     {floor?, removed?, deleted?}: a DM forget floor, the ids
+//                                                    a forget removed (never written again) and the ids a
+//                                                    Discord delete removed (kept a day: a stale REST page)
 //   user/transcripts/access/<waifuId>.json           per room conversation, the intervals she was cast there
 //
 // Every write of a conversation goes through one in-process queue per conversation (like the image
 // index). A new line that sorts after the day's last line is appended (the common case); an edit, a
 // delete, an out-of-order gap fill and every forget rewrite the day file atomically. A crash in the
-// middle of an append can leave a torn last line: readers skip lines that do not parse, and the next
-// rewrite of that day drops it. Access files have a queue per waifu.
+// middle of an append can leave a torn last line: readers skip lines that do not parse, the next
+// append starts on a new line, and the next rewrite of that day drops it. Access files have a queue
+// per waifu. An in-memory cache per conversation (its meta, and per recent day the ids and the last
+// line, checked against the files' size and time) keeps an append to one stat, no parse.
 //
 // Pure storage: nothing here knows Discord or the life; the writer (`writer.ts`) feeds it and her
 // view (`view.ts`) renders it.
@@ -211,22 +214,122 @@ export async function readTranscriptsStartedAt(dataRoot: string): Promise<string
   }
 }
 
-type Meta = { floor?: string; removed?: string[] };
+/** How long a Discord delete's id is remembered (a stale REST page or catch-up right after it). */
+export const DELETED_MEMORY_MS = 86_400_000;
 
-async function readMeta(dataRoot: string, key: string): Promise<Meta> {
+/** meta.json as stored. `removed` are a forget's ids (and, before deletes were kept apart, a delete's). */
+type MetaFile = { floor?: string; removed?: string[]; deleted?: Record<string, string> };
+/** meta.json as used. */
+type Meta = { floor?: string; removed: Set<string>; deleted: Map<string, string> };
+
+type FileStamp = { size: number; mtimeMs: number } | undefined;
+type DayCache = { stamp: FileStamp; ids: Set<string>; last?: TranscriptLine; newline: boolean };
+type ConversationCache = { meta?: { stamp: FileStamp; value: Meta }; days: Map<string, DayCache> };
+
+const CACHED_CONVERSATIONS = 512;
+const CACHED_DAYS = 4;
+const conversationCache = new Map<string, ConversationCache>();
+
+function cacheOf(dataRoot: string, key: string): ConversationCache {
+  const id = `${dataRoot}\u0000${key}`;
+  let entry = conversationCache.get(id);
+  if (entry) {
+    conversationCache.delete(id);
+    conversationCache.set(id, entry);
+    return entry;
+  }
+  entry = { days: new Map() };
+  conversationCache.set(id, entry);
+  if (conversationCache.size > CACHED_CONVERSATIONS) conversationCache.delete(conversationCache.keys().next().value!);
+  return entry;
+}
+
+function dropCache(dataRoot: string, key: string): void {
+  conversationCache.delete(`${dataRoot}\u0000${key}`);
+}
+
+async function stampOf(file: string): Promise<FileStamp> {
   try {
-    const parsed = JSON.parse(await readFile(path.join(conversationDir(dataRoot, key), "meta.json"), "utf8")) as Meta;
-    return {
-      ...(typeof parsed.floor === "string" ? { floor: parsed.floor } : {}),
-      ...(Array.isArray(parsed.removed) ? { removed: parsed.removed.filter((id): id is string => typeof id === "string") } : {})
-    };
+    const info = await stat(file);
+    return info.isFile() ? { size: info.size, mtimeMs: info.mtimeMs } : undefined;
   } catch {
-    return {};
+    return undefined;
   }
 }
 
+const sameStamp = (a: FileStamp, b: FileStamp) => (a === undefined ? b === undefined : b !== undefined && a.size === b.size && a.mtimeMs === b.mtimeMs);
+
+function metaPath(dataRoot: string, key: string): string {
+  return path.join(conversationDir(dataRoot, key), "meta.json");
+}
+
+async function readMeta(dataRoot: string, key: string): Promise<Meta> {
+  const cache = cacheOf(dataRoot, key);
+  const file = metaPath(dataRoot, key);
+  const stamp = await stampOf(file);
+  if (cache.meta && sameStamp(cache.meta.stamp, stamp)) return cache.meta.value;
+  const value: Meta = { removed: new Set(), deleted: new Map() };
+  if (stamp) {
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8")) as MetaFile;
+      if (typeof parsed.floor === "string") value.floor = parsed.floor;
+      if (Array.isArray(parsed.removed)) for (const id of parsed.removed) if (typeof id === "string") value.removed.add(id);
+      if (parsed.deleted && typeof parsed.deleted === "object") {
+        for (const [id, at] of Object.entries(parsed.deleted)) if (typeof at === "string") value.deleted.set(id, at);
+      }
+    } catch {
+      // unreadable: nothing remembered (a forget writes it again)
+    }
+  }
+  cache.meta = { stamp, value };
+  return value;
+}
+
 async function writeMeta(dataRoot: string, key: string, meta: Meta): Promise<void> {
-  await atomicWriteJson(path.join(conversationDir(dataRoot, key), "meta.json"), meta);
+  // Discord deletes are remembered a day; a forget's ids and the floor for good.
+  const cutoff = Date.now() - DELETED_MEMORY_MS;
+  for (const [id, at] of meta.deleted) if (!(Date.parse(at) > cutoff)) meta.deleted.delete(id);
+  const file = metaPath(dataRoot, key);
+  const stored: MetaFile = {
+    ...(meta.floor !== undefined ? { floor: meta.floor } : {}),
+    ...(meta.removed.size > 0 ? { removed: [...meta.removed] } : {}),
+    ...(meta.deleted.size > 0 ? { deleted: Object.fromEntries(meta.deleted) } : {})
+  };
+  await atomicWriteJson(file, stored);
+  cacheOf(dataRoot, key).meta = { stamp: await stampOf(file), value: meta };
+}
+
+/** A Discord delete of this id within `DELETED_MEMORY_MS`. */
+function recentlyDeleted(meta: Meta, id: string): boolean {
+  const at = meta.deleted.get(id);
+  return at !== undefined && Date.parse(at) > Date.now() - DELETED_MEMORY_MS;
+}
+
+/** The ids and last line of one day (cached; read again when the file changed underneath). */
+async function dayIndex(dataRoot: string, key: string, day: string): Promise<DayCache> {
+  const cache = cacheOf(dataRoot, key);
+  const file = dayPath(dataRoot, key, day);
+  const stamp = await stampOf(file);
+  const cached = cache.days.get(day);
+  if (cached && sameStamp(cached.stamp, stamp)) return cached;
+  let raw = "";
+  if (stamp) {
+    try {
+      raw = await readFile(file, "utf8");
+    } catch {
+      raw = "";
+    }
+  }
+  const lines = parseLines(raw).sort(compareLines);
+  const entry: DayCache = { stamp, ids: new Set(lines.map((line) => line.id)), ...(lines.length > 0 ? { last: lines[lines.length - 1]! } : {}), newline: raw.length === 0 || raw.endsWith("\n") };
+  rememberDay(cache, day, entry);
+  return entry;
+}
+
+function rememberDay(cache: ConversationCache, day: string, entry: DayCache): void {
+  cache.days.delete(day);
+  cache.days.set(day, entry);
+  while (cache.days.size > CACHED_DAYS) cache.days.delete(cache.days.keys().next().value!);
 }
 
 /** A line at or below a DM forget floor (a snowflake made from the forget time). */
@@ -251,12 +354,15 @@ function laterOf(a: string | undefined, b: string): string {
 
 async function writeDay(dataRoot: string, key: string, day: string, lines: readonly TranscriptLine[]): Promise<void> {
   const file = dayPath(dataRoot, key, day);
+  const cache = cacheOf(dataRoot, key);
   if (lines.length === 0) {
     await rm(file, { force: true });
+    cache.days.delete(day);
     return;
   }
   const sorted = [...lines].sort(compareLines);
   await atomicWriteText(file, sorted.map((line) => JSON.stringify(line)).join("\n") + "\n", { durable: false });
+  rememberDay(cache, day, { stamp: await stampOf(file), ids: new Set(sorted.map((line) => line.id)), last: sorted[sorted.length - 1]!, newline: true });
 }
 
 export type AddOutcome = "added" | "exists" | "skipped";
@@ -269,24 +375,32 @@ export async function addTranscriptLine(env: TranscriptEnv, key: string, line: T
   return enqueueTranscript(env.dataRoot, `c:${key}`, async () => {
     if (o.startedAt !== undefined && Date.parse(line.at) < Date.parse(o.startedAt)) return "skipped";
     const meta = await readMeta(env.dataRoot, key);
-    if (meta.removed?.includes(line.id) || atOrBelowFloor(line, meta.floor)) return "skipped";
+    if (meta.removed.has(line.id) || recentlyDeleted(meta, line.id) || atOrBelowFloor(line, meta.floor)) return "skipped";
     const day = transcriptDay(line.at, env.timeZone);
-    const lines = await readTranscriptDay(env.dataRoot, key, day);
-    if (lines.some((existing) => existing.id === line.id)) return "exists";
-    const last = lines[lines.length - 1];
+    const index = await dayIndex(env.dataRoot, key, day);
+    if (index.ids.has(line.id)) return "exists";
     const parsed = TranscriptLineSchema.parse(line);
-    if (!last || compareLines(last, parsed) < 0) {
+    if (!index.last || compareLines(index.last, parsed) < 0) {
       const file = dayPath(env.dataRoot, key, day);
       await mkdir(path.dirname(file), { recursive: true });
-      await appendFile(file, `${JSON.stringify(parsed)}\n`, { mode: 0o600 });
+      // After a torn last line (a crash mid-append) the new line starts on a line of its own.
+      await appendFile(file, `${index.newline ? "" : "\n"}${JSON.stringify(parsed)}\n`, { mode: 0o600 });
+      index.ids.add(parsed.id);
+      index.last = parsed;
+      index.newline = true;
+      index.stamp = await stampOf(file);
       return "added";
     }
-    await writeDay(env.dataRoot, key, day, [...lines, parsed]);
+    await writeDay(env.dataRoot, key, day, [...(await readTranscriptDay(env.dataRoot, key, day)), parsed]);
     return "added";
   });
 }
 
-/** An edit: the line is replaced and marked edited (a message the store never had stays out). */
+/**
+ * An edit: the line is replaced (a message the store never had stays out). It is marked edited when
+ * the message says so (its `editedAt`) or was before; an update that changes nothing (an embed
+ * unfurl, a pin) writes nothing.
+ */
 export async function editTranscriptLine(env: TranscriptEnv, key: string, line: TranscriptLine): Promise<boolean> {
   return enqueueTranscript(env.dataRoot, `c:${key}`, async () => {
     const day = transcriptDay(line.at, env.timeZone);
@@ -294,7 +408,8 @@ export async function editTranscriptLine(env: TranscriptEnv, key: string, line: 
     const index = lines.findIndex((existing) => existing.id === line.id);
     if (index < 0) return false;
     const current = lines[index]!;
-    const next: TranscriptLine = TranscriptLineSchema.parse({ ...line, at: current.at, edited: true });
+    const { edited: _edited, ...rest } = line;
+    const next: TranscriptLine = TranscriptLineSchema.parse({ ...rest, at: current.at, ...(line.edited || current.edited ? { edited: true } : {}) });
     if (JSON.stringify(next) === JSON.stringify(current)) return false;
     lines[index] = next;
     await writeDay(env.dataRoot, key, day, lines);
@@ -328,7 +443,9 @@ export async function deleteTranscriptLines(env: TranscriptEnv, key: string, ids
       await writeDay(env.dataRoot, key, day, kept);
     }
     const meta = await readMeta(env.dataRoot, key);
-    await writeMeta(env.dataRoot, key, { ...meta, removed: [...new Set([...(meta.removed ?? []), ...ids])] });
+    const at = new Date().toISOString();
+    for (const id of ids) meta.deleted.set(id, at);
+    await writeMeta(env.dataRoot, key, meta);
     return removed;
   });
 }
@@ -351,7 +468,8 @@ export async function scrubTranscriptLines(env: TranscriptEnv, key: string, drop
     }
     if (removedIds.length > 0) {
       const meta = await readMeta(env.dataRoot, key);
-      await writeMeta(env.dataRoot, key, { ...meta, removed: [...new Set([...(meta.removed ?? []), ...removedIds])] });
+      for (const id of removedIds) meta.removed.add(id);
+      await writeMeta(env.dataRoot, key, meta);
     }
     return removed;
   });
@@ -374,8 +492,14 @@ export async function forgetTranscriptAtOrBelow(env: TranscriptEnv, key: string,
       await writeDay(env.dataRoot, key, day, kept);
     }
     const meta = await readMeta(env.dataRoot, key);
-    // The removed ids at or below the floor are covered by it now.
-    await writeMeta(env.dataRoot, key, { floor: laterOf(meta.floor, floor) });
+    const next = laterOf(meta.floor, floor);
+    // The ids at or below the floor are covered by it now; those above it stay remembered.
+    const above = (id: string) => !/^\d+$/u.test(id) || compareIds(id, next) > 0;
+    await writeMeta(env.dataRoot, key, {
+      floor: next,
+      removed: new Set([...meta.removed].filter(above)),
+      deleted: new Map([...meta.deleted].filter(([id]) => above(id)))
+    });
     return removed;
   });
 }
@@ -387,7 +511,10 @@ export async function hasTranscript(dataRoot: string, key: string): Promise<bool
 
 /** Removes a conversation's folder whole (a thread deleted on Discord keeps its transcript: not used for that). */
 export async function removeTranscriptConversation(dataRoot: string, key: string): Promise<void> {
-  await enqueueTranscript(dataRoot, `c:${key}`, () => rm(conversationDir(dataRoot, key), { recursive: true, force: true }));
+  await enqueueTranscript(dataRoot, `c:${key}`, async () => {
+    await rm(conversationDir(dataRoot, key), { recursive: true, force: true });
+    dropCache(dataRoot, key);
+  });
 }
 
 // ---- access intervals --------------------------------------------------------------------------------
