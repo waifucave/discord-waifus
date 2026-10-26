@@ -2466,3 +2466,75 @@ Settings → Life shows the dream model with the ModelPicker ("Dream model — d
 
 A feature release (3.2.0). No migration of data beyond creating the store; maintenance's old
 instruction is replaced.
+
+## 19. She summarises herself before her memory fills (owner request, 2026-10-26)
+
+Today compaction (§5.4, §5.6) happens to her: at the trigger, a separate call asks her model for a
+summary with tool calls discarded, and the last three turns are carried over. Instead, she gets a
+**rest notice** as a turn of her own life, with her computer available, and writes the summary
+herself. Auto-compaction stays as the fallback.
+
+### 19.1 Owner decisions (2026-10-26)
+
+| # | Decision |
+|---|---|
+| R1 | Near her context limit she receives a harness notification asking her to write what she wants to remember. It tells her that afterwards her context resets to that summary only, and that her computer (home, `/tmp`, `/transcripts`) stays intact and reachable exactly as she left it. |
+| R2 | The notice says to write the summary clearly so she cannot misread it later. |
+| R3 | It comes **after the running turn ends**, never mid-turn; queued wakes wait until after the reset. |
+| R4 | If she ignores it, auto-compaction runs as today. |
+
+### 19.2 When
+
+- Between turns, when the last request's tokens reach `life.restNoticeRatio` (default 0.85) × the
+  compaction trigger (`compaction.triggerRatio` × her budget), and no rest notice is already open in
+  this epoch. It replaces the time line's "memory nearly full" warning.
+- It runs before any queued wake is delivered: the loop's next cycle is the rest turn, and the wakes
+  stay in the queue (with their typing holds and mid-turn folding unaffected) until the new epoch.
+- Every other trigger keeps auto-compaction: log length, a provider overflow, a manual compact, a
+  configuration/model change, a forget scrub, and reaching the full trigger itself.
+- Off with `life.restNotice = false` (auto-compaction only, as today).
+
+### 19.3 The rest turn
+
+- A turn of her life in the current epoch (same system blocks, same tools offered, so the prompt
+  cache holds), opened by a notification:
+
+  > [system] Your memory is almost full. When this turn ends, your context will be reset: everything
+  > you can see now goes away except the summary you write in this turn. Your computer stays exactly
+  > as you left it: your home, /tmp and /transcripts keep every file and you can still read and change
+  > them afterwards. If something should last, you can save it to your notes now. Then write your
+  > summary as your final reply: what is going on in each place, who you talked to and how it went,
+  > plans and promises, open threads, what you were about to do. Write it clearly and concretely, with
+  > names, places and times, so you can't misread it later. Write what happened and how you feel
+  > about it now, not rules for yourself. Don't message anyone in this turn.
+
+- In that turn `SendMessage`, `React`, `WebSearch` and `WebFetch` return "finish your summary first;
+  you can do this after the reset" (the tools stay offered, so the cached prefix is unchanged). File
+  tools, `Bash`, `ScheduleWake` and `WatchFor` work.
+- Her final text (not her reasoning) is the summary. The turn has the normal tool loop and caps.
+
+### 19.4 After it
+
+- **Accepted** when the final text is at least `life.restSummaryMinChars` (default 200) and the turn
+  ended normally: a new epoch starts (§5.4 mechanics: A/B rebuilt from current config, notes and
+  places) whose log holds **only that summary** (no kept turns), framed as "[your summary before the
+  reset]". The life log records the epoch change with reason `rest`.
+- **Ignored**: the text is shorter, the turn failed or was interrupted, or she messaged nobody and
+  wrote nothing → auto-compaction runs right away exactly as today (summary call, three kept turns).
+  An interrupted rest turn (pause, shutdown) is retried at the next cycle, like an interrupted
+  compaction.
+- A provider overflow during the rest turn → auto-compaction (mid-turn path, §5.6).
+
+### 19.5 Settings, API, tests
+
+| Key | Default |
+|---|---|
+| `life.restNotice` | true |
+| `life.restNoticeRatio` | 0.85 |
+| `life.restSummaryMinChars` | 200 |
+
+Registry entries with help, CLI and HTTP paths (§14.2). The Life screen shows the rest turn like any
+turn and the epoch change as "rested (her own summary)". Tests: the notice fires after the running
+turn, not mid-turn, and before queued wakes; refused tools in the rest turn; accepted summary → new
+epoch with only the summary; short/empty/failed → auto-compaction; off switch; cache prefix
+unchanged in the rest turn (cache simulation); goldens for the notice and the new epoch's opening.
