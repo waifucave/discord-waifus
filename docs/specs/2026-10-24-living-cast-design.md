@@ -2628,3 +2628,34 @@ turn and the epoch change as "rested (her own summary)". Tests: the notice fires
 turn, not mid-turn, and before queued wakes; refused tools in the rest turn; accepted summary → new
 epoch with only the summary; short/empty/failed → auto-compaction; off switch; cache prefix
 unchanged in the rest turn (cache simulation); goldens for the notice and the new epoch's opening.
+
+### 19.6 As built (2026-10-26)
+
+- `Life.restTurn` in `src/life/lifeLoop.ts`. `restDue` holds when `life.restNotice` is on, the epoch
+  is running (no pending epoch start), compaction is not backing off, no rest turn was had in this
+  epoch (`state.restTurn`), and `lastRequestTokens` is at least `restNoticeRatio` × the trigger and
+  below it (at the trigger, compaction runs as before). A turn that ends with a rest due returns
+  "again", and the next cycle runs the rest turn after `prepareEpoch` and before `peekImmediate`, so
+  queued wakes stay in the queue (the idle check counts a due rest too).
+- The notice is a `notifications` line (the spec's text, then her time line). It takes no wakes and
+  folds none in mid-turn. Refused tools get the error result `REST_REFUSED_RESULT`; their
+  `appendIntent` never runs.
+- The summary goes into block B's `<life_so_far>` as `[your summary before the reset]\n<text>`,
+  not into a log line: "only that summary" means an epoch log that starts empty, and her first
+  notifications open it. `lastCompaction` is `{ reason: "rest", summarized: true }`, and the
+  boundary line's reason is `rest` (Life: "rested (her own summary)").
+- Ignored (the turn ended other than `done`, or the text is shorter than `restSummaryMinChars`):
+  `compact(..., "tokens", { openTurnId: <rest turn> })`. The summary call sees the rest turn (it is
+  part of the log), but the rest turn is never one of the kept turns. If that summary fails, the
+  usual fallback (truncation, `compactionPausedUntil`) applies.
+- Interrupted rest turn: nothing is recorded and it runs again at the next cycle. Once a rest turn
+  has ended, `state.restTurn = { epoch, turnId }` is set before compaction, so an interrupted
+  compaction is retried by `prepareEpoch` at the next cycle (still leaving that turn out) rather
+  than asking her again. At most one rest notice per epoch.
+- A provider overflow in the rest turn goes down the mid-turn compaction path (§5.6), and that path
+  ends the turn.
+- Tests: `tests/lifeRest.test.ts` (order against the running turn and queued wakes, refused tools,
+  accepted, too short, failed, interrupted turn, interrupted compaction, switch off, warning
+  dropped), the cache simulation `tests/eval/cacheHit.test.ts` ("the rest turn": same tools and
+  system, at least 90% of the rest request read from cache), goldens `life-rest-notice.txt` and
+  `life-rest-epoch.txt`.

@@ -76,6 +76,14 @@ each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` leas
 [A, B] snapshotted per epoch, the epoch's log with permanent time lines, and compaction
 (`compaction.ts`) keeps the last three complete turns (fewer when they alone would be over half
 the trigger; images frozen with their cached OCR text; an aborted summary changes nothing).
+Before that she rests (spec §19, `Life.restTurn`): when her last request reaches
+`life.restNoticeRatio` × the trigger (and is below it), the next cycle, before any queued wake, is a
+rest turn opened by `REST_NOTICE` (same system blocks and tools, so the cache holds; `SendMessage`,
+`React`, `WebSearch`, `WebFetch` are refused at run time; no wakes fold in); a final reply of at least
+`life.restSummaryMinChars` starts a new epoch whose `<life_so_far>` is that summary alone (framed
+`[your summary before the reset]`, no kept turns, boundary reason `rest`), anything else compacts at
+once leaving the rest turn out; `state.restTurn` allows one per epoch (an interrupted compaction after
+it compacts at the next cycle). With `life.restNotice` off the time line's memory warning returns.
 Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.ts`, plus the
 pause start) so catch-up never re-wakes a message it already handled; a mark never passes a message
 still held (a staggered wake, a debouncing burst, a running detector call), and every forget path
