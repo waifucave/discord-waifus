@@ -67,7 +67,7 @@ export function ForgetPersonPanel({ onForgotten }: { onForgotten?: () => void } 
   };
 
   return (
-    <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
+    <div className="cell cell-pad">
       <div className="t-title" style={{ marginBottom: 6 }}>Forget a person</div>
       <p className="t-small" style={{ lineHeight: 1.5, margin: "0 0 8px" }}>
         Removes a Discord user from every DM, the member lists and the archive, and scrubs every waifu&apos;s life,
@@ -93,7 +93,7 @@ export function ForgetPersonPanel({ onForgotten }: { onForgotten?: () => void } 
             setResult(undefined);
           }}
         />
-        <button ref={opener} className="btn" disabled={!valid || busy} onClick={() => void run(true)}>
+        <button ref={opener} className="btn danger" disabled={!valid || busy} onClick={() => void run(true)}>
           {busy && !confirming ? "Checking…" : "Forget…"}
         </button>
       </div>

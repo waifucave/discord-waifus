@@ -18,7 +18,7 @@ export function HeadRow({
 }) {
   return (
     <div className={"headrow" + (action ? "" : " no-action")}>
-      <button className="cell clickable backcell" data-hue onClick={onBack} aria-label="Back">
+      <button className="cell clickable backcell" onClick={onBack} aria-label="Back">
         ←
       </button>
       <div className="cell titlecell">
@@ -42,12 +42,13 @@ export function TabCells({
 }) {
   const tabs = SECTION_TABS[view] ?? [];
   return (
-    <div className="tabcells" style={{ height: 64, flex: "none" }}>
+    <div className="tabcells" role="tablist">
       {tabs.map((tab) => (
         <button
           key={tab.id}
+          role="tab"
+          aria-selected={tab.id === active}
           className={"cell clickable tabcell" + (tab.id === active ? " on" : "")}
-          data-hue
           onClick={() => onTab(tab.id)}
         >
           {tab.label}
@@ -82,8 +83,8 @@ export function Disclosure({ title, hint, children }: { title: string; hint?: st
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button className="disclosure-head" style={{ flex: "none" }} onClick={() => setOpen((v) => !v)}>
-        <span className="t-micro" style={{ color: "var(--ink)" }}>{title}</span>
+      <button className="disclosure-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="t-small">{title}</span>
         <span>
           {hint && <span className="t-micro" style={{ marginRight: 14 }}>{hint}</span>}
           <span className="caret">{open ? "▾" : "▸"}</span>

@@ -8,9 +8,11 @@ import { ModelPicker } from "../components/ModelPicker";
 import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
-import { WaifuDmFields, WaifuLifeFields } from "../components/WaifuLifeFields";
+import { BusyBlocksField, DailyBudgetField, SleepFields, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
+import { SectionHead } from "../components/SectionHead";
 import { WaifuDiscordProfileFields } from "../components/WaifuDiscordProfileFields";
 import { waifuDirty, waifuPatch, waifuProblems } from "./castEdit";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 export function CastScreen({
   characterId,
@@ -76,16 +78,13 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
         title="Cast"
         sub={`${talking} ready · ${unconfigured} need setup`}
         action={
-          <button className="cell clickable actioncell" data-hue style={{ ["--hover-hue" as string]: "var(--mint)" }} onClick={() => onNavigate("cast", undefined, "__new__")}>
+          <button className="cell clickable actioncell" onClick={() => onNavigate("cast", undefined, "__new__")}>
             + New character
           </button>
         }
       />
       <div className="content">
-        <div
-          className="mosaic"
-          style={{ flex: 1, gridTemplateColumns: "repeat(4, 1fr)", gridAutoRows: "minmax(220px, 1fr)" }}
-        >
+        <div className="mosaic tiles cast-mosaic">
           {cast.map((waifu, index) => {
             const hue = characterHue(index);
             const missing = needsSetup(waifu);
@@ -94,12 +93,9 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
             return (
               <button
                 key={waifu.id}
-                className="cell clickable tile"
+                className={"cell clickable tile" + (wide ? " wide" : "")}
                 data-hue
-                style={{
-                  ["--hover-hue" as string]: `var(--${hue})`,
-                  gridColumn: wide ? "span 2" : undefined
-                }}
+                style={{ ["--hover-hue" as string]: `var(--${hue})` }}
                 onClick={() => onNavigate("cast", undefined, waifu.id)}
               >
                 <div>
@@ -107,11 +103,11 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                     <WaifuAvatar id={waifu.id} size={wide ? 64 : 44} />
                     <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
                   </span>
-                  <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
+                  <div className="t-micro t-plain" style={{ marginTop: 8 }}>
                     {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · own bot" : " · no bot yet"}
                   </div>
                   {previous && (
-                    <div className="t-micro t-mute" style={{ marginTop: 4, textTransform: "none", letterSpacing: "0.04em" }}>
+                    <div className="t-micro t-plain" style={{ marginTop: 4 }}>
                       was: {previous}
                     </div>
                   )}
@@ -123,17 +119,12 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
               </button>
             );
           })}
-          <button
-            className="cell clickable"
-            data-hue
-            style={{ ["--hover-hue" as string]: "var(--mint)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 44, color: "var(--mute)" }}
-            onClick={() => onNavigate("cast", undefined, "__new__")}
-          >
+          <button className="cell clickable add-tile" aria-label="New character" onClick={() => onNavigate("cast", undefined, "__new__")}>
             +
           </button>
           {/* pad the final grid row so no ink shows through */}
           {Array.from({ length: (4 - ((cast.length + 1 + (cast.length > 0 ? 1 : 0)) % 4)) % 4 }, (_, i) => (
-            <div className="cell" key={`pad-${i}`} />
+            <div className="cell pad" key={`pad-${i}`} aria-hidden="true" />
           ))}
         </div>
       </div>
@@ -236,6 +227,9 @@ function CharacterEditor({
   const problems = waifuProblems(draft);
   const unchanged = !creating && !waifuDirty(remote.data, draft);
 
+  const name = draft.displayName || draft.name || characterId;
+  const blocked = saving || waifuStyleBlocksSave(draft) || problems.length > 0 || unchanged;
+
   return (
     <div className="screen">
       <HeadRow
@@ -243,19 +237,14 @@ function CharacterEditor({
         title={title}
         sub={creating ? "define who she is" : remote.data?.model?.modelId ?? "no model"}
         action={
-          <button
-            className="cell clickable actioncell"
-            style={{ background: "var(--mint)" }}
-            onClick={save}
-            disabled={saving || waifuStyleBlocksSave(draft) || problems.length > 0 || unchanged}
-          >
-            {saving ? "Saving…" : unchanged ? "Saved" : "Save"}
+          <button className={"cell clickable actioncell" + (blocked ? "" : " primary")} onClick={save} disabled={blocked}>
+            {saving ? "Saving…" : unchanged ? "Saved" : creating ? "Create" : "Save"}
           </button>
         }
       />
       <div className="content">
         {message && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <div className="cell notice-cell" role="status">
             <Notice tone={violations?.length ? "err" : "ok"}>
               <div>{message}</div>
               {violations && violations.length > 0 && (
@@ -270,9 +259,8 @@ function CharacterEditor({
             </Notice>
           </div>
         )}
-
         {problems.length > 0 && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <div className="cell notice-cell">
             <Notice tone="warn">
               {problems.map((problem) => (
                 <div key={problem}>{problem}</div>
@@ -280,139 +268,157 @@ function CharacterEditor({
             </Notice>
           </div>
         )}
-        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: creating ? "1fr 1fr 1fr" : "1fr 1fr" }}>
+
+        {/* ---------- Profile ---------- */}
+        <SectionHead
+          index="01"
+          title="Profile"
+          hint="Who she is: her names, persona and extra instructions."
+          actions={
+            !creating ? (
+              <button type="button" className="btn sm" onClick={() => onNavigate("life", undefined, characterId)}>
+                Open her life →
+              </button>
+            ) : undefined
+          }
+        />
+        <div className="fgrid cols-3">
           {creating && (
             <div className="fcell">
-              <label className="field-label">ID (kebab-case)</label>
-              <input className="input" value={draft.id ?? ""} onChange={(e) => set({ id: e.target.value })} placeholder="momo" />
+              <label className="field-label" htmlFor="waifu-id">ID (kebab-case)</label>
+              <input id="waifu-id" className="input" value={draft.id ?? ""} onChange={(e) => set({ id: e.target.value })} placeholder="momo" />
             </div>
           )}
           <div className="fcell">
-            <label className="field-label">Name</label>
-            <input className="input" value={draft.name ?? ""} onChange={(e) => set({ name: e.target.value })} />
+            <label className="field-label" htmlFor="waifu-name">Name</label>
+            <input id="waifu-name" className="input" value={draft.name ?? ""} onChange={(e) => set({ name: e.target.value })} />
           </div>
           <div className="fcell">
-            <label className="field-label">Display name</label>
-            <input className="input" value={draft.displayName ?? ""} onChange={(e) => set({ displayName: e.target.value })} />
+            <label className="field-label" htmlFor="waifu-display-name">Display name</label>
+            <input id="waifu-display-name" className="input" value={draft.displayName ?? ""} onChange={(e) => set({ displayName: e.target.value })} />
           </div>
-        </div>
-        <div className="cell fcell" style={{ flex: "none" }}>
-          <label className="field-label">Persona</label>
-          <textarea className="textarea" rows={7} value={draft.persona ?? ""} onChange={(e) => set({ persona: e.target.value })} placeholder="Who is she? Voice, history, quirks, relationships…" />
-          <span className="field-hint">Who she is, including how she writes: short and lowercase, long and careful, and so on.</span>
-        </div>
-        <WaifuStyleFields
-          customInstructions={draft.customInstructions}
-          onChange={set}
-        />
-        {!creating && (
-          <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
+          {!creating && (
             <div className="fcell">
-              <label className="field-label">Enabled</label>
+              <span className="field-label">Enabled</span>
               <label className="checkbox-chip">
                 <input type="checkbox" checked={draft.enabled ?? false} onChange={(e) => set({ enabled: e.target.checked })} />
                 {draft.enabled ? "In the cast" : "Benched"}
               </label>
+              <span className="field-hint">Benched: she never wakes.</span>
             </div>
-            <div className="fcell">
-              <label className="field-label">Discord bot</label>
-              <select className="select" value={draft.botId ?? ""} onChange={(e) => set({ botId: e.target.value || undefined })}>
-                <option value="">— none: she cannot post until she has a bot —</option>
-                {(bots.data?.waifus ?? []).map((bot) => (
-                  <option key={bot.id} value={bot.id}>
-                    {bot.displayName} ({bot.id})
-                  </option>
-                ))}
-              </select>
-              <span className="field-hint">Set up or link her bot in Settings → App (Discord bots).</span>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
+        <div className="cell fcell">
+          <label className="field-label" htmlFor="waifu-persona">Persona</label>
+          <textarea id="waifu-persona" className="textarea" rows={7} value={draft.persona ?? ""} onChange={(e) => set({ persona: e.target.value })} placeholder="Who is she? Voice, history, quirks, relationships…" />
+          <span className="field-hint">Who she is, including how she writes: short and lowercase, long and careful, and so on.</span>
+        </div>
+        <WaifuStyleFields customInstructions={draft.customInstructions} onChange={set} />
+
+        {/* ---------- Discord ---------- */}
         {!creating && remote.data && (
-          <WaifuDiscordProfileFields waifuId={remote.data.id} revision={remote.data.revision} draft={draft} onChange={set} />
+          <>
+            <SectionHead index="02" title="Discord" hint="Her own bot and how it looks on Discord. Set up or link bots in Settings → App." />
+            <WaifuDiscordProfileFields
+              waifuId={remote.data.id}
+              revision={remote.data.revision}
+              draft={draft}
+              onChange={set}
+              botField={
+                <div className="fcell">
+                  <label className="field-label" htmlFor="waifu-bot">Discord bot</label>
+                  <select id="waifu-bot" className="select" value={draft.botId ?? ""} onChange={(e) => set({ botId: e.target.value || undefined })}>
+                    <option value="">— none: she cannot post until she has a bot —</option>
+                    {(bots.data?.waifus ?? []).map((bot) => (
+                      <option key={bot.id} value={bot.id}>
+                        {bot.displayName} ({bot.id})
+                      </option>
+                    ))}
+                  </select>
+                  <span className="field-hint">Without her own bot she cannot post or answer DMs.</span>
+                </div>
+              }
+            />
+          </>
         )}
 
-        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 240px" }}>
+        {/* ---------- Model ---------- */}
+        <SectionHead index={creating ? "02" : "03"} title="Model" hint="What she thinks with, and how much she may spend a day." />
+        <div className="fgrid model-row">
           <ModelPicker
             value={draft.model}
             models={models.data?.models ?? []}
             onChange={(model) => setDraft((d) => ({ ...d, model }))}
             unsetHint="She stays quiet until she has a model."
           />
+          <DailyBudgetField draft={draft} onChange={set} />
         </div>
         {previousModel && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <div className="cell notice-cell">
             <Notice tone="warn">Was: {previousModel}. Pick a model from the list to replace it.</Notice>
           </div>
         )}
         {models.error && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <div className="cell notice-cell">
             <Notice tone="warn">The model list could not be loaded. Your saved model is kept.</Notice>
           </div>
         )}
 
-        <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "1fr 1fr" }}>
+        {/* ---------- Schedule ---------- */}
+        <SectionHead index={creating ? "03" : "04"} title="Schedule" hint="When she is around, and what wakes her." />
+        <div className="fgrid cols-2">
           <div className="fcell">
-            <label className="field-label">Schedule</label>
+            <span className="field-label">Schedule in her prompt</span>
             <label className="checkbox-chip">
-              <input
-                type="checkbox"
-                checked={draft.scheduleInPrompt ?? true}
-                onChange={(e) => set({ scheduleInPrompt: e.target.checked })}
-              />
+              <input type="checkbox" checked={draft.scheduleInPrompt ?? true} onChange={(e) => set({ scheduleInPrompt: e.target.checked })} />
               Mention her schedule in the prompt
             </label>
             <span className="field-hint">When on, she knows what she is doing right now (sleeping, busy) and can say so.</span>
           </div>
-          {!creating ? (
-            <button className="cell clickable" data-hue style={{ ["--hover-hue" as string]: "var(--lavender)", padding: "18px 26px" }} onClick={() => onNavigate("life", undefined, characterId)}>
-              <div className="t-body">Open her life →</div>
-              <div className="t-micro" style={{ marginTop: 4 }}>timeline · wake · compact · reset</div>
-            </button>
-          ) : (
-            <div className="cell" />
-          )}
+          <WakeOnNameField draft={draft} onChange={set} />
         </div>
-        <WaifuLifeFields draft={draft} onChange={set} />
+        <SleepFields draft={draft} onChange={set} />
+        <BusyBlocksField draft={draft} onChange={set} />
+
+        {/* ---------- Direct messages ---------- */}
+        <SectionHead index={creating ? "04" : "05"} title="Direct messages" hint="Whether she answers DMs to her bot, and how often." />
         <WaifuDmFields draft={draft} onChange={set} />
 
+        {/* ---------- Danger zone ---------- */}
         {!creating && remote.data && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--line)", background: "var(--ink)", flex: "none" }}>
-            <div className="cell" />
-            <button
-              className="cell clickable"
-              data-hue
-              style={{ ["--hover-hue" as string]: "var(--danger)", padding: "18px 26px" }}
-              onClick={() => setConfirmDelete(true)}
-            >
-              <div className="t-body">Delete {draft.displayName || draft.name}</div>
-              <div className="t-micro" style={{ marginTop: 4 }}>permanent</div>
-            </button>
-          </div>
+          <>
+            <SectionHead index="06" title="Danger zone" tone="danger" />
+            <div className="cell action-row">
+              <div className="action-text">
+                <span className="t-body">Delete {name}</span>
+                <span className="t-small t-mute">Her config and persona are removed permanently.</span>
+              </div>
+              <div className="action-buttons">
+                <button type="button" className="btn danger" onClick={() => setConfirmDelete(true)}>
+                  Delete {name}…
+                </button>
+              </div>
+            </div>
+          </>
         )}
         <div className="cell growcell" />
       </div>
       <FootRow />
 
       {confirmDelete && (
-        <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(false)}>
-          <div className="modal" style={{ width: 480 }}>
-            <div className="modal-header">
-              <span className="t-title">Delete {draft.displayName || draft.name}?</span>
-            </div>
-            <div className="modal-body">
-              <p className="t-small t-mute">Her config and persona are removed permanently.</p>
-            </div>
-            <div className="modal-footer">
-              <button className="cell clickable" style={{ background: "var(--paper)" }} onClick={() => setConfirmDelete(false)}>
-                Keep her
-              </button>
-              <button className="cell clickable" style={{ background: "var(--danger)" }} onClick={doDelete}>
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title={`Delete ${name}?`}
+          cancelLabel="Keep her"
+          confirmLabel="Delete"
+          width={480}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            void doDelete();
+          }}
+        >
+          <p className="t-small t-mute">Her config and persona are removed permanently.</p>
+        </ConfirmDialog>
       )}
     </div>
   );

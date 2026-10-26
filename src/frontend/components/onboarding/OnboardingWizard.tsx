@@ -119,8 +119,8 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           <section>
             <h1 className="onboarding-title">Add a model provider.</h1>
             <p className="onboarding-lede">Characters need a language model. Add one API key to start — more anytime in Settings.</p>
-            <div className="fused" style={{ maxWidth: 640 }}><div className="grid grid-2">
-              <div className="field">
+            <div className="fgrid cols-2 onboarding-form">
+              <div className="fcell">
                 <label className="field-label">Provider</label>
                 <select className="select" value={keyProviderId} onChange={(e) => setKeyProviderId(e.target.value)}>
                   {(providers.data?.providers ?? []).map((p) => (
@@ -130,7 +130,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   ))}
                 </select>
               </div>
-              <div className="field">
+              <div className="fcell">
                 <label className="field-label">API key</label>
                 <input
                   className="input"
@@ -141,7 +141,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 />
                 <span className="field-hint">Stored locally, never shown again.</span>
               </div>
-            </div></div>
+            </div>
             <div className="onboarding-actions">
               <button className="btn ghost" onClick={() => setStep(0)}>
                 <ArrowLeft className="icon" /> Back
@@ -163,9 +163,9 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               The cast default is applied to your characters in the next step. You can give each one her own model
               later in Cast.
             </p>
-            <div className="fused" style={{ maxWidth: 640 }}><div className="grid grid-2">
+            <div className="fgrid cols-2 onboarding-form">
               <ModelPicker value={waifuModel} models={models.data?.models ?? []} onChange={setWaifuModel} />
-            </div></div>
+            </div>
             <div className="onboarding-actions">
               <button className="btn ghost" onClick={() => setStep(1)}>
                 <ArrowLeft className="icon" /> Back

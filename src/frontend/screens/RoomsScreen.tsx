@@ -25,23 +25,23 @@ function GuildMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, 
       <HeadRow onBack={() => onNavigate("home")} title="Rooms" sub={`${guilds.length} servers`} />
       <div className="content">
         {guilds.length === 0 && (
-          <div className="cell growcell" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
-            <span className="t-mute t-small" style={{ maxWidth: 460, textAlign: "center", lineHeight: 1.6 }}>
+          <div className="cell growcell empty">
+            <span className="t-mute t-small" style={{ maxWidth: 460, lineHeight: 1.6 }}>
               No servers yet. When the House bot connects to Discord and is in a server, it appears here.
             </span>
           </div>
         )}
         {guilds.length > 0 && (
-          <div className="mosaic" style={{ flex: 1, gridTemplateColumns: "repeat(3, 1fr)", gridAutoRows: "minmax(200px, 1fr)" }}>
+          <div className="mosaic tiles rooms-mosaic">
             {guilds.map((guild, index) => {
               const channels = Object.values(guild.channels ?? {});
               const live = channels.filter((c) => (c.enabledWaifuIds?.length ?? 0) > 0);
               return (
                 <button
                   key={guild.guildId}
-                  className="cell clickable tile"
+                  className={"cell clickable tile" + (index === 0 ? " wide" : "")}
                   data-hue
-                  style={{ ["--hover-hue" as string]: "var(--sky)", gridColumn: index === 0 ? "span 2" : undefined }}
+                  style={{ ["--hover-hue" as string]: "var(--sky)" }}
                   onClick={() => onNavigate("rooms", undefined, guild.guildId)}
                 >
                   <div>
@@ -54,6 +54,9 @@ function GuildMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, 
                 </button>
               );
             })}
+            {Array.from({ length: (3 - ((guilds.length + 1) % 3)) % 3 }, (_, i) => (
+              <div className="cell pad" key={`pad-${i}`} aria-hidden="true" />
+            ))}
           </div>
         )}
       </div>
@@ -112,9 +115,9 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
   return (
     <div className="screen">
       <HeadRow onBack={() => onNavigate("rooms")} title={server.data?.name ?? guildId} sub="toggle who may speak, per channel" />
-      <div className="fgrid" style={{ flex: "none", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", maxHeight: "65vh", overflow: "auto" }}>
+      <div className="fgrid cols-2">
         <div className="fcell">
-          <label className="field-label">Server switch</label>
+          <span className="field-label">Server switch</span>
           <label className="checkbox-chip">
             <input
               type="checkbox"
@@ -129,8 +132,8 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
           </span>
         </div>
         <div className="fcell">
-          <label className="field-label">Addressee detector here</label>
-          <div style={{ display: "flex", gap: 8 }}>
+          <label className="field-label" htmlFor="rooms-detector-mode">Addressee detector here</label>
+          <div className="fcell-row">
             <select
               id="rooms-detector-mode"
               className="select"
@@ -156,7 +159,7 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
             )}
             {detectorDraft !== undefined && (
               <button
-                className="btn sm"
+                className="btn primary sm"
                 disabled={!detectorSave}
                 title={detectorSave ? undefined : "Name a target, or pick Inherit or Off"}
                 onClick={async () => {
@@ -178,23 +181,23 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
       </div>
       <div className="content">
         {message && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <div className="cell notice-cell" role="alert">
             <Notice tone="err">{message}</Notice>
           </div>
         )}
         {channels.length === 0 && (
-          <div className="cell growcell" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div className="cell growcell empty">
             <span className="t-mute t-small">No channels observed yet — they appear as messages arrive.</span>
           </div>
         )}
         {channels.map((channel) => (
-          <div className="cell" style={{ padding: "18px 26px", flex: "none" }} key={channel.channelId}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 12 }}>
+          <div className="cell cell-pad" key={channel.channelId}>
+            <div className="channel-head">
               <span className="t-title">#{channel.name ?? channel.channelId}</span>
               <span className="t-micro">
                 {(channel.enabledWaifuIds?.length ?? 0) > 0 ? `${channel.enabledWaifuIds.length} talking` : "silent"}
               </span>
-              <label className="checkbox-chip" style={{ marginLeft: "auto" }} title="Threads and forum posts under this channel">
+              <label className="checkbox-chip" title="Threads and forum posts under this channel">
                 <input
                   type="checkbox"
                   checked={(channel.threads ?? "inherit") === "inherit"}
@@ -203,20 +206,16 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
                 {(channel.threads ?? "inherit") === "inherit" ? "Threads share this cast" : "Threads stay silent"}
               </label>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <div className="cast-picks" role="group" aria-label={`Who speaks in #${channel.name ?? channel.channelId}`}>
               {cast.map((waifu, index) => {
-                const on = channel.enabledWaifuIds?.includes(waifu.id);
-                const hue = characterHue(index);
+                const on = channel.enabledWaifuIds?.includes(waifu.id) ?? false;
                 return (
                   <button
                     key={waifu.id}
-                    className="clickable"
-                    style={{
-                      border: "var(--line) solid var(--ink)",
-                      padding: "8px 14px",
-                      fontSize: 13,
-                      background: on ? `var(--${hue})` : "var(--paper)"
-                    }}
+                    type="button"
+                    className="cast-pick"
+                    aria-pressed={on}
+                    style={{ ["--hue" as string]: `var(--${characterHue(index)})` }}
                     onClick={() => toggleWaifu(channel.channelId, waifu.id)}
                   >
                     {waifu.displayName || waifu.name}

@@ -30,7 +30,7 @@ export function WaifuStyleFields({
   const status = customInstructionsStatus(customInstructions);
   return (
     <>
-      <div className="cell fcell" style={{ flex: "none" }}>
+      <div className="cell fcell">
         <label className="field-label" htmlFor="waifu-custom-instructions">Custom instructions</label>
         <textarea
           id="waifu-custom-instructions"
@@ -41,7 +41,7 @@ export function WaifuStyleFields({
           placeholder="Extra rules for how she talks or behaves (optional)…"
           aria-invalid={status.over}
         />
-        <span className="field-hint" style={status.over ? { color: "var(--danger)" } : undefined}>
+        <span className={"field-hint" + (status.over ? " t-error" : "")}>
           <span className="custom-instructions-count">{status.label}</span>
           {status.over ? " — too long, shorten it to save" : " — added to her prompt after the persona"}
         </span>

@@ -95,6 +95,8 @@ export type ModelsResponse = {
   maxOutputUsdPerMTok: number;
   models: CuratedModel[];
   hidden: Array<{ id: string; reason: string }>;
+  /** Curated routes the allow list leaves out that would be offered if switched on. */
+  available?: CuratedModel[];
 };
 
 /**
@@ -425,6 +427,8 @@ export type HelpKey = {
   nullable: boolean;
   default?: unknown;
   help: string;
+  /** A short human name for forms; absent for keys that have none. */
+  label?: string;
   flags: Array<"secret" | "readOnly" | "localOnlyWrite" | "remoteHidden" | "nullUnset" | "nullIsValue" | "leaf">;
   applies: "live" | "reload" | "restart";
   example?: string;

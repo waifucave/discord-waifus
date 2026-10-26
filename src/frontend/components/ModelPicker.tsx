@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { CuratedModel, ModelChoice } from "../api/types";
 
 /** Select value for a stored choice the curated list no longer offers. */
@@ -36,6 +37,7 @@ export function ModelPicker({
   /** Shown under the route select while nothing is chosen. */
   unsetHint?: string;
 }) {
+  const idPrefix = useId();
   const selected = value ? models.find((model) => model.id === routeId(value)) : undefined;
   const routeValue = !value ? "" : selected ? selected.id : UNAVAILABLE;
   const efforts = selected?.efforts ?? [];
@@ -44,8 +46,9 @@ export function ModelPicker({
   return (
     <>
       <div className="fcell">
-        <label className="field-label">Model</label>
+        <label className="field-label" htmlFor={`${idPrefix}-route`}>Model</label>
         <select
+          id={`${idPrefix}-route`}
           className="select"
           value={routeValue}
           onChange={(e) => {
@@ -66,7 +69,7 @@ export function ModelPicker({
         </select>
         {!value && unsetHint && <span className="field-hint">{unsetHint}</span>}
         {value && !selected && (
-          <span className="field-hint" style={{ color: "var(--danger)" }}>
+          <span className="field-hint t-error">
             This model is no longer offered. Pick another one.
           </span>
         )}
@@ -78,8 +81,9 @@ export function ModelPicker({
         )}
       </div>
       <div className="fcell">
-        <label className="field-label">Reasoning effort</label>
+        <label className="field-label" htmlFor={`${idPrefix}-effort`}>Reasoning effort</label>
         <select
+          id={`${idPrefix}-effort`}
           className="select"
           value={value?.effort ?? ""}
           disabled={!selected || efforts.length === 0}

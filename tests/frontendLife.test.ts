@@ -1,5 +1,5 @@
 // The Living cast dashboard (§14.3): the Life timeline is generic over tool names and never shows
-// what the server left out (D14); Home's notices and today's cost; the Cast editor sends only what
+// what the server left out (D14); Home's notices; the Cast editor sends only what
 // changed; registry-driven settings forms; Activity's metadata-only calls; the forget limits text.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -13,7 +13,7 @@ import { ConfirmDialog } from "../src/frontend/components/ConfirmDialog.js";
 import { detectorChoiceOf, detectorPatch } from "../src/frontend/screens/RoomsScreen.js";
 import { waifuPatch, waifuProblems } from "../src/frontend/screens/castEdit.js";
 import { formChanges, formText, nestedPatch, parseField } from "../src/frontend/screens/settingsForm.js";
-import { homeNotices, todaysCost } from "../src/frontend/screens/HomeScreen.js";
+import { homeNotices } from "../src/frontend/screens/HomeScreen.js";
 import { entrySummary } from "../src/frontend/screens/ActivityScreen.js";
 import type { HelpKey, LifeLogLineView, LifeStatus, WaifuConfig } from "../src/frontend/api/types.js";
 import { FORGET_LIMITS } from "../src/shared/constants/forget.js";
@@ -90,24 +90,6 @@ describe("Home", () => {
     );
     expect(notices.map((notice) => notice.chip)).toEqual(["notice", "migration", "forget", "forget", "scrub queued", "model_unmapped"]);
     expect(notices.at(-1)?.dismiss).toBeTypeOf("function");
-  });
-
-  it("today's cost is the report's last (host-local) day", () => {
-    const today = todaysCost({
-      from: "2026-10-18",
-      to: "2026-10-24",
-      timeZone: "UTC",
-      groupBy: ["day", "waifu"],
-      totals: {} as never,
-      skippedLines: 0,
-      groups: [
-        { key: ["2026-10-23", "ella"], costUsd: 5 } as never,
-        { key: ["2026-10-24", "ella"], costUsd: 0.25 } as never,
-        { key: ["2026-10-24", "mina"], costUsd: 0.5 } as never
-      ]
-    });
-    expect(today.total).toBe(0.75);
-    expect(today.byWaifu.get("ella")).toBe(0.25);
   });
 });
 
@@ -278,7 +260,7 @@ describe("her files, reminders and watches (§16.11)", () => {
     const reminders = renderToStaticMarkup(createElement(ReminderList, { data: { waifuId: "ella", timeZone: "UTC", entries: [{ id: "r4", at: "2026-10-25 18:00", repeat: "daily", note: "check the flyer" }] }, onDelete: () => undefined }));
     expect(reminders).toContain("check the flyer");
     expect(reminders).toContain("daily");
-    expect(reminders).toContain("delete");
+    expect(reminders).toContain(">Delete</button>");
     const watches = {
       waifuId: "ella",
       timeZone: "UTC",

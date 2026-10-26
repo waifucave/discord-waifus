@@ -14,8 +14,6 @@ import { breadcrumbs, entryDetail, fileSize, matchingReveal, PRIVATE_HIDDEN, wat
 
 type Message = { tone: "ok" | "err" | "warn"; text: string };
 
-const rowStyle = { display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", padding: "6px 0", borderTop: "1px solid var(--line)" } as const;
-
 /** The file browser: her home or /tmp, one folder at a time, and the file open below it. */
 export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; includePrivate: boolean }) {
   const [root, setRoot] = useState<"home" | "tmp">("home");
@@ -56,17 +54,17 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
   };
 
   return (
-    <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
-      <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", marginBottom: 8 }}>
+    <div className="cell cell-pad">
+      <div className="cell-head">
         <span className="t-title">Her files</span>
-        <button className={`btn sm ${root === "home" ? "" : "ghost"}`} aria-pressed={root === "home"} onClick={() => choose("home")}>
+        <button className="btn sm" aria-pressed={root === "home"} onClick={() => choose("home")}>
           Home
         </button>
-        <button className={`btn sm ${root === "tmp" ? "" : "ghost"}`} aria-pressed={root === "tmp"} onClick={() => choose("tmp")}>
+        <button className="btn sm" aria-pressed={root === "tmp"} onClick={() => choose("tmp")}>
           /tmp
         </button>
         {data && (
-          <span className="t-micro" style={{ textTransform: "none", letterSpacing: "0.04em" }}>
+          <span className="t-micro t-plain">
             {fileSize(data.usage.bytes)} of {fileSize(data.usage.maxBytes)}
             {data.usage.maxFiles !== undefined ? ` · ${data.usage.files} of ${data.usage.maxFiles} files` : ""}
             {data.usage.retentionDays !== undefined ? ` · files are deleted ${data.usage.retentionDays === 1 ? "a day" : `${data.usage.retentionDays} days`} after they were last written` : ""}
@@ -83,7 +81,7 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
                 {index === all.length - 1 ? (
                   <span className="mono">{crumb.label}</span>
                 ) : (
-                  <button className="btn ghost sm mono" onClick={() => { setDir(crumb.dir); setOpen(undefined); }}>
+                  <button className="btn quiet sm mono" onClick={() => { setDir(crumb.dir); setOpen(undefined); }}>
                     {crumb.label}
                   </button>
                 )}
@@ -94,7 +92,7 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
           {data.entries.map((entry, index) => (
             <FileRow key={entry.path ?? `private-${index}`} entry={entry} selected={entry.path !== undefined && entry.path === open?.path} onOpen={() => enter(entry)} />
           ))}
-          <div style={{ ...rowStyle, alignItems: "center" }}>
+          <div className="soft-row" style={{ alignItems: "center" }}>
             <label className="t-micro" htmlFor={newId}>New text file here</label>
             <input id={newId} className="input" style={{ flex: "1 1 160px", minWidth: 0 }} placeholder="notes.md" value={newName} maxLength={100} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createFile()} />
             <button className="btn sm" disabled={!newName.trim()} onClick={createFile}>
@@ -126,13 +124,13 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
 export function FileRow({ entry, selected, onOpen }: { entry: HerFileEntry; selected?: boolean; onOpen: () => void }) {
   const label = entry.kind === "dir" && !entry.redacted ? `${entry.name}/` : entry.name;
   return (
-    <div style={rowStyle}>
+    <div className="soft-row">
       {entry.redacted ? (
         <span className="t-small t-mute" style={{ flex: "1 1 200px", overflowWrap: "anywhere" }}>
           {label} · reveal private chats on the host to open it
         </span>
       ) : (
-        <button className={`btn ghost sm mono`} aria-current={selected ? "true" : undefined} style={{ flex: "1 1 200px", textAlign: "left", overflowWrap: "anywhere" }} onClick={onOpen}>
+        <button className="btn quiet sm mono" aria-current={selected ? "true" : undefined} style={{ flex: "1 1 200px", textAlign: "left", overflowWrap: "anywhere" }} onClick={onOpen}>
           {label}
         </button>
       )}
@@ -249,13 +247,13 @@ function FileViewer({
   };
 
   return (
-    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
+    <div className="soft-divider" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
         <span className="mono t-small" style={{ overflowWrap: "anywhere", flex: "1 1 200px" }}>{display}</span>
         {shown && <span className="t-micro">{fileSize(shown.size)} · {when(shown.modified)}</span>}
         {shown?.private && <span className="chip sky">private chat</span>}
-        <button className="btn ghost sm" onClick={onClose}>
-          close
+        <button className="btn quiet sm" onClick={onClose}>
+          Close
         </button>
       </div>
       {file.error && <Notice tone="err">{file.error.message}</Notice>}
@@ -263,7 +261,7 @@ function FileViewer({
       {conflicted && (
         <div>
           <button className="btn sm" onClick={reloadFile}>
-            reload
+            Reload
           </button>
         </div>
       )}
@@ -283,17 +281,17 @@ function FileViewer({
       {(shown?.kind === "pdf" || shown?.kind === "binary") && <span className="t-small t-mute">{shown.kind === "pdf" ? "A PDF: she reads its text with her Read tool." : "Not a text file."}</span>}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {editable && (
-          <button className="btn sm" disabled={busy || !changed} onClick={() => void save()}>
+          <button className="btn primary sm" disabled={busy || !changed} onClick={() => void save()}>
             {busy ? "Saving…" : "Save"}
           </button>
         )}
         {editable && changed && !isNew && shown?.text !== undefined && (
-          <button className="btn ghost sm" disabled={busy} onClick={() => setDraft(shown.text)}>
-            revert
+          <button className="btn quiet sm" disabled={busy} onClick={() => setDraft(shown.text)}>
+            Revert
           </button>
         )}
         {!isNew && shown && !shown.readOnly && (
-          <button ref={deleteButton} className="btn ghost sm" disabled={busy} onClick={() => setConfirmDelete(true)}>
+          <button ref={deleteButton} className="btn danger sm" disabled={busy} onClick={() => setConfirmDelete(true)}>
             Delete…
           </button>
         )}
@@ -344,11 +342,11 @@ export function PlansPanel({ waifuId, includePrivate }: { waifuId: string; inclu
   };
 
   return (
-    <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
-      <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", marginBottom: 8 }}>
+    <div className="cell cell-pad">
+      <div className="cell-head">
         <span className="t-title">Reminders and watches</span>
-        <button className="btn ghost sm" onClick={refresh}>
-          refresh
+        <button className="btn quiet sm" onClick={refresh}>
+          Refresh
         </button>
       </div>
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
@@ -378,13 +376,13 @@ export function ReminderList({ data, error, onDelete }: { data: ScheduleResponse
       {data?.unreadable && <Notice tone="warn">Her schedule.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
       {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with ScheduleWake, or by editing schedule.json.</span>}
       {data?.entries.map((entry) => (
-        <div key={entry.id} style={rowStyle}>
+        <div key={entry.id} className="soft-row">
           <span className="t-micro" style={{ flex: "none" }}>{entry.id}</span>
           <span className="mono t-small" style={{ flex: "none" }}>{entry.at}</span>
           {entry.repeat && <span className="chip lavender">{entry.repeat}</span>}
           <span className="t-small" style={{ flex: "1 1 200px", overflowWrap: "anywhere" }}>{entry.note}</span>
-          <button className="btn ghost sm" aria-label={`Delete reminder ${entry.id}`} onClick={() => onDelete(entry.id)}>
-            delete
+          <button className="btn quiet sm" aria-label={`Delete reminder ${entry.id}`} onClick={() => onDelete(entry.id)}>
+            Delete
           </button>
         </div>
       ))}
@@ -402,7 +400,7 @@ export function WatchList({ data, includePrivate, error, onDelete }: { data: Wat
       {data?.entries.map((entry) => {
         const hidden = entry.private === true && !includePrivate;
         return (
-          <div key={entry.id} style={rowStyle}>
+          <div key={entry.id} className="soft-row">
             <span className="t-micro" style={{ flex: "none" }}>{entry.id}</span>
             <span className="mono t-small" style={{ flex: "none" }}>until {entry.timeout}</span>
             {!entry.once && <span className="chip lavender">repeats</span>}
@@ -410,8 +408,8 @@ export function WatchList({ data, includePrivate, error, onDelete }: { data: Wat
               {hidden ? <span className="t-mute">{PRIVATE_HIDDEN}</span> : `${watchWhenText(entry)} · ${entry.note}`}
             </span>
             {entry.private && <span className="chip sky">private chat</span>}
-            <button className="btn ghost sm" aria-label={`Delete watch ${entry.id}`} onClick={() => onDelete(entry.id)}>
-              delete
+            <button className="btn quiet sm" aria-label={`Delete watch ${entry.id}`} onClick={() => onDelete(entry.id)}>
+              Delete
             </button>
           </div>
         );

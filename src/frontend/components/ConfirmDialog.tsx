@@ -77,10 +77,10 @@ export function ConfirmDialog({
         </div>
         <div className="modal-body">{children}</div>
         <div className="modal-footer">
-          <button ref={cancelRef} className="cell clickable" style={{ background: "var(--paper)" }} onClick={onCancel}>
+          <button ref={cancelRef} className="cell clickable" onClick={onCancel}>
             {cancelLabel}
           </button>
-          <button className="cell clickable" style={{ background: "var(--danger)" }} disabled={busy} onClick={onConfirm}>
+          <button className="cell clickable confirm-danger" disabled={busy} onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>

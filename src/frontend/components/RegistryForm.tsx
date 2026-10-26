@@ -3,8 +3,9 @@ import { api } from "../api/client";
 import { useApi } from "../api/useApi";
 import type { AppConfig, HelpKey, HelpTopic } from "../api/types";
 import { useClientContext } from "../state/clientContext";
-import { formChanges, formText, getPath, nestedPatch } from "../screens/settingsForm";
+import { formChanges, formText, getPath, keyLabel, nestedPatch } from "../screens/settingsForm";
 import { Notice } from "./Notice";
+import { SectionHead } from "./SectionHead";
 
 function keysOf(topic: HelpTopic | undefined): HelpKey[] {
   if (!topic) return [];
@@ -23,10 +24,12 @@ export function RegistryForm({
   config,
   onSaved,
   filter,
-  columns = 4
+  hint,
+  columns = 3
 }: {
   topic: string;
   title: string;
+  hint?: string;
   config: AppConfig | undefined;
   onSaved: (saved: AppConfig) => void;
   filter?: (key: HelpKey) => boolean;
@@ -58,24 +61,28 @@ export function RegistryForm({
     }
   };
 
+  if (help.data && keys.length === 0) return null;
+
   return (
-    <div className="fused" style={{ flex: "none" }}>
-      <div className="cell slabel" style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <span className="t-small">{title}</span>
-        {help.error && <span className="t-micro">help unavailable: {help.error.message}</span>}
-        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          {dirty && (
-            <button className="btn ghost sm" onClick={() => setDrafts({})}>
-              Undo
+    <>
+      <SectionHead
+        title={title}
+        hint={help.error ? `Help unavailable: ${help.error.message}` : hint}
+        actions={
+          <>
+            {dirty && (
+              <button className="btn quiet sm" onClick={() => setDrafts({})}>
+                Undo
+              </button>
+            )}
+            <button className="btn primary sm" disabled={!dirty || saving || Object.keys(errors).length > 0} onClick={() => void save()}>
+              {saving ? "Saving…" : dirty ? "Save" : "Saved"}
             </button>
-          )}
-          <button className="btn primary sm" disabled={!dirty || saving || Object.keys(errors).length > 0} onClick={() => void save()}>
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </span>
-      </div>
+          </>
+        }
+      />
       {message && (
-        <div className="cell" style={{ padding: "10px 16px" }}>
+        <div className="cell notice-cell" role="status">
           <Notice tone={message.tone}>{message.text}</Notice>
         </div>
       )}
@@ -85,7 +92,7 @@ export function RegistryForm({
           const text = drafts[key.path] ?? formText(key, stored);
           const locked = remote && key.flags.includes("localOnlyWrite");
           const set = (value: string) => setDrafts((current) => ({ ...current, [key.path]: value }));
-          const label = key.path.split(".").slice(-1)[0];
+          const label = keyLabel(key);
           const secret = key.flags.includes("secret");
           const inputId = `${formId}-${key.path}`;
           const hintId = `${inputId}-hint`;
@@ -93,16 +100,18 @@ export function RegistryForm({
           return (
             <div className="fcell" key={key.path} title={key.cli[1] ?? key.cli[0]}>
               <label className="field-label" htmlFor={inputId}>
-                {label}
-                {key.unit ? ` (${key.unit})` : ""}
-                {key.path in changes ? " •" : ""}
+                <span>
+                  {label}
+                  {key.unit ? ` (${key.unit})` : ""}
+                  {key.path in changes ? " •" : ""}
+                </span>
               </label>
               {key.type === "boolean" ? (
                 <label className="checkbox-chip">
                   <input
                     id={inputId}
                     type="checkbox"
-                    aria-label={key.path}
+                    aria-label={label}
                     aria-describedby={hintId}
                     disabled={locked}
                     checked={text === "true"}
@@ -155,6 +164,7 @@ export function RegistryForm({
                   {key.help}
                   {key.default !== undefined && key.type !== "string-list" && !secret ? ` Default ${JSON.stringify(key.default)}.` : ""}
                   {locked ? " Change it on the host itself." : key.applies === "restart" ? " Applies at the next start." : ""}
+                  <span className="field-key"> {key.path}</span>
                 </span>
               )}
             </div>
@@ -165,6 +175,6 @@ export function RegistryForm({
           <div className="fcell pad" key={`pad-${index}`} aria-hidden="true" />
         ))}
       </div>
-    </div>
+    </>
   );
 }

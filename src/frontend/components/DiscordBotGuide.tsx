@@ -418,7 +418,7 @@ function Step({ num, title, body }: { num: number; title: string; body: React.Re
       <span className="num">{num}</span>
       <div className="body">
         <div className="step-title">{title}</div>
-        <div className="step-desc" style={{ color: "var(--text-secondary)" }}>
+        <div className="step-desc">
           {body}
         </div>
       </div>

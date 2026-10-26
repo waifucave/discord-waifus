@@ -110,15 +110,34 @@ export function entrySummary(data: Record<string, unknown>): { title: string; me
     if (typeof payload.durationMs === "number") parts.push(`${(payload.durationMs / 1000).toFixed(1)} s`);
     return { title, metadataOnly, line: parts.length ? parts.join(" · ") : "content not kept" };
   }
-  return { title, metadataOnly, line: typeof data.content === "string" ? data.content : undefined };
+  return { title, metadataOnly, line: typeof data.content === "string" ? data.content : replyText(payload) };
+}
+
+/** A captured model reply's words: its text blocks, or its error. */
+function replyText(payload: Record<string, unknown>): string | undefined {
+  const content = payload.content;
+  if (typeof content === "string") return content || undefined;
+  if (Array.isArray(content)) {
+    const parts = content.flatMap((block) => {
+      if (!block || typeof block !== "object") return [];
+      const record = block as Record<string, unknown>;
+      if (record.type === "text" && typeof record.text === "string") return [record.text];
+      if ((record.type === "tool_use" || record.type === "tool_call") && typeof record.name === "string") return [`→ ${record.name}`];
+      return [];
+    });
+    if (parts.length) return parts.join(" ");
+  }
+  const error = payload.error && typeof payload.error === "object" ? (payload.error as Record<string, unknown>) : undefined;
+  if (error) return `failed: ${[error.kind, error.message].filter((part) => typeof part === "string").join(" · ") || "error"}`;
+  return undefined;
 }
 
 function ExpandableEntry({ entry, hue }: { entry: StreamEntry; hue: string }) {
   const [open, setOpen] = useState(false);
   const { title: summary, metadataOnly, line: body } = entrySummary(entry.data);
   return (
-    <div className="cell" style={{ padding: "12px 26px", flex: "none" }}>
-      <button className="clickable" style={{ background: "transparent", width: "100%" }} onClick={() => setOpen((v) => !v)}>
+    <div className="cell cell-pad" style={{ paddingTop: 12, paddingBottom: 12 }}>
+      <button className="clickable" style={{ background: "transparent", width: "100%" }} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <div className="t-micro" style={{ marginBottom: 3 }}>
           {entry.receivedAt} · <span className={`chip ${hue}`}>{summary || "event"}</span>
           {metadataOnly && <span className="chip butter" style={{ marginLeft: 6 }} title="A life, maintenance, compaction or web call: only its metadata is kept">metadata only</span>}
@@ -151,7 +170,7 @@ export function ActivityScreen({
         ? `${queries.length} model calls · live`
         : active === "usage"
           ? "model calls and cost by local day"
-          : `${replies.length} captured replies · live`;
+          : `${replies.length} model replies · live`;
 
   return (
     <div className="screen">
@@ -178,14 +197,14 @@ export function ActivityScreen({
           ))}
         {active === "replies" &&
           (replies.length === 0 ? (
-            <EmptyCell text="No replies captured since the backend started." />
+            <EmptyCell text="No model replies captured since the backend started." />
           ) : (
             replies.map((entry, index) => <ExpandableEntry key={index} entry={entry} hue="mint" />)
           ))}
         {(active === "queries" || active === "replies") && (
-          <div className="cell" style={{ padding: "10px 26px", flex: "none" }}>
+          <div className="cell cell-pad">
             <span className="t-mute t-small">
-              The assistant&apos;s and the detector&apos;s calls keep their content. A waifu&apos;s life, maintenance, compaction and web calls
+              Every model call and its reply, as they happen. The assistant&apos;s and the detector&apos;s calls keep their content. A waifu&apos;s life, maintenance, compaction and web calls
               keep metadata only; her own turns are on the Life screen.
             </span>
           </div>
@@ -216,10 +235,10 @@ function UsagePanel() {
   const report = usage.data;
   return (
     <>
-      <div className="fgrid" style={{ gridTemplateColumns: "1fr 180px 180px", flex: "none" }}>
+      <div className="fgrid cols-3">
         <div className="fcell">
-          <label className="field-label">Group</label>
-          <select className="select" value={grouping} onChange={(e) => setGrouping(Number(e.target.value))}>
+          <label className="field-label" htmlFor="usage-group">Group</label>
+          <select id="usage-group" className="select" value={grouping} onChange={(e) => setGrouping(Number(e.target.value))}>
             {GROUPINGS.map((option, index) => (
               <option key={option.label} value={index}>
                 {option.label}
@@ -228,40 +247,40 @@ function UsagePanel() {
           </select>
         </div>
         <div className="fcell">
-          <label className="field-label">From</label>
-          <input className="input" type="date" value={range.from ?? report?.from ?? ""} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || undefined }))} />
+          <label className="field-label" htmlFor="usage-from">From</label>
+          <input id="usage-from" className="input" type="date" value={range.from ?? report?.from ?? ""} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value || undefined }))} />
         </div>
         <div className="fcell">
-          <label className="field-label">To</label>
-          <input className="input" type="date" value={range.to ?? report?.to ?? ""} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value || undefined }))} />
+          <label className="field-label" htmlFor="usage-to">To</label>
+          <input id="usage-to" className="input" type="date" value={range.to ?? report?.to ?? ""} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value || undefined }))} />
         </div>
       </div>
       {usage.error && <EmptyCell text={usage.error.message} />}
       {report && (
-        <div className="cell" style={{ padding: "12px 26px", flex: "none", overflowX: "auto" }}>
-          <table className="t-small" style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div className="cell cell-pad" style={{ overflowX: "auto" }}>
+          <table className="t-small data-table">
             <thead>
-              <tr className="t-micro" style={{ textAlign: "left" }}>
-                <th style={{ padding: "6px 8px" }}>{groupBy.join(" · ")}</th>
-                <th style={{ padding: "6px 8px", textAlign: "right" }}>calls</th>
-                <th style={{ padding: "6px 8px", textAlign: "right" }}>tokens in</th>
-                <th style={{ padding: "6px 8px", textAlign: "right" }}>tokens out</th>
-                <th style={{ padding: "6px 8px", textAlign: "right" }}>cost</th>
+              <tr className="t-micro">
+                <th>{groupBy.join(" · ")}</th>
+                <th className="num">calls</th>
+                <th className="num">tokens in</th>
+                <th className="num">tokens out</th>
+                <th className="num">cost</th>
               </tr>
             </thead>
             <tbody>
               {[...report.groups, { ...report.totals, key: ["total"], label: "Total" }].map((group) => (
-                <tr key={group.key.join("|")} style={{ borderTop: "1px solid #e6e6e6", fontWeight: group.key[0] === "total" ? 600 : undefined }}>
-                  <td style={{ padding: "6px 8px" }}>{group.label ?? group.key.join(" · ")}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{group.calls}{group.failedCalls ? ` (${group.failedCalls} failed)` : ""}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{(group.inputTokens + group.cacheReadTokens + group.cacheWriteTokens).toLocaleString()}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{group.outputTokens.toLocaleString()}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{usd(group.costUsd, 4)}{group.unpricedCalls ? "*" : ""}</td>
+                <tr key={group.key.join("|")} className={group.key[0] === "total" ? "total" : undefined}>
+                  <td>{group.label ?? group.key.join(" · ")}</td>
+                  <td className="num">{group.calls}{group.failedCalls ? ` (${group.failedCalls} failed)` : ""}</td>
+                  <td className="num">{(group.inputTokens + group.cacheReadTokens + group.cacheWriteTokens).toLocaleString()}</td>
+                  <td className="num">{group.outputTokens.toLocaleString()}</td>
+                  <td className="num">{usd(group.costUsd, 4)}{group.unpricedCalls ? "*" : ""}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="t-micro" style={{ marginTop: 8, textTransform: "none", letterSpacing: "0.04em" }}>
+          <div className="t-micro t-plain" style={{ marginTop: 8 }}>
             {report.from} … {report.to} · {report.timeZone}
             {report.totals.unpricedCalls ? " · * some calls have no known price" : ""}
             {report.skippedLines ? ` · ${report.skippedLines} unreadable ledger line(s) skipped` : ""}
@@ -275,7 +294,7 @@ function UsagePanel() {
 
 function EmptyCell({ text }: { text: string }) {
   return (
-    <div className="cell" style={{ padding: 40, textAlign: "center", flex: "none" }}>
+    <div className="cell empty-cell">
       <span className="t-mute t-small">{text}</span>
     </div>
   );

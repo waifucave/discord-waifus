@@ -2,7 +2,7 @@
 // types, bounds and help come from `GET /api/help/<topic>`; a save sends only the keys that changed
 // as one partial `PUT /api/config` patch.
 
-import type { HelpKey } from "../api/types";
+import type { CuratedModel, HelpKey, ModelsResponse } from "../api/types";
 
 export function getPath(record: unknown, path: string): unknown {
   let node: unknown = record;
@@ -26,6 +26,14 @@ export function nestedPatch(changes: Record<string, unknown>): Record<string, un
     node[segments[segments.length - 1]!] = value;
   }
   return out;
+}
+
+/** A key's name in a form: its registry label, else its last path segment in words ("maxSendsPerTurn" → "Max sends per turn"). */
+export function keyLabel(key: Pick<HelpKey, "path" | "label">): string {
+  if (key.label) return key.label;
+  const last = key.path.split(".").slice(-1)[0] ?? key.path;
+  const words = last.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/gu, "$1 $2").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** The text an input shows for a stored value (never a secret's: those inputs are write-only). */
@@ -98,4 +106,28 @@ export function formChanges(keys: readonly HelpKey[], config: unknown, drafts: R
     if (JSON.stringify(parsed.value ?? null) !== JSON.stringify(getPath(config, key.path) ?? null)) changes[key.path] = parsed.value;
   }
   return { changes, errors };
+}
+
+/** One row of the allowed-models list: a curated route (or a bare key), whether it is on, and why it is hidden. */
+export type AllowedModelRow = { id: string; model?: CuratedModel; hiddenReason?: string; on: boolean };
+
+/**
+ * The allowed-models list over `GET /api/models`: the allowed routes in allow-list order (offered or
+ * hidden), then the curated routes left off the list, then any key added here that the host has not
+ * described yet. `allowed` is the list as it would be saved.
+ */
+export function allowedModelRows(response: Pick<ModelsResponse, "models" | "hidden" | "available"> | undefined, allowed: readonly string[]): AllowedModelRow[] {
+  const rows = new Map<string, AllowedModelRow>();
+  const on = new Set(allowed);
+  for (const model of response?.models ?? []) rows.set(model.id, { id: model.id, model, on: on.has(model.id) });
+  for (const hidden of response?.hidden ?? []) if (!rows.has(hidden.id)) rows.set(hidden.id, { id: hidden.id, hiddenReason: hidden.reason, on: on.has(hidden.id) });
+  for (const model of response?.available ?? []) if (!rows.has(model.id)) rows.set(model.id, { id: model.id, model, on: on.has(model.id) });
+  for (const id of allowed) if (!rows.has(id)) rows.set(id, { id, on: true });
+  return [...rows.values()];
+}
+
+/** The allow list with one route switched on (appended) or off (removed); order is otherwise kept. */
+export function toggleAllowed(allowed: readonly string[], id: string, on: boolean): string[] {
+  const without = allowed.filter((entry) => entry !== id);
+  return on ? [...without, id] : without;
 }

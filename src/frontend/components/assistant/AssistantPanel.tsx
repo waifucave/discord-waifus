@@ -87,7 +87,7 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
       <div className="m-label" style={{ marginBottom: 6 }}>
         Secure input · {args.purpose === "provider_key" ? `${target} API key` : `${target} bot token`} · bypasses the chat
       </div>
-      <div className="fgrid" style={{ gridTemplateColumns: "1fr 90px 32px", margin: "0 -20px", borderTop: "var(--line) solid var(--ink)", borderBottom: "var(--line) solid var(--ink)" }}>
+      <div className="fgrid secret-form">
         <div className="fcell" style={{ padding: "10px 12px" }}>
           <input
             className="input"
@@ -99,10 +99,10 @@ function SecretForm({ args, onDone }: { args: SecretArgs; onDone: (outcome: stri
             onKeyDown={(e) => e.key === "Enter" && submit()}
           />
         </div>
-        <button className="cell clickable btn" onClick={submit} disabled={saving || !value.trim()}>
+        <button className="cell clickable btn primary" onClick={submit} disabled={saving || !value.trim()}>
           {saving ? "…" : "Save"}
         </button>
-        <button className="cell clickable btn ghost" onClick={() => onDone("[secure-form] the user dismissed the form without saving a secret.")}>
+        <button className="cell clickable btn" aria-label="Dismiss" onClick={() => onDone("[secure-form] the user dismissed the form without saving a secret.")}>
           ✕
         </button>
       </div>
@@ -115,7 +115,7 @@ function ToolRow({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="m-tool">
-      <button className="clickable" style={{ background: "transparent", padding: 0, font: "inherit", color: "inherit" }} onClick={() => setExpanded((v) => !v)}>
+      <button className="clickable" style={{ background: "transparent", padding: 0, font: "inherit", color: "inherit" }} aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
         <span className="chip pink">{item.name}</span>
         {item.result === undefined ? "running…" : "done"}
       </button>
@@ -214,7 +214,7 @@ export function AssistantActionCard({
       {detail?.fileText !== undefined ? (
         <>
           <p className="t-small">{detail.summary.split("\n")[0]}</p>
-          <pre className="mono t-small" tabIndex={0} aria-label="The new text" style={{ maxHeight: 320, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: 0, padding: 8, border: "1px solid var(--line)" }}>
+          <pre className="mono t-small file-preview" tabIndex={0} aria-label="The new text">
             {detail.fileText || "(empty file)"}
           </pre>
         </>
@@ -263,23 +263,7 @@ export function AssistantActionCard({
 export function AssistantLauncher({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   if (open) return null;
   return (
-    <button
-      className="clickable"
-      style={{
-        position: "fixed",
-        right: 0,
-        bottom: 0,
-        width: 52,
-        height: 52,
-        background: "var(--ink)",
-        color: "#fff",
-        border: "none",
-        fontSize: 18,
-        zIndex: 29
-      }}
-      onClick={onToggle}
-      aria-label="Assistant"
-    >
+    <button className="assistant-launcher" onClick={onToggle} aria-label="Assistant" title="Open the assistant">
       ▣
     </button>
   );
@@ -318,7 +302,7 @@ export function AssistantPanel({
   const model = assistantConfig.data?.model?.modelId;
 
   return (
-    <aside className="norma">
+    <aside className="norma" aria-label="Assistant">
       <div className="nhead">
         <div className="ttl">
           <span className="t-title">Norma</span>
@@ -326,8 +310,6 @@ export function AssistantPanel({
         </div>
         <button
           className="cell clickable hbtn"
-          data-hue
-          style={{ ["--hover-hue" as string]: "var(--sky)" }}
           onClick={() => {
             chat.reset();
             setHandledSecrets(new Set());
@@ -337,7 +319,7 @@ export function AssistantPanel({
         >
           +
         </button>
-        <button className="cell clickable hbtn" data-hue style={{ ["--hover-hue" as string]: "var(--peach)" }} onClick={onClose} aria-label="Close">
+        <button className="cell clickable hbtn" onClick={onClose} aria-label="Close the assistant" title="Close (the page gets its width back)">
           ✕
         </button>
       </div>

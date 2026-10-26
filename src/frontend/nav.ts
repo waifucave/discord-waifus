@@ -1,4 +1,4 @@
-/** Section registry for the home-launcher navigation. Hue names map to system.css vars. */
+/** Section registry for navigation. Hue names map to system.css vars. */
 export type ViewId = "home" | "cast" | "life" | "rooms" | "activity" | "settings";
 
 export type SectionDef = {
@@ -23,7 +23,7 @@ export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: str
   activity: [
     { id: "logs", label: "Logs" },
     { id: "queries", label: "Model calls" },
-    { id: "replies", label: "Replies" },
+    { id: "replies", label: "Model replies" },
     { id: "usage", label: "Usage" }
   ],
   settings: [

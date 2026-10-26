@@ -24,7 +24,7 @@ export function Notice({
     <div className={"notice " + tone}>
       <Icon className="icon" />
       <div>
-        {title && <div style={{ fontWeight: 600, marginBottom: 2 }}>{title}</div>}
+        {title && <div className="notice-title">{title}</div>}
         <div>{children}</div>
       </div>
     </div>

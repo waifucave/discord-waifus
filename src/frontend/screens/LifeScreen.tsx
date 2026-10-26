@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useApi, useInterval } from "../api/useApi";
-import type { LifeLog, LifeLogLineView, LifeStatus, NeedsReviewResponse, SearchUsage, WaifuConfig, WaifusResponse } from "../api/types";
+import type { LifeLog, LifeLogLineView, LifeStatus, LogsResponse, NeedsReviewResponse, SearchUsage, WaifuConfig, WaifusResponse } from "../api/types";
 import { characterHue, type ViewId } from "../nav";
 import { useClientContext } from "../state/clientContext";
 import { FootRow, HeadRow } from "./scaffold";
@@ -9,7 +9,7 @@ import { Notice } from "../components/Notice";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ForgetPersonPanel } from "../components/ForgetPersonPanel";
 import { HerFilesPanel, PlansPanel } from "./LifeFiles";
-import { blockRow, groupByTurn, lineLabel, matchingReveal, mergeTimeline, settledAll, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
+import { blockRow, castEvents, groupByTurn, lineLabel, matchingReveal, mergeTimeline, settledAll, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
 
 const LOG_PAGE = 100;
 const POLL_MS = 5000;
@@ -48,23 +48,33 @@ export function useLives(cast: readonly WaifuConfig[]) {
 /** The header's note while a poll is failing and the screen still shows its last answers. */
 export const STALE_NOTE = "last update failed, retrying";
 
+const LIFE_COLUMNS = 3;
+
 function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
   const waifus = useApi<WaifusResponse>((s) => api.waifus(s), []);
   const cast = waifus.data?.waifus ?? [];
   const lives = useLives(cast);
-  useInterval(() => lives.reload(), POLL_MS * 2);
+  const logs = useApi<LogsResponse>((s) => api.logs(500, s), []);
+  useInterval(() => {
+    lives.reload();
+    logs.reload();
+  }, POLL_MS * 2);
   const byId = new Map((lives.data ?? []).map((life) => [life.waifuId, life]));
+  const names = new Map(cast.map((waifu) => [waifu.id, waifu.displayName || waifu.name]));
+  const events = castEvents(logs.data, 12);
+  const awake = (lives.data ?? []).filter((life) => stateLabel(life).word === "Awake" || life.status === "turn").length;
+  const sub = `${awake} of ${cast.length} awake · what each waifu is doing, live${lives.error && lives.data ? ` · ${STALE_NOTE}` : ""}`;
   return (
     <div className="screen">
-      <HeadRow onBack={() => onNavigate("home")} title="Life" sub={lives.error && lives.data ? `what each waifu is doing · ${STALE_NOTE}` : "what each waifu is doing, live"} />
+      <HeadRow onBack={() => onNavigate("home")} title="Life" sub={sub} />
       <div className="content">
         {cast.length === 0 && (
-          <div className="cell growcell" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 40 }}>
+          <div className="cell growcell empty">
             <span className="t-mute t-small">No characters yet. Create one in Cast.</span>
           </div>
         )}
         {cast.length > 0 && (
-          <div className="mosaic life-mosaic" style={{ flex: 1 }}>
+          <div className="mosaic tiles life-mosaic">
             {cast.map((waifu, index) => {
               const life = byId.get(waifu.id);
               const state = life ? stateLabel(life) : undefined;
@@ -79,9 +89,9 @@ function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                 >
                   <div>
                     <span className="nm">{waifu.displayName || waifu.name}</span>
-                    <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "baseline" }}>
+                    <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
                       {state && <span className={`chip ${state.hue}`}>{state.word}</span>}
-                      {state?.detail && <span className="t-micro" style={{ textTransform: "none", letterSpacing: "0.04em" }}>{state.detail}</span>}
+                      {state?.detail && <span className="t-micro t-plain">{state.detail}</span>}
                     </div>
                   </div>
                   <span className="meta">
@@ -95,7 +105,22 @@ function LifeMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                 </button>
               );
             })}
+            {Array.from({ length: (LIFE_COLUMNS - (cast.length % LIFE_COLUMNS)) % LIFE_COLUMNS }, (_, i) => (
+              <div className="cell pad" key={`pad-${i}`} aria-hidden="true" />
+            ))}
           </div>
+        )}
+        {cast.length > 0 && (
+          <section className="cell events-list" aria-label="Recent sends and wakes">
+            <div className="t-micro" style={{ marginBottom: 8 }}>Recent sends and wakes</div>
+            {events.length === 0 && <span className="t-mute t-small">Nothing since the host started.</span>}
+            {events.map((event, index) => (
+              <div key={`${event.at}-${index}`} className="t-small event">
+                <span className="t-micro" style={{ marginRight: 10 }}>{when(event.at)}</span>
+                <span>{names.get(event.waifuId) ?? event.waifuId}</span> <span className="t-mute">{event.text}</span>
+              </div>
+            ))}
+          </section>
         )}
       </div>
       <FootRow />
@@ -193,14 +218,14 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         title={name}
         sub={life ? `${state?.word ?? ""}${state?.detail ? ` · ${state.detail}` : ""} · epoch ${life.epoch}` : "loading her life…"}
         action={
-          <button className="cell clickable actioncell" data-hue style={{ ["--hover-hue" as string]: "var(--mint)" }} onClick={() => onNavigate("cast", undefined, waifuId)}>
+          <button className="cell clickable actioncell" onClick={() => onNavigate("cast", undefined, waifuId)}>
             Edit in Cast →
           </button>
         }
       />
       <div className="content">
         {[status.error, log.error, review.error, search.error].some(Boolean) && (
-          <div className="cell" style={{ padding: 16, flex: "none", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="cell notice-cell">
             {status.error && <Notice tone="err">Status: {status.error.message}</Notice>}
             {log.error && <Notice tone="err">Timeline: {log.error.message}</Notice>}
             {review.error && <Notice tone="err">Needs review: {review.error.message}</Notice>}
@@ -208,13 +233,13 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
           </div>
         )}
         {message && (
-          <div className="cell" style={{ padding: 16, flex: "none" }}>
+          <div className="cell notice-cell" role="status">
             <Notice tone={message.tone}>{message.text}</Notice>
           </div>
         )}
 
         {life && (
-          <div className="mosaic life-stats" style={{ flex: "none" }}>
+          <div className="mosaic life-stats">
             <StatCell label="Now" value={state?.word ?? ""} detail={state?.detail || (life.currentTurn ? `turn of ${life.currentTurn.wakes} wake(s), round ${life.currentTurn.rounds}` : `last turn ${when(life.lastTurnEndedAt)}`)} />
             <StatCell
               label="Waiting"
@@ -235,7 +260,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         )}
 
         {life && (
-          <div className="fgrid life-actions" style={{ flex: "none" }}>
+          <div className="fgrid life-actions">
             <div className="fcell">
               <label className="field-label" htmlFor={noteId}>
                 Wake her (an owner wake skips sleep and budget)
@@ -243,7 +268,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
               <input id={noteId} className="input" maxLength={500} placeholder="A note she sees (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
             <button
-              className="cell clickable btn"
+              className="cell clickable btn primary"
               disabled={busy !== undefined}
               onClick={() =>
                 void act("wake", async () => {
@@ -272,16 +297,16 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             >
               {busy === "compact" ? "Compacting…" : "Compact"}
             </button>
-            <button ref={resetButton} className="cell clickable btn" data-hue style={{ ["--hover-hue" as string]: "var(--danger)" }} disabled={busy !== undefined || !life.runtime.running} onClick={() => setConfirmReset(true)}>
+            <button ref={resetButton} className="cell clickable btn danger" disabled={busy !== undefined || !life.runtime.running} onClick={() => setConfirmReset(true)}>
               Reset…
             </button>
           </div>
         )}
 
-        <div className="cell" style={{ padding: "14px 26px", flex: "none", display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+        <div className="cell timeline-bar">
           <span className="t-title">Timeline</span>
           {(epoch !== undefined || (logData && logData.epochs.length > 1)) && (
-            <select className="select" aria-label="Epoch" style={{ maxWidth: 180 }} value={epoch ?? ""} onChange={(e) => setEpoch(e.target.value ? Number(e.target.value) : undefined)}>
+            <select className="select" aria-label="Epoch" value={epoch ?? ""} onChange={(e) => setEpoch(e.target.value ? Number(e.target.value) : undefined)}>
               <option value="">Current epoch</option>
               {(logData?.epochs ?? (epoch !== undefined ? [epoch] : []))
                 .filter((value) => value !== life?.epoch)
@@ -296,7 +321,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             <input type="checkbox" checked={includePrivate} disabled={remote} onChange={(e) => setReveal(e.target.checked)} />
             Show private chats
           </label>
-          <span className="t-micro" style={{ textTransform: "none", letterSpacing: "0.04em" }}>
+          <span className="t-micro t-plain">
             {remote
               ? "Private chats stay hidden over Remote Access: open the dashboard on the host to reveal them."
               : includePrivate
@@ -306,7 +331,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         </div>
 
         {lifeData && (lifeData.summary.text || lifeData.summary.hidden) && (
-          <div className="cell" style={{ padding: "12px 26px", flex: "none" }}>
+          <div className="cell cell-pad">
             <div className="t-micro" style={{ marginBottom: 4 }}>Her life so far (summary)</div>
             {lifeData.summary.hidden ? (
               <span className="t-small t-mute">Hidden: it may hold things from private chats.</span>
@@ -317,12 +342,12 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
         )}
 
         {hasMore && (
-          <button className="cell clickable" style={{ padding: "10px 26px", flex: "none" }} onClick={() => void loadOlder()}>
-            <span className="t-micro">Load older lines</span>
+          <button className="cell clickable cell-pad" style={{ textAlign: "center" }} onClick={() => void loadOlder()}>
+            <span className="t-small">Load older lines</span>
           </button>
         )}
         {shownLog && lines.length === 0 && (
-          <div className="cell" style={{ padding: 30, flex: "none", textAlign: "center" }}>
+          <div className="cell empty-cell">
             <span className="t-mute t-small">Nothing in this epoch yet.</span>
           </div>
         )}
@@ -330,7 +355,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
           <TurnCell key={`${group.turnId ?? "line"}-${group.lines[0]!.seq}`} lines={group.lines} />
         ))}
 
-        <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
+        <div className="cell cell-pad">
           <div className="t-title" style={{ marginBottom: 8 }}>Needs review</div>
           {!reviewData ? (
             <span className="t-small t-mute">{review.error ? "Could not load the review lines." : "Loading…"}</span>
@@ -338,14 +363,14 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             <span className="t-small t-mute">Nothing to review. After a forget, lines naming someone who shares a name with another person are listed here.</span>
           ) : (
             reviewData.items.map((item) => (
-              <div key={item.id} style={{ display: "flex", gap: 12, alignItems: "baseline", padding: "6px 0", borderTop: "1px solid var(--line-soft, #e6e6e6)" }}>
+              <div key={item.id} className="soft-row">
                 <span className="t-micro" style={{ flex: "none" }}>{item.where}</span>
                 <span className="t-small" style={{ flex: 1, overflowWrap: "anywhere" }}>
                   {item.private && !includePrivate ? <span className="t-mute">From a private chat: reveal it on the host to read it.</span> : item.line}
                   {item.private && <span className="chip sky" style={{ marginLeft: 8 }}>private chat</span>}
                 </span>
                 <button
-                  className="btn ghost sm"
+                  className="btn quiet sm"
                   onClick={async () => {
                     try {
                       await api.dismissNeedsReview(waifuId, item.id);
@@ -356,20 +381,20 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
                     }
                   }}
                 >
-                  dismiss
+                  Dismiss
                 </button>
               </div>
             ))
           )}
         </div>
 
-        <div className="cell" style={{ padding: "18px 26px", flex: "none" }}>
+        <div className="cell cell-pad">
           <div className="t-title" style={{ marginBottom: 8 }}>Web searches today</div>
           {myQueries.length === 0 ? (
             <span className="t-small t-mute">None today.</span>
           ) : (
             myQueries.map((entry, index) => (
-              <div key={`${entry.at}-${index}`} className="t-small" style={{ padding: "3px 0" }}>
+              <div key={`${entry.at}-${index}`} className="t-small soft-row">
                 <span className="t-micro" style={{ marginRight: 10 }}>{when(entry.at)} · {entry.kind}</span>
                 {entry.dm && !includePrivate ? <span className="t-mute">From a private chat: hidden</span> : entry.query}
                 {entry.dm && <span className="chip sky" style={{ marginLeft: 8 }}>private chat</span>}
@@ -415,9 +440,9 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
 
 function StatCell({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
-    <div className="cell" style={{ padding: "16px 22px" }}>
+    <div className="cell stat-cell">
       <div className="t-micro">{label}</div>
-      <div className="t-title" style={{ margin: "4px 0" }}>{value}</div>
+      <div className="t-title">{value}</div>
       <div className="t-small t-mute" style={{ lineHeight: 1.4 }}>{detail}</div>
     </div>
   );
@@ -426,10 +451,10 @@ function StatCell({ label, value, detail }: { label: string; value: string; deta
 /** One turn (or one stray line) of her life log; tool calls show their own names and arguments. */
 export function TurnCell({ lines }: { lines: LifeLogLineView[] }) {
   return (
-    <div className="cell" style={{ padding: "12px 26px", flex: "none" }}>
+    <div className="cell cell-pad">
       {lines.map((line) => (
-        <div key={line.seq} style={{ marginBottom: 6 }}>
-          <div className="t-micro" style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+        <div key={line.seq} className="turn-line">
+          <div className="t-micro turn-line-head">
             <span>{when(line.at)}</span>
             <span>{lineLabel(line)}</span>
             {line.dm && <span className="chip sky">private chat</span>}
@@ -438,18 +463,9 @@ export function TurnCell({ lines }: { lines: LifeLogLineView[] }) {
           </div>
           {line.blocks.map((block, index) => {
             const row = blockRow(block);
+            const tone = row.tone === "muted" ? " muted" : row.tone === "error" ? " error" : row.tone === "text" ? " text" : "";
             return (
-              <div
-                key={index}
-                className="t-small"
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  padding: "2px 0 2px 14px",
-                  color: row.tone === "muted" ? "var(--mute)" : row.tone === "error" ? "#c22f2f" : undefined,
-                  whiteSpace: row.tone === "text" ? "pre-wrap" : undefined
-                }}
-              >
+              <div key={index} className={"t-small turn-block" + tone}>
                 {row.label && <span className="mono" style={{ flex: "none", fontSize: 11.5 }}>{row.tone === "call" ? `→ ${row.label}` : row.label}</span>}
                 <span style={{ overflowWrap: "anywhere" }}>{row.text}</span>
               </div>
