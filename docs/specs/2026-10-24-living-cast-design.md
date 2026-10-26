@@ -2682,3 +2682,38 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 - Mid-turn folding (§4.2) and the morning batch use the same per-message lines.
 - D14 redaction of DM lines works per line, as today. Goldens for the DM burst, the room burst and a
   folded mid-turn arrival.
+
+### 20.1 As built (2026-10-26)
+
+- A wake carries `messages` (`WakeMessageSchema`: id, author id and name, preview, own `reasons`,
+  `matched`, `note`), oldest first, at most `MAX_WAKE_MESSAGES` (50) kept with an `earlier` count
+  for the rest (`src/life/wakeMessages.ts`). The wake's own fields (`messageId`, `preview`,
+  `fromName`, `reasons`) stay as before for everything else that reads them (the unsent-reply
+  check, the dashboard queue, forget).
+- Held room bursts (`Intake.mergeHeld`) keep every message of the burst, everyone's: a message's
+  `reasons` are the ones it gave her (a mention drops her name on the same message); a message
+  that gave her none has `reasons: []` and its line has **no reason label** (`- bake-club/#general ·
+  from Mina · #a1 "…"`), so a line never claims a mention that was someone else's message. This
+  reads "each line has its reason label" as "its own reason, when it has one".
+- Detector wakes carry the burst's messages without per-message reasons, so every line reads as the
+  pick (`maybe for you`, `for all of you`, the chime-in label).
+- DM bursts (`Intake.fireDm`): every message is fetched and previewed; the first watch matching a
+  message rides on that message's line (`dm, watch · … · "match" · … · your note`), further watches
+  on the same message route as `watch` wakes with that message's id and join its line.
+- Rendering (`notifications.ts` `placeLines`): the wakes of one place are joined by message id
+  (reasons, matches and notes merged), sorted by id, the newest `linesPerPlace` shown; reasons of a
+  place wake that names no message go on the first line; a place with no message at all keeps the
+  old single line. The `N unread` count is on the last line only when unread > lines shown. Every
+  line's message gets its ref (`Life.notificationView` assigns refs for all of them).
+- The wake queue's merge past its cap (`mergeInto`) joins both wakes' messages; a forget scrub drops
+  the person's messages from someone else's wake and replaces a preview or note naming them with
+  `(removed)`.
+- D14: the DM line pattern also matches a line that starts with the DM handle (no reason label),
+  so each line is redacted on its own.
+- Morning batch: a deferred DM wake with watch matches lists one `watch matched` line per matching
+  message.
+- `life.notificationLinesPerPlace` (1–50, default 8) is in the registry and Settings → Life
+  ("Wakes").
+- Tests: `tests/lifeNotificationLines.test.ts`; goldens `life-dm-wake.txt` (the DM burst now shows
+  both messages), `life-room-burst.txt` (new) and `life-mid-turn.txt` (the folded arrival is now two
+  messages from Mina, one line each).

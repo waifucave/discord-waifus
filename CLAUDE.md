@@ -54,9 +54,11 @@ lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume,
 `intakeHold.ts`, spec §4.2: a room burst fires 1.5 s after its last message, a DM 2.5 s, later while
 an author of the burst is typing there (6 s per typing event, from the House bot's and DM bots' raw
 `TYPING_START` packets), capped at 10 s / 60 s from the first message; a human message's
-mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu,
-previewing the author's newest message), room watches and waifu-authored direct wakes route at
-once, a DM's watch matches ride on its `dm` wake after the DM hold (one `dm, watch` line), and
+mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu
+that keeps every message of the burst in `messages`, each with the reasons it gave her; spec §20,
+`wakeMessages.ts`), room watches and waifu-authored direct wakes route at
+once, a DM's watch matches ride on its `dm` wake after the DM hold (on the line of the message
+they matched), and
 everything else, a person's burst or a waifu's own burst (her lines per place, 1.5 s quiet, never
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
@@ -67,7 +69,8 @@ waifu-only rounds beyond the optional room loop guard and daily budgets) → **w
 per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
 (`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
-`life.maxConcurrentTurns` slot; notifications (with the previewed message's ref; wakes ready mid-turn
+`life.maxConcurrentTurns` slot; notifications (`notifications.ts`: one line per message with its ref,
+at most `life.notificationLinesPerPlace` per place, the first saying `+N earlier`; wakes ready mid-turn
 are folded into the next tool-results message after its results, recorded in `currentTurn` before
 they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing only once a SendMessage's place has streamed in (`typing.ts`, spec §6.3); an
 interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
