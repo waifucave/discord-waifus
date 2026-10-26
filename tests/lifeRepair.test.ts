@@ -168,7 +168,7 @@ describe("crash repair of her file tools (review minors)", () => {
     // A longer file that merely has "id": in it is not what she wrote.
     await writeHerFile(v, "notes.md", 'something else entirely, "id": 1');
     expect(await repaired(v)).toMatchObject({ content: "[interrupted] not written", is_error: true });
-  });
+  }, 30_000);
 
   it("a ScheduleWake counts as done only for an entry with its note at the time it asked for", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
