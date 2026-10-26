@@ -518,7 +518,7 @@ export const api = {
     request<NeedsReviewDismissResponse>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review/${encodeURIComponent(itemId)}`),
 
   // Her files, reminders and watches (Living cast §16.11). DM files need `includePrivate` (host only).
-  herFiles: (waifuId: string, query: { root: "home" | "tmp"; dir?: string; includePrivate: boolean }, signal?: AbortSignal) => {
+  herFiles: (waifuId: string, query: { root: "home" | "tmp" | "transcripts"; dir?: string; includePrivate: boolean }, signal?: AbortSignal) => {
     const params = new URLSearchParams({ root: query.root });
     if (query.dir) params.set("dir", query.dir);
     if (query.includePrivate) params.set("includePrivate", "1");

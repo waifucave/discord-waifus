@@ -9,7 +9,7 @@ import { Notice } from "../components/Notice";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ForgetPersonPanel } from "../components/ForgetPersonPanel";
 import { HerFilesPanel, PlansPanel } from "./LifeFiles";
-import { blockRow, castEvents, groupByTurn, lineLabel, matchingReveal, mergeTimeline, settledAll, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
+import { blockRow, boundaryReasonLabel, castEvents, groupByTurn, lineLabel, matchingReveal, mergeTimeline, settledAll, stateLabel, usd, wakeOutcomeText, when } from "./lifeView";
 
 const LOG_PAGE = 100;
 const POLL_MS = 5000;
@@ -254,7 +254,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
             <StatCell
               label="Life"
               value={life.started ? `Epoch ${life.epoch}` : "Not started"}
-              detail={`${life.logLines} lines · compacted ${life.lastCompaction ? when(life.lastCompaction.at) : "never"} · tidied ${when(life.lastMaintenanceAt)}`}
+              detail={`${life.logLines} lines · ${life.lastCompaction?.reason === "rest" ? "rested" : "compacted"} ${life.lastCompaction ? when(life.lastCompaction.at) : "never"} · dreamed ${when(life.lastMaintenanceAt)}`}
             />
           </div>
         )}
@@ -458,7 +458,7 @@ export function TurnCell({ lines }: { lines: LifeLogLineView[] }) {
             <span>{when(line.at)}</span>
             <span>{lineLabel(line)}</span>
             {line.dm && <span className="chip sky">private chat</span>}
-            {line.boundary && <span className="chip lavender">from epoch {line.boundary.fromEpoch} · {line.boundary.reason}</span>}
+            {line.boundary && <span className="chip lavender">from epoch {line.boundary.fromEpoch} · {boundaryReasonLabel(line.boundary.reason)}</span>}
             {line.origin?.modelId && <span style={{ marginLeft: "auto", textTransform: "none" }}>{line.origin.modelId}</span>}
           </div>
           {line.blocks.map((block, index) => {

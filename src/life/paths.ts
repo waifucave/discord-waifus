@@ -57,6 +57,8 @@ export const lifePaths = {
   /** Bash change sets being applied (§16.9): `<toolCallId>.json`. */
   pendingChanges: (waifuId: string) => path.join(lifeDir(waifuId), "pending-changes"),
   maintenance: (waifuId: string) => path.join(lifeDir(waifuId), "maintenance.jsonl"),
+  /** Per conversation, the last transcript line her dreams covered (§18.4). */
+  dreamCursor: (waifuId: string) => path.join(lifeDir(waifuId), "dream-cursor.json"),
   pendingScrubs: (waifuId: string) => path.join(lifeDir(waifuId), "pending-scrubs.json"),
   usage: (waifuId: string) => path.join(lifeDir(waifuId), "usage.json")
 };

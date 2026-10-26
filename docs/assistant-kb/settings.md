@@ -57,8 +57,15 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxSendsPerTurn` | integer 1–50 | `8` | Messages she may send in one turn. |
 | `life.maxWakesPerUserPerHour` | integer 1–200 | `20` | Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line. |
 | `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches may fire per day. |
+| `life.notificationLinesPerPlace` | integer 1–50 | `8` | Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out. |
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |
-| `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of nightly maintenance for a waifu with no sleep window (with one, it runs 30 minutes into her sleep). |
+| `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of her nightly dream (and queued forget scrubs) for a waifu with no sleep window (with one, it runs 30 minutes into her sleep). |
+| `life.restNotice` | boolean | `true` | Near the compaction trigger she gets a rest notice after her turn and writes her own summary; her new epoch starts from it alone (her files stay). Off: compaction summarises for her, as before. |
+| `life.restNoticeRatio` | number 0.5–0.99 | `0.85` | The rest notice comes when her last request reaches this share of the compaction trigger (compaction.triggerRatio × her budget). |
+| `life.restSummaryMinChars` | integer 0–5000 [characters] | `200` | A rest summary shorter than this counts as ignored: compaction summarises for her right away. |
+| `life.dreamModel` | JSON |  | The model of her nightly dream (the memory keeper that adds the day's memories to her notes and checks them against her transcripts): {providerId, modelId, effort?} from GET /api/models (or `provider/model[@effort]` on the command line). Unset (null): her own model. See `waifus help dreaming`. |
+| `life.dreamMaxRounds` | integer 5–200 | `60` | At most this many tool rounds in one dream session. |
+| `life.dreamWindowMaxChars` | integer 20000–2000000 [characters] | `200000` | When what was said since her last dream is longer than this, the dream runs in several sessions (oldest days first), each moving her dream cursor for what it covered. |
 | `life.webFetch.model` | string | `""` | Route for reading long web pages ("" = the cheapest offered route with a key; name a contributor route here to allow one). |
 | `life.webFetch.maxPerWaifuPerDay` | integer 0–500 | `20` | Pages one waifu may fetch per day (0 = no WebFetch). |
 | `life.webFetch.maxPerTurn` | integer 0–20 | `3` | Pages she may fetch in one turn (0 = no WebFetch). |
@@ -239,7 +246,7 @@ CLI: `waifus get remote-access [KEY]`, `waifus set remote-access KEY VALUE`, `wa
 
 ### A waifu's life (`life`)
 
-Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app) and /tmp (files people sent, deleted 7 days after the last write). The files routes list, read, write and delete them under the same checks as her Write tool (places.md refused, the JSON files checked with line and column; revision by content hash, expectedHash). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a watch bound to a DM is redacted the same way.
+Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app), /tmp (files people sent, deleted 7 days after the last write) and the read-only /transcripts (everything said where she is, one file per room per day, kept forever; see `waifus help dreaming`). The files routes list, read, write and delete them under the same checks as her Write tool (places.md refused, the JSON files checked with line and column; revision by content hash, expectedHash). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a watch bound to a DM is redacted the same way.
 
 - `GET /api/waifus/:waifuId/life` — Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally).
 - `GET /api/waifus/:waifuId/life/log` — Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1).
@@ -248,9 +255,9 @@ Each waifu is an autonomous agent with one continuous life: wakes arrive as noti
 - `POST /api/waifus/:waifuId/life/reset` — Reset her short-term memory: a fresh epoch, no summary ({confirm: true}).
 - `GET /api/waifus/:waifuId/life/needs-review` — Forget review lines for the owner.
 - `DELETE /api/waifus/:waifuId/life/needs-review/:itemId` — Dismiss a review line.
-- `GET /api/waifus/:waifuId/files` — List a folder of her home or /tmp (?root=home|tmp&dir; files from private chats are named only with a local includePrivate=1).
-- `GET /api/waifus/:waifuId/files/*` — One of her files: JSON with the text for a text file, ?raw=1 for the bytes (a DM file needs a local includePrivate=1).
-- `PUT /api/waifus/:waifuId/files/*` — Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md refused).
+- `GET /api/waifus/:waifuId/files` — List a folder of her home, /tmp or her read-only /transcripts (?root=home|tmp|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1).
+- `GET /api/waifus/:waifuId/files/*` — One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1).
+- `PUT /api/waifus/:waifuId/files/*` — Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md and /transcripts refused).
 - `DELETE /api/waifus/:waifuId/files/*` — Delete one of her files (?expectedHash).
 - `GET /api/waifus/:waifuId/schedule` — Her reminders (~/schedule.json), parsed.
 - `DELETE /api/waifus/:waifuId/schedule/:reminderId` — Remove one reminder from her schedule.json.
@@ -259,13 +266,26 @@ Each waifu is an autonomous agent with one continuous life: wakes arrive as noti
 
 - `waifus life <waifu> [--log] [--private]`
 - `waifus wake <waifu> [note]`
-- `waifus files <waifu> [path] [--root tmp] [--private]`
+- `waifus files <waifu> [path] [--root tmp|transcripts] [--private]`
 - `waifus schedule <waifu>`
 - `waifus watches <waifu> [--private]`
 
+### Transcripts and dreaming (`dreaming`)
+
+Transcripts: the app writes every message in a room where a waifu is cast, and in her DMs, to one shared store (user/transcripts/), kept forever: only a forget and Discord deletes remove lines. She reads her part as /transcripts/<server>/<room>/<YYYY-MM-DD>.md (threads below their room, her DMs under /transcripts/dm/<name>/) with Read and Bash (grep, cat, python); nothing can write there and SendMessage can't attach it. A waifu added to a room later sees only what was said after she arrived; one removed keeps what she saw. DM transcripts are private (D14): GET /api/waifus/:waifuId/files?root=transcripts lists them as [private chat redacted] and opens them only with a local includePrivate=1. Dreaming: 30 minutes into her sleep (else at life.maintenanceHourLocal), a separate memory keeper with no life log and no persona (life.dreamModel, else her model) reads the dream window, everything said since her last dream (her dream cursor moves only when a dream finishes), adds memories from that window only, and checks every note against it: a note the window contradicts is patched (the newest wins); a note the window does not mention is never changed or deleted for lack of evidence. A long window runs in several sessions (life.dreamWindowMaxChars), oldest days first; each session has at most life.dreamMaxRounds tool rounds. One report line per dream goes to her maintenance.jsonl.
+
+- `GET /api/waifus/:waifuId/files` — List a folder of her home, /tmp or her read-only /transcripts (?root=home|tmp|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1).
+- `GET /api/waifus/:waifuId/files/*` — One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1).
+- `GET /api/config` — The app settings (config.toml).
+- `PUT /api/config` — Change app settings (partial patch).
+
+- `waifus files <waifu> /transcripts [--private]`
+- `waifus set app life.dreamModel anthropic/claude-haiku-5-5`
+- `waifus unset app life.dreamModel`
+
 ### Forget a person (`forget`)
 
-POST /api/people/:userId/forget {confirm: true, dryRun?} deletes the person's DMs with every waifu, removes them from member lists and the archive, and scrubs every life (her summary, queued wakes, her reminders and watches, and every text file in her home, then a verification pass; her downloads of the person's files and copies of them are deleted). A part that fails answers 202 with `pending` and runs again at the next start (given up after 3 tries, with an owner notice). Review lines (names someone else shares) are kept per waifu for the owner.
+POST /api/people/:userId/forget {confirm: true, dryRun?} deletes the person's DMs with every waifu, removes them from member lists and the archive, removes their lines (and the lines naming them) from every transcript and their DM transcripts whole, and scrubs every life (her summary, queued wakes, her reminders and watches, and every text file in her home, then a verification pass; her downloads of the person's files and copies of them are deleted). A part that fails answers 202 with `pending` and runs again at the next start (given up after 3 tries, with an owner notice). Review lines (names someone else shares) are kept per waifu for the owner.
 
 - `POST /api/people/:userId/forget` — Forget a Discord user everywhere ({confirm: true, dryRun?}; 202 with pending parts).
 - `GET /api/people/forget-jobs` — Owner forgets that have not finished, part by part.

@@ -1,15 +1,20 @@
-// The notification block (Living cast spec §4.7, §10.3): one `<notifications>` text block in a
-// user turn, followed by the time line. Wakes for one place merge into one line with their reasons
-// joined; previews are about 60 characters of the triggering message rendered as a transcript body.
+// The notification block (Living cast spec §4.7, §10.3, §20): one `<notifications>` text block in
+// a user turn, followed by the time line. Wakes for one place show one line per message, in message
+// order (each with its own reasons, sender, ref and preview; at most `life.notificationLinesPerPlace`,
+// the newest); previews are about 60 characters of the message rendered as a transcript body.
 // Places are named by her handles (§6.1), the names her tools take.
 
 import { renderDiscordMessage } from "../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../orchestration/context/types.js";
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import type { Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
+import { compareIds } from "../discord/rawMessage.js";
 import { clockText, weekdayTimeText } from "./clock.js";
+import { messagesOf } from "./wakeMessages.js";
 
 export const PREVIEW_CHARS = 60;
+/** At most this many lines per place in one notification block (§20; `life.notificationLinesPerPlace`). */
+export const NOTIFICATION_LINES_PER_PLACE = 8;
 
 /** How each wake reason reads in her notifications (owner-reviewed through the goldens). */
 export const REASON_LABELS: Record<WakeReason, string> = {
@@ -55,6 +60,8 @@ export type NotificationView = {
   /** A message's ref in a place (`a1`), assigned when the notification is rendered (§4.7). */
   ref?(placeKey: string, messageId: string): string | undefined;
   timeZone: string;
+  /** Lines per place (§20); `NOTIFICATION_LINES_PER_PLACE` when absent. */
+  linesPerPlace?: number;
 };
 
 /**
@@ -66,15 +73,82 @@ const quote = (text: string) => `"${text.replace(/"/g, "'").replace(/\s*[\r\n]+\
 /** A person's name as notifications show it: no double quotes and no line breaks (they would shift the quoting). */
 const plainName = (name: string) => name.replace(/"/g, "'").replace(/\s*[\r\n]+\s*/g, " ");
 
+/** How a place's reasons read: a detector wake for all of them, or a chime-in, says so. */
+function labeller(group: readonly Wake[]): (reason: WakeReason) => string {
+  const forAll = group.some((wake) => wake.forAll === true);
+  // Only when every detector wake in the place is a chime-in (a pick of her is the stronger reading).
+  const chimeIn = group.some((wake) => wake.chimeIn === true) && group.every((wake) => wake.reason !== "detector" || wake.chimeIn === true);
+  return (reason) => (reason === "detector" && forAll ? DETECTOR_ALL_LABEL : reason === "detector" && chimeIn ? DETECTOR_CHIME_IN_LABEL : REASON_LABELS[reason]);
+}
+
+type MessageLine = { id: string; fromName?: string; preview: string; reasons: WakeReason[]; matched: string[]; notes: string[] };
+
+const addUnique = <T,>(list: T[], items: readonly T[]) => {
+  for (const item of items) if (!list.includes(item)) list.push(item);
+};
+
+/**
+ * One line per message (§20), in message order: `- <reasons> · <place> · "<match>" · from <name> ·
+ * #<ref> "<preview>" · your note: "<note>"`. The newest `linesPerPlace` are shown; the first line
+ * says how many earlier ones were left out, the last one the unread count when not all are shown.
+ * Reasons that came with no message (rare) go on the first line.
+ */
+function placeLines(group: Wake[], view: NotificationView): string[] {
+  const placeKey = group[0]!.placeKey!;
+  const byId = new Map<string, MessageLine>();
+  const loose = { reasons: [] as WakeReason[], matched: [] as string[], notes: [] as string[] };
+  let earlier = 0;
+  for (const wake of group) {
+    earlier += wake.earlier ?? 0;
+    const messages = messagesOf(wake);
+    if (messages.length === 0) {
+      addUnique(loose.reasons, wake.reasons ?? [wake.reason]);
+      if (wake.matched !== undefined) addUnique(loose.matched, [wake.matched]);
+      if (wake.note && wake.reason !== "owner") addUnique(loose.notes, [wake.note]);
+      continue;
+    }
+    for (const message of messages) {
+      const line = byId.get(message.id) ?? { id: message.id, preview: message.preview, reasons: [], matched: [], notes: [] };
+      if (message.fromName && !line.fromName) line.fromName = message.fromName;
+      if (!line.preview && message.preview) line.preview = message.preview;
+      addUnique(line.reasons, message.reasons);
+      if (message.matched !== undefined) addUnique(line.matched, [message.matched]);
+      if (message.note) addUnique(line.notes, [message.note]);
+      byId.set(message.id, line);
+    }
+  }
+  if (byId.size === 0) return [placeLine(group, view)];
+  const label = labeller(group);
+  const ordered = [...byId.values()].sort((a, b) => compareIds(a.id, b.id));
+  const shown = ordered.slice(-Math.max(1, view.linesPerPlace ?? NOTIFICATION_LINES_PER_PLACE));
+  const hidden = earlier + ordered.length - shown.length;
+  const unread = view.unread(placeKey);
+  return shown.map((line, index) => {
+    const first = index === 0;
+    const reasons = first ? [...loose.reasons] : [];
+    addUnique(reasons, line.reasons);
+    const parts: string[] = [];
+    if (reasons.length > 0) parts.push(reasons.map(label).join(", "));
+    parts.push(view.handle(placeKey));
+    if (first && hidden > 0) parts.push(`+${hidden} earlier`);
+    for (const matched of first ? [...loose.matched, ...line.matched] : line.matched) parts.push(quote(matched));
+    if (line.fromName) parts.push(`from ${plainName(line.fromName)}`);
+    if (index === shown.length - 1 && unread !== undefined && unread > shown.length) parts.push(`${unread} unread`);
+    const ref = view.ref?.(placeKey, line.id);
+    if (line.preview) parts.push(ref ? `#${ref} ${quote(line.preview)}` : quote(line.preview));
+    else if (ref) parts.push(`#${ref}`);
+    for (const note of first ? [...new Set([...loose.notes, ...line.notes])] : line.notes) parts.push(`your note: ${quote(note)}`);
+    return `- ${parts.join(" · ")}`;
+  });
+}
+
+/** A place's wakes that name no message: one line, as before §20. */
 function placeLine(group: Wake[], view: NotificationView): string {
   const first = group[0]!;
   const reasons: WakeReason[] = [];
   for (const wake of group) for (const reason of wake.reasons ?? [wake.reason]) if (!reasons.includes(reason)) reasons.push(reason);
   const latest = group[group.length - 1]!;
-  const forAll = group.some((wake) => wake.forAll === true);
-  // Only when every detector wake in the line is a chime-in (a pick of her is the stronger reading).
-  const chimeIn = group.some((wake) => wake.chimeIn === true) && group.every((wake) => wake.reason !== "detector" || wake.chimeIn === true);
-  const label = (reason: WakeReason) => (reason === "detector" && forAll ? DETECTOR_ALL_LABEL : reason === "detector" && chimeIn ? DETECTOR_CHIME_IN_LABEL : REASON_LABELS[reason]);
+  const label = labeller(group);
   const parts = [reasons.map(label).join(", "), view.handle(first.placeKey!)];
   const watch = group.find((wake) => wake.reason === "watch" || wake.reasons?.includes("watch"));
   if (watch?.matched) parts.push(quote(watch.matched));
@@ -111,7 +185,7 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
   }
 }
 
-/** The lines of one notification block, in arrival order (place wakes merged per place). */
+/** The lines of one notification block: places in arrival order, one line per message within a place. */
 export function notificationLines(wakes: readonly Wake[], view: NotificationView): string[] {
   const groups = new Map<string, Wake[]>();
   const order: Array<{ kind: "place"; key: string } | { kind: "solo"; wake: Wake }> = [];
@@ -128,7 +202,7 @@ export function notificationLines(wakes: readonly Wake[], view: NotificationView
       order.push({ kind: "place", key: wake.placeKey! });
     }
   }
-  return order.flatMap((entry) => (entry.kind === "place" ? [placeLine(groups.get(entry.key)!, view)] : soloLine(entry.wake, view)));
+  return order.flatMap((entry) => (entry.kind === "place" ? placeLines(groups.get(entry.key)!, view) : soloLine(entry.wake, view)));
 }
 
 export function quietLines(quiet: WakeQueue["quiet"], view: NotificationView): string[] {
@@ -186,13 +260,18 @@ export function morningBatch(
     if (item.reason === "reminder") {
       lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
     } else if (item.reason === "watch" || item.reasons?.includes("watch")) {
-      // A DM wake that carried a watch match (§16.5) shows the match here; its DM counts above.
-      const parts = ["watch matched"];
-      if (item.placeKey) parts.push(view.handle(item.placeKey));
-      if (item.matched) parts.push(quote(item.matched));
-      if (item.fromName) parts.push(`from ${plainName(item.fromName)}`);
-      if (item.note) parts.push(`your note: ${quote(item.note)}`);
-      lines.push(`  · ${parts.join(" · ")}`);
+      // A DM wake that carried a watch match (§16.5) shows the match here; its DM counts above. One
+      // line per matching message (§20).
+      const matches = messagesOf(item).filter((message) => message.matched !== undefined || (message.reasons.includes("watch") && message.note !== undefined));
+      const entries = matches.length > 0 ? matches : [{ matched: item.matched, fromName: item.fromName, note: item.note }];
+      for (const entry of entries) {
+        const parts = ["watch matched"];
+        if (item.placeKey) parts.push(view.handle(item.placeKey));
+        if (entry.matched) parts.push(quote(entry.matched));
+        if (entry.fromName) parts.push(`from ${plainName(entry.fromName)}`);
+        if (entry.note) parts.push(`your note: ${quote(entry.note)}`);
+        lines.push(`  · ${parts.join(" · ")}`);
+      }
     } else if (item.reason === "watch_timeout") {
       lines.push(`  · watch timed out (${weekdayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
     } else if (item.reason === "followup") {

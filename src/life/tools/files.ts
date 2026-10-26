@@ -18,7 +18,8 @@ import { checkEnvFor, homeStoreFor } from "../home/index.js";
 import { HomeError, isTextBytes, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
-import { pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
+import { herSlug, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
+import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
 import { imageSize } from "../bash/imageCommand.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
@@ -34,6 +35,47 @@ const OCR_TIMEOUT_MS = 4_000;
 
 export function storeOf(ctx: Pick<ToolContext, "deps" | "waifu">): HomeStore {
   return homeStoreFor(ctx.deps, ctx.waifu);
+}
+
+/** Her `/transcripts` for one call (spec §18.3). */
+export function transcriptViewOf(ctx: Pick<ToolContext, "deps" | "waifu">): TranscriptView {
+  return new TranscriptView({ storage: ctx.deps.storage, waifuId: ctx.waifu.id, timeZone: ctx.deps.timeZone, now: ctx.deps.now });
+}
+
+/** The `/transcripts` segments of a path she gave, if it is there. */
+function transcriptsArg(ctx: Pick<ToolContext, "deps" | "waifu">, input: string): string[] | undefined {
+  return transcriptsSegments(input, herSlug(ctx.waifu));
+}
+
+/** Read of a transcript day file (rendered from the store; a private chat's is a DM call, D14). */
+async function readTranscript(ctx: ToolContext, segments: string[], offset: number, limit: number): Promise<ToolOutput> {
+  const view = transcriptViewOf(ctx);
+  const display = transcriptsVirtual(segments);
+  if (await view.isPrivate(segments)) notePlace((await view.conversationOf(segments))?.key ?? "dm_file");
+  const stat = await view.stat(segments);
+  if (!stat) return toolError(`${display} doesn't exist`);
+  if (stat.kind === "dir") return toolError(`${display} is a folder; list it with Bash (ls ${display})`);
+  const text = (await view.read(segments)) ?? "";
+  if (await view.isPrivate(segments)) {
+    const placeKey = (await view.conversationOf(segments))?.key ?? "dm_file";
+    rememberTranscriptText(ctx, Buffer.from(text, "utf8"), placeKey);
+  }
+  return { content: capReadOutput(numbered(text, offset, limit), "offset and limit") };
+}
+
+/** A private chat's transcript text she was shown this turn (§18.3, D14). */
+export function rememberTranscriptText(ctx: Pick<ToolContext, "turn">, data: Uint8Array, placeKey: string): void {
+  const sha = sha256(data);
+  ctx.turn.transcriptTexts ??= new Map();
+  ctx.turn.transcriptTexts.set(sha, { sha256: sha, size: data.length, placeKey });
+}
+
+/** A file she just wrote whose bytes are a private chat's transcript she was shown keeps its DM origin. */
+async function keepTranscriptOrigin(ctx: ToolContext, store: HomeStore, p: HerPath, hash: string): Promise<void> {
+  const text = ctx.turn.transcriptTexts?.get(hash);
+  if (!text) return;
+  await store.recordTranscriptCopies([{ path: p, sha256: text.sha256, size: text.size, placeKey: text.placeKey }], ctx.deps.now());
+  notePlace(text.placeKey);
 }
 
 /**
@@ -183,6 +225,8 @@ async function readPdf(ctx: ToolContext, p: HerPath, data: Buffer, pages: string
 async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(ReadInput, input);
   if (!parsed.ok) return parsed.output;
+  const transcript = transcriptsArg(ctx, parsed.value.file_path);
+  if (transcript) return readTranscript(ctx, transcript, parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -222,6 +266,7 @@ const WriteInput = z.object({ file_path: z.string().min(1).max(2000), content: z
 async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(WriteInput, input);
   if (!parsed.ok) return parsed.output;
+  if (transcriptsArg(ctx, parsed.value.file_path)) return toolError(TRANSCRIPTS_READ_ONLY);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -246,6 +291,7 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   try {
     const result = await store.writeText(target.path, parsed.value.content, checkEnvFor(ctx.deps, ctx.waifu.id), guard);
     if (special) rememberRead(ctx, result.path, result.hash);
+    await keepTranscriptOrigin(ctx, store, result.path, result.hash);
     await noteDmFile(store, result.path);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
     return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}` };
@@ -266,6 +312,7 @@ const EditInput = z.object({
 async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(EditInput, input);
   if (!parsed.ok) return parsed.output;
+  if (transcriptsArg(ctx, parsed.value.file_path)) return toolError(TRANSCRIPTS_READ_ONLY);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -276,6 +323,7 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     // Her view of the file now includes her edit (an earlier stale Read stays stale).
     const key = pathKey(target.path.virtual);
     if (specialJsonFile(target.path) && ctx.turn.readHashes?.has(key)) rememberRead(ctx, target.path, result.hash);
+    await keepTranscriptOrigin(ctx, store, target.path, result.hash);
     const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
     return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}` };
@@ -291,7 +339,7 @@ export const fileTools: LifeTool[] = [
   {
     name: "Read",
     description:
-      "Read a file from your folders. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you; when they can't be, you get any text in them. PDFs come back as text with page markers (the first 20 pages; use pages for others).",
+      "Read a file from your folders or /transcripts. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you; when they can't be, you get any text in them. PDFs come back as text with page markers (the first 20 pages; use pages for others).",
     inputSchema: {
       type: "object",
       properties: {

@@ -1,6 +1,7 @@
 === 0 user ===
 --- text ---
 <notifications>
+- dm · dm/kevin · from Kevin · #a0 "hey ella"
 - dm · dm/kevin · from Kevin · #a1 "my exam got moved to friday, i'm so nervous"
 </notifications>
 --- text ---

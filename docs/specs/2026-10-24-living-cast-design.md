@@ -2467,6 +2467,131 @@ Settings → Life shows the dream model with the ModelPicker ("Dream model — d
 A feature release (3.2.0). No migration of data beyond creating the store; maintenance's old
 instruction is replaced.
 
+### 18.9 As built (2026-10-26)
+
+Every choice §18 left open, and every place where the build differs from the text above. The code
+(`src/life/transcripts/`, `src/life/dream.ts`) is the authority for exact strings; the goldens show
+the changed prompt and tool texts (`life-system-prompt.txt`) and a dream session (`life-dream.txt`,
+which replaces `life-maintenance.txt`).
+
+**The lazy mount (§18.3).** just-bash takes any `IFileSystem`, and her Bash already runs over the
+app's own guarded one (`bashWorker.ts`), so `/transcripts` is routed there: `stat`, `exists`,
+`readdir`, `readFile*` and `realpath` under `/transcripts` ask the host over the worker's message
+port (`{type: "transcripts", op: stat|list|read}`); the host answers from a `TranscriptView` built
+for the call (`runner.ts`), which reads the folder list once and renders a day file only when it
+is stat'ed or read (16 rendered days kept for the call). Nothing is copied into the worker's
+in-memory filesystem, so a command pays only for the days it opens (a test runs `ls`/`head` over
+120 days of a 10 MB store well inside time and memory bounds). CPython sees the same mount through
+just-bash's filesystem bridge (`os.listdir('/')` is `['home', 'tmp', 'transcripts']`). Every write,
+`rm`, `mv`, `mkdir`, `touch`, `chmod` and redirection there fails with `EROFS: transcripts are
+read-only` (the shell prints `<path>: transcripts are read-only`); `cp` *out of* `/transcripts`
+into her folders works (a quote she keeps becomes her file). `Read` renders the same view; `Write`
+and `Edit` answer `error: transcripts are read-only`; `SendMessage` lists a transcript path as
+`(transcripts can't be attached)`. `/transcripts` always exists (empty until she has a transcript).
+A copy keeps a DM's privacy (D14): the runner records, uncapped, every private chat whose
+transcript a command touched (the call is a DM call) and the sha256 of every private day it served;
+a file the command saves with exactly those bytes gets a `files-index.json` entry with the DM's
+key (`attachmentId: "transcript"`), as does a `Write`/`Edit` whose result equals a private day she
+was shown this turn (by `Read` or `Bash`). Such a file counts as from the DM like a DM download,
+and `SendMessage` refuses it (`a copy of a private chat's transcript can't be attached`). A file
+she changed afterwards (an excerpt, her own words) no longer matches and is hers.
+
+**The store (§18.2).**
+- Writes: a line that sorts after the day's last line is *appended* (the common case, so a busy
+  room does not rewrite its day file per message); edits, deletes, out-of-order gap fills and every
+  forget rewrite the day atomically. This differs from "atomic per day file": a crash mid-append can
+  leave a torn last line, which readers skip, the next append starts on a new line after, and the
+  next rewrite drops. An in-memory cache per conversation (512 conversations; its meta and, for the
+  4 most recent days, the ids and last line), checked against each file's size and mtime, makes an
+  append one `stat` and no parse.
+- `store.json` `startedAt` is written when the cast first starts: no line older than it is ever
+  written (no backfill), and the first dream's window starts there.
+- A room is written only while some waifu is cast in it (`castOf`, threads inheriting). Before each
+  write the writer compares the cast with what it last saw for that room (read from the access
+  files once per process) and opens or closes intervals; boot reconciles every room. A live message
+  opens an interval no later than its own time (it was sent before it arrived); a REST page opens
+  one at now. An interval closes at the oldest message of the event that showed the change, and
+  at boot just after the room's newest stored line (the removal happened while the app was down,
+  at a time nobody knows), so a catch-up never shows a removed waifu what was said after she left.
+  There is no timer: a cast change shows in the access files with the room's next message.
+- DMs are not listed in the access files: a DM is visible whole to the waifu whose DM it is, and to
+  nobody else.
+- REST pages reach the writer as a new cache event, `page` (catch-up, tail checks, older pages),
+  with the forget floor already applied; a stale page cannot bring back an id a forget removed
+  (`meta.json` `removed`, kept for good) or a Discord delete removed in the last day (`deleted`, id →
+  time, pruned after `DELETED_MEMORY_MS`). A DM forget floor keeps the remembered ids above it. An
+  edit replaces only a line the store has; it is marked edited when the message has `editedAt` (or
+  the line already was), and an update that changes nothing (an embed unfurl, a pin) writes nothing.
+- A forgotten person's messages from before their forget are never written (the forget records,
+  as for ReadMessages), nor anyone's line from before it that mentions them by id (`mentions`, or
+  the id in the text); the forget paths make the writer read the records again
+  (`TranscriptWriter.noteForget`). The records hold no names, so a late gap fill of a message that
+  names them only by name is kept (the forget's own scrub removed every such line the store had).
+  With unreadable records a gap fill waits and live messages are written.
+- Line fields: `id`, `at`, `authorId`, `author` (her config name for a waifu), `waifu?`, `reply?`
+  (an id), `text` (mentions as `@Name`, custom emoji as `:name:`, no attachment lines), `files?`,
+  `edited?`, `mentions?` (user ids, for forget).
+
+**Rendering.** A day file starts with `# <handle> · Sat 24 Oct 2026`; a line is `HH:MM Name: text
+[file: a.png]` plus ` (edited)`; a reply shows `↩#ref` when the conversation's ref table has one for
+the target, else `↩<the target's author>` when the target is that day, else `↩`. A message's later
+lines continue indented by two spaces (each stays greppable). Folders follow her handles
+(`handles.json`), with `server-xxxx/channel-xxxx` (or `dm/user-xxxx`) for a conversation she has no
+handle for. `ls` (readdir) and the dashboard's listing report the stored day file's size (no day
+is rendered to list a folder); `stat` and a read the rendered size. A view reads each
+conversation's refs once.
+
+**Dreaming (§18.4).**
+- The system block is the spec's text plus `In /transcripts (read-only) her own lines are written as
+  "you".`; the opening message is the instruction (`DREAM_INSTRUCTION`), `Her files: …`, the window
+  (`The dream window starts <day time>. Read these transcript files (N lines in all):` and one line
+  per file with `the whole file` or `from line N on, after the HH:MM line` and its line count: a
+  line number as `Read` numbers the rendered file, since several lines can share a minute) and her
+  time line.
+- Sessions split by whole day files (oldest first); one day larger than `life.dreamWindowMaxChars`
+  is a session of its own. A session that is not the last says the rest comes later.
+- An empty window calls no model: the report line says `nothing new since the last dream`. An
+  aborted dream is not reported (it runs again; sessions that finished keep their cursor).
+- The report line is `kind: "maintenance"` with `dream: true`, `windowStart`, `conversations`,
+  `lines`, `sessions`, `rounds`, `changed`, `summary`.
+- `life.dreamModel` that is no longer offered falls back to her model; its `effort` is used with it,
+  her own `effort` with hers. `PUT /api/config` checks a changed `life.dreamModel` like every model
+  choice (400 `model_not_available` / `unsupported_effort`); `null` unsets it. Settings → Life has a
+  "Dreaming" section (the ModelPicker) and a "Dreaming limits" form.
+- The forget's notes scrub keeps its old session (her identity and persona, 30 rounds).
+- Nightly maintenance dreams with `life.dreamModel` even when her own model is unavailable; a
+  pending forget scrub needs her own model, so while one waits, neither runs.
+
+**Forget (§18.5).** The owner's job part `transcripts` runs after `archive` (before
+`record-copies`); by then the `dms` part has already removed the DM transcripts at the floor
+(`dmForget` does it for every DM forget), so the part counts the room lines it removed
+(`transcriptLines` in the response). Removal by name uses the unique, non-weak names with word
+boundaries (§7.5 "removable"); a shared name removes nothing here. A line's text names them by a
+whole word; its author only by the whole name ("Kevin's Mom" is not Kevin). A DM `/forget everything`
+removes the person's room lines in step 3 of her scrub, so a rate-limited one does it at her
+nightly maintenance (its DM transcript goes at once, with the DM data). Her dream cursor drops the
+DM's entry on every forget of it.
+
+**Prompt.** `<life>` gains the sentence in §18.3; `Read`'s description says "from your folders or
+/transcripts" and `Bash`'s says `/transcripts can be read and searched but not changed` (both in
+the harness hash: each life's first turn after the upgrade starts with a configuration-change
+compaction, as for any harness change).
+
+**API, CLI.** `HER_ROOTS` gains `transcripts`; its listing has no `usage`; `/transcripts/dm` and a
+DM transcript need a local `includePrivate=1` (403 `PrivateContentLocalOnly` otherwise, always over
+Remote Access and for the assistant), and a DM entry is listed as `[private chat redacted]`;
+`PUT`/`DELETE` there answer 400 `ReadOnlyFile`. `waifus files <waifu> /transcripts` (or `--root
+transcripts`) lists and prints them; `waifus help dreaming` is a resource topic. The assistant's
+`list_files` takes `root: transcripts`.
+
+**Known limitations.**
+- Days are the host's local days when a line is written. After a host time zone change, lines
+  written near midnight before it stay in the day file of the old zone, so a day file can hold a
+  few lines another zone would put in the next or previous day (each line keeps its exact time).
+- The dream cursor is per conversation (time and id of the last line covered). A gap fill that
+  lands behind it later (a REST catch-up of older messages) and an edit of a line behind it are
+  not dreamed again; the lines are in `/transcripts` for her to grep.
+
 ## 19. She summarises herself before her memory fills (owner request, 2026-10-26)
 
 Today compaction (§5.4, §5.6) happens to her: at the trigger, a separate call asks her model for a
@@ -2539,6 +2664,42 @@ turn, not mid-turn, and before queued wakes; refused tools in the rest turn; acc
 epoch with only the summary; short/empty/failed → auto-compaction; off switch; cache prefix
 unchanged in the rest turn (cache simulation); goldens for the notice and the new epoch's opening.
 
+### 19.6 As built (2026-10-26)
+
+- `Life.restTurn` in `src/life/lifeLoop.ts`. `restDue` holds when `life.restNotice` is on, the epoch
+  is running (no pending epoch start), compaction is not backing off, no rest turn was had in this
+  epoch (`state.restTurn`), and `lastRequestTokens` is at least `restNoticeRatio` × the trigger and
+  below it (at the trigger, compaction runs as before). A turn that ends with a rest due returns
+  "again", and the next cycle runs the rest turn after `prepareEpoch` and before `peekImmediate`, so
+  queued wakes stay in the queue (the idle check counts a due rest too).
+- The notice is a `notifications` line (the spec's text, then her time line). It takes no wakes and
+  folds none in mid-turn. Refused tools get the error result `REST_REFUSED_RESULT`; their
+  `appendIntent` never runs.
+- The summary goes into block B's `<life_so_far>` as `[your summary before the reset]\n<text>`,
+  not into a log line: "only that summary" means an epoch log that starts empty, and her first
+  notifications open it. `lastCompaction` is `{ reason: "rest", summarized: true }`, and the
+  boundary line's reason is `rest` (Life: "rested (her own summary)").
+- Ignored (the turn ended other than `done`, or the text is shorter than `restSummaryMinChars`):
+  `compact(..., "tokens", { openTurnId: <rest turn> })`. The summary call sees the rest turn (it is
+  part of the log), but the rest turn is never one of the kept turns. If that summary fails, the
+  usual fallback (truncation, `compactionPausedUntil`) applies.
+- Interrupted rest turn: nothing is recorded and it runs again at the next cycle. Once a rest turn
+  has ended, `state.restTurn = { epoch, turnId }` is set before compaction, so an interrupted
+  compaction is retried by `prepareEpoch` at the next cycle (still leaving that turn out) rather
+  than asking her again. At most one rest notice per epoch.
+- A provider overflow in the rest turn goes down the mid-turn compaction path (§5.6), and that path
+  ends the turn.
+- Compaction never keeps a rest turn (`restTurnIds`: a turn opened by the notice), finished or
+  interrupted, so the notice never reaches the next epoch.
+- Her text in a rest turn is her summary: the owner's views hide it like `<life_so_far>` unless a
+  local request asks for private content (`scanDmContent` `restTurns`; the dashboard log, `/print
+  life`, Remote Access and the assistant).
+- Tests: `tests/lifeRest.test.ts` (order against the running turn and queued wakes, refused tools,
+  accepted, too short, failed, interrupted turn, interrupted compaction, switch off, warning
+  dropped), the cache simulation `tests/eval/cacheHit.test.ts` ("the rest turn": same tools and
+  system, at least 90% of the rest request read from cache), goldens `life-rest-notice.txt` and
+  `life-rest-epoch.txt`.
+
 ## 20. One notification line per message (owner request, 2026-10-26)
 
 A burst (§4.2 holds) or several queued wakes for one place are still **one wake** (guards, the
@@ -2561,3 +2722,38 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 - Mid-turn folding (§4.2) and the morning batch use the same per-message lines.
 - D14 redaction of DM lines works per line, as today. Goldens for the DM burst, the room burst and a
   folded mid-turn arrival.
+
+### 20.1 As built (2026-10-26)
+
+- A wake carries `messages` (`WakeMessageSchema`: id, author id and name, preview, own `reasons`,
+  `matched`, `note`), oldest first, at most `MAX_WAKE_MESSAGES` (50) kept with an `earlier` count
+  for the rest (`src/life/wakeMessages.ts`). The wake's own fields (`messageId`, `preview`,
+  `fromName`, `reasons`) stay as before for everything else that reads them (the unsent-reply
+  check, the dashboard queue, forget).
+- Held room bursts (`Intake.mergeHeld`) keep every message of the burst, everyone's: a message's
+  `reasons` are the ones it gave her (a mention drops her name on the same message); a message
+  that gave her none has `reasons: []` and its line has **no reason label** (`- bake-club/#general ·
+  from Mina · #a1 "…"`), so a line never claims a mention that was someone else's message. This
+  reads "each line has its reason label" as "its own reason, when it has one".
+- Detector wakes carry the burst's messages without per-message reasons, so every line reads as the
+  pick (`maybe for you`, `for all of you`, the chime-in label).
+- DM bursts (`Intake.fireDm`): every message is fetched and previewed; the first watch matching a
+  message rides on that message's line (`dm, watch · … · "match" · … · your note`), further watches
+  on the same message route as `watch` wakes with that message's id and join its line.
+- Rendering (`notifications.ts` `placeLines`): the wakes of one place are joined by message id
+  (reasons, matches and notes merged), sorted by id, the newest `linesPerPlace` shown; reasons of a
+  place wake that names no message go on the first line; a place with no message at all keeps the
+  old single line. The `N unread` count is on the last line only when unread > lines shown. Every
+  line's message gets its ref (`Life.notificationView` assigns refs for all of them).
+- The wake queue's merge past its cap (`mergeInto`) joins both wakes' messages; a forget scrub drops
+  the person's messages from someone else's wake and replaces a preview or note naming them with
+  `(removed)`.
+- D14: the DM line pattern also matches a line that starts with the DM handle (no reason label),
+  so each line is redacted on its own.
+- Morning batch: a deferred DM wake with watch matches lists one `watch matched` line per matching
+  message.
+- `life.notificationLinesPerPlace` (1–50, default 8) is in the registry and Settings → Life
+  ("Wakes").
+- Tests: `tests/lifeNotificationLines.test.ts`; goldens `life-dm-wake.txt` (the DM burst now shows
+  both messages), `life-room-burst.txt` (new) and `life-mid-turn.txt` (the folded arrival is now two
+  messages from Mina, one line each).

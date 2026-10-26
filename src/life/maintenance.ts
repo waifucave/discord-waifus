@@ -1,7 +1,8 @@
-// Nightly maintenance (Living cast spec §7.3, §16.8) and the notes-scrub session of a forget (§7.5
-// step 4): a separate short session, not her life log — her model, her identity and persona, an
-// instruction, only her file tools (Read, Write, Edit, Bash; no messaging, no web), purpose
-// `maintenance`, at most 30 tool rounds. One report line goes to `maintenance.jsonl`.
+// Sessions outside her life (Living cast spec §7.3, §16.8, §18.4): nightly dreaming (`dream.ts`) and
+// the notes-scrub session of a forget (§7.5 step 4). Each is a separate short session, never her life
+// log: an instruction, only her file tools (Read, Write, Edit, Bash with /transcripts read-only; no
+// messaging, no web), purpose `maintenance`. The scrub session keeps her identity and persona; the
+// dream is a memory keeper with neither (T3).
 
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { CuratedModel } from "../models/catalog.js";
@@ -11,24 +12,21 @@ import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { homeStoreFor } from "./home/index.js";
 import { PLACES_FILE } from "./home/pathRules.js";
-import { appendMaintenanceReport } from "./lifeStore.js";
 import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
 
+/** A forget's notes scrub: at most this many tool rounds. */
 export const MAINTENANCE_MAX_ROUNDS = 30;
 
 /** The session's opening file listing names at most this many files. */
 export const MAINTENANCE_LISTING_MAX = 200;
-
-export const MAINTENANCE_INSTRUCTION =
-  "[system] It's quiet; time to tidy your home. Resolve contradictions in your notes (the newest fact wins), merge duplicates, merge or delete notes that are stale, fix broken links in MEMORY.md and keep it short: one line per note, well under 200 lines. Remove reminders and watches you no longer need from schedule.json and watches.json; edit those two carefully: a broken file is refused with the line and column. /tmp cleans itself. When you're done, reply with one short line saying what you changed.";
 
 export function scrubInstruction(o: { userId: string; names: readonly string[] }): string {
   const who = o.names.length > 0 ? `${o.names.map((name) => `"${name}"`).join(", ")} (<@${o.userId}>)` : `<@${o.userId}>`;
   return `[system] Someone asked to be forgotten: ${who}. Remove everything about them from your home: delete notes that are about them, remove every line and sentence that mentions them from your other files, and update MEMORY.md. Keep no trace of them, not even that they asked. When you're done, reply with one short line saying what you changed.`;
 }
 
-/** System block of a maintenance session: who she is, without the life harness. */
+/** System block of a forget's notes scrub: who she is, without the life harness. */
 export function maintenanceSystem(waifu: WaifuConfig): string {
   const parts = [
     `<maintenance>\nYou are ${waifu.name}, looking after your own folder, your home: your notes are real files only you write. MEMORY.md is your index, one short line per note with a link to the details. Nobody else sees this session.\n</maintenance>`
@@ -45,45 +43,51 @@ export type MaintenanceOutcome = {
   error?: string;
 };
 
-/** One session over her home; never throws for model failures (the outcome says so). */
-export async function runNotesSession(
-  deps: LifeDeps,
-  o: { waifu: WaifuConfig; model: CuratedModel; instruction: string; signal?: AbortSignal; kind: "maintenance" | "scrub" }
-): Promise<MaintenanceOutcome> {
-  const store = homeStoreFor(deps, o.waifu);
-  const before = new Map(await store.readAllText());
-  // Every file of her home (pictures and large files too), the first MAINTENANCE_LISTING_MAX by name.
+/** `Your files: ~/a.md, ~/b.md` (every file of her home, pictures too, the first 200 by name). */
+export async function homeListing(deps: LifeDeps, waifu: WaifuConfig, o: { possessive?: string } = {}): Promise<string> {
+  const store = homeStoreFor(deps, waifu);
   const all = (await store.files.walk("home").catch(() => [])).filter((entry) => entry.kind === "file").map((entry) => entry.path.segments.join("/")).sort();
   const listing = all.slice(0, MAINTENANCE_LISTING_MAX);
   const more = all.length - listing.length;
+  const whose = o.possessive ?? "Your";
+  return listing.length > 0
+    ? `${whose} files: ${listing.map((name) => `~/${name}`).join(", ")}${more > 0 ? `, … and ${more} more; use \`ls -R\`` : ""}`
+    : `${whose === "Your" ? "Your" : whose} home is empty.`;
+}
+
+/** One session over her home with her file tools; never throws for model failures (the outcome says so). */
+export async function runSession(
+  deps: LifeDeps,
+  o: {
+    waifu: WaifuConfig;
+    model: CuratedModel;
+    system: string;
+    /** The opening message's text blocks. */
+    opening: string[];
+    maxRounds: number;
+    effort?: string;
+    signal?: AbortSignal;
+    kind: "maintenance" | "scrub" | "dream";
+  }
+): Promise<MaintenanceOutcome> {
+  const store = homeStoreFor(deps, o.waifu);
+  const before = new Map(await store.readAllText());
   const toolNames = maintenanceToolNames(deps.config());
-  const messages: ProviderMessageLike[] = [
-    {
-      role: "user",
-      content: [
-        { type: "text", text: o.instruction },
-        {
-          type: "text",
-          text: listing.length > 0 ? `Your files: ${listing.map((name) => `~/${name}`).join(", ")}${more > 0 ? `, … and ${more} more; use \`ls -R\`` : ""}` : "Your home is empty."
-        },
-        { type: "text", text: timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability }) }
-      ]
-    }
-  ];
+  const messages: ProviderMessageLike[] = [{ role: "user", content: o.opening.map((text) => ({ type: "text" as const, text })) }];
   const tools = modelTools(toolNames, deps.config());
   // One scratch for the whole session (a Read earlier in it lets a later Write replace a special file).
   const turn = { id: `${o.kind}-${deps.now().getTime()}`, sentPlaces: new Set<string>(), dmUsersSent: new Set<string>(), fetches: 0 };
   let rounds = 0;
   let summary = "";
   try {
-    for (; rounds < MAINTENANCE_MAX_ROUNDS; ) {
+    for (; rounds < o.maxRounds; ) {
       const result = await deps.models.call({
         route: { providerId: o.model.providerId, modelId: o.model.modelId },
-        system: [maintenanceSystem(o.waifu)],
+        system: [o.system],
         messages,
         tools,
-        ...(o.waifu.model?.effort ? { effort: o.waifu.model.effort } : {}),
-        cacheKey: `maintenance:${o.waifu.id}`,
+        ...(o.effort ? { effort: o.effort } : {}),
+        cacheKey: `${o.kind === "dream" ? "dream" : "maintenance"}:${o.waifu.id}`,
         ...(o.signal ? { signal: o.signal } : {}),
         attribution: { purpose: "maintenance", waifuId: o.waifu.id }
       });
@@ -129,24 +133,25 @@ export async function runNotesSession(
   return { rounds, changed: changedPaths(before, after), summary: summary.slice(0, 500), ok: true };
 }
 
+/** A forget's notes scrub session (her identity and persona, her files listed, her clock). */
+export async function runNotesSession(
+  deps: LifeDeps,
+  o: { waifu: WaifuConfig; model: CuratedModel; instruction: string; signal?: AbortSignal; kind: "maintenance" | "scrub" }
+): Promise<MaintenanceOutcome> {
+  return runSession(deps, {
+    waifu: o.waifu,
+    model: o.model,
+    system: maintenanceSystem(o.waifu),
+    opening: [o.instruction, await homeListing(deps, o.waifu), timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability })],
+    maxRounds: MAINTENANCE_MAX_ROUNDS,
+    ...(o.waifu.model?.effort ? { effort: o.waifu.model.effort } : {}),
+    ...(o.signal ? { signal: o.signal } : {}),
+    kind: o.kind
+  });
+}
+
 /** What she changed: places.md is the app's to rewrite (she can't), so a refresh during the session isn't hers. */
 function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
   return [...paths].filter((path) => path !== PLACES_FILE && before.get(path) !== after.get(path)).sort();
-}
-
-/** The nightly session plus its report line. */
-export async function runMaintenance(deps: LifeDeps, o: { waifu: WaifuConfig; model: CuratedModel; signal?: AbortSignal }): Promise<MaintenanceOutcome> {
-  const outcome = await runNotesSession(deps, { ...o, instruction: MAINTENANCE_INSTRUCTION, kind: "maintenance" });
-  await appendMaintenanceReport(deps.storage, o.waifu.id, {
-    at: deps.now().toISOString(),
-    kind: "maintenance",
-    ok: outcome.ok,
-    rounds: outcome.rounds,
-    changed: outcome.changed,
-    summary: outcome.summary,
-    ...(outcome.error ? { error: outcome.error } : {})
-  });
-  deps.logger.info("Life maintenance ran", { category: "life", waifuId: o.waifu.id, ok: outcome.ok, rounds: outcome.rounds, changed: outcome.changed.length });
-  return outcome;
 }

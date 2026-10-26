@@ -1,16 +1,17 @@
 // Goldens for owner review (Living cast spec §12, §16.12): the system prompt and tools, a wake turn
 // (notification → read → send), a DM wake, a turn that downloads and reads an image, a Bash call, a
-// watch timeout, a `morning` batch, a maintenance session, a compaction request, the detector state
+// watch timeout, a `morning` batch, a dream session, a compaction request, the detector state
 // and the WebFetch digest prompt. Deterministic (fixed clock, fake Discord, scripted winter fakes);
 // each file is the request as the model would see it.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectorQuestion } from "../../src/life/detector/decider.js";
-import { updateLifeState } from "../../src/life/lifeStore.js";
+import { readLifeState, updateLifeState } from "../../src/life/lifeStore.js";
+import { lifeBudget } from "../../src/life/request.js";
 import { buildWebFetchDigestRequest } from "../../src/life/web/index.js";
 import { writeWaifuConfig } from "../lifeFixtures.js";
 import { textTurn } from "../modelFakes.js";
 import { FakeImageFetcher } from "../contextFixtures.js";
-import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, script, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, script, seedTranscript, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
 import { removeTempRoot } from "../testUtils.js";
 import { serializeMessages, serializeRequest, serializeSystem, serializeTools } from "./serialize.js";
 
@@ -68,9 +69,12 @@ describe("Living cast goldens", () => {
       waifus: [ELLA],
       scripts: [
         async function* () {
-          // Mina pings her while she reads; her burst fires before the read's result comes back.
+          // Mina pings her twice while she reads; her burst fires before the read's result comes back
+          // and folds in one line per message (§20).
           const ping = w.discord.post(ROOM, `<@${ELLA_BOT}> can you bring the piping bags too?`, { authorId: MINA_USER, authorName: "Mina", mentions: { [ELLA_BOT]: "Ella" } });
           await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: ping });
+          const more = w.discord.post(ROOM, "and the sprinkles, the rainbow ones", { authorId: MINA_USER, authorName: "Mina" });
+          await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: more.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: more });
           w.cast.intake.flushDetector();
           await w.cast.intake.settle();
           yield* toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]);
@@ -84,6 +88,27 @@ describe("Living cast goldens", () => {
     await w.cast.life("ella").runNow();
     const second = w.anthropic.calls[1]!.request;
     await expect(serializeMessages(second.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-mid-turn.txt");
+  });
+
+  it("a room burst: one line per message (§20)", async () => {
+    const w = await lifeWorld(roots, { waifus: [ELLA], scripts: script(textTurn("(nothing to send yet)")) });
+    await seedNotes(w);
+    const burst: Array<[string, string, string, Record<string, string>?]> = [
+      [KEVIN, "Kevin", "ok who is on dessert this time"],
+      [MINA_USER, "Mina", "not me, i'm on the oven"],
+      [KEVIN, "Kevin", `<@${ELLA_BOT}> are you coming saturday?`, { [ELLA_BOT]: "Ella" }],
+      [KEVIN, "Kevin", "we need someone on dessert"]
+    ];
+    for (const [authorId, authorName, text, mentions] of burst) {
+      const message = w.discord.post(ROOM, text, { authorId, authorName, ...(mentions ? { mentions } : {}) });
+      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
+    }
+    await w.cast.settle();
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
+    await w.cast.life("ella").runNow();
+    const first = w.anthropic.calls[0]!.request;
+    await expect(serializeMessages(first.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-room-burst.txt");
   });
 
   it("a DM wake", async () => {
@@ -102,6 +127,7 @@ describe("Living cast goldens", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await w.cast.life("ella").runNow();
+    // A DM burst: one line per message (§20).
     const last = w.anthropic.calls[2]!.request;
     await expect(serializeMessages(last.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-dm-wake.txt");
   });
@@ -133,15 +159,43 @@ describe("Living cast goldens", () => {
     await expect(serializeMessages(first.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-morning.txt");
   });
 
-  it("a maintenance session", async () => {
+  it("a dream session (§18.4)", async () => {
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
-      scripts: script(toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }]), textTurn("merged the Kevin lines"))
+      scripts: script(toolTurn([{ name: "Bash", input: { command: "cat /transcripts/bake-club/general/2026-10-24.md" } }]), textTurn("Kevin's exam moved to Monday"))
     });
     await seedNotes(w);
+    await seedTranscript(w, [
+      { text: "my exam got moved to monday :(", minutesAgo: 30 },
+      { text: "noooo, more time to study at least", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 29 }
+    ]);
     await w.cast.scheduler.tick();
     const request = w.anthropic.calls[1]!.request;
-    await expect(serializeRequest(request)).toMatchFileSnapshot("./__snapshots__/life-maintenance.txt");
+    await expect(serializeRequest(request)).toMatchFileSnapshot("./__snapshots__/life-dream.txt");
+  });
+
+  it("the rest notice and the epoch her own summary opens (§19)", async () => {
+    const summary = "Bake Club #general, Sat 24 Oct around 14:00: Kevin asked if I'm coming Saturday and said they need someone on dessert. I said yes and that I'm bringing lemon tarts. Mina was preheating the oven. Nothing else open; I want to check the lemon supply before Saturday.";
+    const w = await lifeWorld(roots, {
+      waifus: [ELLA],
+      scripts: [...wakeTurn(), () => toolTurn([{ name: "Write", input: { file_path: "~/places/bake-club.md", content: "# Bake Club\n- Saturday bake sale: I'm on dessert (lemon tarts)\n" } }]), () => textTurn(summary), () => textTurn("(nothing to send)")]
+    });
+    await seedNotes(w);
+    await mention(w, "are you coming saturday? we need someone on dessert");
+    await w.cast.life("ella").runNow();
+    // Her last request reached 0.9 of the compaction trigger: the rest notice is due (§19.2).
+    const route = (await readLifeState(w.storage, "ella")).modelRoute!;
+    const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === route.providerId && entry.modelId === route.modelId)!;
+    const tokens = Math.round(0.9 * w.config.compaction.triggerRatio * lifeBudget(model, w.config.life.maxContextTokens));
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastRequestTokens: tokens }));
+    await w.cast.life("ella").runNow();
+    const rest = w.anthropic.calls[3]!.request;
+    const before = w.anthropic.calls[2]!.request.messages.length;
+    await expect(`(system, tools and the turns before: see life-system-prompt.txt and life-wake-turn.txt; ${before} earlier messages)\n${serializeMessages(rest.messages, before)}\n`).toMatchFileSnapshot("./__snapshots__/life-rest-notice.txt");
+    await mention(w, "did you get lemons?");
+    await w.cast.life("ella").runNow();
+    const opening = w.anthropic.calls[5]!.request;
+    await expect(serializeRequest(opening, { tools: false })).toMatchFileSnapshot("./__snapshots__/life-rest-epoch.txt");
   });
 
   it("a compaction request (her persona changed: the old epoch is summarised first)", async () => {

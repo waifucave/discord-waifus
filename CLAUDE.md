@@ -54,9 +54,11 @@ lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume,
 `intakeHold.ts`, spec §4.2: a room burst fires 1.5 s after its last message, a DM 2.5 s, later while
 an author of the burst is typing there (6 s per typing event, from the House bot's and DM bots' raw
 `TYPING_START` packets), capped at 10 s / 60 s from the first message; a human message's
-mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu,
-previewing the author's newest message), room watches and waifu-authored direct wakes route at
-once, a DM's watch matches ride on its `dm` wake after the DM hold (one `dm, watch` line), and
+mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu
+that keeps every message of the burst in `messages`, each with the reasons it gave her; spec §20,
+`wakeMessages.ts`), room watches and waifu-authored direct wakes route at
+once, a DM's watch matches ride on its `dm` wake after the DM hold (on the line of the message
+they matched), and
 everything else, a person's burst or a waifu's own burst (her lines per place, 1.5 s quiet, never
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
@@ -67,7 +69,8 @@ waifu-only rounds beyond the optional room loop guard and daily budgets) → **w
 per-user wake limit, sleep, budget, room loop guard; the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
 (`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
-`life.maxConcurrentTurns` slot; notifications (with the previewed message's ref; wakes ready mid-turn
+`life.maxConcurrentTurns` slot; notifications (`notifications.ts`: one line per message with its ref,
+at most `life.notificationLinesPerPlace` per place, the first saying `+N earlier`; wakes ready mid-turn
 are folded into the next tool-results message after its results, recorded in `currentTurn` before
 they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing only once a SendMessage's place has streamed in (`typing.ts`, spec §6.3); an
 interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
@@ -76,6 +79,14 @@ each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` leas
 [A, B] snapshotted per epoch, the epoch's log with permanent time lines, and compaction
 (`compaction.ts`) keeps the last three complete turns (fewer when they alone would be over half
 the trigger; images frozen with their cached OCR text; an aborted summary changes nothing).
+Before that she rests (spec §19, `Life.restTurn`): when her last request reaches
+`life.restNoticeRatio` × the trigger (and is below it), the next cycle, before any queued wake, is a
+rest turn opened by `REST_NOTICE` (same system blocks and tools, so the cache holds; `SendMessage`,
+`React`, `WebSearch`, `WebFetch` are refused at run time; no wakes fold in); a final reply of at least
+`life.restSummaryMinChars` starts a new epoch whose `<life_so_far>` is that summary alone (framed
+`[your summary before the reset]`, no kept turns, boundary reason `rest`), anything else compacts at
+once leaving the rest turn out; `state.restTurn` allows one per epoch (an interrupted compaction after
+it compacts at the next cycle). With `life.restNotice` off the time line's memory warning returns.
 Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.ts`, plus the
 pause start) so catch-up never re-wakes a message it already handled; a mark never passes a message
 still held (a staggered wake, a debouncing burst, a running detector call), and every forget path
@@ -93,6 +104,20 @@ nothing, `/tmp` expiry and size cap, the provenance index `life/files-index.json
 3.6.0 (exact pin) with WebAssembly CPython in a worker thread per call over an in-memory copy of
 her folders (`src/life/bash/`: `bashWorker.ts`, `runner.ts`, the pure-JS `image` command); the
 wall clock terminates it and nothing is saved; `tests/bashIsolation.test.ts` is the escape suite.
+**Transcripts (spec §18)**: `src/life/transcripts/`: one shared store `user/transcripts/<conversationKey>/<day>.jsonl`
+(host-time-zone days, kept forever; `store.json` `startedAt` = no backfill; `meta.json` keeps a DM
+forget floor, the ids a forget removed (for good) and those a Discord delete removed (a day), so a REST
+page never writes them again; an in-memory cache per conversation keeps an append to one stat;
+`access/<waifuId>.json` her room intervals, opened/closed by comparing the cast before each write, closed
+at the event's oldest message or, at boot, after the room's newest line) written
+by `TranscriptWriter` (`writer.ts`, owned by `LivingCast`, fed by every cache event incl. the cache's
+`page` event for REST pages; one queue per conversation, in-order lines appended, edits/deletes/forgets
+rewrite the day atomically); `view.ts` renders her read-only `/transcripts/<server>/<room>[/<thread>]/<day>.md`
+and `/transcripts/dm/<name>/` (her DMs only; rooms only inside her intervals) for `Read`, the API and
+Bash, where the worker's guarded filesystem mounts it lazily (stat/list/read asked over the message port
+per command, never copied; writes fail `EROFS: transcripts are read-only`); `SendMessage` never attaches it,
+nor a file whose bytes are a private day she was served (`HomeStore.recordTranscriptCopies` gives such a copy
+its DM origin in `files-index.json`).
 Worker files import only npm packages and `node:` builtins (Node runs them as stripped TS in
 source). `ReadMessages` downloads attachments into `/tmp/<place>/` through the attachment fetcher
 (`fetchFile`); `Read` shows images (bytes cached as `file:<sha256>`, pinned for the epoch, indexed
@@ -101,15 +126,19 @@ under the DM they came from). Web search/fetch in
 by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
 `privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
 `log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `watch-ids.json`,
-`schedule-ids.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `pending-scrubs.json`,
+`schedule-ids.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
 `needs-review.json`, `usage.json`) and her home `user/waifus/<id>/home/` (`MEMORY.md` index,
 `schedule.json`, `watches.json`, `places.md`). Boot repairs every life (`repair.ts`: finishes
 journalled change sets first), runs queued
 owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
 fires reminders from her file (routed under a deterministic wake id before removal), routes watch
 timeouts (`watch_timeout`), refreshes `places.md` (≤1/min; also at every turn start), expires `/tmp`
-(first tick, then hourly), sends the `morning` batch when sleep ends and starts nightly maintenance with any pending scrubs
-(`maintenance.ts`) as a tracked background task (abortable; one process-wide run per waifu). The
+(first tick, then hourly), sends the `morning` batch when sleep ends and starts nightly maintenance (pending scrubs, then the
+**dream**, `dream.ts`: a memory keeper session with no life log and no persona, `life.dreamModel` else her
+model, over the window of transcript lines after `life/dream-cursor.json`, split by
+`life.dreamWindowMaxChars`; the cursor moves only when a session finishes; an empty window calls no model;
+sessions run through `runSession` in `maintenance.ts`) as a tracked background task (abortable; one
+process-wide run per waifu). The
 storage service skips writes whose content did not change. The House bot owns
 `/wake` and `/print` (`/print life|system_prompt` leave DM content out unless `private:true`, by the
 same rule as the dashboard, `src/life/lifeView.ts`): only the Discord application's owner or its team members may run them
@@ -243,7 +272,10 @@ PUT shim in `src/api/server.ts`.
   lost), removes the DM data and `user/dms/<userId>/` except `limits/`, whose files are reset to
   the floor alone, drops the person from member/participant lists, scrubs the Living cast archive
   (`src/life/archiveScrub.ts`, D-b; a file nested deeper than 256 levels counts as unreadable)
-  and the kept copies of unreadable forget records; each part runs on its own. Every forget path
+  and the kept copies of unreadable forget records, and the transcripts (part `transcripts`: their lines, lines
+  mentioning them or a unique name, their DM transcripts at the floor; `src/life/transcripts/forget.ts`; a DM
+  forget deletes that DM's transcript in `dmForget` and a life scrub removes their lines in the rooms she
+  can see and her dream cursor's DM entry); each part runs on its own. Every forget path
   drops the captured traffic and `/api/events` replay records that carry the person (their id or a
   name only they have, `personMatcher`), never anyone else's. Only a
   missing record file reads as empty; an unreadable `forgotten.json` stops readers that must not

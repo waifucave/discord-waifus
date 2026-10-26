@@ -251,9 +251,23 @@ const LIFE_FIELDS = {
   maxSendsPerTurn: z.number().int().min(1).max(50),
   maxWakesPerUserPerHour: z.number().int().min(1).max(200),
   maxWatchFiresPerDay: z.number().int().min(1).max(100),
+  /** One notification line per message (§20): at most this many per place, the newest. */
+  notificationLinesPerPlace: z.number().int().min(1).max(50),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
-  maintenanceHourLocal: z.number().int().min(0).max(23)
+  maintenanceHourLocal: z.number().int().min(0).max(23),
+  dreamMaxRounds: z.number().int().min(5).max(200),
+  dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000),
+  restNotice: z.boolean(),
+  restNoticeRatio: z.number().min(0.5).max(0.99),
+  restSummaryMinChars: z.number().int().min(0).max(5_000)
 };
+// The dream's model (spec §18.4): a route GET /api/models offers, with an optional effort; unset = her model.
+export const DreamModelSchema = z.object({
+  providerId: z.string().min(1).max(100),
+  modelId: z.string().min(1).max(200),
+  effort: z.string().min(1).max(40).optional()
+});
+export type DreamModel = z.infer<typeof DreamModelSchema>;
 export const DEFAULT_LIFE_CONFIG = {
   maxConcurrentTurns: 4,
   maxTurnMs: 180_000,
@@ -265,8 +279,14 @@ export const DEFAULT_LIFE_CONFIG = {
   maxSendsPerTurn: 8,
   maxWakesPerUserPerHour: 20,
   maxWatchFiresPerDay: 24,
+  notificationLinesPerPlace: 8,
   maxWaifuTriggeredTurns: 0,
-  maintenanceHourLocal: 5
+  maintenanceHourLocal: 5,
+  dreamMaxRounds: 60,
+  dreamWindowMaxChars: 200_000,
+  restNotice: true,
+  restNoticeRatio: 0.85,
+  restSummaryMinChars: 200
 };
 export const LifeConfigSchema = z
   .object({
@@ -280,8 +300,15 @@ export const LifeConfigSchema = z
     maxSendsPerTurn: LIFE_FIELDS.maxSendsPerTurn.default(DEFAULT_LIFE_CONFIG.maxSendsPerTurn),
     maxWakesPerUserPerHour: LIFE_FIELDS.maxWakesPerUserPerHour.default(DEFAULT_LIFE_CONFIG.maxWakesPerUserPerHour),
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.default(DEFAULT_LIFE_CONFIG.maxWatchFiresPerDay),
+    notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.default(DEFAULT_LIFE_CONFIG.notificationLinesPerPlace),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
+    dreamModel: DreamModelSchema.optional(),
+    dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
+    dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.default(DEFAULT_LIFE_CONFIG.dreamWindowMaxChars),
+    restNotice: LIFE_FIELDS.restNotice.default(DEFAULT_LIFE_CONFIG.restNotice),
+    restNoticeRatio: LIFE_FIELDS.restNoticeRatio.default(DEFAULT_LIFE_CONFIG.restNoticeRatio),
+    restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.default(DEFAULT_LIFE_CONFIG.restSummaryMinChars),
     webFetch: WebFetchConfigSchema,
     home: HomeConfigSchema,
     tmp: TmpConfigSchema,
@@ -417,8 +444,16 @@ export const UpdateAppConfigBodySchema = z.object({
     maxSendsPerTurn: LIFE_FIELDS.maxSendsPerTurn.optional(),
     maxWakesPerUserPerHour: LIFE_FIELDS.maxWakesPerUserPerHour.optional(),
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.optional(),
+    notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.optional(),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.optional(),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
+    // null unsets it (the dream uses her own model again).
+    dreamModel: DreamModelSchema.strict().nullable().optional(),
+    dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.optional(),
+    dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.optional(),
+    restNotice: LIFE_FIELDS.restNotice.optional(),
+    restNoticeRatio: LIFE_FIELDS.restNoticeRatio.optional(),
+    restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.optional(),
     webFetch: z.object({
       model: WEB_FETCH_FIELDS.model.optional(),
       maxPerWaifuPerDay: WEB_FETCH_FIELDS.maxPerWaifuPerDay.optional(),

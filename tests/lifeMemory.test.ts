@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
-import { MAINTENANCE_INSTRUCTION } from "../src/life/maintenance.js";
+import { DREAM_INSTRUCTION, DREAM_NOTHING_NEW } from "../src/life/dream.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
 import { queueOwnerScrubs, waifusWithLife } from "../src/life/forget.js";
 import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
@@ -16,7 +16,7 @@ import { SearchUsageSchema } from "../src/shared/schemas/life.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
-import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -56,7 +56,7 @@ async function liveATurn(w: LifeWorld): Promise<void> {
   await w.cast.life("ella").runNow();
 }
 
-describe("nightly maintenance (§7.3, §16.8)", () => {
+describe("nightly dreaming (§18.4, replacing §7.3 and §16.8)", () => {
   it("is a separate session with only her file tools, purpose maintenance, and one report line", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
@@ -67,6 +67,7 @@ describe("nightly maintenance (§7.3, §16.8)", () => {
     });
     const notes = homeOf(w, "ella");
     await notes.write("MEMORY.md", "# Memory\n- Kevin studies chemistry\n- Kevin is a chemistry student\n");
+    await seedTranscript(w, [{ text: "chemistry exam on friday!" }]);
     // No sleep window: maintenance is due at 05:00 local; the clock says 14:00.
     await w.cast.scheduler.tick();
     const calls = w.anthropic.calls;
@@ -75,7 +76,8 @@ describe("nightly maintenance (§7.3, §16.8)", () => {
       expect(call.request.tools?.map((tool) => tool.name).sort()).toEqual([...FILE_TOOLS].sort());
       expect(JSON.stringify(call.request.messages)).not.toContain("<notifications>");
     }
-    expect(JSON.stringify(calls[0]!.request.messages[0])).toContain(MAINTENANCE_INSTRUCTION.slice(0, 40));
+    expect(JSON.stringify(calls[0]!.request.messages[0])).toContain(DREAM_INSTRUCTION.slice(0, 40));
+    expect(JSON.stringify(calls[0]!.request.messages[0])).toContain("/transcripts/bake-club/general/2026-10-24.md (the whole file, 1 line)");
     expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["maintenance", "maintenance", "maintenance"]);
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Kevin](people/kevin.md) — chemistry student\n");
     const reports = await readMaintenanceReports(w.storage, "ella");
@@ -203,9 +205,10 @@ describe("forget (§7.5)", () => {
     expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
     expect((await readMaintenanceReports(w.storage, "ella")).map((report) => [report.kind, report.source ?? report.summary])).toEqual([
       ["forget", "owner"],
-      ["maintenance", "all tidy"]
+      ["maintenance", DREAM_NOTHING_NEW]
     ]);
-    expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["life", "life", "life", "compaction", "maintenance", "maintenance"]);
+    // The scrub's notes session; the dream after it found nothing new and called no model.
+    expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["life", "life", "life", "compaction", "maintenance"]);
   });
 
   it("a DM user's /forget everything runs at most once per 6 hours; later ones queue a pending scrub for maintenance", async () => {

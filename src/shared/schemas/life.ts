@@ -36,6 +36,23 @@ export type SystemSnapshot = z.infer<typeof SystemSnapshotSchema>;
 export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "morning", "owner", "followup"]);
 export type WakeReason = z.infer<typeof WakeReasonSchema>;
 
+/**
+ * One message a wake is about (§20: one notification line per message). `reasons` are this
+ * message's own (absent: the wake's; empty: none, a message of the burst that woke her for nothing).
+ */
+export const WakeMessageSchema = z.object({
+  id: z.string().min(1),
+  fromUserId: z.string().min(1).optional(),
+  fromName: z.string().optional(),
+  /** ~60 characters, rendered once when the wake was queued. */
+  preview: z.string(),
+  reasons: z.array(WakeReasonSchema).optional(),
+  /** watch: what matched in this message, and her note. */
+  matched: z.string().optional(),
+  note: z.string().optional()
+});
+export type WakeMessage = z.infer<typeof WakeMessageSchema>;
+
 /** One queued wake (§4.6 `immediate`). Merged entries for one place carry every reason. */
 export const WakeSchema = z.object({
   id: z.string().min(1),
@@ -55,6 +72,10 @@ export const WakeSchema = z.object({
   watchId: z.string().optional(),
   matched: z.string().optional(),
   setAt: IsoDateStringSchema.optional(),
+  /** Every message of the burst or the merged wakes, oldest first (the newest `MAX_WAKE_MESSAGES`). */
+  messages: z.array(WakeMessageSchema).optional(),
+  /** Messages older than `messages` that were left out of it. */
+  earlier: z.number().int().positive().optional(),
   /** How many wakes were merged into this entry. */
   count: z.number().int().positive().optional(),
   /** morning: the rendered batch (built when her sleep ends). */
@@ -115,6 +136,11 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
     .object({ at: IsoDateStringSchema, reason: z.string(), summarized: z.boolean(), fromEpoch: z.number().int().positive() })
     .optional(),
   compactionPausedUntil: IsoDateStringSchema.optional(),
+  /**
+   * The rest turn she had in this epoch (§19.2: at most one per epoch). Should the compaction after
+   * an ignored one be interrupted, the next cycle compacts, leaving this turn out.
+   */
+  restTurn: z.object({ epoch: z.number().int().positive(), turnId: z.string() }).optional(),
   /** A forget scrub wrote the summary; the new epoch starts after the scrub (§7.5 step 2). */
   pendingEpochStart: z.boolean().optional(),
   /**

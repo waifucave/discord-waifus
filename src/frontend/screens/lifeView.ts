@@ -197,8 +197,13 @@ export function fileSize(bytes: number): string {
 }
 
 /** The folders from the root to the listed one, each with the path to list it (`~` › `people`). */
+/** A new epoch's reason as the Life screen says it (§19.4: "rest" is her own summary). */
+export function boundaryReasonLabel(reason: string): string {
+  return reason === "rest" ? "rested (her own summary)" : reason;
+}
+
 export function breadcrumbs(list: Pick<HerFilesList, "root" | "dir" | "display">): Array<{ label: string; dir: string }> {
-  const rootLabel = list.root === "home" ? "~" : "/tmp";
+  const rootLabel = list.root === "home" ? "~" : list.root === "tmp" ? "/tmp" : "/transcripts";
   const rel = list.display === rootLabel ? "" : list.display.slice(rootLabel.length + 1);
   const segments = rel ? rel.split("/") : [];
   const rootDir = segments.length === 0 ? list.dir : list.dir.slice(0, list.dir.length - rel.length - 1);

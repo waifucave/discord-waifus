@@ -1,0 +1,9 @@
+(system, tools and the turns before: see life-system-prompt.txt and life-wake-turn.txt; 5 earlier messages)
+=== 5 assistant ===
+--- text ---
+(sent; that's handled)
+=== 6 user ===
+--- text ---
+[system] Your memory is almost full. When this turn ends, your context will be reset: everything you can see now goes away except the summary you write in this turn. Your computer stays exactly as you left it: your home, /tmp and /transcripts keep every file and you can still read and change them afterwards. If something should last, you can save it to your notes now. Then write your summary as your final reply: what is going on in each place, who you talked to and how it went, plans and promises, open threads, what you were about to do. Write it clearly and concretely, with names, places and times, so you can't misread it later. Write what happened and how you feel about it now, not rules for yourself. Don't message anyone in this turn.
+--- text ---
+[Sat 24 Oct 14:00 · awake]

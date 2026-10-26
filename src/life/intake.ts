@@ -64,6 +64,7 @@ import { fireWatches, type FiredWatch } from "./watches.js";
 import { homeStoreFor } from "./home/index.js";
 import { TypingHolds, type HoldTiming } from "./intakeHold.js";
 import { newWakeId } from "./wakeQueue.js";
+import { joinMessages } from "./wakeMessages.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
@@ -105,7 +106,7 @@ type HeldWake = { waifuId: string; wake: Wake };
 
 type Burst = {
   messageIds: string[];
-  /** Each message's author and preview: a held wake previews its author's newest message. */
+  /** Each message's author and preview: the wakes it fires show one line per message (§20). */
   messages: Array<{ id: string; authorId: string; fromName: string; preview: string }>;
   /** Direct wakes waiting for the burst to fire (§4.2). */
   held: HeldWake[];
@@ -487,7 +488,19 @@ export class Intake {
         ...(wake.fromName ? { fromName: wake.fromName } : {})
       });
     }
-    return [...byWaifu].map(([waifuId, wake]) => {
+    return [...byWaifu].map(([waifuId, merged]) => {
+      // Every message of the burst is a line of its own (§20), each with the reasons it gave her
+      // (none for the others' messages around it; a mention makes her name redundant).
+      const own = new Map<string, WakeReason[]>();
+      for (const held of burst.held) {
+        if (held.waifuId !== waifuId || !held.wake.messageId) continue;
+        const reasons = [...(own.get(held.wake.messageId) ?? []), ...(held.wake.reasons ?? [held.wake.reason])];
+        own.set(held.wake.messageId, reasons.includes("mention") ? reasons.filter((reason) => reason !== "name") : [...new Set(reasons)]);
+      }
+      const { messages, earlier } = joinMessages([
+        burst.messages.map((message) => ({ id: message.id, fromUserId: message.authorId, fromName: message.fromName, preview: message.preview, reasons: DIRECT_ORDER.filter((reason) => own.get(message.id)?.includes(reason)) }))
+      ]);
+      const wake: Wake = { ...merged, messages, ...(earlier > 0 ? { earlier } : {}) };
       const newest = [...burst.messages].reverse().find((message) => message.authorId === wake.fromUserId);
       if (!newest || !wake.messageId || compareIds(newest.id, wake.messageId) <= 0) return { waifuId, wake };
       return { waifuId, wake: { ...wake, messageId: newest.id, preview: newest.preview, fromName: newest.fromName } };
@@ -634,6 +647,8 @@ export class Intake {
     chosen = chosen.filter((id) => !watched.has(id) && id !== authorWaifuId);
     const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
     const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
+    const joined = joinMessages([burst.messages.map((message) => ({ id: message.id, fromUserId: message.authorId, fromName: message.fromName, preview: message.preview }))]);
+    const burstMessages: Partial<Wake> = joined.messages.length > 0 ? { messages: joined.messages, ...(joined.earlier > 0 ? { earlier: joined.earlier } : {}) } : {};
     const wakeFor = (extra: Partial<Wake>): Wake => ({
       id: newWakeId(),
       reason: "detector",
@@ -642,6 +657,8 @@ export class Intake {
       ...(burst.authorName ? { fromName: burst.authorName } : {}),
       messageId: newestId,
       ...(preview !== undefined ? { preview } : {}),
+      // One line per message of the burst (§20), each read as the detector's pick.
+      ...burstMessages,
       ...(burst.waifuAuthored ? { waifuAuthored: true } : {}),
       ...extra,
       at: now.toISOString()
@@ -780,67 +797,96 @@ export class Intake {
     try {
       // Her watches on these messages ride on the DM wake (§16.5, one wake per message): one line
       // `dm, watch · …` and one turn, matched after the DM's own hold, not at once.
-      const fired = await this.dmWatches(waifuId, conversation, burst, records);
+      const { fired, lines } = await this.dmWatches(waifuId, conversation, burst, records);
       const [first, ...more] = fired;
+      const fromName = removed ? "someone" : (burst.userName ?? message?.authorName ?? "someone");
+      // One line per message (§20): each `dm`, a watch's match on the message it matched.
+      const firstOf = new Map<string, FiredWatch>();
+      for (const entry of fired) if (!firstOf.has(entry.messageId)) firstOf.set(entry.messageId, entry);
+      const joined = joinMessages([
+        lines.map((line) => {
+          const hit = firstOf.get(line.id);
+          return {
+            id: line.id,
+            fromUserId: userId,
+            fromName: line.removed ? "someone" : fromName,
+            preview: line.preview,
+            reasons: hit ? (["dm", "watch"] as WakeReason[]) : (["dm"] as WakeReason[]),
+            ...(hit ? { matched: hit.matched, note: hit.watch.note } : {})
+          };
+        })
+      ]);
       const wake: Wake = {
         id: newWakeId(),
         reason: "dm",
         ...(first ? { reasons: ["dm", "watch"] as WakeReason[], watchId: first.watch.id, matched: first.matched, note: first.watch.note } : {}),
         placeKey,
         fromUserId: userId,
-        fromName: removed ? "someone" : (burst.userName ?? message?.authorName ?? "someone"),
+        fromName,
         messageId: newestId,
         ...(message ? { preview: messagePreview(message, EMPTY_GUILD_DIRECTORY, deps.timeZone, { removed }) } : {}),
+        ...(joined.messages.length > 0 ? { messages: joined.messages } : {}),
+        ...(joined.earlier > 0 ? { earlier: joined.earlier } : {}),
         ...(burst.messageIds.length > 1 ? { count: burst.messageIds.length } : {}),
         at: deps.now().toISOString()
       };
       const outcome = await this.o.router.route(waifuId, wake, { dmUserId: userId });
       // A watch is her own intention: when the DM itself is dropped (its rate limit), the match still
-      // reaches her as a plain watch wake. Further watches matching the same burst join its line.
-      const watchWake = (entry: FiredWatch): Wake => ({
-        id: newWakeId(),
-        reason: "watch",
-        watchId: entry.watch.id,
-        matched: entry.matched,
-        note: entry.watch.note,
-        placeKey,
-        fromUserId: userId,
-        fromName: wake.fromName!,
-        messageId: newestId,
-        at: wake.at
-      });
-      for (const entry of outcome === "dropped" ? fired : more) await this.o.router.route(waifuId, watchWake(entry), {});
+      // reaches her as a plain watch wake. Further watches matching the burst join the line of the
+      // message they matched.
+      const watchWake = (entry: FiredWatch & { messageId: string }): Wake => {
+        const line = lines.find((candidate) => candidate.id === entry.messageId);
+        return {
+          id: newWakeId(),
+          reason: "watch",
+          watchId: entry.watch.id,
+          matched: entry.matched,
+          note: entry.watch.note,
+          placeKey,
+          fromUserId: userId,
+          fromName: line?.removed ? "someone" : wake.fromName!,
+          messageId: entry.messageId,
+          ...(line ? { preview: line.preview } : {}),
+          at: wake.at
+        };
+      };
+      for (const entry of outcome === "dropped" ? fired : more.filter((entry) => firstOf.get(entry.messageId) !== entry)) await this.o.router.route(waifuId, watchWake(entry), {});
       this.mark(placeKey, burst.messageIds);
     } finally {
       this.release(placeKey, burst.messageIds, "routing");
     }
   }
 
-  /** Her watches that fire for a DM burst's messages (once-watches removed, fires recorded). */
+  /**
+   * A DM burst's messages, oldest first, with their previews (§20), and her watches that fire for
+   * them (once-watches removed, fires recorded), each with the message it matched.
+   */
   private async dmWatches(
     waifuId: string,
     conversation: ConversationRef,
     burst: DmBurst,
     records: { forgotten: ForgottenPerson[]; unreadable: boolean }
-  ): Promise<FiredWatch[]> {
+  ): Promise<{ fired: Array<FiredWatch & { messageId: string }>; lines: Array<{ id: string; preview: string; removed: boolean }> }> {
     const deps = this.deps;
     const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
-    if (!waifu) return [];
     const placeKey = conversationKey(conversation);
     const now = deps.now();
-    const fired: FiredWatch[] = [];
+    const fired: Array<FiredWatch & { messageId: string }> = [];
+    const lines: Array<{ id: string; preview: string; removed: boolean }> = [];
     for (const id of [...burst.messageIds].sort(compareIds)) {
       const raw = await this.findMessage(conversation, id);
       if (!raw) continue;
       const removed = records.unreadable || isRemovedMessage(raw, records.forgotten);
+      lines.push({ id, preview: messagePreview(raw, EMPTY_GUILD_DIRECTORY, deps.timeZone, { removed }), removed });
+      if (!waifu) continue;
       const text = removed ? "(removed)" : (renderDiscordMessage(raw, EMPTY_GUILD_DIRECTORY, deps.timeZone)?.body ?? "");
       const hits = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own: false, createdAt: raw.createdAt }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }).catch((error: unknown) => {
         deps.logger.warn("Life DM watch check failed", { waifuId, message: error instanceof Error ? error.message : String(error) });
         return [] as FiredWatch[];
       });
-      for (const hit of hits) if (!fired.some((entry) => entry.watch.id === hit.watch.id)) fired.push(hit);
+      for (const hit of hits) if (!fired.some((entry) => entry.watch.id === hit.watch.id)) fired.push({ ...hit, messageId: id });
     }
-    return fired;
+    return { fired, lines };
   }
 
   /** Fires every pending DM wake now (tests; the boot catch-up after a long pause). */

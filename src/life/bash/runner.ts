@@ -10,10 +10,12 @@
 // command runs and terminates the worker once the growth over the sample taken at its start passes
 // `life.bash.maxMemoryMb`. The measure is process-wide: two commands running at once share it.
 
+import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import type { ChangeBase, ChangeSet } from "../home/homeStore.js";
 import type { HomeStore } from "../home/homeStore.js";
 import { parseVirtual } from "../home/pathRules.js";
+import { transcriptsSegments, type TranscriptView } from "../transcripts/view.js";
 import type { BashHostMessage, BashWorkerInput, BashWorkerMessage } from "./bashWorker.js";
 
 /**
@@ -52,6 +54,10 @@ export type BashRun = {
   tooMany?: number;
   /** failed: why (memory, a worker error). */
   error?: string;
+  /** The private chats whose transcripts the command stat'ed, listed or read (D14; never capped). */
+  transcriptDms?: string[];
+  /** The private chats' transcript days it was served, by content hash (a copy keeps its DM origin). */
+  transcriptTexts?: Array<{ sha256: string; size: number; placeKey: string }>;
 };
 
 export type BashRunOptions = {
@@ -67,6 +73,8 @@ export type BashRunOptions = {
   maxMemoryBytes?: number;
   /** Most entries (written files, deleted paths, new folders) a change set may carry. */
   maxChanges?: number;
+  /** Her `/transcripts` (spec §18.3): mounted read-only and served on demand, never copied. */
+  transcripts?: TranscriptView;
 };
 
 /** How often the memory watchdog samples the host's resident memory. */
@@ -97,9 +105,12 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
     commands: [...BASH_COMMANDS],
     maxOutputBytes: BASH_MAX_OUTPUT_BYTES,
     maxFileSystemBytes: o.maxFileSystemBytes,
-    maxChanges: o.maxChanges ?? MAX_CHANGE_ENTRIES
+    maxChanges: o.maxChanges ?? MAX_CHANGE_ENTRIES,
+    ...(o.transcripts ? { transcripts: true } : {})
   };
   const read = new Set<string>();
+  const transcriptDms = new Set<string>();
+  const transcriptTexts = new Map<string, { sha256: string; size: number; placeKey: string }>();
   if (o.signal?.aborted) return { outcome: "aborted", stdout: "", stderr: "", exitCode: 130, base, read: [] };
   const baseline = process.memoryUsage.rss();
   const worker = new Worker(workerUrl(), {
@@ -122,7 +133,13 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
       clearInterval(watchdog);
       o.signal?.removeEventListener("abort", onAbort);
       void worker.terminate().catch(() => undefined);
-      resolve({ ...run, base, read: [...read] });
+      resolve({
+        ...run,
+        base,
+        read: [...read],
+        ...(transcriptDms.size > 0 ? { transcriptDms: [...transcriptDms] } : {}),
+        ...(transcriptTexts.size > 0 ? { transcriptTexts: [...transcriptTexts.values()] } : {})
+      });
     };
     // The wall clock is the one time limit (§16.3.5): just-bash's own deadlines are set past it, so
     // a command that runs too long always ends here, with the worker terminated and nothing saved.
@@ -148,6 +165,38 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
         );
         return;
       }
+      if (message.type === "transcripts") {
+        const view = o.transcripts;
+        const segments = view ? transcriptsSegments(message.path, store.slug) : undefined;
+        if (!view || !segments) {
+          worker.postMessage({ type: "transcripts-result", id: message.id, error: "ENOENT" } satisfies BashHostMessage);
+          return;
+        }
+        void (async () => {
+          const answer = await serveTranscripts(view, message.op, segments);
+          // A private chat's transcript (D14): the call is a DM call, and a file whose bytes are a
+          // day she was served keeps that DM origin once saved.
+          if (await view.isPrivate(segments)) {
+            const placeKey = (await view.conversationOf(segments))?.key ?? "dm_file";
+            transcriptDms.add(placeKey);
+            if (answer.data) {
+              const sha = createHash("sha256").update(answer.data).digest("hex");
+              transcriptTexts.set(sha, { sha256: sha, size: answer.data.length, placeKey });
+            }
+          }
+          return answer;
+        })().then(
+          (answer) => {
+            if (settled) return;
+            const transfer = answer.data ? [answer.data.buffer as ArrayBuffer] : [];
+            worker.postMessage({ type: "transcripts-result", id: message.id, ...answer } satisfies BashHostMessage, transfer);
+          },
+          () => {
+            if (!settled) worker.postMessage({ type: "transcripts-result", id: message.id, error: "EIO" } satisfies BashHostMessage);
+          }
+        );
+        return;
+      }
       if (message.type === "fatal") {
         finish({ outcome: "failed", stdout: "", stderr: "", exitCode: 1, error: message.message });
         return;
@@ -168,6 +217,23 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
     });
     worker.on("exit", () => finish({ outcome: "failed", stdout: "", stderr: "", exitCode: 1, error: "the command stopped unexpectedly" }));
   });
+}
+
+/** A `/transcripts` question from the worker: an entry's kind and size, a folder's entries, or a day's text. */
+async function serveTranscripts(view: TranscriptView, op: "stat" | "list" | "read", segments: string[]): Promise<Omit<Extract<BashHostMessage, { type: "transcripts-result" }>, "type" | "id">> {
+  if (op === "stat") {
+    const stat = await view.stat(segments);
+    return stat ? { stat } : {};
+  }
+  if (op === "list") {
+    const entries = await view.readdir(segments);
+    if (entries) return { entries };
+    const stat = await view.stat(segments);
+    return stat ? { stat } : {};
+  }
+  const text = await view.read(segments);
+  if (text === undefined) return (await view.stat(segments)) ? { error: "EISDIR" } : { error: "ENOENT" };
+  return { data: new Uint8Array(Buffer.from(text, "utf8")) };
 }
 
 /** One file's bytes for the worker: only files that were in her folders when the command started. */

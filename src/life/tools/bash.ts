@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { MAX_CHANGE_ENTRIES, runBash } from "../bash/runner.js";
 import { checkEnvFor } from "../home/index.js";
-import { HomeError, type HomeStore } from "../home/homeStore.js";
+import { HomeError, sha256, type HomeStore } from "../home/homeStore.js";
 import { isDmFolderPath, parseVirtual, pathKey, PROFILE_FILE, specialJsonFile } from "../home/pathRules.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 
@@ -22,7 +22,7 @@ function touchesProfile(virtual: string, slug: string): boolean {
 }
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
-import { noteDmFile, storeOf } from "./files.js";
+import { noteDmFile, storeOf, transcriptViewOf } from "./files.js";
 import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
@@ -81,8 +81,9 @@ async function noteDmTouches(store: HomeStore, paths: readonly string[], text: s
     }
   }
   const lowered = pathKey(text);
-  if (lowered.includes("/tmp/dm/") || dmEntries.some((entry) => lowered.includes(pathKey(entry.path)))) notePlace("dm_file");
+  if (lowered.includes("/tmp/dm/") || lowered.includes("/transcripts/dm/") || dmEntries.some((entry) => lowered.includes(pathKey(entry.path)))) notePlace("dm_file");
 }
+
 
 async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(BashInput, input);
@@ -92,7 +93,8 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const timeoutMs = Math.min(parsed.value.timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS, life.bash.maxTimeoutMs);
   const store = storeOf(ctx);
   // A command that names a private chat's downloads is about that chat (D14).
-  if (/\/tmp\/dm(?:\/|\b)/iu.test(parsed.value.command)) notePlace("dm_file");
+  if (/\/(?:tmp|transcripts)\/dm(?:\/|\b)/iu.test(parsed.value.command)) notePlace("dm_file");
+  const transcripts = transcriptViewOf(ctx);
   const run = await runBash({
     store,
     command: parsed.value.command,
@@ -102,8 +104,15 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     signal: ctx.signal,
     maxFileSystemBytes: life.home.maxBytes + life.tmp.maxBytes + WORK_ROOM_BYTES,
     maxMemoryBytes: life.bash.maxMemoryMb * 1024 * 1024,
-    maxChanges: MAX_CHANGE_ENTRIES
+    maxChanges: MAX_CHANGE_ENTRIES,
+    transcripts
   });
+  // The private chats whose transcripts it listed or read (D14): each is recorded as touched.
+  for (const key of run.transcriptDms ?? []) notePlace(key);
+  for (const text of run.transcriptTexts ?? []) {
+    ctx.turn.transcriptTexts ??= new Map();
+    ctx.turn.transcriptTexts.set(text.sha256, text);
+  }
   if (run.outcome === "aborted") return toolError("interrupted; nothing was saved");
   if (run.outcome === "timeout") return toolError(`the command took longer than ${Math.round(timeoutMs / 1000)} s and was stopped; nothing was saved`);
   if (run.outcome === "memory") return toolError("the command used too much memory and was stopped; nothing was saved");
@@ -128,6 +137,16 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   await appendIntent(deps.storage, ctx.waifu.id, { ...intent, at: deps.now().toISOString() });
   try {
     const applied = await store.applyChanges(changes, run.base, checkEnvFor(deps, ctx.waifu.id), { journalId: ctx.toolCallId });
+    // A file that is a private chat's transcript day keeps its DM origin (§18.3, D14).
+    if (run.transcriptTexts) {
+      const served = new Map(run.transcriptTexts.map((text) => [text.sha256, text] as const));
+      const copies = changes.writes.flatMap((write) => {
+        const text = served.get(sha256(write.data));
+        const p = parseVirtual(write.path, store.slug);
+        return text && p ? [{ path: p, sha256: text.sha256, size: text.size, placeKey: text.placeKey }] : [];
+      });
+      await store.recordTranscriptCopies(copies, deps.now());
+    }
     for (const virtual of changes.writes.map((write) => write.path)) {
       const p = parseVirtual(virtual, store.slug);
       if (p) await noteDmFile(store, p);
@@ -148,7 +167,7 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 function bashDescription(python: boolean): string {
-  return `Run a bash command in your own folders: your home (~, where you start) and /tmp. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read; Read gives a picture's size in pixels, and crop boxes are in those pixels, so look at an edited picture before you send it). There is no internet and nothing outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
+  return `Run a bash command in your own folders: your home (~, where you start) and /tmp; /transcripts can be read and searched but not changed. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read; Read gives a picture's size in pixels, and crop boxes are in those pixels, so look at an edited picture before you send it). There is no internet and nothing else outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
 }
 
 /** Bash's input schema; the timeout's limit as configured (`life.bash.maxTimeoutMs`). */

@@ -449,7 +449,10 @@ export class CastRuntime {
               return undefined;
             })
         : undefined;
+    // The transcript writer reads the forget records again (a catch-up never writes what goes now).
+    this.cast.transcripts.noteForget();
     const result = await dmForget(this.options.storage, input, this.dmForgetHooks());
+    this.cast.transcripts.noteForget();
     if (prepared) {
       const life = this.cast.runForget(prepared).catch((error: unknown) => {
         this.options.logger.warn("Life forget scrub failed; it stays queued", { waifuId: input.waifuId, message: error instanceof Error ? error.message : String(error) });
@@ -472,12 +475,14 @@ export class CastRuntime {
     const identities = prepared?.map((entry) => entry.identity) ?? [];
     const names = [...new Set(identities.flatMap((identity) => identity.names))];
     const avoidNames = [...new Set(identities.flatMap((identity) => identity.sharedNames))];
+    if (!input.dryRun) this.cast.transcripts.noteForget();
     const result = await forgetUser(this.options.storage, { ...input, names, avoidNames }, this.dmForgetHooks()).catch((error: unknown) => {
       if (input.dryRun) throw error;
       this.options.logger.warn("The owner's forget could not queue its DM part; the life scrubs still run", { message: error instanceof Error ? error.message : String(error) });
       return unqueuedForgetResult(input.discordUserId, error);
     });
     if (input.dryRun) return result;
+    this.cast.transcripts.noteForget();
     await this.directory.forgetMember(input.discordUserId).catch((error: unknown) => {
       this.options.logger.warn("Guild directory forget failed", { message: error instanceof Error ? error.message : String(error) });
     });

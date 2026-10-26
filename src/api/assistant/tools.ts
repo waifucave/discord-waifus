@@ -1010,13 +1010,14 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "List a folder of a waifu's own computer (Living cast §16): her home (`/home/<name>`, `~`: her notes in any " +
       "layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app) " +
-      "or /tmp (files people sent, deleted after the number of days its usage.retentionDays says, 7 by default, since the last write). Entries have name, path, kind, size and " +
-      "modified time. Files from private chats are never shown to you: they appear as `[private chat redacted]`.",
+      "or /tmp (files people sent, deleted after the number of days its usage.retentionDays says, 7 by default, since the last write), " +
+      "or /transcripts (read-only: everything said where she is, one file per place per day, kept forever). Entries have name, path, kind, size and " +
+      "modified time. Files and transcripts from private chats are never shown to you: they appear as `[private chat redacted]`.",
     parameters: {
       type: "object",
       properties: {
         waifuId: { type: "string" },
-        root: { type: "string", enum: ["home", "tmp"], description: "Default home." },
+        root: { type: "string", enum: ["home", "tmp", "transcripts"], description: "Default home." },
         dir: { type: "string", description: "A folder below the root (`people`), or a path from an entry." }
       },
       required: ["waifuId"],
@@ -1024,7 +1025,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     },
     execute: async (ctx, args) => {
       const query = new URLSearchParams();
-      if (args.root === "home" || args.root === "tmp") query.set("root", args.root);
+      if (args.root === "home" || args.root === "tmp" || args.root === "transcripts") query.set("root", args.root);
       if (typeof args.dir === "string" && args.dir.trim()) query.set("dir", args.dir.trim());
       const suffix = query.toString();
       return (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/files${suffix ? `?${suffix}` : ""}` })).body;
@@ -1033,7 +1034,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "read_file",
     description:
-      "Read one of a waifu's files by path (`~/people/kevin.md`, `/home/<name>/MEMORY.md`, `/tmp/…`; a relative path " +
+      "Read one of a waifu's files by path (`~/people/kevin.md`, `/home/<name>/MEMORY.md`, `/tmp/…`, `/transcripts/<server>/<room>/<day>.md`; a relative path " +
       "is under her home). Text files come back with their text and a hash; images and PDFs only with their size and " +
       "type (the owner opens them in the dashboard). Files from private chats are refused.",
     parameters: {

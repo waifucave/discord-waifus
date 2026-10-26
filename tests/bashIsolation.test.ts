@@ -94,20 +94,21 @@ async function py(code: string, timeout_ms?: number): Promise<{ text: string; is
 const exitOf = (text: string) => Number(/\nexit (\d+)/u.exec(`\n${text}`)?.[1] ?? Number.NaN);
 
 describe("the filesystem she sees (§16.2)", { timeout: 60_000 }, () => {
-  it("cat /etc/passwd, ls /, cd .. past /home: only her two folders exist", async () => {
+  it("cat /etc/passwd, ls /, cd .. past /home: only her two folders (and the read-only /transcripts) exist", async () => {
     const passwd = await bash("cat /etc/passwd");
     expect(passwd.text).toMatch(/cat: \/etc\/passwd: No such file or directory/u);
     expect(passwd.text).not.toMatch(/root:/u);
     expect(exitOf(passwd.text)).not.toBe(0);
-    expect((await bash("ls /")).text).toBe("home\ntmp\nexit 0");
+    // /transcripts is read-only and served on demand (§18.3).
+    expect((await bash("ls /")).text).toBe("home\ntmp\ntranscripts\nexit 0");
     expect((await bash("ls /home")).text).toBe("ella\nexit 0");
-    expect((await bash("pwd; cd ..; cd ..; cd ..; pwd; ls")).text).toBe("/home/ella\n/\nhome\ntmp\nexit 0");
+    expect((await bash("pwd; cd ..; cd ..; cd ..; pwd; ls")).text).toBe("/home/ella\n/\nhome\ntmp\ntranscripts\nexit 0");
     for (const command of ["ls /etc", "ls /usr/bin", "ls /bin", "ls /proc", "cat /proc/self/environ", "ls /home/mina", "cat ~/../../etc/hosts"]) {
       const result = await bash(command);
       expect(exitOf(result.text), command).not.toBe(0);
       expect(result.text, command).not.toMatch(/root:|localhost|PATH=|node_modules/u);
     }
-    expect((await bash("find / -maxdepth 3 | sort")).text).toBe("/\n/home\n/home/ella\n/home/ella/MEMORY.md\n/home/ella/people\n/tmp\nexit 0");
+    expect((await bash("find / -maxdepth 3 | sort")).text).toBe("/\n/home\n/home/ella\n/home/ella/MEMORY.md\n/home/ella/people\n/tmp\n/transcripts\nexit 0");
     expect((await bash("find / -type f | sort")).text).toBe("/home/ella/MEMORY.md\n/home/ella/people/kevin.md\nexit 0");
   });
 
@@ -180,7 +181,7 @@ describe("Python (§16.3.5)", { timeout: 120_000 }, () => {
         ].join("\n")
       )
     );
-    expect(result.text).toContain("['home', 'tmp']");
+    expect(result.text).toContain("['home', 'tmp', 'transcripts']");
     expect(result.text).toContain("['ella']");
     expect(result.text).not.toContain("OPEN");
     expect(result.text.match(/^refused \w+$/gmu)).toHaveLength(4);

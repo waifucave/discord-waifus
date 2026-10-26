@@ -45,6 +45,11 @@ export type TurnScratch = {
    * its own in between).
    */
   readHashes?: Map<string, string>;
+  /**
+   * Private chats' transcript days she was shown this turn (Read, Bash), by content hash: a file she
+   * then writes with exactly that text keeps its DM origin (§18.3, D14).
+   */
+  transcriptTexts?: Map<string, { sha256: string; size: number; placeKey: string }>;
 };
 
 export type ToolContext = {

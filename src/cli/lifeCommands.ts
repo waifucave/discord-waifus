@@ -259,9 +259,10 @@ function sizeLabel(bytes: number): string {
 }
 
 function listingLines(list: FilesList): string[] {
-  const where = list.root === "home" ? "her home" : "/tmp";
-  const limit = `${sizeLabel(list.usage.bytes)} of ${sizeLabel(list.usage.maxBytes)}${list.usage.maxFiles !== undefined ? `, ${list.usage.files} of ${list.usage.maxFiles} files` : `, ${list.usage.files} files`}`;
-  const lines = [`${list.display} (${where}: ${limit})`];
+  const where = list.root === "home" ? "her home" : list.root === "tmp" ? "/tmp" : "read-only transcripts";
+  const usage = list.usage;
+  const limit = usage ? `: ${sizeLabel(usage.bytes)} of ${sizeLabel(usage.maxBytes)}${usage.maxFiles !== undefined ? `, ${usage.files} of ${usage.maxFiles} files` : `, ${usage.files} files`}` : "";
+  const lines = [`${list.display} (${where}${limit})`];
   if (list.entries.length === 0) lines.push("  (empty)");
   const width = Math.min(48, Math.max(8, ...list.entries.map((entry) => entry.name.length + (entry.kind === "dir" ? 1 : 0))));
   for (const entry of list.entries) {
@@ -273,12 +274,12 @@ function listingLines(list: FilesList): string[] {
   return lines;
 }
 
-/** `waifus files WAIFU [PATH] [--root home|tmp] [--private]`: list a folder, or print a text file. */
+/** `waifus files WAIFU [PATH] [--root home|tmp|transcripts] [--private]`: list a folder, or print a text file. */
 export async function filesCommand(ctx: CliContext, args: readonly string[], o: { root?: string; private?: boolean }): Promise<ExitCode> {
   const waifuId = waifuIdArg(args[0]);
   if (args.length > 2) throw usageError("waifus files takes one waifu and at most one path.");
-  if (o.root !== undefined && o.root !== "home" && o.root !== "tmp") throw usageError("--root is home or tmp.");
-  const input = herPathInput(args[1], (o.root as "home" | "tmp" | undefined) ?? "home");
+  if (o.root !== undefined && o.root !== "home" && o.root !== "tmp" && o.root !== "transcripts") throw usageError("--root is home, tmp or transcripts.");
+  const input = herPathInput(args[1], (o.root as "home" | "tmp" | "transcripts" | undefined) ?? "home");
   const host = await requireHost(ctx);
   const privateQuery = o.private ? "includePrivate=1" : "";
   const listFolder = async (dir: string): Promise<ExitCode> => {
@@ -289,7 +290,7 @@ export async function filesCommand(ctx: CliContext, args: readonly string[], o: 
     else for (const line of listingLines(body)) ctx.out(line);
     return EXIT.ok;
   };
-  if (input === "~" || input === "/tmp" || input.endsWith("/")) return listFolder(input.replace(/(.)\/+$/u, "$1"));
+  if (input === "~" || input === "/tmp" || input === "/transcripts" || input.endsWith("/")) return listFolder(input.replace(/(.)\/+$/u, "$1"));
   const response = await host({ method: "GET", path: `${herFileUrl(waifuId, input)}${privateQuery ? `?${privateQuery}` : ""}` });
   const code = (response.body as { error?: unknown } | undefined)?.error;
   if (response.status === 400 && code === "IsFolder") return listFolder(input);

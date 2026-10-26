@@ -10,6 +10,25 @@ wakes in her queue. She handles them one turn at a time: she reads, decides what
 what she sends reaches people. Her life is split into epochs: when it grows long, compaction
 summarises it into her `<life_so_far>` and a new epoch starts with her last few turns kept.
 
+**Resting.** Before that happens she summarises herself. When her last request reaches
+`life.restNoticeRatio` (default 0.85) of the compaction trigger, the turn after the running one is
+a rest turn: a notice tells her that her context will be reset to the summary she writes now, that
+her home, `/tmp` and `/transcripts` stay as they are, and to write it clearly. In that turn she can
+use her files, Bash, reminders and watches, but SendMessage, React, WebSearch and WebFetch answer
+"finish your summary first". Queued wakes wait until after it. If her final reply is at least
+`life.restSummaryMinChars` (default 200) characters, a new epoch starts from that summary alone
+(Life shows "rested (her own summary)"); a shorter reply, a failed turn or a cap means compaction
+summarises for her as before. One rest notice per epoch. What she writes in a rest turn is her
+summary, so like her `<life_so_far>` it is hidden in the owner's views unless revealed on the host. `life.restNotice = false` turns it off
+(her time line then warns her that her memory is nearly full, as before).
+
+**Notifications.** Several messages in one place (a burst, or wakes queued while she was busy)
+are one wake and one turn, but she sees one notification line per message, in order, each with
+its reason, the place, the sender, its ref and a short preview: a mention, her name, `@everyone`
+or a watch match is on the line of the message it belongs to, and a message around it that was
+not for her has a line with no reason. At most `life.notificationLinesPerPlace` (default 8)
+lines per place, the newest; the first then says `+N earlier`.
+
 ## Seeing it
 
 - Dashboard → Life: her status (awake, asleep or busy; idle or mid-turn), her queue, today's cost
@@ -48,9 +67,17 @@ simulated Bash (nothing she runs can reach the host or the network):
   same values as her waifu config, so her edit changes her config (and her bot), and a dashboard
   edit rewrites the file. A bad edit (Discord's username rules, a bio over 400 characters, a nickname
   over 32, an unknown server, a changed `name`) is refused and nothing changes; it can't be deleted
-  and nightly maintenance never changes it.
+  and her nightly dream never changes it.
 - **`/tmp`**: files people sent (ReadMessages downloads attachments there) and scratch files, each
   deleted `life.tmp.retentionDays` days (7 by default) after it was last written.
+- **`/transcripts`** (read-only): everything said where she is, kept forever, one file per place per
+  day: `/transcripts/<server>/<room>/<YYYY-MM-DD>.md` (threads in a folder below their room) and her
+  private chats under `/transcripts/dm/<name>/`. A line reads `14:02 Kevin ↩#k3: text [file: a.png]`
+  (her own lines as `you`). She searches it with Read and Bash (`grep -r`, `cat`, Python); nothing
+  can change it and SendMessage can't attach it. A waifu added to a room later sees only what was
+  said after she arrived; one removed from it keeps what she saw. The app writes it (one shared
+  store, `user/transcripts/`) from the same Discord feed as everything else, from the first message
+  after the upgrade on; only a forget and Discord deletions remove lines.
 
 Limits: her home holds `life.home.maxBytes`, `life.home.maxFiles` files and `life.home.maxFolders`
 folders; `/tmp` holds `life.tmp.maxBytes` and `life.tmp.maxFiles` files. One Bash command may save
@@ -58,27 +85,52 @@ at most 5,000 files and folders at once, and is stopped (nothing saved) when the
 grows past `life.bash.maxMemoryMb` while it runs. Names are compared as a case-insensitive disk
 does: `~/Memory.md` is `~/MEMORY.md`.
 
-To look at them: Dashboard → Life (a file browser for her home and `/tmp` with a text editor and
-image previews, and her reminders and watches with delete buttons), `waifus files <id> [path]
-[--root tmp]`, `waifus schedule <id>`, `waifus watches <id>`, or the routes `GET /api/waifus/:id/files`,
+To look at them: Dashboard → Life (a file browser for her home, `/tmp` and her transcripts, with a
+text editor and image previews, and her reminders and watches with delete buttons), `waifus files
+<id> [path] [--root tmp|transcripts]`, `waifus schedule <id>`, `waifus watches <id>`, or the routes `GET /api/waifus/:id/files`,
 `GET|PUT|DELETE /api/waifus/:id/files/<path>`, `GET /api/waifus/:id/schedule` and `/watches`. A save
 from the dashboard or the API passes the same checks as her own Write tool: `places.md` is refused,
 `schedule.json` and `watches.json` must stay valid (a broken one is refused with its line and
-column, and nothing is saved), and a file changed since it was read is a conflict.
+column, and nothing is saved), and a file changed since it was read is a conflict. Transcripts are
+read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
 
-Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`)
-are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
+Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`,
+her DM transcripts under `/transcripts/dm/`, and an exact copy of one in her home) are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
 a DM is shown without its words, and `watches.json` itself then reads as a redacted, read-only copy
 (changing or deleting it needs the reveal on the host). Over Remote Access, and for the dashboard assistant, they stay
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
 click on its secure dashboard card applies.
 
+## Dreaming
+
+While she sleeps (30 minutes into her sleep window, else at `life.maintenanceHourLocal`) her memory
+is tended by a dream: a separate memory keeper with no life log and no persona, using
+`life.dreamModel` when it is set (Settings → Life, "Dream model") and her own model otherwise. It
+reads the dream window, everything said in her transcripts since her last dream, then:
+
+- adds memories from that window only (new people, places, facts, plans, how things felt), as her
+  notes in her voice, with a line in MEMORY.md for each new note;
+- checks every note against the window: a fact the window clearly contradicts is patched (the newest
+  wins); a note the window doesn't mention stays exactly as it is. Absence of evidence is never a
+  reason to delete or change a note;
+- keeps MEMORY.md short with valid links.
+
+Her dream cursor (`life/dream-cursor.json`) moves only when a dream finishes, so a failed or
+interrupted one is read again the next night. A long window (over `life.dreamWindowMaxChars`
+characters) runs in several sessions, oldest days first; each session has at most
+`life.dreamMaxRounds` tool rounds. A night with nothing new calls no model. Each dream adds one
+line to her `maintenance.jsonl` (window start, places, lines, sessions, what changed). Queued forget
+scrubs still run first. `waifus help dreaming` explains it on the command line.
+
 ## Forgetting a person
 
 `POST /api/people/:userId/forget`, `waifus forget <userId>` or the Life screen's forget form removes
-a Discord user from every DM, the member lists, the archive, and scrubs every waifu's life log,
-summary, queue and files (her notes and every other text file in her home, her reminders and
-watches, and the files the person sent her). Forget is a best-effort scrub:
+a Discord user from every DM, the member lists, the archive and every transcript (their lines, the
+lines that mention them or a name only they have, and their DM transcripts whole), and scrubs every
+waifu's life log, summary, queue and files (her notes and every other text file in her home, her
+reminders and watches, and the files the person sent her). A DM user's `/forget conversation`
+deletes that DM's transcript; `/forget everything` also removes their lines in the rooms that
+waifu can see. Forget is a best-effort scrub:
 
 - Discord history itself is not deleted, and whatever she already said in rooms stays there.
 - Usage-ledger lines and app logs stay (they hold ids only, never text).

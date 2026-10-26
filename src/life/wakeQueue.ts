@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import type { DeferredPlace, Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
 import { readLifeFile, updateLifeFile } from "./lifeStore.js";
+import { joinMessages, messagesOf } from "./wakeMessages.js";
 
 export const MAX_IMMEDIATE_WAKES = 200;
 /** What forget leaves of her own note (a reminder's, a watch's) that named the person. */
@@ -31,8 +32,12 @@ function mergeInto(existing: Wake, wake: Wake): Wake {
   if (!reasons.includes(wake.reason)) reasons.push(wake.reason);
   // Still a chime-in only while no plain detector pick joined it.
   const { chimeIn, ...rest } = existing;
+  // Both wakes' messages, each line keeping its own reasons (§20).
+  const joined = joinMessages([messagesOf(existing), messagesOf(wake)], (existing.earlier ?? 0) + (wake.earlier ?? 0));
   return {
     ...rest,
+    ...(joined.messages.length > 0 ? { messages: joined.messages } : {}),
+    ...(joined.earlier > 0 ? { earlier: joined.earlier } : {}),
     ...(chimeIn === true && (wake.reason !== "detector" || wake.chimeIn === true) ? { chimeIn: true } : {}),
     reasons,
     count: (existing.count ?? 1) + (wake.count ?? 1),
@@ -267,6 +272,23 @@ export async function scrubWakeQueue(
         }
         const next: Wake = { ...wake };
         let changed = false;
+        if (next.messages) {
+          // Their messages in someone else's wake go; a quote of another message that names them goes (§20).
+          const messages = next.messages.flatMap((message) => {
+            if (message.fromUserId === o.userId) return [];
+            const kept = { ...message };
+            if (o.mentions(kept.preview)) kept.preview = REMOVED_TEXT;
+            else o.review?.(kept.preview);
+            if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
+            if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
+            return [kept];
+          });
+          if (JSON.stringify(messages) !== JSON.stringify(next.messages)) {
+            changed = true;
+            if (messages.length > 0) next.messages = messages;
+            else delete next.messages;
+          }
+        }
         for (const field of ["preview", "note", "matched"] as const) {
           const text = next[field];
           if (text === undefined) continue;

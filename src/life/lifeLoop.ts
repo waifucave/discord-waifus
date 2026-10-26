@@ -36,6 +36,8 @@ import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
+import { REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME } from "./rest.js";
+import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
 import { collectPlaces, handleOf, refreshPlaces, resolvePlace, withPlaceCache } from "./places.js";
@@ -62,6 +64,8 @@ export const MEMORY_SUMMARISED_NOTE = "[system] memory summarised";
 export const CUT_OFF_RESULT = "error: your message was cut off; try shorter";
 export const INTERRUPTED_RESULT = "[interrupted]";
 export const REFUSED_RESULT = "error: not run (your reply ended in a refusal)";
+
+export { REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME } from "./rest.js";
 
 export type LifeHostHooks = {
   /** A turn ended (tests, dashboard). */
@@ -124,6 +128,12 @@ type TurnRun = {
    * executed, so a late lookup never brings typing back after the send.
    */
   typing?: { keeper: TypingKeeper; sends: Map<string, string>; lookups: Map<string, Promise<void>>; ran: Set<string> };
+  /** The rest turn (§19.3): no wakes fold in, tools that reach people are refused. */
+  rest?: boolean;
+  /** Her text in the round that ended the turn (the rest summary). */
+  finalText?: string;
+  /** Why the turn ended (`done`, `length`, a cap, `error`, `interrupted`, `compaction:…`). */
+  endReason?: string;
 };
 
 type TurnOutcome = "idle" | "again";
@@ -319,7 +329,8 @@ export class Life {
       // first; the messages before them get theirs too, so refs stay in message order (a ref handed
       // to her own later send never jumps ahead of an older message). Only messages that exist get
       // one: the buffer and the latest page (served from the buffer when the conversation is trusted).
-      const wanted = wakes.flatMap((wake) => (wake.placeKey === key && wake.messageId ? [wake.messageId] : []));
+      // Every message a wake is about gets its line and its ref (§20).
+      const wanted = wakes.flatMap((wake) => (wake.placeKey === key ? [...(wake.messageId ? [wake.messageId] : []), ...messagesOf(wake).map((message) => message.id)] : []));
       if (wanted.length === 0) continue;
       const dmFloor = ref.kind === "dm" ? await readDmFloor(deps.storage, ref.userId, ref.waifuId).catch(() => undefined) : undefined;
       const page = await deps.conversations.readPage({ conversation: ref, limit: 50 }).catch(() => ({ messages: [] as typeof buffered }));
@@ -330,13 +341,34 @@ export class Life {
       const ids = known.filter((id) => compareIds(id, newest) <= 0);
       refs.set(key, await assignConversationRefs(deps.storage, key as never, ids, deps.now()).catch(() => new Map<string, string>()));
     }
-    return { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: (key) => unread.get(key), ref: (key, messageId) => refs.get(key)?.get(messageId) };
+    return {
+      timeZone: deps.timeZone,
+      linesPerPlace: deps.config().life.notificationLinesPerPlace,
+      handle: (key) => handles.get(key) ?? key,
+      unread: (key) => unread.get(key),
+      ref: (key, messageId) => refs.get(key)?.get(messageId)
+    };
   }
 
   private timeLineText(waifu: WaifuConfig, estimate: number, model: CuratedModel): string {
     const config = this.deps.config();
     const trigger = config.compaction.triggerRatio * lifeBudget(model, config.life.maxContextTokens);
-    return timeLine({ now: this.deps.now(), timeZone: this.deps.timeZone, availability: waifu.availability, memoryWarning: estimate >= MEMORY_WARNING_RATIO * trigger });
+    // The rest notice replaces the "memory nearly full" warning (§19.2); with it off, the warning stays.
+    return timeLine({ now: this.deps.now(), timeZone: this.deps.timeZone, availability: waifu.availability, memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
+  }
+
+  /**
+   * A rest turn is due (§19.2): the rest notice is on, her epoch is running, compaction is not
+   * backing off, no rest notice was given in this epoch yet, and her last request reached `life.restNoticeRatio` × the compaction trigger but not
+   * the trigger itself (that one compacts for her, as before).
+   */
+  private restDue(state: LifeState, model: CuratedModel): boolean {
+    const config = this.deps.config();
+    if (!config.life.restNotice || !state.systemSnapshot || state.pendingEpochStart || state.restTurn?.epoch === state.epoch) return false;
+    if (state.compactionPausedUntil !== undefined && Date.parse(state.compactionPausedUntil) > this.deps.now().getTime()) return false;
+    const trigger = config.compaction.triggerRatio * lifeBudget(model, config.life.maxContextTokens);
+    const tokens = state.lastRequestTokens ?? 0;
+    return tokens >= config.life.restNoticeRatio * trigger && tokens < trigger;
   }
 
   private async append(run: TurnRun, kind: LifeLogKind, message: ProviderMessageLike | Record<string, unknown>, extra: Partial<LifeLogLine> = {}): Promise<void> {
@@ -395,6 +427,8 @@ export class Life {
     const config = deps.config();
     const paused = state.compactionPausedUntil !== undefined && Date.parse(state.compactionPausedUntil) > deps.now().getTime();
     if (paused) return state;
+    // She had her rest turn and its compaction was interrupted: compact now, leaving that turn out (§19.4).
+    if (state.restTurn?.epoch === state.epoch) return this.compact(waifu, state, lines, harness, "tokens", signal, { openTurnId: state.restTurn.turnId });
     const budget = lifeBudget(model, config.life.maxContextTokens);
     const messageLines = lines.filter((line) => line.message !== null).length;
     if ((state.lastRequestTokens ?? 0) >= config.compaction.triggerRatio * budget) return this.compact(waifu, state, lines, harness, "tokens", signal);
@@ -453,7 +487,8 @@ export class Life {
     const nowMs = deps.now().getTime();
     const followUpDue = state.failedTurn !== undefined && !state.failedTurn.followUpDone && nowMs - Date.parse(state.failedTurn.at) >= FOLLOW_UP_DELAY_MS;
     const queued = await pendingWakeCount(deps.storage, this.waifuId);
-    if (queued === 0 && !followUpDue) return "idle";
+    // A rest turn may be due with nothing queued: it follows the turn that filled her memory (§19.2).
+    if (queued === 0 && !followUpDue && !this.restDue(state, model)) return "idle";
     // Her provider is cooling down after a quota or billing error: the wakes wait in the queue and
     // she is poked again when the cooldown ends (review I6).
     const cooling = deps.models.cooldownRemainingMs?.(model.providerId);
@@ -475,6 +510,8 @@ export class Life {
     state = await this.prepareEpoch(waifu, model, state, signal);
     // An interrupted compaction (pause, shutdown, a reload) changed nothing; no wakes are taken.
     if (signal.aborted) return "idle";
+    // Her memory is nearly full: she rests before any queued wake is delivered (§19.2, R3).
+    if (this.restDue(state, model)) return this.restTurn(waifu, model, state, signal, budgetLeftUsd);
     // Read now, removed once her state records them (a crash in between loses none, §4.6).
     const { wakes, quiet } = await peekImmediate(deps.storage, this.waifuId);
     if (wakes.length === 0 && !followUpDue) return "idle";
@@ -531,6 +568,64 @@ export class Life {
       keeper.stop();
       if (this.typing === keeper) this.typing = undefined;
     }
+  }
+
+  /**
+   * The rest turn (§19.3): a turn of her life in the current epoch (same system blocks and tools, so
+   * the prompt cache holds) opened by the rest notice; no wake is taken or folded in. Her final text
+   * becomes the summary her new epoch starts from (§19.4) when it is long enough and the turn ended
+   * normally; otherwise compaction summarises for her right away, without this turn. An interrupted
+   * rest turn changes nothing and runs again at the next cycle.
+   */
+  private async restTurn(waifu: WaifuConfig, model: CuratedModel, state: LifeState, signal: AbortSignal, budgetLeftUsd: number | undefined): Promise<TurnOutcome> {
+    const deps = this.deps;
+    const turnId = newTurnId();
+    const selfIds = await selfAuthorIds(deps.storage, waifu);
+    const run: TurnRun = {
+      waifu,
+      model,
+      state,
+      lines: await readLifeLog(deps.storage, this.waifuId, state.epoch),
+      turnId,
+      wakes: [],
+      scratch: { id: turnId, sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 },
+      signal,
+      startedMs: deps.now().getTime(),
+      lastEstimate: state.lastRequestTokens ?? 0,
+      selfIds,
+      ...(budgetLeftUsd !== undefined ? { budgetLeftUsd } : {}),
+      spentUsd: 0,
+      rest: true
+    };
+    run.state = await updateLifeState(deps.storage, this.waifuId, (current) => ({
+      ...current,
+      status: "turn",
+      currentTurn: { id: turnId, startedAt: deps.now().toISOString(), rounds: 0, wakeIds: [], wakes: [] }
+    }));
+    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: REST_NOTICE }, { type: "text", text: this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
+    deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate });
+    let outcome = await this.rounds(run);
+    // Interrupted (pause, shutdown, a reload): nothing changes; the rest turn runs again next cycle.
+    if (run.endReason === "interrupted" || signal.aborted) return "idle";
+    // A provider overflow already compacted for her (the mid-turn path).
+    if (run.endReason?.startsWith("compaction:")) return outcome;
+    // One rest notice per epoch: should compaction fail too, she is not asked again in this epoch.
+    await updateLifeState(deps.storage, this.waifuId, (current) => (current.epoch === state.epoch ? { ...current, restTurn: { epoch: state.epoch, turnId } } : current));
+    const summary = (run.finalText ?? "").trim();
+    const harness = await currentHarness(deps, waifu, model);
+    const current = await readLifeState(deps.storage, this.waifuId);
+    if (run.endReason === "done" && summary.length >= Math.max(1, deps.config().life.restSummaryMinChars)) {
+      const next = await startEpoch(deps, this.waifuId, { harness, summary: `${REST_SUMMARY_FRAME}\n${summary}`, kept: [], readIds: [], reason: "rest", summarized: true, strippedBlocks: 0 });
+      deps.logger.info("Life rested", { category: "life", waifuId: this.waifuId, epoch: next.epoch, summaryChars: summary.length });
+    } else {
+      // Ignored (too short, failed, capped): compaction as before, leaving the rest turn out (R4).
+      deps.logger.info("Life rest notice ignored; compacting", { category: "life", waifuId: this.waifuId, reason: run.endReason, summaryChars: summary.length });
+      const lines = await readLifeLog(deps.storage, this.waifuId, current.epoch);
+      await this.compact(waifu, current, lines, harness, "tokens", signal, { openTurnId: turnId });
+      if (signal.aborted) return "idle";
+    }
+    outcome = (await pendingWakeCount(deps.storage, this.waifuId)) > 0 ? "again" : "idle";
+    return outcome;
   }
 
   /** A streaming SendMessage's arguments so far: once its `place` is complete, typing starts there (§6.3). */
@@ -658,6 +753,7 @@ export class Life {
         return this.endTurn(run, rounds, "refusal");
       }
       const calls = result.toolCalls;
+      run.finalText = result.text;
       if (calls.length === 0) {
         if (!unsentChecked && direct() && result.text.trim() && run.scratch.sentPlaces.size === 0 && !overBudget()) {
           unsentChecked = true;
@@ -683,7 +779,8 @@ export class Life {
       // A turn that ends here (capped or interrupted) never folds new wakes in: she could not answer
       // them; they stay queued for her next turn (review I1).
       const wakesBefore = run.wakes.length;
-      const folded = run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);
+      // The rest turn takes no wake: they wait for her new epoch (§19.2, R3).
+      const folded = run.rest || run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);
       const dmFolded = run.wakes.slice(wakesBefore).some((wake) => isDmPlaceKey(wake.placeKey));
       if (dmFolded || executed.dmCalls.length > 0) await this.markDmTurn(run);
       const tail: ContentBlockLike[] = [...folded];
@@ -724,6 +821,9 @@ export class Life {
       let output: ToolOutput;
       if (!tool) {
         output = toolError(`there is no tool called ${call.name}`);
+      } else if (run.rest && REST_REFUSED_TOOLS.has(call.name)) {
+        // Offered (the cached prefix stays the same), refused at run time (§19.3).
+        output = toolError(REST_REFUSED_RESULT);
       } else {
         const argsDigest = createHash("sha256").update(JSON.stringify(call.input ?? {})).digest("hex").slice(0, 32);
         if (tool.sideEffect) await appendIntent(deps.storage, this.waifuId, { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest, at: deps.now().toISOString() });
@@ -822,7 +922,10 @@ export class Life {
     await compactIntents(deps.storage, this.waifuId, new Set()).catch(() => undefined);
     this.host.hooks?.onTurnEnd?.(this.waifuId, { turnId: run.turnId, rounds, reason, sent: run.scratch.sentPlaces.size > 0 });
     deps.logger.info("Life turn ended", { category: "life", waifuId: this.waifuId, turnId: run.turnId, rounds, reason, sent: run.scratch.sentPlaces.size > 0 });
+    run.endReason = reason;
     if (reason === "interrupted") return "idle";
+    // Her memory is nearly full: the next cycle is her rest turn, before any queued wake (§19.2).
+    if (!run.rest && this.restDue(run.state, run.model)) return "again";
     return (await pendingWakeCount(deps.storage, this.waifuId)) > 0 ? "again" : "idle";
   }
 

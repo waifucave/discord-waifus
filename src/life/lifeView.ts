@@ -11,7 +11,8 @@
 // - in notifications (a turn's block, or folded into a tool result), everything from the first quote
 //   to the end of a line about a DM (a preview, a matched word, a note), across lines while a quote
 //   stays open;
-// - her compaction summary (`<life_so_far>`), which can carry anything from her DMs.
+// - her compaction summary (`<life_so_far>`), which can carry anything from her DMs, and so her own
+//   text in a rest turn (§19), the summary she writes herself.
 // The life loop records what each call resolved to (`dmCalls` on the tool-results line, `dmWakes`
 // on lines that carry wakes); a line written before that, or a call whose results are not written
 // yet, falls back to matching DM place references the way `resolvePlace` reads them (trimmed,
@@ -21,6 +22,7 @@
 
 import type { LifeLogLine, LifeState } from "../shared/schemas/life.js";
 import { lifeSystem } from "./request.js";
+import { REST_NOTICE_PREFIX } from "./rest.js";
 
 export const DM_REDACTED = "[private chat redacted]";
 
@@ -37,8 +39,11 @@ export function isDmPlaceKey(placeKey: string | undefined): boolean {
   return typeof placeKey === "string" && placeKey.startsWith("dm_");
 }
 
-/** A notification line about a DM: `- dm · dm/kevin · …`, `- +3 more from Kevin (dm/kevin)`, `  · watch matched · dm/kevin · …`. */
-const DM_NOTIFICATION_LINE = /^\s*[-·] .*(?:· |\(|\s)<?dm[/_]/iu;
+/**
+ * A notification line about a DM (one per message, §20): `- dm · dm/kevin · …`, `- dm/kevin · …`,
+ * `- +3 more from Kevin (dm/kevin)`, `  · watch matched · dm/kevin · …`.
+ */
+const DM_NOTIFICATION_LINE = /^\s*[-·] (?:.*(?:· |\(|\s))?<?dm[/_]/iu;
 
 /** A line that starts a notification entry (or the block's tags); anything else continues the line before. */
 const ENTRY_START = /^\s*(?:[-·] |<\/?notifications>)/u;
@@ -129,12 +134,16 @@ function imageText(block: Block): string {
   return "[image]";
 }
 
-/** Which tool calls touched a DM place, and which turns are DM turns (spec §14.4). */
-export type DmScan = { dmCalls: ReadonlySet<string>; dmTurns: ReadonlySet<string> };
+/**
+ * Which tool calls touched a DM place, which turns are DM turns (spec §14.4), and which are rest
+ * turns (§19: her text there is her summary, private like `<life_so_far>`).
+ */
+export type DmScan = { dmCalls: ReadonlySet<string>; dmTurns: ReadonlySet<string>; restTurns?: ReadonlySet<string> };
 
 export function scanDmContent(lines: readonly LifeLogLine[]): DmScan {
   const dmCalls = new Set<string>();
   const dmTurns = new Set<string>();
+  const restTurns = new Set<string>();
   // What the life loop recorded when the tools ran: per call, whether it resolved to a DM place.
   const recorded = new Map<string, boolean>();
   for (const line of lines) {
@@ -148,6 +157,7 @@ export function scanDmContent(lines: readonly LifeLogLine[]): DmScan {
     if (line.dmWakes === true && turn) dmTurns.add(turn);
     for (const block of blocksOf(line.message)) {
       const type = block["type"];
+      if (type === "text" && turn && line.message?.["role"] !== "assistant" && String(block["text"] ?? "").startsWith(REST_NOTICE_PREFIX)) restTurns.add(turn);
       if (type === "tool_use") {
         const id = String(block["id"]);
         const dm = recorded.has(id) ? recorded.get(id)! : inputNamesDm(block["input"]);
@@ -168,7 +178,7 @@ export function scanDmContent(lines: readonly LifeLogLine[]): DmScan {
       if (id !== undefined && dmCalls.has(id)) dmTurns.add(line.turnId);
     }
   }
-  return { dmCalls, dmTurns };
+  return { dmCalls, dmTurns, restTurns };
 }
 
 const REASONING_TYPES = new Set(["thinking", "redacted_thinking", "reasoning"]);
@@ -212,6 +222,8 @@ function plainInput(input: unknown): unknown {
 export function viewLogLine(line: LifeLogLine, scan: DmScan, o: { includePrivate: boolean }): { view: LogLineView; redacted: number } {
   const hide = !o.includePrivate;
   const dmTurn = line.turnId !== undefined && scan.dmTurns.has(line.turnId);
+  // Her text in a rest turn is her summary: private like `<life_so_far>` (§19, D14).
+  const restTurn = line.turnId !== undefined && scan.restTurns?.has(line.turnId) === true;
   const role = line.message?.["role"];
   const assistant = role === "assistant";
   let redacted = 0;
@@ -224,7 +236,7 @@ export function viewLogLine(line: LifeLogLine, scan: DmScan, o: { includePrivate
     }
     if (type === "text") {
       const text = String(block["text"] ?? "");
-      if (hide && assistant && dmTurn) {
+      if (hide && assistant && (dmTurn || restTurn)) {
         blocks.push({ type: "text", redacted: true });
         redacted += 1;
       } else blocks.push({ type: "text", text: hide ? redactDmNotifications(text) : text });

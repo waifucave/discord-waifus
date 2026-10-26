@@ -64,7 +64,8 @@ at upgrade; writes that still send them are accepted and ignored.
 > reminders and watches, the addressee detector), reads before answering, may stay quiet, and keeps
 > notes in her own folder (her home `/home/<name>`, backed by `user/waifus/<id>/home/`, with
 > `MEMORY.md` as the index and her reminders and watches in `schedule.json` and `watches.json`;
-> files people send land in her `/tmp`), tidying them nightly. See the life doc. She sleeps in
+> files people send land in her `/tmp`; what was said where she is stays readable in her
+> read-only `/transcripts`), and a nightly dream checks her notes against what was said that day. See the life doc. She sleeps in
 > her sleep window (wakes are held for a morning summary), stops at her daily budget
 > (`life.dailyBudgetUsd`) and can search and read the web.
 
