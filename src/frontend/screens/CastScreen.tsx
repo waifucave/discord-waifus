@@ -32,6 +32,11 @@ export function previousModelFor(warnings: readonly ModelWarning[] | undefined, 
   return (warnings ?? []).find((warning) => warning.scope === `waifu:${waifuId}` && warning.previous)?.previous;
 }
 
+/** Her model as provider and route, e.g. `openrouter · anthropic/claude-haiku-5.5`. */
+function modelText(model: WaifuConfig["model"] | undefined): string {
+  return model ? `${model.providerId} · ${model.modelId}` : "no model";
+}
+
 /* ================= mosaic ================= */
 
 /** Her avatar as saved here (uploaded, or imported from her bot's Discord profile); nothing when she has none. */
@@ -55,7 +60,7 @@ function WaifuAvatar({ id, size }: { id: string; size: number }) {
     };
   }, [id]);
   if (!url) return null;
-  return <img src={url} alt="" width={size} height={size} style={{ borderRadius: "50%", objectFit: "cover", flex: "none" }} />;
+  return <img src={url} alt="" width={size} height={size} style={{ objectFit: "cover", flex: "none" }} />;
 }
 
 function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, id?: string) => void }) {
@@ -104,7 +109,7 @@ function CastMosaic({ onNavigate }: { onNavigate: (view: ViewId, tab?: string, i
                     <span className="nm" style={{ fontSize: wide ? 52 : 34 }}>{waifu.displayName || waifu.name}</span>
                   </span>
                   <div className="t-micro t-plain" style={{ marginTop: 8 }}>
-                    {waifu.model?.modelId ?? "no model"}{waifu.botId ? " · own bot" : " · no bot yet"}
+                    {modelText(waifu.model)}{waifu.botId ? " · own bot" : " · no bot yet"}
                   </div>
                   {previous && (
                     <div className="t-micro t-plain" style={{ marginTop: 4 }}>
@@ -235,7 +240,7 @@ function CharacterEditor({
       <HeadRow
         onBack={() => onNavigate("cast")}
         title={title}
-        sub={creating ? "define who she is" : remote.data?.model?.modelId ?? "no model"}
+        sub={creating ? "define who she is" : modelText(remote.data?.model)}
         action={
           <button className={"cell clickable actioncell" + (blocked ? "" : " primary")} onClick={save} disabled={blocked}>
             {saving ? "Saving…" : unchanged ? "Saved" : creating ? "Create" : "Save"}
