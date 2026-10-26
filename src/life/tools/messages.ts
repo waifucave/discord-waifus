@@ -27,6 +27,7 @@ import { placeLabel, resolvePlace, type ResolvedPlace } from "../places.js";
 import { entryHeader, type LineMessage, type LineView } from "../render.js";
 import type { LifeDeps } from "../deps.js";
 import { noteDmFile, pathArg, storeOf } from "./files.js";
+import { transcriptsSegments } from "../transcripts/view.js";
 import { CANNOT_POST, MESSAGE_TOO_OLD, parseInput, toolError, UNKNOWN_PLACE, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 /** At most this many attachments are downloaded by one ReadMessages call (§16.3.1). */
@@ -322,6 +323,11 @@ async function attachments(ctx: ToolContext, requested: readonly string[]): Prom
   const seen = new Set<string>();
   let total = 0;
   for (const input of requested) {
+    // Transcripts are hers to read, never to send (§18.3).
+    if (transcriptsSegments(input, store.slug)) {
+      skipped.push(`${input} (transcripts can't be attached)`);
+      continue;
+    }
     const target = await pathArg(store, input);
     if (!target.ok) {
       skipped.push(`${input} (${String(target.output.content).replace(/^error:\s*/u, "")})`);

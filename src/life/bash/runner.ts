@@ -14,6 +14,7 @@ import { Worker } from "node:worker_threads";
 import type { ChangeBase, ChangeSet } from "../home/homeStore.js";
 import type { HomeStore } from "../home/homeStore.js";
 import { parseVirtual } from "../home/pathRules.js";
+import { transcriptsSegments, type TranscriptView } from "../transcripts/view.js";
 import type { BashHostMessage, BashWorkerInput, BashWorkerMessage } from "./bashWorker.js";
 
 /**
@@ -52,6 +53,8 @@ export type BashRun = {
   tooMany?: number;
   /** failed: why (memory, a worker error). */
   error?: string;
+  /** Paths below `/transcripts` the command stat'ed, listed or read (segments; the DM check). */
+  transcriptPaths?: string[][];
 };
 
 export type BashRunOptions = {
@@ -67,6 +70,8 @@ export type BashRunOptions = {
   maxMemoryBytes?: number;
   /** Most entries (written files, deleted paths, new folders) a change set may carry. */
   maxChanges?: number;
+  /** Her `/transcripts` (spec §18.3): mounted read-only and served on demand, never copied. */
+  transcripts?: TranscriptView;
 };
 
 /** How often the memory watchdog samples the host's resident memory. */
@@ -97,9 +102,11 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
     commands: [...BASH_COMMANDS],
     maxOutputBytes: BASH_MAX_OUTPUT_BYTES,
     maxFileSystemBytes: o.maxFileSystemBytes,
-    maxChanges: o.maxChanges ?? MAX_CHANGE_ENTRIES
+    maxChanges: o.maxChanges ?? MAX_CHANGE_ENTRIES,
+    ...(o.transcripts ? { transcripts: true } : {})
   };
   const read = new Set<string>();
+  const transcriptPaths = new Map<string, string[]>();
   if (o.signal?.aborted) return { outcome: "aborted", stdout: "", stderr: "", exitCode: 130, base, read: [] };
   const baseline = process.memoryUsage.rss();
   const worker = new Worker(workerUrl(), {
@@ -122,7 +129,7 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
       clearInterval(watchdog);
       o.signal?.removeEventListener("abort", onAbort);
       void worker.terminate().catch(() => undefined);
-      resolve({ ...run, base, read: [...read] });
+      resolve({ ...run, base, read: [...read], ...(transcriptPaths.size > 0 ? { transcriptPaths: [...transcriptPaths.values()] } : {}) });
     };
     // The wall clock is the one time limit (§16.3.5): just-bash's own deadlines are set past it, so
     // a command that runs too long always ends here, with the worker terminated and nothing saved.
@@ -148,6 +155,23 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
         );
         return;
       }
+      if (message.type === "transcripts") {
+        const view = o.transcripts;
+        const segments = view ? transcriptsSegments(message.path, store.slug) : undefined;
+        if (!view || !segments) {
+          worker.postMessage({ type: "transcripts-result", id: message.id, error: "ENOENT" } satisfies BashHostMessage);
+          return;
+        }
+        if (transcriptPaths.size < MAX_TRANSCRIPT_PATHS) transcriptPaths.set(segments.join("/"), segments);
+        void serveTranscripts(view, message.op, segments).then(
+          (answer) => {
+            const transfer = answer.data ? [answer.data.buffer as ArrayBuffer] : [];
+            worker.postMessage({ type: "transcripts-result", id: message.id, ...answer } satisfies BashHostMessage, transfer);
+          },
+          () => worker.postMessage({ type: "transcripts-result", id: message.id, error: "EIO" } satisfies BashHostMessage)
+        );
+        return;
+      }
       if (message.type === "fatal") {
         finish({ outcome: "failed", stdout: "", stderr: "", exitCode: 1, error: message.message });
         return;
@@ -168,6 +192,26 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
     });
     worker.on("exit", () => finish({ outcome: "failed", stdout: "", stderr: "", exitCode: 1, error: "the command stopped unexpectedly" }));
   });
+}
+
+/** At most this many distinct `/transcripts` paths are remembered for the DM check. */
+const MAX_TRANSCRIPT_PATHS = 50_000;
+
+/** A `/transcripts` question from the worker: an entry's kind and size, a folder's entries, or a day's text. */
+async function serveTranscripts(view: TranscriptView, op: "stat" | "list" | "read", segments: string[]): Promise<Omit<Extract<BashHostMessage, { type: "transcripts-result" }>, "type" | "id">> {
+  if (op === "stat") {
+    const stat = await view.stat(segments);
+    return stat ? { stat } : {};
+  }
+  if (op === "list") {
+    const entries = await view.readdir(segments);
+    if (entries) return { entries };
+    const stat = await view.stat(segments);
+    return stat ? { stat } : {};
+  }
+  const text = await view.read(segments);
+  if (text === undefined) return (await view.stat(segments)) ? { error: "EISDIR" } : { error: "ENOENT" };
+  return { data: new Uint8Array(Buffer.from(text, "utf8")) };
 }
 
 /** One file's bytes for the worker: only files that were in her folders when the command started. */

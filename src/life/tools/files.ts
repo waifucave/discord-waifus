@@ -18,7 +18,8 @@ import { checkEnvFor, homeStoreFor } from "../home/index.js";
 import { HomeError, isTextBytes, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
-import { pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
+import { herSlug, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
+import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
 import { imageSize } from "../bash/imageCommand.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
@@ -34,6 +35,28 @@ const OCR_TIMEOUT_MS = 4_000;
 
 export function storeOf(ctx: Pick<ToolContext, "deps" | "waifu">): HomeStore {
   return homeStoreFor(ctx.deps, ctx.waifu);
+}
+
+/** Her `/transcripts` for one call (spec §18.3). */
+export function transcriptViewOf(ctx: Pick<ToolContext, "deps" | "waifu">): TranscriptView {
+  return new TranscriptView({ storage: ctx.deps.storage, waifuId: ctx.waifu.id, timeZone: ctx.deps.timeZone, now: ctx.deps.now });
+}
+
+/** The `/transcripts` segments of a path she gave, if it is there. */
+function transcriptsArg(ctx: Pick<ToolContext, "deps" | "waifu">, input: string): string[] | undefined {
+  return transcriptsSegments(input, herSlug(ctx.waifu));
+}
+
+/** Read of a transcript day file (rendered from the store; a private chat's is a DM call, D14). */
+async function readTranscript(ctx: ToolContext, segments: string[], offset: number, limit: number): Promise<ToolOutput> {
+  const view = transcriptViewOf(ctx);
+  const display = transcriptsVirtual(segments);
+  if (await view.isPrivate(segments)) notePlace((await view.conversationOf(segments))?.key ?? "dm_file");
+  const stat = await view.stat(segments);
+  if (!stat) return toolError(`${display} doesn't exist`);
+  if (stat.kind === "dir") return toolError(`${display} is a folder; list it with Bash (ls ${display})`);
+  const text = (await view.read(segments)) ?? "";
+  return { content: capReadOutput(numbered(text, offset, limit), "offset and limit") };
 }
 
 /**
@@ -183,6 +206,8 @@ async function readPdf(ctx: ToolContext, p: HerPath, data: Buffer, pages: string
 async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(ReadInput, input);
   if (!parsed.ok) return parsed.output;
+  const transcript = transcriptsArg(ctx, parsed.value.file_path);
+  if (transcript) return readTranscript(ctx, transcript, parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -222,6 +247,7 @@ const WriteInput = z.object({ file_path: z.string().min(1).max(2000), content: z
 async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(WriteInput, input);
   if (!parsed.ok) return parsed.output;
+  if (transcriptsArg(ctx, parsed.value.file_path)) return toolError(TRANSCRIPTS_READ_ONLY);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -266,6 +292,7 @@ const EditInput = z.object({
 async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(EditInput, input);
   if (!parsed.ok) return parsed.output;
+  if (transcriptsArg(ctx, parsed.value.file_path)) return toolError(TRANSCRIPTS_READ_ONLY);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -291,7 +318,7 @@ export const fileTools: LifeTool[] = [
   {
     name: "Read",
     description:
-      "Read a file from your folders. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you; when they can't be, you get any text in them. PDFs come back as text with page markers (the first 20 pages; use pages for others).",
+      "Read a file from your folders or /transcripts. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you; when they can't be, you get any text in them. PDFs come back as text with page markers (the first 20 pages; use pages for others).",
     inputSchema: {
       type: "object",
       properties: {

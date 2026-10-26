@@ -130,10 +130,10 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | POST | `/api/waifus/:waifuId/assets/pfp` | Upload her avatar image. | `waifu` |
 | GET | `/api/waifus/:waifuId/discord-profile` | Her bot's Discord profile sync: wanted username, bio, nicknames and images, pending fields, rate-limit retry time, warnings. | `waifu` |
 | POST | `/api/waifus/:waifuId/discord-profile/sync` | Sync her profile to her bot now (rate-limited fields keep waiting); returns the status. | `waifu` |
-| GET | `/api/waifus/:waifuId/files` | List a folder of her home or /tmp (?root=home\|tmp&dir; files from private chats are named only with a local includePrivate=1). | `life` |
+| GET | `/api/waifus/:waifuId/files` | List a folder of her home, /tmp or her read-only /transcripts (?root=home\|tmp\|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1). | `life` |
 | DELETE | `/api/waifus/:waifuId/files/*` | Delete one of her files (?expectedHash). | `life` |
-| GET | `/api/waifus/:waifuId/files/*` | One of her files: JSON with the text for a text file, ?raw=1 for the bytes (a DM file needs a local includePrivate=1). | `life` |
-| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md refused). | `life` |
+| GET | `/api/waifus/:waifuId/files/*` | One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1). | `life` |
+| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md and /transcripts refused). | `life` |
 | GET | `/api/waifus/:waifuId/life` | Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally). | `life` |
 | POST | `/api/waifus/:waifuId/life/compact` | Summarise her life now (between turns). | `life` |
 | GET | `/api/waifus/:waifuId/life/log` | Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1). | `life` |
@@ -193,9 +193,9 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   owner reveals them on the host); `DELETE …/life/needs-review/:itemId` dismisses one.
 - **Her files** (`life` topic; spec §16.11): her home `/home/<name>` (`~`: notes, `MEMORY.md`,
   `schedule.json`, `watches.json`, the read-only `places.md`) and `/tmp` (downloads, deleted 7 days
-  after the last write). `GET /api/waifus/:id/files?root=home|tmp&dir=` lists one folder →
+  after the last write). `GET /api/waifus/:id/files?root=home|tmp|transcripts&dir=` lists one folder →
   `{root, dir, display, parent, entries: [{name, path, kind: file|dir, size, modified, private?,
-  redacted?}], redacted, usage: {bytes, files, maxBytes, maxFiles?}, includePrivate}` (folders
+  redacted?}], redacted, usage?: {bytes, files, maxBytes, maxFiles?}, includePrivate}` (folders
   first; links never listed). A file's URL is its path without the leading slash
   (`/api/waifus/aria/files/home/aria/people/kevin.md`, `…/files/tmp/x.png`, or `…/files/~/notes.md`):
   `GET` answers JSON `{path, display, kind: text|image|pdf|binary, contentType, size, modified,
@@ -207,7 +207,11 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   400 `NotTextFile`, a name differing only by case 409 `NameCollision`; `expectedHash` is the `hash`
   last read (mismatch 409 `Conflict`; `null` = must not exist yet) → `{path, display, hash, size,
   created, rewritten}` (`rewritten`: new reminder or watch entries got their ids). `DELETE
-  …/files/<path>?expectedHash=` → `{deleted: true}`. A file from a private chat (a DM download, a
+  …/files/<path>?expectedHash=` → `{deleted: true}`. Her read-only `/transcripts` (§18.3: one file
+  per place per day, `/transcripts/<server>/<room>/<YYYY-MM-DD>.md`, DMs under `/transcripts/dm/`)
+  lists with `?root=transcripts` (or `?dir=/transcripts/…`; no `usage`) and reads as text
+  (`readOnly: true`) at `…/files/transcripts/<path>`; `PUT`/`DELETE` there answer 400
+  `ReadOnlyFile`. A DM transcript (and listing `/transcripts/dm`) is private like a DM file. A file from a private chat (a DM download, a
   copy of one by content, anything under `/tmp/dm/`) is listed as `[private chat redacted]`
   without a path, and reading, writing or deleting it (or listing a folder under `/tmp/dm/`) needs
   a local `includePrivate=1` (else 403 `PrivateContentLocalOnly`). The assistant's writes need its

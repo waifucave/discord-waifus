@@ -282,7 +282,7 @@ export function coerceValue(info: KeyInfo, raw: string): Coerced {
         if (info.maxLength !== undefined && raw.length > info.maxLength) return { ok: false, error: `${info.id} is at most ${info.maxLength} characters` };
         return { ok: true, value: raw };
       case "json":
-        if (info.path === "model") return { ok: true, value: parseModelChoice(text) };
+        if (info.path === "model" || info.path === "life.dreamModel") return { ok: true, value: parseModelChoice(text) };
         if (info.id === "channel.enabledWaifuIds") return { ok: true, value: text.startsWith("[") ? JSON.parse(text) : text.split(",").map((part) => part.trim()).filter(Boolean) };
         return { ok: true, value: JSON.parse(text) };
     }

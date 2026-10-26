@@ -22,7 +22,8 @@ function touchesProfile(virtual: string, slug: string): boolean {
 }
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
-import { noteDmFile, storeOf } from "./files.js";
+import { noteDmFile, storeOf, transcriptViewOf } from "./files.js";
+import type { TranscriptView } from "../transcripts/view.js";
 import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
@@ -81,7 +82,19 @@ async function noteDmTouches(store: HomeStore, paths: readonly string[], text: s
     }
   }
   const lowered = pathKey(text);
-  if (lowered.includes("/tmp/dm/") || dmEntries.some((entry) => lowered.includes(pathKey(entry.path)))) notePlace("dm_file");
+  if (lowered.includes("/tmp/dm/") || lowered.includes("/transcripts/dm/") || dmEntries.some((entry) => lowered.includes(pathKey(entry.path)))) notePlace("dm_file");
+}
+
+/** The private chats whose transcripts a command listed or read (D14): each is recorded as touched. */
+async function noteTranscriptDms(view: TranscriptView, paths: readonly string[][]): Promise<void> {
+  const noted = new Set<string>();
+  for (const segments of paths) {
+    if (!(await view.isPrivate(segments))) continue;
+    const key = (await view.conversationOf(segments))?.key ?? "dm_file";
+    if (noted.has(key)) continue;
+    noted.add(key);
+    notePlace(key);
+  }
 }
 
 async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
@@ -92,7 +105,8 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const timeoutMs = Math.min(parsed.value.timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS, life.bash.maxTimeoutMs);
   const store = storeOf(ctx);
   // A command that names a private chat's downloads is about that chat (D14).
-  if (/\/tmp\/dm(?:\/|\b)/iu.test(parsed.value.command)) notePlace("dm_file");
+  if (/\/(?:tmp|transcripts)\/dm(?:\/|\b)/iu.test(parsed.value.command)) notePlace("dm_file");
+  const transcripts = transcriptViewOf(ctx);
   const run = await runBash({
     store,
     command: parsed.value.command,
@@ -102,8 +116,10 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     signal: ctx.signal,
     maxFileSystemBytes: life.home.maxBytes + life.tmp.maxBytes + WORK_ROOM_BYTES,
     maxMemoryBytes: life.bash.maxMemoryMb * 1024 * 1024,
-    maxChanges: MAX_CHANGE_ENTRIES
+    maxChanges: MAX_CHANGE_ENTRIES,
+    transcripts
   });
+  if (run.transcriptPaths) await noteTranscriptDms(transcripts, run.transcriptPaths).catch(() => undefined);
   if (run.outcome === "aborted") return toolError("interrupted; nothing was saved");
   if (run.outcome === "timeout") return toolError(`the command took longer than ${Math.round(timeoutMs / 1000)} s and was stopped; nothing was saved`);
   if (run.outcome === "memory") return toolError("the command used too much memory and was stopped; nothing was saved");
@@ -148,7 +164,7 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 function bashDescription(python: boolean): string {
-  return `Run a bash command in your own folders: your home (~, where you start) and /tmp. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read; Read gives a picture's size in pixels, and crop boxes are in those pixels, so look at an edited picture before you send it). There is no internet and nothing outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
+  return `Run a bash command in your own folders: your home (~, where you start) and /tmp; /transcripts can be read and searched but not changed. Common tools work (ls, cat, grep, find, sed, awk, jq, sort, mv, cp, rm, mkdir${python ? ", python3 with its standard library" : ""}, and image to get a picture's size or crop, resize, rotate, flip or convert it; look at pictures with Read; Read gives a picture's size in pixels, and crop boxes are in those pixels, so look at an edited picture before you send it). There is no internet and nothing else outside your two folders. What the command changes is saved when it ends, all at once; if anything can't be saved, nothing is.`;
 }
 
 /** Bash's input schema; the timeout's limit as configured (`life.bash.maxTimeoutMs`). */

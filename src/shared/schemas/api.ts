@@ -270,8 +270,11 @@ export const LifeResetResponseSchema = z.object({
 
 // ---- her files, reminders and watches (§16.11) ------------------------------------------------------
 
-/** Her two folders: `/home/<slug>` (her home, `~`) and `/tmp` (downloads, deleted 7 days after the last write). */
-export const HER_ROOTS = ["home", "tmp"] as const;
+/**
+ * Her two folders: `/home/<slug>` (her home, `~`) and `/tmp` (downloads, deleted 7 days after the last
+ * write), and the read-only `/transcripts` (§18.3).
+ */
+export const HER_ROOTS = ["home", "tmp", "transcripts"] as const;
 
 export { PRIVATE_FILE_NAME } from "../constants/files.js";
 
@@ -304,14 +307,14 @@ export const HerFilesListResponseSchema = z.object({
   includePrivate: z.boolean(),
   /** Entries whose name was left out. */
   redacted: z.number().int().nonnegative(),
-  /** The whole root: bytes and files, and its limits (`/tmp` also says how many days a file is kept). */
+  /** The whole root: bytes and files, and its limits (`/tmp` also says how many days a file is kept); none for `/transcripts`. */
   usage: z.object({
     bytes: z.number().int().nonnegative(),
     files: z.number().int().nonnegative(),
     maxBytes: z.number().int().positive(),
     maxFiles: z.number().int().positive().optional(),
     retentionDays: z.number().int().positive().optional()
-  })
+  }).optional()
 });
 
 export const HER_FILE_KINDS = ["text", "image", "pdf", "binary"] as const;
@@ -505,6 +508,8 @@ export const PeopleForgetResponseSchema = z.object({
   cachedImages: z.number().int().nonnegative(),
   memberLists: z.number().int().nonnegative().optional(),
   archive: z.object({ files: z.number().int(), removed: z.number().int(), unreadable: z.number().int(), skipped: z.number().int() }).optional(),
+  /** Transcript lines removed (Living cast §18.5). */
+  transcriptLines: z.number().int().nonnegative().optional(),
   pending: z.array(ForgetPendingSchema).optional(),
   /** Each life scrubbed now (a cast runtime is live). */
   lives: z.array(ForgetScrubResultSchema).optional(),

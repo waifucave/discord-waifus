@@ -16,6 +16,9 @@
 // `watches.json` with a DM-bound watch reads, without `includePrivate`, as a redacted copy (that
 // watch's note and bindings `[private chat redacted]`, read-only); writing or deleting it then needs
 // `includePrivate`. Paths compare as her disk does (`/tmp/DM/…` is `/tmp/dm/…`).
+// `/transcripts` (§18.3) lists and reads the same way, read-only: a private chat's transcript is
+// listed as `[private chat redacted]` and opens only with `includePrivate=1`; PUT and DELETE there
+// answer 400 `ReadOnlyFile`.
 // Errors never carry host paths: her store's messages name only her paths.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -37,6 +40,7 @@ import type { StorageService } from "../storage/storageService.js";
 import { ApiError, badRequest, conflict, notFound } from "./errors.js";
 import { assertSafeId } from "./ids.js";
 import { includePrivateOf } from "./lifeRoutes.js";
+import { TranscriptView, transcriptsSegments, transcriptsVirtual } from "../life/transcripts/view.js";
 
 export type HomeRouteOptions = {
   storage: StorageService;
@@ -244,11 +248,68 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     }
   };
 
+  /** Her `/transcripts` (§18.3), read-only; a private chat's transcript is D14. */
+  const transcriptsOf = (waifuId: string) => new TranscriptView({ storage: o.storage, waifuId, timeZone: timeZone(), now });
+
+  /** The `*` part of a files URL when it is under `/transcripts` (segments below it). */
+  const transcriptPathOf = (request: FastifyRequest, slug: string): string[] | undefined => {
+    const raw = String((request.params as Record<string, unknown>)["*"] ?? "");
+    return raw.startsWith("~") ? undefined : transcriptsSegments(`/${raw}`, slug);
+  };
+
+  const listTranscripts = async (waifuId: string, segments: string[], includePrivate: boolean) => {
+    const view = transcriptsOf(waifuId);
+    // A private chat's folder (or `dm`, which names the people she has private chats with).
+    if (!includePrivate && (await view.isPrivate(segments))) throw privateRefused();
+    const entries = await view.readdir(segments, { sizes: true });
+    if (!entries) {
+      if (await view.stat(segments)) throw new ApiError(400, `${transcriptsVirtual(segments)} is a file, not a folder`, undefined, "NotFolder");
+      throw notFound(`${transcriptsVirtual(segments)} doesn't exist`);
+    }
+    let redacted = 0;
+    const views = [];
+    for (const entry of entries) {
+      const child = [...segments, entry.name];
+      const isPrivate = (await view.conversationOf(child))?.dm === true;
+      const hide = isPrivate && !includePrivate;
+      if (hide) redacted += 1;
+      views.push({
+        name: hide ? PRIVATE_FILE_NAME : entry.name,
+        ...(hide ? {} : { path: transcriptsVirtual(child) }),
+        kind: entry.kind,
+        size: entry.size,
+        modified: iso(entry.mtimeMs),
+        ...(isPrivate ? { private: true as const } : {}),
+        ...(hide ? { redacted: true as const } : {})
+      });
+    }
+    return {
+      waifuId,
+      root: "transcripts" as const,
+      dir: transcriptsVirtual(segments),
+      display: transcriptsVirtual(segments),
+      parent: segments.length === 0 ? null : transcriptsVirtual(segments.slice(0, -1)),
+      entries: views,
+      includePrivate,
+      redacted
+    };
+  };
+
+  const transcriptsReadOnly = () => new ApiError(400, "Transcripts are read-only.", undefined, "ReadOnlyFile");
+
   app.get("/api/waifus/:waifuId/files", async (request) => {
     const waifuId = waifuIdOf(request.params);
     const includePrivate = includePrivateOf(request);
     const query = z.object({ root: z.enum(HER_ROOTS).optional(), dir: z.string().max(2000).optional() }).parse(request.query ?? {});
     const { home } = await homeOf(waifuId);
+    const transcriptDir = query.dir?.trim().startsWith("/") ? transcriptsSegments(query.dir.trim(), home.slug) : undefined;
+    if (transcriptDir || query.root === "transcripts") {
+      const dir = query.dir?.trim() ?? "";
+      const segments = transcriptDir ?? (dir ? transcriptsSegments(`/transcripts/${dir}`, home.slug) : []);
+      if (!segments) throw badRequest(`${dir} is not under /transcripts.`);
+      if (query.root && query.root !== "transcripts") throw badRequest(`${dir} is not under ${query.root === "home" ? "her home" : "/tmp"}.`);
+      return listTranscripts(waifuId, segments, includePrivate);
+    }
     let folder: HerPath;
     const dir = query.dir?.trim() ?? "";
     if (dir.startsWith("/") || dir.startsWith("~")) {
@@ -304,6 +365,40 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const includePrivate = includePrivateOf(request);
     const { raw } = z.object({ raw: z.enum(["0", "1", "true", "false"]).optional() }).parse({ raw: (request.query as Record<string, unknown> | undefined)?.["raw"] });
     const { home } = await homeOf(waifuId);
+    const transcript = transcriptPathOf(request, home.slug);
+    if (transcript) {
+      const view = transcriptsOf(waifuId);
+      const virtual = transcriptsVirtual(transcript);
+      if (!includePrivate && (await view.isPrivate(transcript))) throw privateRefused();
+      const stat = await view.stat(transcript);
+      if (!stat) throw notFound(`${virtual} doesn't exist`);
+      if (stat.kind === "dir") throw new ApiError(400, `${virtual} is a folder, not a file (list it with GET /api/waifus/${waifuId}/files?dir=${virtual})`, undefined, "IsFolder");
+      const text = (await view.read(transcript)) ?? "";
+      const data = Buffer.from(text, "utf8");
+      if (raw === "1" || raw === "true") {
+        return reply
+          .header("content-type", "text/plain; charset=utf-8")
+          .header("x-content-type-options", "nosniff")
+          .header("content-security-policy", "default-src 'none'; sandbox")
+          .header("content-disposition", `attachment; filename="${(transcript.at(-1) ?? "transcript.md").replace(/[^\w.-]+/gu, "_")}"`)
+          .send(data);
+      }
+      const isPrivate = (await view.conversationOf(transcript))?.dm === true;
+      return {
+        waifuId,
+        path: virtual,
+        display: virtual,
+        kind: "text" as const,
+        contentType: "text/plain; charset=utf-8",
+        size: data.length,
+        modified: iso(stat.mtimeMs),
+        hash: sha256(data),
+        ...(data.length > TEXT_INLINE_MAX_BYTES ? { tooLarge: true as const } : { text }),
+        readOnly: true as const,
+        ...(isPrivate ? { private: true as const } : {}),
+        includePrivate
+      };
+    }
     const p = await filePath(home, request);
     const info = await home.files.inspect(p);
     if (info.kind === "missing") throw notFound(`${p.display} doesn't exist`);
@@ -360,6 +455,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
   app.put("/api/waifus/:waifuId/files/*", async (request) => {
     const waifuId = waifuIdOf(request.params);
     refuseUnconfirmedAssistant(request);
+    if (transcriptPathOf(request, (await homeOf(waifuId)).home.slug)) throw transcriptsReadOnly();
     const includePrivate = includePrivateOf(request);
     const body = HerFileWriteBodySchema.parse(request.body ?? {});
     const { home, env } = await homeOf(waifuId);
@@ -375,6 +471,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
   app.delete("/api/waifus/:waifuId/files/*", async (request) => {
     const waifuId = waifuIdOf(request.params);
     refuseUnconfirmedAssistant(request);
+    if (transcriptPathOf(request, (await homeOf(waifuId)).home.slug)) throw transcriptsReadOnly();
     const includePrivate = includePrivateOf(request);
     const query = z.object({ expectedHash: z.string().regex(/^[0-9a-f]{64}$/u).optional() }).parse({ expectedHash: (request.query as Record<string, unknown> | undefined)?.["expectedHash"] });
     const { home, env } = await homeOf(waifuId);

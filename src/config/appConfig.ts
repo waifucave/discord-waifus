@@ -45,6 +45,9 @@ export function mergeAppConfigPatch(
       frontend.staticDir = patch.frontend.staticDir;
     }
   }
+  const life: Record<string, unknown> = { ...current.life, ...patch.life };
+  // An explicit null unsets the dream model (the dream uses her own model again).
+  if (patch.life && Object.prototype.hasOwnProperty.call(patch.life, "dreamModel") && patch.life.dreamModel === null) delete life["dreamModel"];
   return AppConfigSchema.parse({
     ...current,
     ...patch,
@@ -62,8 +65,7 @@ export function mergeAppConfigPatch(
     },
     models: { ...current.models, ...patch.models },
     life: {
-      ...current.life,
-      ...patch.life,
+      ...life,
       webFetch: { ...current.life.webFetch, ...patch.life?.webFetch },
       home: { ...current.life.home, ...patch.life?.home },
       tmp: { ...current.life.tmp, ...patch.life?.tmp },

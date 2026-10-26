@@ -504,6 +504,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         "AssistantConfirmationRequired"
       );
     }
+    // The dream model (§18.4) must be a route GET /api/models offers, like any model choice; an
+    // unchanged one is never re-checked (it may have left the allow list since).
+    const dreamModel = patch.life?.dreamModel;
+    if (dreamModel && !sameModelChoice(currentConfig.life.dreamModel, dreamModel)) {
+      const allowed = { ...currentConfig.models, ...patch.models };
+      assertModelChoiceValid(dreamModel, { allowed: allowed.allowed, maxOutputUsdPerMTok: allowed.maxOutputUsdPerMTok });
+    }
     const saved = await storage.withLocks([APP_CONFIG_LOCK], () => updateAppConfig(options.dataRoot, patch));
     options.runtime.paused = saved.runtime.paused;
     const { updates: _beforeUpdates, ...beforeRuntimeConfig } = currentConfig;

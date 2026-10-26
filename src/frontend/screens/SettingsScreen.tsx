@@ -672,14 +672,67 @@ type LifeGroup = { title: string; hint: string; paths: string[]; columns?: numbe
 
 /** Host-wide life limits, grouped by what they bound. Any app.life key not listed lands in "Other limits". */
 export const LIFE_LIMIT_GROUPS: readonly LifeGroup[] = [
-  { title: "Turns", hint: "How many lives run at once, how long a turn may take, and when nightly maintenance runs.", paths: ["life.maxConcurrentTurns", "life.maxTurnMs", "life.maintenanceHourLocal"] },
+  { title: "Turns", hint: "How many lives run at once, how long a turn may take, and when her nightly dream runs.", paths: ["life.maxConcurrentTurns", "life.maxTurnMs", "life.maintenanceHourLocal"] },
   { title: "Sending", hint: "What she may send in one turn.", paths: ["life.maxSendsPerTurn", "life.maxSendPlacesPerTurn", "life.send.maxFiles"] },
   { title: "Wakes", hint: "How often people, watches and other waifus may wake her.", paths: ["life.maxWakesPerUserPerHour", "life.maxWatchFiresPerDay", "life.maxWaifuTriggeredTurns"] },
   { title: "Context and images", hint: "How long her life gets before compaction, and the pictures she sees as images.", paths: ["life.maxLogMessages", "life.maxContextTokens", "life.maxInlineImagesPerEpoch", "life.maxInlineImageBytesPerEpoch"], columns: 2 },
   { title: "Her home folder", hint: "Her notes, reminders, watches and anything she keeps.", paths: ["life.home.maxBytes", "life.home.maxFiles", "life.home.maxFolders"] },
   { title: "/tmp and downloads", hint: "Files people sent her and her scratch files.", paths: ["life.tmp.maxBytes", "life.tmp.maxFiles", "life.tmp.retentionDays", "life.attachments.maxBytes"], columns: 2 },
-  { title: "Simulated Bash", hint: "just-bash over a copy of her two folders: never a real program, no network.", paths: ["life.bash.enabled", "life.bash.python", "life.bash.maxTimeoutMs", "life.bash.maxOutputChars", "life.bash.maxMemoryMb"] }
+  { title: "Simulated Bash", hint: "just-bash over a copy of her two folders: never a real program, no network.", paths: ["life.bash.enabled", "life.bash.python", "life.bash.maxTimeoutMs", "life.bash.maxOutputChars", "life.bash.maxMemoryMb"] },
+  { title: "Dreaming limits", hint: "Her nightly dream reads what was said since the last one; a long window runs in several sessions.", paths: ["life.dreamMaxRounds", "life.dreamWindowMaxChars"], columns: 2 }
 ];
+
+/** The dream model (spec §18.4, §18.6): a ModelPicker over GET /api/models; unset = her own model. */
+function DreamModelSection({ config }: { config: ReturnType<typeof useApi<AppConfig>> }) {
+  const models = useApi<ModelsResponse>((s) => api.models(s), []);
+  const current = config.data?.life.dreamModel;
+  const [draft, setDraft] = useState<ModelChoice | undefined>(undefined);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<Message | undefined>(undefined);
+  useEffect(() => {
+    setDraft(config.data?.life.dreamModel);
+  }, [config.data]);
+  const changed = config.data !== undefined && !sameChoice(draft, current);
+  const save = async () => {
+    setSaving(true);
+    setMessage(undefined);
+    try {
+      config.setData(await api.putConfig({ life: { dreamModel: draft ?? null } }));
+      setMessage({ tone: "ok", text: "Saved." });
+    } catch (err) {
+      setMessage({ tone: "err", text: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <>
+      <SectionHead
+        title="Dreaming"
+        hint="While she sleeps, a memory keeper reads her transcripts since the last dream, adds what is new to her notes and patches what the day contradicted. It never deletes a note for lack of evidence."
+      />
+      <MessageCell message={message} />
+      <div className="fgrid model-pair">
+        <ModelPicker value={draft} models={models.data?.models ?? []} onChange={setDraft} unsetLabel="— her own model —" unsetHint="Dream model — defaults to her model." />
+      </div>
+      <div className="cell action-row">
+        <div className="action-text">
+          <span className="t-small t-mute">Dream model — defaults to her model. Its calls show in Activity under maintenance.</span>
+        </div>
+        <div className="action-buttons">
+          {changed && (
+            <button className="btn quiet" onClick={() => setDraft(current)}>
+              Undo
+            </button>
+          )}
+          <button className="btn primary" onClick={save} disabled={saving || !config.data || !changed}>
+            {saving ? "Saving…" : changed ? "Save" : "Saved"}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
 
 function LifeLimitsTab() {
   const config = useApi<AppConfig>((s) => api.getConfig(s), []);
@@ -703,7 +756,8 @@ function LifeLimitsTab() {
           filter={(key) => group.paths.includes(key.path)}
         />
       ))}
-      <RegistryForm topic="app.life" title="Other limits" config={config.data} onSaved={config.setData} filter={(key) => !listed.has(key.path) && !key.path.startsWith("life.webFetch.")} />
+      <DreamModelSection config={config} />
+      <RegistryForm topic="app.life" title="Other limits" config={config.data} onSaved={config.setData} filter={(key) => !listed.has(key.path) && key.path !== "life.dreamModel" && !key.path.startsWith("life.webFetch.")} />
       <RegistryForm topic="app.compaction" title="Compaction" hint="Summarising a life that got long." config={config.data} onSaved={config.setData} />
       <RegistryForm topic="app.discord.debounce" title="Waiting before a wake" hint="How long a burst of messages waits before it wakes her." config={config.data} onSaved={config.setData} />
       <RegistryForm topic="app.discord.dm" title="After a restart" config={config.data} onSaved={config.setData} columns={1} />

@@ -10,7 +10,7 @@ import { currentHarness } from "../src/life/compaction.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { hangingTurn, textTurn } from "./modelFakes.js";
-import { ELLA_BOT, closeWorlds, herEntries, homeOf, lifeWorld, script, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { ELLA_BOT, closeWorlds, herEntries, homeOf, lifeWorld, script, writeHerFile, type LifeWorld, seedTranscript } from "./lifeFixtures.js";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { removeTempRoot } from "./testUtils.js";
@@ -58,6 +58,8 @@ describe("maintenance in the background (M3)", () => {
   it("never blocks the scheduler tick; stop() aborts it and waits; it is not recorded as done", async () => {
     const w = await lifeWorld(roots, { scripts: [hangingTurn()] });
     await homeOf(w).write("schedule.json", JSON.stringify([{ id: "r1", at: "2026-10-24 13:59", note: "call mom" }]));
+    // Something to dream about (an empty window calls no model).
+    await seedTranscript(w, [{ text: "see you tomorrow" }]);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     // 14:00 is past the 05:00 maintenance hour: it starts and hangs on its model call.
     await w.cast.scheduler.tick({ waitForMaintenance: false });

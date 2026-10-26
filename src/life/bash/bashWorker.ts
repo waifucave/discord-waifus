@@ -10,13 +10,16 @@
 //   for over the message port the first time something reads them (never by host path);
 // - through a guarded filesystem: only `/home/<slug>` and `/tmp` exist and are writable, links
 //   are refused, `~/places.md` is read-only;
+// - and `/transcripts` (spec §18.3), mounted lazily and read-only: listings, sizes and the rendered
+//   day files are asked for over the same port when a command opens them, never copied in (the
+//   store grows forever); every write, move or removal there fails with "transcripts are read-only";
 // - and when the command ends, the change set (written files with their bytes, deleted paths,
 //   created folders) goes back to the host, which checks and applies it all or nothing.
 // The host terminates this worker when the wall-clock limit passes; nothing is saved then.
 
 import { parentPort, workerData } from "node:worker_threads";
 import path from "node:path";
-import { Bash, defineCommand, InMemoryFs } from "just-bash";
+import { Bash, defineCommand, InMemoryFs, unsafeBytesFromLatin1 } from "just-bash";
 import type { IFileSystem } from "just-bash";
 
 type ManifestEntry = { path: string; kind: "file" | "dir"; size: number; mtimeMs: number };
@@ -36,12 +39,18 @@ export type BashWorkerInput = {
   maxFileSystemBytes: number;
   /** Most entries a change set may carry; past it nothing is sent and the host refuses the set. */
   maxChanges: number;
+  /** Mount `/transcripts` (read-only, served by the host on demand). */
+  transcripts?: boolean;
 };
+
+/** A `/transcripts` entry as the host describes it. */
+export type TranscriptsStat = { kind: "file" | "dir"; size: number; mtimeMs: number };
 
 export type BashWorkerChange = { writes: Array<{ path: string; data: Uint8Array }>; deletes: string[]; dirs: string[] };
 
 export type BashWorkerMessage =
   | { type: "read"; id: number; path: string }
+  | { type: "transcripts"; id: number; op: "stat" | "list" | "read"; path: string }
   | {
       type: "done";
       stdout: string;
@@ -55,7 +64,16 @@ export type BashWorkerMessage =
     }
   | { type: "fatal"; message: string };
 
-export type BashHostMessage = { type: "read-result"; id: number; data?: Uint8Array; error?: string };
+export type BashHostMessage =
+  | { type: "read-result"; id: number; data?: Uint8Array; error?: string }
+  | {
+      type: "transcripts-result";
+      id: number;
+      stat?: TranscriptsStat;
+      entries?: Array<{ name: string } & TranscriptsStat>;
+      data?: Uint8Array;
+      error?: string;
+    };
 
 const input = workerData as BashWorkerInput;
 const port = parentPort!;
@@ -67,6 +85,14 @@ const placesFile = `${home}/places.md`;
 let nextRead = 1;
 const waiting = new Map<number, { resolve: (data: Uint8Array) => void; reject: (error: Error) => void }>();
 port.on("message", (message: BashHostMessage) => {
+  if (message.type === "transcripts-result") {
+    const asked = transcriptWaiting.get(message.id);
+    if (!asked) return;
+    transcriptWaiting.delete(message.id);
+    if (message.error !== undefined) asked.reject(transcriptError(message.error, asked.op, asked.path));
+    else asked.resolve(message);
+    return;
+  }
   if (message.type !== "read-result") return;
   const pending = waiting.get(message.id);
   if (!pending) return;
@@ -83,6 +109,39 @@ function readFromHost(virtual: string): Promise<Uint8Array> {
   });
 }
 
+// ---- /transcripts from the host ----------------------------------------------------------------------------
+
+const TRANSCRIPTS = "/transcripts";
+type TranscriptsAnswer = Extract<BashHostMessage, { type: "transcripts-result" }>;
+const transcriptWaiting = new Map<number, { op: string; path: string; resolve: (answer: TranscriptsAnswer) => void; reject: (error: Error) => void }>();
+
+function transcriptError(code: string, op: string, p: string): Error {
+  const text = code === "ENOTDIR" ? "not a directory" : code === "EISDIR" ? "illegal operation on a directory" : "no such file or directory";
+  const error = new Error(`${code}: ${text}, ${op} '${p}'`) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
+function askTranscripts(op: "stat" | "list" | "read", virtual: string): Promise<TranscriptsAnswer> {
+  const id = nextRead++;
+  return new Promise((resolve, reject) => {
+    transcriptWaiting.set(id, { op, path: virtual, resolve, reject });
+    port.postMessage({ type: "transcripts", id, op, path: virtual } satisfies BashWorkerMessage);
+  });
+}
+
+async function transcriptBytes(virtual: string): Promise<Uint8Array> {
+  const answer = await askTranscripts("read", virtual);
+  if (!answer.data) throw transcriptError("EISDIR", "read", virtual);
+  return answer.data;
+}
+
+function readOnly(op: string, p: string): Error {
+  const error = new Error(`EROFS: transcripts are read-only, ${op} '${p}'`) as Error & { code: string };
+  error.code = "EROFS";
+  return error;
+}
+
 // ---- the guarded filesystem -----------------------------------------------------------------------------
 
 function norm(p: string): string {
@@ -96,7 +155,16 @@ function within(p: string, root: string): boolean {
 
 /** Paths that exist for her at all (and `/dev/null`, which redirections use). */
 function visible(p: string): boolean {
-  return p === "/" || p === "/home" || within(p, home) || within(p, "/tmp") || p === "/dev" || p === "/dev/null";
+  return p === "/" || p === "/home" || within(p, home) || within(p, "/tmp") || p === "/dev" || p === "/dev/null" || inTranscripts(p);
+}
+
+function inTranscripts(p: string): boolean {
+  return input.transcripts === true && within(p, TRANSCRIPTS);
+}
+
+/** What `ls /` shows. */
+function topLevel(): string[] {
+  return input.transcripts === true ? ["home", "tmp", "transcripts"] : ["home", "tmp"];
 }
 
 /** Paths she may create, change or remove: inside her folders, never the folders themselves. */
@@ -167,6 +235,7 @@ class GuardedFs implements IFileSystem {
 
   private guardWrite(op: string, p: string): string {
     const n = norm(p);
+    if (inTranscripts(n)) throw readOnly(op, p);
     if (!visible(n)) throw fsError("ENOENT", op, p);
     if (!writable(n)) throw fsError("EACCES", op, p);
     return n;
@@ -174,18 +243,21 @@ class GuardedFs implements IFileSystem {
 
   async readFile(p: string, options?: Parameters<IFileSystem["readFile"]>[1]): Promise<string> {
     const n = this.guardRead("open", p);
+    if (inTranscripts(n)) return new TextDecoder().decode(await transcriptBytes(n));
     touch(n);
     return inner.readFile(n, options);
   }
 
   async readFileBytes(p: string) {
     const n = this.guardRead("open", p);
+    if (inTranscripts(n)) return unsafeBytesFromLatin1(Buffer.from(await transcriptBytes(n)).toString("latin1"));
     touch(n);
     return inner.readFileBytes(n);
   }
 
   async readFileBuffer(p: string): Promise<Uint8Array> {
     const n = this.guardRead("open", p);
+    if (inTranscripts(n)) return transcriptBytes(n);
     touch(n);
     return inner.readFileBuffer(n);
   }
@@ -210,12 +282,19 @@ class GuardedFs implements IFileSystem {
   async exists(p: string): Promise<boolean> {
     const n = norm(p);
     if (!visible(n)) return false;
+    if (inTranscripts(n)) return askTranscripts("stat", n).then((answer) => answer.stat !== undefined, () => false);
     if (pending.has(n)) return true;
     return inner.exists(n);
   }
 
   async stat(p: string) {
     const n = this.guardRead("stat", p);
+    if (inTranscripts(n)) {
+      const answer = await askTranscripts("stat", n);
+      if (!answer.stat) throw transcriptError("ENOENT", "stat", p);
+      const dir = answer.stat.kind === "dir";
+      return { isFile: !dir, isDirectory: dir, isSymbolicLink: false, mode: dir ? 0o555 : 0o444, size: answer.stat.size, mtime: new Date(answer.stat.mtimeMs) };
+    }
     touch(n);
     const lazy = pending.get(n);
     // An original nobody read yet: its size and time from the host, without loading it.
@@ -229,6 +308,8 @@ class GuardedFs implements IFileSystem {
 
   async mkdir(p: string, options?: Parameters<IFileSystem["mkdir"]>[1]): Promise<void> {
     const n = norm(p);
+    // `mkdir -p` of a folder that exists in /transcripts is fine; anything else there is refused.
+    if (inTranscripts(n) && options?.recursive && (await this.exists(n))) return;
     if (visible(n) && !writable(n) && (n === home || n === "/tmp" || n === "/home" || n === "/" || n === "/dev")) {
       // The folders that exist already: `mkdir -p ~` is fine.
       if (options?.recursive) return;
@@ -244,9 +325,16 @@ class GuardedFs implements IFileSystem {
     await inner.createExclusive(n, options);
   }
 
+  private async transcriptEntries(n: string, p: string) {
+    const answer = await askTranscripts("list", n);
+    if (!answer.entries) throw transcriptError(answer.stat ? "ENOTDIR" : "ENOENT", "scandir", p);
+    return answer.entries;
+  }
+
   async readdir(p: string): Promise<string[]> {
     const n = this.guardRead("scandir", p);
-    if (n === "/") return ["home", "tmp"];
+    if (n === "/") return topLevel();
+    if (inTranscripts(n)) return (await this.transcriptEntries(n, p)).map((entry) => entry.name);
     if (n === "/home") return [input.slug];
     const names = await inner.readdir(n);
     touch(n);
@@ -256,7 +344,8 @@ class GuardedFs implements IFileSystem {
 
   async readdirWithFileTypes(p: string) {
     const n = this.guardRead("scandir", p);
-    if (n === "/") return [{ name: "home", isFile: false, isDirectory: true, isSymbolicLink: false }, { name: "tmp", isFile: false, isDirectory: true, isSymbolicLink: false }];
+    if (n === "/") return topLevel().map((name) => ({ name, isFile: false, isDirectory: true, isSymbolicLink: false }));
+    if (inTranscripts(n)) return (await this.transcriptEntries(n, p)).map((entry) => ({ name: entry.name, isFile: entry.kind === "file", isDirectory: entry.kind === "dir", isSymbolicLink: false }));
     if (n === "/home") return [{ name: input.slug, isFile: false, isDirectory: true, isSymbolicLink: false }];
     const entries = await inner.readdirWithFileTypes(n);
     touch(n);
@@ -275,6 +364,11 @@ class GuardedFs implements IFileSystem {
   async cp(src: string, dest: string, options?: Parameters<IFileSystem["cp"]>[2]): Promise<void> {
     const from = this.guardRead("cp", src);
     const to = this.guardWrite("cp", dest);
+    // A copy out of /transcripts is a new file of hers (a quote she wants to keep).
+    if (inTranscripts(from)) {
+      await this.copyTranscripts(from, (await isDir(to)) ? path.posix.join(to, path.posix.basename(from)) : to, src, options?.recursive === true);
+      return;
+    }
     touch(from);
     touch(to);
     markDirty(to);
@@ -301,6 +395,22 @@ class GuardedFs implements IFileSystem {
       pending.set(final + key.slice(from.length), value);
     }
     await inner.mv(from, to);
+  }
+
+  private async copyTranscripts(from: string, to: string, src: string, recursive: boolean): Promise<void> {
+    const answer = await askTranscripts("stat", from);
+    if (!answer.stat) throw transcriptError("ENOENT", "cp", src);
+    if (answer.stat.kind === "file") {
+      const data = await transcriptBytes(from);
+      dropPending(to);
+      markDirty(to);
+      await inner.writeFile(to, data);
+      return;
+    }
+    if (!recursive) throw transcriptError("EISDIR", "cp", src);
+    markDirty(to);
+    await inner.mkdir(to, { recursive: true });
+    for (const entry of await this.transcriptEntries(from, src)) await this.copyTranscripts(path.posix.join(from, entry.name), path.posix.join(to, entry.name), src, true);
   }
 
   resolvePath(base: string, p: string): string {
@@ -331,6 +441,10 @@ class GuardedFs implements IFileSystem {
 
   async realpath(p: string): Promise<string> {
     const n = this.guardRead("realpath", p);
+    if (inTranscripts(n)) {
+      if (!(await this.exists(n))) throw fsError("ENOENT", "realpath", p);
+      return n;
+    }
     if (!(await this.exists(n))) throw fsError("ENOENT", "realpath", p);
     return n;
   }
@@ -394,9 +508,10 @@ async function changeSet(): Promise<BashWorkerChange | { tooMany: number }> {
 /** `ENOENT: no such file or directory, open '/etc/x'` → `/etc/x: No such file or directory`. */
 function shellError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  const match = /^(ENOENT|EACCES|EPERM|EISDIR|ENOTDIR|EEXIST): ([^,]+), \w+ '([^']*)'/u.exec(message);
+  const match = /^(ENOENT|EACCES|EPERM|EISDIR|ENOTDIR|EEXIST|EROFS): ([^,]+), \w+ '([^']*)'/u.exec(message);
   if (!match) return message.split("\n")[0]!.slice(0, 300);
   const text = match[2]!;
+  if (match[1] === "EROFS") return `${match[3]}: ${text}`;
   return `${match[3]}: ${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }
 

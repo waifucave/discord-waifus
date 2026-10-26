@@ -1,4 +1,5 @@
-// Her own computer on the Life screen (Living cast spec §16.11): a browser for her home and /tmp, a
+// Her own computer on the Life screen (Living cast spec §16.11, §18.3): a browser for her home, /tmp
+// and her read-only /transcripts (a private chat's transcript only with the reveal), a
 // text editor that saves under her Write tool's checks (the server's message is shown as it is, a
 // JSON line and column included), image previews, and her reminders and watches with delete
 // buttons. Files from private chats arrive unnamed unless the reveal is on (local only, D14); the
@@ -16,7 +17,7 @@ type Message = { tone: "ok" | "err" | "warn"; text: string };
 
 /** The file browser: her home or /tmp, one folder at a time, and the file open below it. */
 export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; includePrivate: boolean }) {
-  const [root, setRoot] = useState<"home" | "tmp">("home");
+  const [root, setRoot] = useState<"home" | "tmp" | "transcripts">("home");
   const [dir, setDir] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState<{ path: string; isNew?: boolean } | undefined>(undefined);
   const [newName, setNewName] = useState("");
@@ -25,7 +26,7 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
   const list = useApi<HerFilesList>((s) => api.herFiles(waifuId, { root, ...(dir ? { dir } : {}), includePrivate }, s), [waifuId, root, dir, includePrivate]);
   const data = list.error ? undefined : matchingReveal(list.data, includePrivate);
 
-  const choose = (next: "home" | "tmp") => {
+  const choose = (next: "home" | "tmp" | "transcripts") => {
     setRoot(next);
     setDir(undefined);
     setOpen(undefined);
@@ -63,7 +64,11 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
         <button className="btn sm" aria-pressed={root === "tmp"} onClick={() => choose("tmp")}>
           /tmp
         </button>
-        {data && (
+        <button className="btn sm" aria-pressed={root === "transcripts"} onClick={() => choose("transcripts")}>
+          Transcripts
+        </button>
+        {data && !data.usage && <span className="t-micro t-plain">read-only: everything said where she is, one file per place per day</span>}
+        {data?.usage && (
           <span className="t-micro t-plain">
             {fileSize(data.usage.bytes)} of {fileSize(data.usage.maxBytes)}
             {data.usage.maxFiles !== undefined ? ` · ${data.usage.files} of ${data.usage.maxFiles} files` : ""}
@@ -92,13 +97,13 @@ export function HerFilesPanel({ waifuId, includePrivate }: { waifuId: string; in
           {data.entries.map((entry, index) => (
             <FileRow key={entry.path ?? `private-${index}`} entry={entry} selected={entry.path !== undefined && entry.path === open?.path} onOpen={() => enter(entry)} />
           ))}
-          <div className="soft-row" style={{ alignItems: "center" }}>
+          {data.root !== "transcripts" && <div className="soft-row" style={{ alignItems: "center" }}>
             <label className="t-micro" htmlFor={newId}>New text file here</label>
             <input id={newId} className="input" style={{ flex: "1 1 160px", minWidth: 0 }} placeholder="notes.md" value={newName} maxLength={100} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createFile()} />
             <button className="btn sm" disabled={!newName.trim()} onClick={createFile}>
               Create
             </button>
-          </div>
+          </div>}
           {createNote && <Notice tone="warn">{createNote}</Notice>}
         </>
       )}

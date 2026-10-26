@@ -23,6 +23,8 @@ import { forgetConversationImageIndex, readConversationImageKeys } from "../../d
 import { conversationDirPath, conversationKey } from "../context/keys.js";
 import { ImageOcrService } from "../ocr.js";
 import { readConversationRefs } from "../../discord/refStore.js";
+import { forgetTranscriptAtOrBelow } from "../../life/transcripts/store.js";
+import { hostTimeZone } from "../context/timeFormat.js";
 import { aboveFloor, dmFloorAt, dmStatePath, dmStateResource, laterFloor, listDmUserIds, readDmState, updateDmLimit } from "./dmStore.js";
 
 export type DmForgetScope = "conversation" | "all";
@@ -86,6 +88,15 @@ export async function dmWaifuIdsForUser(storage: StorageService, userId: string)
   } catch {
     // no conversations yet
   }
+  // A DM with a transcript (§18.2) but no conversation folder (refs are written only when she reads).
+  try {
+    for (const entry of await readdir(storage.dataPath("user", "transcripts"), { withFileTypes: true })) {
+      const prefix = `dm_${userId}_`;
+      if (entry.isDirectory() && entry.name.startsWith(prefix)) ids.add(entry.name.slice(prefix.length));
+    }
+  } catch {
+    // no transcripts yet
+  }
   if ((await listDmUserIds(storage)).includes(userId)) {
     for (const entry of await readdir(storage.dataPath("user", "dms", userId), { withFileTypes: true })) {
       if (entry.isFile() && entry.name.endsWith(".json")) ids.add(entry.name.slice(0, -5));
@@ -124,6 +135,8 @@ export async function dmForget(storage: StorageService, input: DmForgetInput, ho
       const floor = limit ?? dmFloorAt((hooks.now ?? (() => new Date()))());
       await updateDmLimit(storage, input.userId, waifuId, (current) => ({ ...current, floorMessageId: laterFloor(current.floorMessageId, floor) }));
       if (images.length > 0) await purge(images);
+      // Her transcript of the DM (§18.5): every line at or below the floor; the floor is kept with it.
+      await forgetTranscriptAtOrBelow({ dataRoot: storage.dataRoot, timeZone: hostTimeZone() }, key, floor);
     }
     deleted.cachedImages += cached.size;
     // The retired context engine's copy of this chat (living-cast-archive-director-v1) goes too.

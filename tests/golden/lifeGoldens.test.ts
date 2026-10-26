@@ -1,6 +1,6 @@
 // Goldens for owner review (Living cast spec §12, §16.12): the system prompt and tools, a wake turn
 // (notification → read → send), a DM wake, a turn that downloads and reads an image, a Bash call, a
-// watch timeout, a `morning` batch, a maintenance session, a compaction request, the detector state
+// watch timeout, a `morning` batch, a dream session, a compaction request, the detector state
 // and the WebFetch digest prompt. Deterministic (fixed clock, fake Discord, scripted winter fakes);
 // each file is the request as the model would see it.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +10,7 @@ import { buildWebFetchDigestRequest } from "../../src/life/web/index.js";
 import { writeWaifuConfig } from "../lifeFixtures.js";
 import { textTurn } from "../modelFakes.js";
 import { FakeImageFetcher } from "../contextFixtures.js";
-import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, script, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, script, seedTranscript, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
 import { removeTempRoot } from "../testUtils.js";
 import { serializeMessages, serializeRequest, serializeSystem, serializeTools } from "./serialize.js";
 
@@ -133,15 +133,19 @@ describe("Living cast goldens", () => {
     await expect(serializeMessages(first.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-morning.txt");
   });
 
-  it("a maintenance session", async () => {
+  it("a dream session (§18.4)", async () => {
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
-      scripts: script(toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }]), textTurn("merged the Kevin lines"))
+      scripts: script(toolTurn([{ name: "Bash", input: { command: "cat /transcripts/bake-club/general/2026-10-24.md" } }]), textTurn("Kevin's exam moved to Monday"))
     });
     await seedNotes(w);
+    await seedTranscript(w, [
+      { text: "my exam got moved to monday :(", minutesAgo: 30 },
+      { text: "noooo, more time to study at least", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 29 }
+    ]);
     await w.cast.scheduler.tick();
     const request = w.anthropic.calls[1]!.request;
-    await expect(serializeRequest(request)).toMatchFileSnapshot("./__snapshots__/life-maintenance.txt");
+    await expect(serializeRequest(request)).toMatchFileSnapshot("./__snapshots__/life-dream.txt");
   });
 
   it("a compaction request (her persona changed: the old epoch is summarised first)", async () => {

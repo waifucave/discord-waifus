@@ -333,7 +333,7 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   keys and model choices are never touched), and the in-memory captured traffic (Activity, the
   `/api/events` replay) loses every entry carrying the user's id or a name only they have (other
   people's entries stay). A part that fails (`record`, `floors`, `dms`, `dm-directory`,
-  `member-lists`, `archive` or `record-copies`; the DM parts wait for the floors) never stops the
+  `member-lists`, `archive`, `transcripts` or `record-copies`; the DM parts wait for the floors) never stops the
   rest: the response is **202** with `pending: [{ part, error, failures, retried }]` (`error` is an
   error code such as `EACCES`, never a path or message). Its unfinished parts run again at the next
   start, before Discord connects; finished parts never run twice, and a resumed part removes only

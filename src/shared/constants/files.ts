@@ -6,13 +6,13 @@ export const PRIVATE_FILE_NAME = "[private chat redacted]";
 
 /**
  * A path as the owner (or the assistant) wrote it → her path (`/…` or `~…`). A relative path means
- * her home, or `/tmp` when `root` is `tmp`; nothing at all means the root itself.
+ * her home, or `/tmp` (`/transcripts`) when `root` is `tmp` (`transcripts`); nothing at all means the root itself.
  */
-export function herPathInput(raw: string | undefined, root: "home" | "tmp" = "home"): string {
+export function herPathInput(raw: string | undefined, root: "home" | "tmp" | "transcripts" = "home"): string {
   const text = (raw ?? "").trim();
-  if (!text) return root === "home" ? "~" : "/tmp";
+  if (!text) return root === "home" ? "~" : `/${root}`;
   if (text.startsWith("/") || text === "~" || text.startsWith("~/")) return text;
-  return root === "home" ? `~/${text}` : `/tmp/${text}`;
+  return root === "home" ? `~/${text}` : `/${root}/${text}`;
 }
 
 /**

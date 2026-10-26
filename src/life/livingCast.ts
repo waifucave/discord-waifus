@@ -43,7 +43,7 @@ import {
 import { Intake, type GuildMessageInput } from "./intake.js";
 import { Life, lifeModelOf, type LifeActivity } from "./lifeLoop.js";
 import { lifeStateExists, readLifeFile, readLifeLog, readLifeState, updateLifeState } from "./lifeStore.js";
-import { runMaintenance } from "./maintenance.js";
+import { runDream } from "./dream.js";
 import { OwnerNotices } from "./ownerNotices.js";
 import { IntakeMarks } from "./intakeMarks.js";
 import { homeStoreFor } from "./home/index.js";
@@ -54,6 +54,7 @@ import { printLifeLines, printSystemPromptText } from "./lifeView.js";
 import { compactLife, compactRetiredTools, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
+import { TranscriptWriter } from "./transcripts/writer.js";
 import { WebTools } from "./search.js";
 import { abortableSleep, KeyedMutex, Semaphore } from "./sync.js";
 import { createWebBackend, LifeWebFetchCache, type WebBackend } from "./web/index.js";
@@ -119,6 +120,8 @@ export class LivingCast {
   readonly notices = new OwnerNotices();
   /** Intake high-water marks per place (catch-up, review I3). */
   readonly marks: IntakeMarks;
+  /** The transcript store's writer (spec §18.2): fed by the conversation cache's events. */
+  readonly transcripts: TranscriptWriter;
   /** When an explicit pause began: the resume catch-up starts there. */
   private pausedAt: Date | undefined;
   /** The start a running resume's catch-up began from (cleared when it ends). */
@@ -178,6 +181,7 @@ export class LivingCast {
     this.router = new WakeRouter({ deps, cost: this.cost, poke: (waifuId) => this.pokeLife(waifuId) });
     this.detector = o.detector ?? new AddresseeDetector({ credentials, usage: o.usageLedger });
     this.marks = new IntakeMarks(o.storage);
+    this.transcripts = new TranscriptWriter(deps);
     this.intake = new Intake({ deps, router: this.router, botRoles: this.botRoles, cost: this.cost, detector: this.detector, marks: this.marks });
     this.scheduler = new Scheduler({
       deps,
@@ -263,6 +267,8 @@ export class LivingCast {
   async start(): Promise<void> {
     const deps = this.deps;
     await this.marks.load();
+    // The transcript store's start and every room's access intervals, before any event is written.
+    await this.transcripts.start().catch((error: unknown) => deps.logger.warn("Transcripts could not start", { category: "life", message: error instanceof Error ? error.message : String(error) }));
     const waifus = await listWaifus(deps.storage).catch(() => [] as WaifuConfig[]);
     for (const waifu of waifus) {
       if (!(await lifeStateExists(deps.storage, waifu.id))) continue;
@@ -374,6 +380,7 @@ export class LivingCast {
     await Promise.all([...this.lives.values()].map((life) => life.whenIdle()));
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
+    await this.transcripts.close();
     await this.marks.flush();
     this.detector.close();
     await this.webBackend.close().catch(() => undefined);
@@ -507,6 +514,7 @@ export class LivingCast {
 
   onCacheEvent(event: ConversationCacheEvent, castOf: (guildId: string, channelId: string) => Promise<string[]>): void {
     if (this.stopped) return;
+    this.transcripts.onCacheEvent(event);
     this.intake.onCacheEvent(event, castOf);
   }
 
@@ -518,6 +526,7 @@ export class LivingCast {
   async settle(): Promise<void> {
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
+    await this.transcripts.settle();
     await this.scheduler.settle();
   }
 
@@ -539,7 +548,7 @@ export class LivingCast {
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
     if (pending.length > 0 && !signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
     if (signal.aborted) return;
-    await runMaintenance(this.deps, { waifu, model, signal });
+    await runDream(this.deps, { waifu, signal });
   }
 
   /** `/forget conversation` (steps 0–2 for the DM), then the epoch starts at once so the old log goes too. */

@@ -62,6 +62,11 @@ export type ConversationCacheEvent =
       source: "gateway" | "catchup";
     }
   | { type: "deleteBulk"; conversation: ConversationRef; messageIds: string[] }
+  /**
+   * Messages a REST page brought (catch-up, a tail check, an older page): the transcript store fills
+   * its gaps from them by message id (Living cast §18.2). Floors already applied.
+   */
+  | { type: "page"; conversation: ConversationRef; messages: RawDiscordMessage[] }
   | {
       type: "reaction";
       conversation: ConversationRef;
@@ -320,6 +325,7 @@ export class ConversationMessageCache implements ConversationMessageSource {
       fetched = buf ? [...buf.messages.values()] : [];
     }
     await this.resolveMentions(input.conversation, fetched, input.signal);
+    this.emitPage(input.conversation, fetched);
     const served = page(fetched);
     return { messages: served.messages, hasMore: served.more };
   }
@@ -815,6 +821,14 @@ export class ConversationMessageCache implements ConversationMessageSource {
     buf.trustedAt = this.now();
     this.pruneReactions(buf);
     this.observe(buf.conversation, page.messages);
+    this.emitPage(buf.conversation, page.messages.filter((message) => !buf.tombstones.has(message.id)));
+  }
+
+  /** A REST page's messages above the conversation's forget floor (transcript gap fill, §18.2). */
+  private emitPage(conversation: ConversationRef, messages: readonly RawDiscordMessage[]): void {
+    const floor = this.floors.get(conversationKey(conversation));
+    const kept = floor === undefined ? [...messages] : messages.filter((message) => compareIds(message.id, floor) > 0);
+    if (kept.length > 0) this.emit({ type: "page", conversation, messages: kept });
   }
 
   private trim(buf: Buffer): void {

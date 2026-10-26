@@ -27,6 +27,7 @@ import { StorageService } from "../src/storage/storageService.js";
 import { ensureDataLayout } from "../src/config/layout.js";
 import { LivingCast, type LivingCastOptions } from "../src/life/livingCast.js";
 import { checkEnvFor, homeStoreFor } from "../src/life/home/index.js";
+import { addTranscriptLine, updateTranscriptAccess } from "../src/life/transcripts/store.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { NoopUsageLedger, type UsageLedger, type UsageLedgerLine } from "../src/orchestration/usageLedger.js";
 import { ANTHROPIC_MESSAGES, CHAT_COMPLETIONS, OPENAI_RESPONSES, fakeAdapter, fakeWinter, type FakeAdapter, type ScriptedTurn } from "./modelFakes.js";
@@ -469,4 +470,40 @@ export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relat
 export async function herEntries(w: Pick<LifeWorld, "root">, name: "schedule.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
   const text = await homeOf(w, waifuId).read(name);
   return text?.trim() ? (JSON.parse(text) as Array<Record<string, unknown>>) : [];
+}
+
+/**
+ * Transcript lines (spec §18.2) for a waifu: her room access opens a day back, then each line is
+ * written `minutesAgo` before the clock (default: one a minute, the last a minute ago).
+ */
+export async function seedTranscript(
+  w: Pick<LifeWorld, "root" | "clock">,
+  lines: Array<{ text: string; author?: string; authorId?: string; waifu?: string; minutesAgo?: number }>,
+  o: { conversation?: ConversationRef; waifuId?: string } = {}
+): Promise<string[]> {
+  const conversation = o.conversation ?? ROOM;
+  const key = conversationKey(conversation);
+  const waifuId = o.waifuId ?? "ella";
+  if (conversation.kind === "guild") {
+    await updateTranscriptAccess(w.root, waifuId, (access) => {
+      if (access.conversations[key]?.length) return undefined;
+      access.conversations[key] = [{ from: new Date(w.clock.ms - 86_400_000).toISOString() }];
+      return access;
+    });
+  }
+  const ids: string[] = [];
+  for (const [index, line] of lines.entries()) {
+    const at = new Date(w.clock.ms - (line.minutesAgo ?? lines.length - index) * 60_000);
+    const id = ((BigInt(at.getTime()) - DISCORD_EPOCH) << 22n).toString();
+    ids.push(id);
+    await addTranscriptLine({ dataRoot: w.root, timeZone: TZ }, key, {
+      id,
+      at: at.toISOString(),
+      authorId: line.authorId ?? KEVIN,
+      author: line.author ?? "Kevin",
+      ...(line.waifu ? { waifu: line.waifu } : {}),
+      text: line.text
+    });
+  }
+  return ids;
 }

@@ -198,7 +198,7 @@ export function fileSize(bytes: number): string {
 
 /** The folders from the root to the listed one, each with the path to list it (`~` › `people`). */
 export function breadcrumbs(list: Pick<HerFilesList, "root" | "dir" | "display">): Array<{ label: string; dir: string }> {
-  const rootLabel = list.root === "home" ? "~" : "/tmp";
+  const rootLabel = list.root === "home" ? "~" : list.root === "tmp" ? "/tmp" : "/transcripts";
   const rel = list.display === rootLabel ? "" : list.display.slice(rootLabel.length + 1);
   const segments = rel ? rel.split("/") : [];
   const rootDir = segments.length === 0 ? list.dir : list.dir.slice(0, list.dir.length - rel.length - 1);

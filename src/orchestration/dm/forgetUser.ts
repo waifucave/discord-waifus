@@ -31,6 +31,8 @@ import path from "node:path";
 import type { Logger } from "../../backend/logger.js";
 import { resolveDataPath } from "../../config/paths.js";
 import { scrubArchive, type ArchiveScrubResult } from "../../life/archiveScrub.js";
+import { forgetPersonInTranscripts } from "../../life/transcripts/forget.js";
+import { hostTimeZone } from "../context/timeFormat.js";
 import { personMatcher } from "../../life/text.js";
 import { forgetCapturedTraffic } from "../../shared/queryLog.js";
 import { ActiveChatParticipantsFileSchema, GuildMembersFileSchema } from "../../shared/schemas/domain.js";
@@ -65,6 +67,8 @@ export type ForgetUserResult = {
   memberLists?: number;
   /** The Living cast archive scrub (D-b): files rewritten, records removed, files left unreadable. */
   archive?: ArchiveScrubResult;
+  /** Transcript lines removed (§18.5). */
+  transcriptLines?: number;
   /** Parts that did not finish (absent when every part did). */
   pending?: ForgetPending[];
 };
@@ -371,6 +375,11 @@ async function runForgetJob(storage: StorageService, initial: ForgetJob, hooks: 
       })
     );
     if (archive) result.archive = archive;
+    // §18.5: their lines and the lines naming them in every transcript, and their DM transcripts.
+    const transcripts = await part("transcripts", () =>
+      forgetPersonInTranscripts({ dataRoot: storage.dataRoot, timeZone: hostTimeZone() }, { userId, ...(job.names ? { names: job.names } : {}), at, floor })
+    );
+    if (transcripts) result.transcriptLines = transcripts.removedLines;
     await part("record-copies", () => scrubForgetRecordCopies(storage, { userId, carries: personMatcher(userId, job.names) }));
   } finally {
     forgetCapturedTraffic(personMatcher(userId, job.names));

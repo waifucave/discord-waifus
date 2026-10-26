@@ -326,7 +326,7 @@ describe("ConversationMessageCache tail check and catch-up", () => {
     clock.now += 11 * 60_000;
     expect(ids((await read(posted[0]!.id)).messages)).toEqual(ids(posted.slice(1)));
     expect(gateway.restCalls).toHaveLength(2);
-    expect(events).toEqual([]);
+    expect(events.filter((event) => event.type !== "page")).toEqual([]);
     await read(posted[0]!.id);
     expect(gateway.restCalls).toHaveLength(2);
   });

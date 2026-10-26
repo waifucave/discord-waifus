@@ -2,7 +2,7 @@
 // and the dashboard (which may import this module at runtime).
 
 /** The parts of one owner forget, in the order they run. */
-export const FORGET_JOB_PARTS = ["record", "floors", "dms", "dm-directory", "member-lists", "archive", "record-copies"] as const;
+export const FORGET_JOB_PARTS = ["record", "floors", "dms", "dm-directory", "member-lists", "archive", "transcripts", "record-copies"] as const;
 export type ForgetJobPart = (typeof FORGET_JOB_PARTS)[number];
 
 /** A part that failed this many times (the request's run plus boots) is no longer retried. */

@@ -141,7 +141,7 @@ describe("an unfinished owner forget (review F1, F8)", { timeout: 30_000 }, () =
         userId: PERSON,
         at: at.toISOString(),
         names: ["Quillon"],
-        done: ["record", "floors", "dm-directory", "member-lists", "archive", "record-copies"],
+        done: ["record", "floors", "dm-directory", "member-lists", "archive", "transcripts", "record-copies"],
         failures: { dms: { count: 1, error: "Error", at: at.toISOString() } }
       }
     ]);

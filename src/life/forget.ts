@@ -86,6 +86,8 @@ import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
 import { foldName, hasNoWordBoundaries, isGenericName, isWeakName, namesSomeone } from "./text.js";
 import { REMOVED_TEXT, scrubWakeQueue } from "./wakeQueue.js";
+import { dropDreamCursorEntries } from "./dream.js";
+import { forgetPersonInHerTranscripts } from "./transcripts/forget.js";
 
 export const DM_SCRUB_RATE_MS = 6 * 3_600_000;
 /** At most this many review lines are kept per scrub, and in `needs-review.json`. */
@@ -320,8 +322,26 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId: identity.userId });
   const floor = await readDmFloor(deps.storage, identity.userId, waifu.id).catch(() => undefined);
   const home = homeStoreFor(deps, waifu);
+  // Her transcripts (§18.5): the DM at or below the floor (everything: the person's lines in the rooms
+  // she can see, and the lines naming them), and her dream cursor forgets the DM.
+  const transcriptEnv = { dataRoot: deps.storage.dataRoot, timeZone: deps.timeZone };
+  const transcriptLines = await forgetPersonInHerTranscripts(transcriptEnv, {
+    waifuId: waifu.id,
+    userId: identity.userId,
+    names: removableNames(identity),
+    at: deps.now(),
+    ...(floor !== undefined ? { floor } : {}),
+    ...(o.dmOnly ? { dmOnly: true } : {})
+  }).then(
+    (result) => result.removedLines,
+    (error: unknown) => {
+      deps.logger.warn("Her transcripts could not be scrubbed", { category: "life", waifuId: waifu.id, code: (error as NodeJS.ErrnoException)?.code ?? "error" });
+      return 0;
+    }
+  );
+  await dropDreamCursorEntries(deps.storage, waifu.id, new Set([dmKey])).catch(() => undefined);
   if (o.dmOnly) {
-    let removed = await scrubWakeQueue(deps.storage, waifu.id, { userId: "", placeKeys: new Set([dmKey]), mentions: () => false });
+    let removed = transcriptLines + (await scrubWakeQueue(deps.storage, waifu.id, { userId: "", placeKeys: new Set([dmKey]), mentions: () => false }));
     removed += await dropWatches(home, deps.timeZone, (bindings) => bindings.some((binding) => binding.placeKey === dmKey));
     await setReadCursor(deps.storage, waifu.id, dmKey, floor, deps.now());
     return removed;
@@ -332,7 +352,7 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   const review = (where: string) => (text: string, dm = false) => {
     if (o.review && uncertain.some((name) => namesSomeone(text, name))) o.review({ where, line: text.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
   };
-  let removed = await scrubWakeQueue(deps.storage, waifu.id, { userId: identity.userId, placeKeys: new Set([dmKey]), mentions, review: review("wakes") });
+  let removed = transcriptLines + (await scrubWakeQueue(deps.storage, waifu.id, { userId: identity.userId, placeKeys: new Set([dmKey]), mentions, review: review("wakes") }));
   await updateLifeState(deps.storage, waifu.id, (current) => {
     const pendingNotices = current.pendingNotices.filter((notice) => !mentions(notice));
     removed += current.pendingNotices.length - pendingNotices.length;

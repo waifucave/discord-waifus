@@ -252,8 +252,17 @@ const LIFE_FIELDS = {
   maxWakesPerUserPerHour: z.number().int().min(1).max(200),
   maxWatchFiresPerDay: z.number().int().min(1).max(100),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
-  maintenanceHourLocal: z.number().int().min(0).max(23)
+  maintenanceHourLocal: z.number().int().min(0).max(23),
+  dreamMaxRounds: z.number().int().min(5).max(200),
+  dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000)
 };
+// The dream's model (spec §18.4): a route GET /api/models offers, with an optional effort; unset = her model.
+export const DreamModelSchema = z.object({
+  providerId: z.string().min(1).max(100),
+  modelId: z.string().min(1).max(200),
+  effort: z.string().min(1).max(40).optional()
+});
+export type DreamModel = z.infer<typeof DreamModelSchema>;
 export const DEFAULT_LIFE_CONFIG = {
   maxConcurrentTurns: 4,
   maxTurnMs: 180_000,
@@ -266,7 +275,9 @@ export const DEFAULT_LIFE_CONFIG = {
   maxWakesPerUserPerHour: 20,
   maxWatchFiresPerDay: 24,
   maxWaifuTriggeredTurns: 0,
-  maintenanceHourLocal: 5
+  maintenanceHourLocal: 5,
+  dreamMaxRounds: 60,
+  dreamWindowMaxChars: 200_000
 };
 export const LifeConfigSchema = z
   .object({
@@ -282,6 +293,9 @@ export const LifeConfigSchema = z
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.default(DEFAULT_LIFE_CONFIG.maxWatchFiresPerDay),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
+    dreamModel: DreamModelSchema.optional(),
+    dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
+    dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.default(DEFAULT_LIFE_CONFIG.dreamWindowMaxChars),
     webFetch: WebFetchConfigSchema,
     home: HomeConfigSchema,
     tmp: TmpConfigSchema,
@@ -419,6 +433,10 @@ export const UpdateAppConfigBodySchema = z.object({
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.optional(),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.optional(),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
+    // null unsets it (the dream uses her own model again).
+    dreamModel: DreamModelSchema.strict().nullable().optional(),
+    dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.optional(),
+    dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.optional(),
     webFetch: z.object({
       model: WEB_FETCH_FIELDS.model.optional(),
       maxPerWaifuPerDay: WEB_FETCH_FIELDS.maxPerWaifuPerDay.optional(),
