@@ -12,6 +12,7 @@
 // change (A, tools or model), a forget scrub. `compaction.enabled = false` truncates at the same
 // triggers without a summary.
 
+import { REST_NOTICE_PREFIX } from "./rest.js";
 import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { CuratedModel } from "../models/catalog.js";
@@ -152,13 +153,27 @@ export function inlineImagesOf(lines: readonly LifeLogLine[]): Array<{ key: stri
  * reasoning (winter `stripOpaque`), results that showed a deleted message replaced, images as text
  * (their OCR text when `imageText` knows it).
  */
+/** Turns opened by the rest notice (§19). */
+export function restTurnIds(lines: readonly LifeLogLine[]): Set<string> {
+  const ids = new Set<string>();
+  for (const line of lines) {
+    if (!line.turnId || line.kind !== "notifications" || !line.message) continue;
+    const content = (line.message as { content?: unknown }).content;
+    const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : "")) : [];
+    if (texts.some((text) => text.startsWith(REST_NOTICE_PREFIX))) ids.add(line.turnId);
+  }
+  return ids;
+}
+
 export function keptTurnLines(
   lines: readonly LifeLogLine[],
   o: { keep: number; openTurnId?: string; deletedIds: ReadonlySet<string>; imageText?: ReadonlyMap<string, string> }
 ): { kept: LifeLogLine[]; strippedBlocks: number; readIds: string[] } {
   const textFor = (key: string) => o.imageText?.get(key) ?? imageTextFor(undefined);
   if (o.keep <= 0) return { kept: [], strippedBlocks: 0, readIds: [] };
-  const complete = turnOrder(lines).filter((id) => id !== "" && id !== o.openTurnId);
+  // A rest turn (§19) is never carried over, finished or not: its notice belongs to the epoch it ended.
+  const rest = restTurnIds(lines);
+  const complete = turnOrder(lines).filter((id) => id !== "" && id !== o.openTurnId && !rest.has(id));
   const keepIds = new Set(complete.slice(-o.keep));
   let strippedBlocks = 0;
   const readIds = new Set<string>();

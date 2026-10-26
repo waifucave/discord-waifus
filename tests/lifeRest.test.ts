@@ -14,10 +14,11 @@ vi.mock("../src/life/request.js", async (importOriginal) => {
 });
 
 import { REST_NOTICE, REST_REFUSED_RESULT, REST_SUMMARY_FRAME } from "../src/life/lifeLoop.js";
-import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
+import { readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { lifeBudget } from "../src/life/request.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { MEMORY_WARNING } from "../src/life/clock.js";
+import { printLifeLines, scanDmContent, viewLogLine } from "../src/life/lifeView.js";
 import { errorTurn, hangingTurn, textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { closeWorlds, homeOf, lifeWorld, ROOM_KEY, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
@@ -114,6 +115,22 @@ describe("the rest notice (§19.2, §19.3)", () => {
     expect(w.ledger.lines.map((line) => line.purpose)).not.toContain("compaction");
   });
 
+  it("her rest summary is private from the owner like <life_so_far> (D14): hidden without includePrivate", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), thenSmall(textTurn(SUMMARY)), play(textTurn("hi"))] });
+    estimate.value = nearlyFull(w);
+    await owner(w, "first");
+    await w.cast.life("ella").runNow();
+    const old = await readLifeLog(w.storage, "ella", 1);
+    const scan = scanDmContent(old);
+    const shown = JSON.stringify(old.map((line) => viewLogLine(line, scan, { includePrivate: false }).view));
+    expect(shown).not.toContain("lemon tarts");
+    expect(shown).toContain("Your memory is almost full");
+    expect(printLifeLines(old, { private: false })).not.toContain("lemon tarts");
+    // Her ordinary turn before it stays visible; the local reveal shows the summary.
+    expect(shown).toContain("noted");
+    expect(JSON.stringify(old.map((line) => viewLogLine(line, scan, { includePrivate: true }).view))).toContain("lemon tarts");
+  });
+
   it("a summary that is too short means compaction summarises for her, leaving the rest turn out", async () => {
     const w = await lifeWorld(roots, {
       scripts: [play(textTurn("noted")), thenSmall(textTurn("ok")), play(textTurn("We talked about Saturday in Bake Club.")), play(textTurn("hi"))]
@@ -193,6 +210,27 @@ describe("the rest notice (§19.2, §19.3)", () => {
     expect(state.epoch).toBe(2);
     expect(state.lastCompaction).toMatchObject({ reason: "rest" });
     expect(JSON.stringify(calls[3]!.messages)).toContain("second");
+  });
+
+  it("an interrupted rest turn is never carried over by a later compaction", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), hangingTurn(), thenSmall(textTurn("We talked about Saturday.")), play(textTurn("hi"))] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    estimate.value = nearlyFull(w);
+    await owner(w, "first");
+    const running = w.cast.life("ella").runNow();
+    for (let tries = 0; w.anthropic.calls.length < 2 && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    w.cast.life("ella").abort("pause");
+    await running;
+    // Her memory reaches the trigger itself: compaction, which keeps her last turns.
+    estimate.value = Math.round(nearlyFull(w) / 0.9);
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastRequestTokens: estimate.value }));
+    await owner(w, "second");
+    await w.cast.life("ella").runNow();
+    const state = await readLifeState(w.storage, "ella");
+    expect(state.epoch).toBe(2);
+    const kept = JSON.stringify(await readLifeLog(w.storage, "ella", 2));
+    expect(kept).toContain("noted");
+    expect(kept).not.toContain("Your memory is almost full");
   });
 
   it("is never given with the switch off: her time line warns her instead, as before", async () => {
