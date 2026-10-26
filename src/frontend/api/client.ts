@@ -1,3 +1,4 @@
+import { noteGet, noteMutation } from "./responseCache";
 import type {
   AssistantActionConfirmation,
   AssistantActionDetail,
@@ -290,6 +291,7 @@ async function request<T>(
   init?: { body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }
 ): Promise<T> {
   if (method === "GET" || method === "HEAD") {
+    if (method === "GET") noteGet(path);
     return (await sendRequest<T>(method, path, init)).value;
   }
   const action = await logicalMutations.begin({
@@ -297,9 +299,13 @@ async function request<T>(
     target: path,
     body: init?.body
   });
-  return action.execute(({ idempotencyKey }) =>
-    sendRequest<T>(method, path, init, idempotencyKey)
-  );
+  try {
+    return await action.execute(({ idempotencyKey }) =>
+      sendRequest<T>(method, path, init, idempotencyKey)
+    );
+  } finally {
+    noteMutation();
+  }
 }
 
 export const api = {

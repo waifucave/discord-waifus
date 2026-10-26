@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "./client";
+import { cachedValue, startCaptured, storeValue } from "./responseCache";
 
 export type AsyncState<T> = {
   data: T | undefined;
@@ -24,10 +25,14 @@ export function useApi<T>(fetcher: Fetcher<T>, deps: ReadonlyArray<unknown> = []
     let active = true;
     setLoading(true);
     setError(undefined);
-    fetcherRef
-      .current(controller.signal)
+    const started = startCaptured(() => fetcherRef.current(controller.signal));
+    // Show what this screen showed last at once; the request below replaces it.
+    const cached = cachedValue(started.key);
+    if (cached !== undefined) setData(cached as T);
+    started.promise
       .then((value) => {
         if (!active) return;
+        storeValue(started.key, started.generation, value);
         setData(value);
         setLoading(false);
       })
