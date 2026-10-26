@@ -2329,3 +2329,140 @@ Her profile is also a file in her home that she reads and changes with Read, Wri
   maintenance, a forget's notes scrub) Write, Edit and Bash refuse to change it.
 - **Prompt.** `<life>` gains one sentence: "Your Discord profile is in profile.json: you may change
   your username, bio and server nicknames when you want to, sparingly."
+
+## 18. Transcripts and dreaming (owner request, 2026-10-26)
+
+Her notes drift from what really happened (Lumi wrote that Lianne is in the winter-s-secret-room
+server; she is in kingdom-16062's #secret-room), and nightly maintenance (§7.3, §16.8) cannot
+notice: it only sees the notes. This section gives every waifu a **read-only transcript** of the
+conversations she is in, and turns maintenance into **dreaming**: a memory keeper that adds the
+day's memories and checks her notes against what was said since the last dream.
+
+### 18.1 Owner decisions (2026-10-26)
+
+| # | Decision |
+|---|---|
+| T1 | Transcripts are kept **forever** (only forget and Discord deletions remove lines). |
+| T2 | Her **DMs get transcripts too**; DM transcripts follow D14 (hidden from every view unless a local request reveals them) and every forget path removes them. |
+| T3 | The dreamer is a **separate memory keeper**, not her life: it runs while she sleeps, never sees her life log or context, and uses `life.dreamModel` when set, else her own model. |
+| T4 | Dreaming **adds memories only from what happened since the last dream** and **re-checks all her notes against that same window**. A note the window does not mention stays exactly as it is ("favourite food: sushi" with nothing about food since → untouched); a note the window contradicts is patched ("my favourite food is lasagna" said today → sushi becomes lasagna). Absence of evidence is never a reason to delete or change. |
+
+### 18.2 The transcript store
+
+- **One shared store**, not a copy per waifu: `user/transcripts/<conversationKey>/<YYYY-MM-DD>.jsonl`
+  (the same conversation keys as the conversation cache; days in the host time zone). One line per
+  message: message id, time, author id, author display name at the time, whether the author is a
+  waifu (and which), reply target ref, text as rendered for her (mentions resolved to names, custom
+  emoji as `:name:`), attachment names, edited flag. Her own sends are lines like anyone's.
+- **Written by the app** from the same feed that fills the conversation cache: gateway messages,
+  our own sends (when they are published), edits (the line is replaced and marked edited) and
+  deletes (the line is removed). REST pages fill gaps (catch-up after downtime) by message id, never
+  twice. No backfill before the feature ships: transcripts start with the first message after
+  upgrade.
+- **Who sees what.** `user/transcripts/access/<waifuId>.json` records, per conversation, the
+  intervals she was in it (cast in that channel or thread, or that DM is hers). She sees a day file
+  only for the times inside her intervals, so a waifu added to a room later does not read what was
+  said before she arrived, and one removed from it keeps what she saw. A DM conversation is only
+  ever visible to the waifu whose DM it is.
+- Writes go through one per-conversation queue (like the image index), atomic per day file.
+
+### 18.3 `/transcripts` in her computer
+
+- A third top-level folder beside `/home/<slug>` and `/tmp`: **`/transcripts`**, read-only for
+  every tool. Layout uses the same handles as `places.md` and `/tmp`:
+  - rooms: `/transcripts/<server>/<room>/<YYYY-MM-DD>.md`, threads under
+    `/transcripts/<server>/<room>/<thread>/…`
+  - DMs: `/transcripts/dm/<handle>/<YYYY-MM-DD>.md`
+- **The `.md` she reads is rendered from the JSONL on read**, one line per message:
+  `HH:MM Name ↩#ref: text [file: a.png]` (`(edited)` when edited; her own lines as `you`). The
+  rendering is the only view; she never sees ids. `ls` lists only days inside her intervals.
+- `Read`, `Bash` (`grep`, `rg`-like search, `cat`, Python reading files) work on it; `Write`, `Edit`
+  and a Bash change set touching `/transcripts` are refused with "transcripts are read-only".
+- **Bash must not copy it.** Today Bash runs over an in-memory copy of her folders; transcripts
+  grow forever, so `/transcripts` is mounted lazily and read-only in the Bash worker (files are read
+  from disk only when a command opens them; directory listings are computed from the store and her
+  access intervals). If just-bash cannot mount a lazy read-only tree, the implementer reports it
+  before choosing another design.
+- `ReadMessages` is unchanged: it stays the live view of recent messages with refs and
+  attachments. `<life>` gains one sentence: "Everything said where you are is also kept in
+  /transcripts, one file per room per day: search it (grep) when you need something from long ago."
+- **D14 for DM transcripts.** The dashboard's file views and the assistant never show DM transcript
+  content; a local request with `includePrivate=1` may (as for her DM-origin files). Room transcripts
+  are shown read-only in Life → Files. `SendMessage` cannot attach a transcript file.
+
+### 18.4 Dreaming (replaces the §7.3 / §16.8 task)
+
+- **When**: unchanged (30 minutes into her sleep window, else `life.maintenanceHourLocal`), under
+  the per-waifu lock, as the same tracked background task. Pending forget scrubs still run first.
+- **Model**: `life.dreamModel` (`{providerId, modelId, effort?}`, a route `GET /api/models` offers;
+  unset by default) else her model. Usage purpose stays `maintenance`.
+- **Context**: a fresh session with no life log and no persona. System: "You keep <Name>'s memory.
+  Her notes are files in her home, written in her own voice (keep their voice and layout).
+  MEMORY.md is the index: one short line per note, linking to it." The opening message lists her
+  files (as today) and **the dream window**: every transcript day file that has lines after her
+  dream cursor, with the time the window starts, and her current time line.
+- **Task** (the instruction):
+  1. Read the window (only the lines after the window start).
+  2. Add memories from the window only: new people, places, facts, plans, how things felt; update
+     MEMORY.md for new notes.
+  3. Check every note against the window. Patch a fact only when the window clearly says otherwise
+     (newest wins) and keep everything else exactly as written. Never delete or change a note
+     because the window does not mention it. You may grep older transcript days to confirm a fact
+     the window touches, but add nothing from before the window.
+  4. Keep MEMORY.md short and its links valid; merge duplicates you notice.
+  5. Reply with one short line saying what changed.
+  Reminders and watches are no longer tidied here (both clean themselves up).
+- **Tools**: `Read`, `Write`, `Edit`, `Bash` over her home, `/transcripts` read-only, no `/tmp`
+  writes needed, no messaging, no web. Round cap `life.dreamMaxRounds` (default 60). profile.json
+  stays refused (§17.1).
+- **Cursor**: `life/dream-cursor.json` (per conversation, the last message time and id covered).
+  It advances only when the dream finishes (an aborted or failed dream changes nothing, and the
+  next one covers the longer window). The first dream after upgrade has a window starting at the
+  upgrade.
+- **Big windows**: when the window's rendered text is over `life.dreamWindowMaxChars` (default
+  200,000), the dream runs in several sessions, oldest conversations' days first, each advancing
+  the cursor for what it covered.
+- Report line in `maintenance.jsonl` as today, plus the window's start, conversations and line count.
+
+### 18.5 Forget
+
+- Owner forget-user (§7.5): removes **every line the person wrote** in every transcript, every
+  line that mentions them by a unique name or mention (shared names follow the §7.5 rules), and
+  their whole DM transcripts with every waifu; drops their DM conversations from the access files.
+  Durable like the other forget parts (`forget-jobs.json` gets a `transcripts` part).
+- DM `/forget everything`: as above for that waifu's DM transcript and the person's lines in room
+  transcripts she can see. `/forget conversation`: deletes that DM transcript at or below the floor.
+- DM floors apply: a transcript never re-gains a line at or below a forget floor (REST catch-up
+  respects `setFloor`).
+- Dream cursors drop entries for removed conversations.
+
+### 18.6 Settings, API, CLI
+
+| Key | Default |
+|---|---|
+| `life.dreamModel` | unset (her model) |
+| `life.dreamMaxRounds` | 60 |
+| `life.dreamWindowMaxChars` | 200000 |
+
+Registry entries with help, CLI and HTTP paths like every key (§14.2). `GET
+/api/waifus/:id/files` lists `/transcripts` read-only (DM ones per D14). The dashboard's
+Settings → Life shows the dream model with the ModelPicker ("Dream model — defaults to her model").
+`waifus help dreaming` explains the window and the never-delete-for-absence rule.
+
+### 18.7 Tests and acceptance
+
+- Store: messages, edits, deletes, our sends, REST gap fill without duplicates, day split in the
+  host time zone, access intervals (joined later / removed earlier), DM isolation between waifus.
+- Her computer: `ls`, `Read`, `grep` through Bash on `/transcripts`; Write/Edit/Bash change sets
+  refused; a Bash run over a large transcript store does not copy it (memory/time bound test).
+- Dreaming: the window lists only post-cursor lines; the cursor advances only on success; the
+  scripted model adds a note from the window, patches a contradicted fact, leaves an unmentioned
+  one byte-identical; big window splits; `life.dreamModel` picked when set.
+- Forget: owner and DM forget remove lines, DM transcripts and access, survive a crash mid-job,
+  floors respected on catch-up.
+- D14: DM transcripts hidden over Remote Access and from the assistant.
+
+### 18.8 Release
+
+A feature release (3.2.0). No migration of data beyond creating the store; maintenance's old
+instruction is replaced.
