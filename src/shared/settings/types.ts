@@ -16,6 +16,8 @@ export type IdKind = "safe-id" | "snowflake" | "snowflake-pair" | "bot" | "provi
 export type KeyHelp = {
   /** One or two sentences: what it does, in the owner's terms. */
   help: string;
+  /** A short human name for forms ("Turns at once"); the dotted path stays the key. */
+  label?: string;
   /** Never shown or accepted on the command line (read from an environment variable or stdin). */
   secret?: true;
   /** Shown but not writable (ids, timestamps). */
@@ -81,7 +83,8 @@ export type KeyInfo = {
   nullable: boolean;
   default?: unknown;
   help: string;
-  flags: Omit<KeyHelp, "help" | "example" | "unit">;
+  label?: string;
+  flags: Omit<KeyHelp, "help" | "label" | "example" | "unit">;
   example?: string;
   unit?: string;
 };

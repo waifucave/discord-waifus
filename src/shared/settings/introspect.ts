@@ -185,7 +185,7 @@ export function keyInfo(group: SettingGroup, path: string): KeyInfo | undefined 
   const help = group.keys[path];
   const schema = schemaAt(group.schema, path);
   if (!help || !schema) return undefined;
-  const { help: text, example, unit, ...flags } = help;
+  const { help: text, label, example, unit, ...flags } = help;
   // A record's defaults are parsed from a seed (an example id and name): its required fields have none.
   const seeded = group.target.kind === "id" && (flags.readOnly === true || requiredLeaf(schema));
   const defaults = seeded ? undefined : group.defaults?.();
@@ -197,6 +197,7 @@ export function keyInfo(group: SettingGroup, path: string): KeyInfo | undefined 
     ...describeLeaf(schema),
     ...(fallback !== undefined ? { default: fallback } : {}),
     help: text,
+    ...(label !== undefined ? { label } : {}),
     flags,
     ...(example !== undefined ? { example } : {}),
     ...(unit !== undefined ? { unit } : {})

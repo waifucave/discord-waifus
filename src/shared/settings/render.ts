@@ -51,6 +51,7 @@ export function keyHelpJson(group: SettingGroup, info: KeyInfo) {
     nullable: info.nullable || info.flags.nullIsValue === true,
     ...(info.default !== undefined && !info.flags.secret ? { default: info.default } : {}),
     help: info.help,
+    ...(info.label !== undefined ? { label: info.label } : {}),
     flags: FLAG_NAMES.filter((flag) => info.flags[flag]),
     applies: info.flags.applies ?? "live",
     ...(info.example !== undefined ? { example: info.example } : {}),
