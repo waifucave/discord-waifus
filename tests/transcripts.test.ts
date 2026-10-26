@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ConversationCacheEvent } from "../src/discord/conversationCache.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
+import { TRANSCRIPT_COPY_REASON } from "../src/life/tools/messages.js";
+import { homeStoreFor } from "../src/life/home/index.js";
 import type { ToolContext } from "../src/life/tools/types.js";
 import {
   addTranscriptLine,
@@ -221,6 +223,30 @@ describe("/transcripts in her computer", () => {
     const w = await seeded();
     const result = await run(w, "SendMessage", { place: "bake-club/#general", text: "look", files: ["/transcripts/bake-club/general/2026-10-24.md"] });
     expect(result.text).toContain("transcripts can't be attached");
+    expect(w.discord.sent.at(-1)?.files).toBeUndefined();
+  }, 60_000);
+
+  it("a copy of a DM transcript in her home keeps its DM origin and is never attached (D14)", async () => {
+    const { w, writer } = await world();
+    const dm = dmOf("ella");
+    await feed(writer, create(dm, w.discord.post(dm, "a secret for Ella")));
+    const key = conversationKey(dm);
+    const day = "/transcripts/dm/user-0003/2026-10-24.md";
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+    await run(w, "Bash", { command: `cp ${day} ~/copy.md && cat ${day} > ~/cat.md` });
+    expect(await store.dmOrigin((await store.resolveExisting("~/copy.md")).path!)).toBe(key);
+    expect(await store.dmOrigin((await store.resolveExisting("~/cat.md")).path!)).toBe(key);
+    // Read, then a Write of exactly what it showed, in one turn.
+    const ctx = await toolCtx(w);
+    await lifeTool("Read")!.run({ file_path: day }, ctx);
+    const text = (await new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: "UTC", now: w.clock.now }).read(["dm", "user-0003", "2026-10-24.md"]))!;
+    await lifeTool("Write")!.run({ file_path: "~/written.md", content: text }, ctx);
+    expect(await store.dmOrigin((await store.resolveExisting("~/written.md")).path!)).toBe(key);
+    // Her own words about it are hers.
+    await run(w, "Write", { file_path: "~/mine.md", content: "Kevin told me something" });
+    expect(await store.dmOrigin((await store.resolveExisting("~/mine.md")).path!)).toBeUndefined();
+    const sent = await run(w, "SendMessage", { place: "bake-club/#general", text: "look", files: ["~/copy.md", "~/written.md"] });
+    expect(sent.text).toContain(TRANSCRIPT_COPY_REASON);
     expect(w.discord.sent.at(-1)?.files).toBeUndefined();
   }, 60_000);
 

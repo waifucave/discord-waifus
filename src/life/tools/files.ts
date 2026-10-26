@@ -56,7 +56,26 @@ async function readTranscript(ctx: ToolContext, segments: string[], offset: numb
   if (!stat) return toolError(`${display} doesn't exist`);
   if (stat.kind === "dir") return toolError(`${display} is a folder; list it with Bash (ls ${display})`);
   const text = (await view.read(segments)) ?? "";
+  if (await view.isPrivate(segments)) {
+    const placeKey = (await view.conversationOf(segments))?.key ?? "dm_file";
+    rememberTranscriptText(ctx, Buffer.from(text, "utf8"), placeKey);
+  }
   return { content: capReadOutput(numbered(text, offset, limit), "offset and limit") };
+}
+
+/** A private chat's transcript text she was shown this turn (§18.3, D14). */
+export function rememberTranscriptText(ctx: Pick<ToolContext, "turn">, data: Uint8Array, placeKey: string): void {
+  const sha = sha256(data);
+  ctx.turn.transcriptTexts ??= new Map();
+  ctx.turn.transcriptTexts.set(sha, { sha256: sha, size: data.length, placeKey });
+}
+
+/** A file she just wrote whose bytes are a private chat's transcript she was shown keeps its DM origin. */
+async function keepTranscriptOrigin(ctx: ToolContext, store: HomeStore, p: HerPath, hash: string): Promise<void> {
+  const text = ctx.turn.transcriptTexts?.get(hash);
+  if (!text) return;
+  await store.recordTranscriptCopies([{ path: p, sha256: text.sha256, size: text.size, placeKey: text.placeKey }], ctx.deps.now());
+  notePlace(text.placeKey);
 }
 
 /**
@@ -272,6 +291,7 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   try {
     const result = await store.writeText(target.path, parsed.value.content, checkEnvFor(ctx.deps, ctx.waifu.id), guard);
     if (special) rememberRead(ctx, result.path, result.hash);
+    await keepTranscriptOrigin(ctx, store, result.path, result.hash);
     await noteDmFile(store, result.path);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
     return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}` };
@@ -303,6 +323,7 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     // Her view of the file now includes her edit (an earlier stale Read stays stale).
     const key = pathKey(target.path.virtual);
     if (specialJsonFile(target.path) && ctx.turn.readHashes?.has(key)) rememberRead(ctx, target.path, result.hash);
+    await keepTranscriptOrigin(ctx, store, target.path, result.hash);
     const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
     return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}` };

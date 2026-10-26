@@ -10,6 +10,7 @@
 // command runs and terminates the worker once the growth over the sample taken at its start passes
 // `life.bash.maxMemoryMb`. The measure is process-wide: two commands running at once share it.
 
+import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import type { ChangeBase, ChangeSet } from "../home/homeStore.js";
 import type { HomeStore } from "../home/homeStore.js";
@@ -53,8 +54,10 @@ export type BashRun = {
   tooMany?: number;
   /** failed: why (memory, a worker error). */
   error?: string;
-  /** Paths below `/transcripts` the command stat'ed, listed or read (segments; the DM check). */
-  transcriptPaths?: string[][];
+  /** The private chats whose transcripts the command stat'ed, listed or read (D14; never capped). */
+  transcriptDms?: string[];
+  /** The private chats' transcript days it was served, by content hash (a copy keeps its DM origin). */
+  transcriptTexts?: Array<{ sha256: string; size: number; placeKey: string }>;
 };
 
 export type BashRunOptions = {
@@ -106,7 +109,8 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
     ...(o.transcripts ? { transcripts: true } : {})
   };
   const read = new Set<string>();
-  const transcriptPaths = new Map<string, string[]>();
+  const transcriptDms = new Set<string>();
+  const transcriptTexts = new Map<string, { sha256: string; size: number; placeKey: string }>();
   if (o.signal?.aborted) return { outcome: "aborted", stdout: "", stderr: "", exitCode: 130, base, read: [] };
   const baseline = process.memoryUsage.rss();
   const worker = new Worker(workerUrl(), {
@@ -129,7 +133,13 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
       clearInterval(watchdog);
       o.signal?.removeEventListener("abort", onAbort);
       void worker.terminate().catch(() => undefined);
-      resolve({ ...run, base, read: [...read], ...(transcriptPaths.size > 0 ? { transcriptPaths: [...transcriptPaths.values()] } : {}) });
+      resolve({
+        ...run,
+        base,
+        read: [...read],
+        ...(transcriptDms.size > 0 ? { transcriptDms: [...transcriptDms] } : {}),
+        ...(transcriptTexts.size > 0 ? { transcriptTexts: [...transcriptTexts.values()] } : {})
+      });
     };
     // The wall clock is the one time limit (§16.3.5): just-bash's own deadlines are set past it, so
     // a command that runs too long always ends here, with the worker terminated and nothing saved.
@@ -162,13 +172,28 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
           worker.postMessage({ type: "transcripts-result", id: message.id, error: "ENOENT" } satisfies BashHostMessage);
           return;
         }
-        if (transcriptPaths.size < MAX_TRANSCRIPT_PATHS) transcriptPaths.set(segments.join("/"), segments);
-        void serveTranscripts(view, message.op, segments).then(
+        void (async () => {
+          const answer = await serveTranscripts(view, message.op, segments);
+          // A private chat's transcript (D14): the call is a DM call, and a file whose bytes are a
+          // day she was served keeps that DM origin once saved.
+          if (await view.isPrivate(segments)) {
+            const placeKey = (await view.conversationOf(segments))?.key ?? "dm_file";
+            transcriptDms.add(placeKey);
+            if (answer.data) {
+              const sha = createHash("sha256").update(answer.data).digest("hex");
+              transcriptTexts.set(sha, { sha256: sha, size: answer.data.length, placeKey });
+            }
+          }
+          return answer;
+        })().then(
           (answer) => {
+            if (settled) return;
             const transfer = answer.data ? [answer.data.buffer as ArrayBuffer] : [];
             worker.postMessage({ type: "transcripts-result", id: message.id, ...answer } satisfies BashHostMessage, transfer);
           },
-          () => worker.postMessage({ type: "transcripts-result", id: message.id, error: "EIO" } satisfies BashHostMessage)
+          () => {
+            if (!settled) worker.postMessage({ type: "transcripts-result", id: message.id, error: "EIO" } satisfies BashHostMessage);
+          }
         );
         return;
       }
@@ -193,9 +218,6 @@ export async function runBash(o: BashRunOptions): Promise<BashRun> {
     worker.on("exit", () => finish({ outcome: "failed", stdout: "", stderr: "", exitCode: 1, error: "the command stopped unexpectedly" }));
   });
 }
-
-/** At most this many distinct `/transcripts` paths are remembered for the DM check. */
-const MAX_TRANSCRIPT_PATHS = 50_000;
 
 /** A `/transcripts` question from the worker: an entry's kind and size, a folder's entries, or a day's text. */
 async function serveTranscripts(view: TranscriptView, op: "stat" | "list" | "read", segments: string[]): Promise<Omit<Extract<BashHostMessage, { type: "transcripts-result" }>, "type" | "id">> {

@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { MAX_CHANGE_ENTRIES, runBash } from "../bash/runner.js";
 import { checkEnvFor } from "../home/index.js";
-import { HomeError, type HomeStore } from "../home/homeStore.js";
+import { HomeError, sha256, type HomeStore } from "../home/homeStore.js";
 import { isDmFolderPath, parseVirtual, pathKey, PROFILE_FILE, specialJsonFile } from "../home/pathRules.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 
@@ -23,7 +23,6 @@ function touchesProfile(virtual: string, slug: string): boolean {
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
 import { noteDmFile, storeOf, transcriptViewOf } from "./files.js";
-import type { TranscriptView } from "../transcripts/view.js";
 import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
@@ -85,17 +84,6 @@ async function noteDmTouches(store: HomeStore, paths: readonly string[], text: s
   if (lowered.includes("/tmp/dm/") || lowered.includes("/transcripts/dm/") || dmEntries.some((entry) => lowered.includes(pathKey(entry.path)))) notePlace("dm_file");
 }
 
-/** The private chats whose transcripts a command listed or read (D14): each is recorded as touched. */
-async function noteTranscriptDms(view: TranscriptView, paths: readonly string[][]): Promise<void> {
-  const noted = new Set<string>();
-  for (const segments of paths) {
-    if (!(await view.isPrivate(segments))) continue;
-    const key = (await view.conversationOf(segments))?.key ?? "dm_file";
-    if (noted.has(key)) continue;
-    noted.add(key);
-    notePlace(key);
-  }
-}
 
 async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(BashInput, input);
@@ -119,7 +107,12 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     maxChanges: MAX_CHANGE_ENTRIES,
     transcripts
   });
-  if (run.transcriptPaths) await noteTranscriptDms(transcripts, run.transcriptPaths).catch(() => undefined);
+  // The private chats whose transcripts it listed or read (D14): each is recorded as touched.
+  for (const key of run.transcriptDms ?? []) notePlace(key);
+  for (const text of run.transcriptTexts ?? []) {
+    ctx.turn.transcriptTexts ??= new Map();
+    ctx.turn.transcriptTexts.set(text.sha256, text);
+  }
   if (run.outcome === "aborted") return toolError("interrupted; nothing was saved");
   if (run.outcome === "timeout") return toolError(`the command took longer than ${Math.round(timeoutMs / 1000)} s and was stopped; nothing was saved`);
   if (run.outcome === "memory") return toolError("the command used too much memory and was stopped; nothing was saved");
@@ -144,6 +137,16 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   await appendIntent(deps.storage, ctx.waifu.id, { ...intent, at: deps.now().toISOString() });
   try {
     const applied = await store.applyChanges(changes, run.base, checkEnvFor(deps, ctx.waifu.id), { journalId: ctx.toolCallId });
+    // A file that is a private chat's transcript day keeps its DM origin (§18.3, D14).
+    if (run.transcriptTexts) {
+      const served = new Map(run.transcriptTexts.map((text) => [text.sha256, text] as const));
+      const copies = changes.writes.flatMap((write) => {
+        const text = served.get(sha256(write.data));
+        const p = parseVirtual(write.path, store.slug);
+        return text && p ? [{ path: p, sha256: text.sha256, size: text.size, placeKey: text.placeKey }] : [];
+      });
+      await store.recordTranscriptCopies(copies, deps.now());
+    }
     for (const virtual of changes.writes.map((write) => write.path)) {
       const p = parseVirtual(virtual, store.slug);
       if (p) await noteDmFile(store, p);

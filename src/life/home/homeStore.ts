@@ -118,6 +118,9 @@ export class HomeError extends Error {
 
 export const PLACES_REFUSED = "places.md is kept up to date for you and can't be changed";
 
+/** The provenance entry fields of a file copied from a private chat's transcript (§18.3). */
+export const TRANSCRIPT_COPY = "transcript";
+
 export function sha256(data: Uint8Array | string): string {
   return createHash("sha256").update(data).digest("hex");
 }
@@ -887,6 +890,48 @@ export class HomeStore {
     if (info.kind !== "file" || !entries.some((entry) => entry.size === info.size)) return undefined;
     const sha = await this.hashOf(p);
     return entries.find((entry) => entry.sha256 === sha)?.placeKey;
+  }
+
+  /**
+   * Files she made from a private chat's transcript (§18.3, D14): a copy (`cp`, `cat >`, a Write of
+   * what Read showed her) keeps its DM origin like a DM download, by content hash. Recorded only when
+   * the file's bytes still equal the transcript text she was served.
+   */
+  async recordTranscriptCopies(copies: ReadonlyArray<{ path: HerPath; sha256: string; size: number; placeKey: string }>, now: Date): Promise<number> {
+    if (copies.length === 0) return 0;
+    return this.locked(async () => {
+      const index = await this.readIndex();
+      const added: ProvenanceEntry[] = [];
+      for (const copy of copies) {
+        const info = await this.files.inspect(copy.path);
+        if (info.kind !== "file" || info.size !== copy.size || sha256(await this.files.readBytes(copy.path)) !== copy.sha256) continue;
+        added.push({
+          sha256: copy.sha256,
+          placeKey: copy.placeKey,
+          messageId: TRANSCRIPT_COPY,
+          authorId: TRANSCRIPT_COPY,
+          attachmentId: TRANSCRIPT_COPY,
+          downloadedAt: now.toISOString(),
+          path: copy.path.virtual,
+          size: copy.size
+        });
+      }
+      if (added.length === 0) return 0;
+      const paths = new Set(added.map((entry) => entry.path));
+      const kept = index.entries.filter((entry) => !(entry.attachmentId === TRANSCRIPT_COPY && paths.has(entry.path)));
+      await this.writeSide(lifePaths.filesIndex(this.waifuId), { entries: [...kept, ...added].slice(-MAX_PROVENANCE_ENTRIES) });
+      return added.length;
+    });
+  }
+
+  /** A file whose bytes are a copy of a private chat's transcript (SendMessage refuses it, §18.3). */
+  async isTranscriptCopy(p: HerPath, index?: FilesIndex): Promise<boolean> {
+    const entries = (index ?? (await this.readIndex())).entries.filter((entry) => entry.attachmentId === TRANSCRIPT_COPY);
+    if (entries.length === 0) return false;
+    const info = await this.files.inspect(p);
+    if (info.kind !== "file" || !entries.some((entry) => entry.size === info.size)) return false;
+    const sha = await this.hashOf(p);
+    return entries.some((entry) => entry.sha256 === sha);
   }
 
   /** Drops provenance entries (forget, §16.9). */

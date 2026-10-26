@@ -312,6 +312,7 @@ const SendInput = z.object({
 });
 
 export const PRIVATE_FILE_REASON = "your notes, reminders, watches and places are private and can't be attached";
+export const TRANSCRIPT_COPY_REASON = "a copy of a private chat's transcript can't be attached";
 
 /** The files she asked to attach: what can go, and why the rest can't (§16.3.2). */
 async function attachments(ctx: ToolContext, requested: readonly string[]): Promise<{ files: OutgoingFile[]; skipped: string[] }> {
@@ -356,6 +357,12 @@ async function attachments(ctx: ToolContext, requested: readonly string[]): Prom
       const data = await store.files.readBytes(p, { maxBytes: MAX_SEND_FILE_BYTES }).catch(() => undefined);
       if (!data) {
         skipped.push(`${p.display} (it can't be read)`);
+        continue;
+      }
+      // A copy of a private chat's transcript never goes out (§18.3, D14).
+      if (await store.isTranscriptCopy(p)) {
+        await noteDmFile(store, p);
+        skipped.push(`${p.display} (${TRANSCRIPT_COPY_REASON})`);
         continue;
       }
       // A DM's download sent anywhere is about that DM (D14): the owner's views hide the call.
