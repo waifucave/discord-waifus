@@ -21,6 +21,13 @@ use her files, Bash, reminders and watches, but SendMessage, React, WebSearch an
 summarises for her as before. One rest notice per epoch. `life.restNotice = false` turns it off
 (her time line then warns her that her memory is nearly full, as before).
 
+**Notifications.** Several messages in one place (a burst, or wakes queued while she was busy)
+are one wake and one turn, but she sees one notification line per message, in order, each with
+its reason, the place, the sender, its ref and a short preview: a mention, her name, `@everyone`
+or a watch match is on the line of the message it belongs to, and a message around it that was
+not for her has a line with no reason. At most `life.notificationLinesPerPlace` (default 8)
+lines per place, the newest; the first then says `+N earlier`.
+
 ## Seeing it
 
 - Dashboard → Life: her status (awake, asleep or busy; idle or mid-turn), her queue, today's cost

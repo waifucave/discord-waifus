@@ -57,6 +57,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxSendsPerTurn` | integer 1–50 | `8` | Messages she may send in one turn. |
 | `life.maxWakesPerUserPerHour` | integer 1–200 | `20` | Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line. |
 | `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches may fire per day. |
+| `life.notificationLinesPerPlace` | integer 1–50 | `8` | Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out. |
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |
 | `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of her nightly dream (and queued forget scrubs) for a waifu with no sleep window (with one, it runs 30 minutes into her sleep). |
 | `life.restNotice` | boolean | `true` | Near the compaction trigger she gets a rest notice after her turn and writes her own summary; her new epoch starts from it alone (her files stay). Off: compaction summarises for her, as before. |

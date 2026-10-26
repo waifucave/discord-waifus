@@ -84,6 +84,12 @@ const APP: SettingGroup = {
     "life.maxSendsPerTurn": { label: "Messages per turn", help: "Messages she may send in one turn.", ...reload, example: "8" },
     "life.maxWakesPerUserPerHour": { label: "Wakes per person per hour", help: "Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line.", ...reload, example: "20" },
     "life.maxWatchFiresPerDay": { label: "Watch fires per day", help: "How often one of her repeating watches may fire per day.", ...reload, example: "24" },
+    "life.notificationLinesPerPlace": {
+      label: "Notification lines per place",
+      help: "Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out.",
+      ...reload,
+      example: "8"
+    },
     "life.maxWaifuTriggeredTurns": { label: "Room loop guard", help: "Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off).", ...reload, example: "0" },
     "life.maintenanceHourLocal": { label: "Maintenance hour", help: "Local hour of her nightly dream (and queued forget scrubs) for a waifu with no sleep window (with one, it runs 30 minutes into her sleep).", unit: "hour 0–23", ...reload, example: "5" },
     "life.restNotice": { label: "Rest before her memory fills", help: "Near the compaction trigger she gets a rest notice after her turn and writes her own summary; her new epoch starts from it alone (her files stay). Off: compaction summarises for her, as before.", ...reload, example: "true" },

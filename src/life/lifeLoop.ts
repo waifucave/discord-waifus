@@ -36,6 +36,7 @@ import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
+import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
 import { collectPlaces, handleOf, refreshPlaces, resolvePlace, withPlaceCache } from "./places.js";
@@ -335,7 +336,8 @@ export class Life {
       // first; the messages before them get theirs too, so refs stay in message order (a ref handed
       // to her own later send never jumps ahead of an older message). Only messages that exist get
       // one: the buffer and the latest page (served from the buffer when the conversation is trusted).
-      const wanted = wakes.flatMap((wake) => (wake.placeKey === key && wake.messageId ? [wake.messageId] : []));
+      // Every message a wake is about gets its line and its ref (§20).
+      const wanted = wakes.flatMap((wake) => (wake.placeKey === key ? [...(wake.messageId ? [wake.messageId] : []), ...messagesOf(wake).map((message) => message.id)] : []));
       if (wanted.length === 0) continue;
       const dmFloor = ref.kind === "dm" ? await readDmFloor(deps.storage, ref.userId, ref.waifuId).catch(() => undefined) : undefined;
       const page = await deps.conversations.readPage({ conversation: ref, limit: 50 }).catch(() => ({ messages: [] as typeof buffered }));
@@ -346,7 +348,13 @@ export class Life {
       const ids = known.filter((id) => compareIds(id, newest) <= 0);
       refs.set(key, await assignConversationRefs(deps.storage, key as never, ids, deps.now()).catch(() => new Map<string, string>()));
     }
-    return { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: (key) => unread.get(key), ref: (key, messageId) => refs.get(key)?.get(messageId) };
+    return {
+      timeZone: deps.timeZone,
+      linesPerPlace: deps.config().life.notificationLinesPerPlace,
+      handle: (key) => handles.get(key) ?? key,
+      unread: (key) => unread.get(key),
+      ref: (key, messageId) => refs.get(key)?.get(messageId)
+    };
   }
 
   private timeLineText(waifu: WaifuConfig, estimate: number, model: CuratedModel): string {

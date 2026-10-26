@@ -37,8 +37,11 @@ export function isDmPlaceKey(placeKey: string | undefined): boolean {
   return typeof placeKey === "string" && placeKey.startsWith("dm_");
 }
 
-/** A notification line about a DM: `- dm · dm/kevin · …`, `- +3 more from Kevin (dm/kevin)`, `  · watch matched · dm/kevin · …`. */
-const DM_NOTIFICATION_LINE = /^\s*[-·] .*(?:· |\(|\s)<?dm[/_]/iu;
+/**
+ * A notification line about a DM (one per message, §20): `- dm · dm/kevin · …`, `- dm/kevin · …`,
+ * `- +3 more from Kevin (dm/kevin)`, `  · watch matched · dm/kevin · …`.
+ */
+const DM_NOTIFICATION_LINE = /^\s*[-·] (?:.*(?:· |\(|\s))?<?dm[/_]/iu;
 
 /** A line that starts a notification entry (or the block's tags); anything else continues the line before. */
 const ENTRY_START = /^\s*(?:[-·] |<\/?notifications>)/u;

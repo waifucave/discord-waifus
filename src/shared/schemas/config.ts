@@ -251,6 +251,8 @@ const LIFE_FIELDS = {
   maxSendsPerTurn: z.number().int().min(1).max(50),
   maxWakesPerUserPerHour: z.number().int().min(1).max(200),
   maxWatchFiresPerDay: z.number().int().min(1).max(100),
+  /** One notification line per message (§20): at most this many per place, the newest. */
+  notificationLinesPerPlace: z.number().int().min(1).max(50),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
   maintenanceHourLocal: z.number().int().min(0).max(23),
   dreamMaxRounds: z.number().int().min(5).max(200),
@@ -277,6 +279,7 @@ export const DEFAULT_LIFE_CONFIG = {
   maxSendsPerTurn: 8,
   maxWakesPerUserPerHour: 20,
   maxWatchFiresPerDay: 24,
+  notificationLinesPerPlace: 8,
   maxWaifuTriggeredTurns: 0,
   maintenanceHourLocal: 5,
   dreamMaxRounds: 60,
@@ -297,6 +300,7 @@ export const LifeConfigSchema = z
     maxSendsPerTurn: LIFE_FIELDS.maxSendsPerTurn.default(DEFAULT_LIFE_CONFIG.maxSendsPerTurn),
     maxWakesPerUserPerHour: LIFE_FIELDS.maxWakesPerUserPerHour.default(DEFAULT_LIFE_CONFIG.maxWakesPerUserPerHour),
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.default(DEFAULT_LIFE_CONFIG.maxWatchFiresPerDay),
+    notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.default(DEFAULT_LIFE_CONFIG.notificationLinesPerPlace),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
     dreamModel: DreamModelSchema.optional(),
@@ -440,6 +444,7 @@ export const UpdateAppConfigBodySchema = z.object({
     maxSendsPerTurn: LIFE_FIELDS.maxSendsPerTurn.optional(),
     maxWakesPerUserPerHour: LIFE_FIELDS.maxWakesPerUserPerHour.optional(),
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.optional(),
+    notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.optional(),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.optional(),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
     // null unsets it (the dream uses her own model again).

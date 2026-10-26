@@ -69,9 +69,12 @@ describe("Living cast goldens", () => {
       waifus: [ELLA],
       scripts: [
         async function* () {
-          // Mina pings her while she reads; her burst fires before the read's result comes back.
+          // Mina pings her twice while she reads; her burst fires before the read's result comes back
+          // and folds in one line per message (§20).
           const ping = w.discord.post(ROOM, `<@${ELLA_BOT}> can you bring the piping bags too?`, { authorId: MINA_USER, authorName: "Mina", mentions: { [ELLA_BOT]: "Ella" } });
           await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: ping.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: ping });
+          const more = w.discord.post(ROOM, "and the sprinkles, the rainbow ones", { authorId: MINA_USER, authorName: "Mina" });
+          await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: more.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: more });
           w.cast.intake.flushDetector();
           await w.cast.intake.settle();
           yield* toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]);
@@ -85,6 +88,27 @@ describe("Living cast goldens", () => {
     await w.cast.life("ella").runNow();
     const second = w.anthropic.calls[1]!.request;
     await expect(serializeMessages(second.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-mid-turn.txt");
+  });
+
+  it("a room burst: one line per message (§20)", async () => {
+    const w = await lifeWorld(roots, { waifus: [ELLA], scripts: script(textTurn("(nothing to send yet)")) });
+    await seedNotes(w);
+    const burst: Array<[string, string, string, Record<string, string>?]> = [
+      [KEVIN, "Kevin", "ok who is on dessert this time"],
+      [MINA_USER, "Mina", "not me, i'm on the oven"],
+      [KEVIN, "Kevin", `<@${ELLA_BOT}> are you coming saturday?`, { [ELLA_BOT]: "Ella" }],
+      [KEVIN, "Kevin", "we need someone on dessert"]
+    ];
+    for (const [authorId, authorName, text, mentions] of burst) {
+      const message = w.discord.post(ROOM, text, { authorId, authorName, ...(mentions ? { mentions } : {}) });
+      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
+    }
+    await w.cast.settle();
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
+    await w.cast.life("ella").runNow();
+    const first = w.anthropic.calls[0]!.request;
+    await expect(serializeMessages(first.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-room-burst.txt");
   });
 
   it("a DM wake", async () => {
@@ -103,6 +127,7 @@ describe("Living cast goldens", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await w.cast.life("ella").runNow();
+    // A DM burst: one line per message (§20).
     const last = w.anthropic.calls[2]!.request;
     await expect(serializeMessages(last.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-dm-wake.txt");
   });
