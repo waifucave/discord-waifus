@@ -160,6 +160,7 @@ async function selectedGateway(options: {
   readonly dataRoot: string;
   readonly client: DashboardRemoteClient;
   readonly incomingContexts?: unknown[];
+  readonly connectionState?: () => "direct" | "reconnecting" | "direct_unavailable";
 }): Promise<RunningRemoteGateway> {
   let selected: RemoteSelectedHostGateway | undefined;
   const gateway = await startRemoteGateway({
@@ -180,7 +181,7 @@ async function selectedGateway(options: {
     remoteGatewayVersion: "1.5.203",
     connectionShellOrigin: `http://waifus-${"a".repeat(52)}.localhost:49231`,
     localOrigin: gateway.origin,
-    connectionState: () => "direct",
+    connectionState: options.connectionState ?? (() => "direct"),
     randomBytes: deterministicRandom(0x61)
   });
   gateways.push(gateway);
@@ -349,6 +350,33 @@ describe("verified selected-host dashboard serving", () => {
 
     reachable = true;
     const opened = await rawRequest(second, "/", cookie, "GET", { accept: "text/html" });
+    expect(opened.body.toString("utf8")).toContain("<main>fresh</main>");
+  });
+
+  it("answers a page load with the waiting page at once while the path is not direct", async () => {
+    // The download would otherwise hold the page blank until the direct request times out.
+    const fresh = await dashboardFixture("fresh");
+    const requests: HelperRemoteRequest[] = [];
+    const working = fixtureClient(() => fresh, requests);
+    let state: "direct" | "reconnecting" = "reconnecting";
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slow: DashboardRemoteClient = {
+      ...working,
+      request: vi.fn(async (input: HelperRemoteRequest) => {
+        await gate;
+        return working.request(input);
+      })
+    };
+    const gateway = await selectedGateway({ dataRoot: fresh.root, client: slow, connectionState: () => state });
+    const cookie = await bootstrap(gateway);
+    const waiting = await rawRequest(gateway, "/", cookie, "GET", { accept: "text/html" });
+    expect(waiting.statusCode).toBe(200);
+    expect(waiting.body.toString("utf8")).toContain("Waiting for your host");
+
+    state = "direct";
+    release?.();
+    const opened = await rawRequest(gateway, "/", cookie, "GET", { accept: "text/html" });
     expect(opened.body.toString("utf8")).toContain("<main>fresh</main>");
   });
 

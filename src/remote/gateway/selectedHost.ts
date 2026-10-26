@@ -95,11 +95,18 @@ export class RemoteSelectedHostGateway {
         : "";
     if (requestedAssetPath.length === 0) return reply.code(404).send({ error: "NotFound" });
 
+    const navigation = acceptsHtml(request) && isSpaRoute(pathname) && browserContext.method === "GET";
+    if (navigation && !this.#build && this.#options.connectionState() !== "direct") {
+      // Answer a page load at once: the download would wait out the direct timeout first.
+      void this.#ensureBuild(browserContext).catch(() => undefined);
+      return reply.header("cache-control", "no-store").header("content-type", "text/html; charset=utf-8")
+        .send(waitingDashboard(browserContext.gatewayLaunchId));
+    }
     let build: VerifiedDashboardBuild;
     try {
       build = await this.#ensureBuild(browserContext);
     } catch {
-      if (acceptsHtml(request) && isSpaRoute(pathname) && browserContext.method === "GET") {
+      if (navigation) {
         return reply.header("cache-control", "no-store").header("content-type", "text/html; charset=utf-8")
           .send(waitingDashboard(browserContext.gatewayLaunchId));
       }
