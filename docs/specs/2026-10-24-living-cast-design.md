@@ -2488,26 +2488,46 @@ read-only` (the shell prints `<path>: transcripts are read-only`); `cp` *out of*
 into her folders works (a quote she keeps becomes her file). `Read` renders the same view; `Write`
 and `Edit` answer `error: transcripts are read-only`; `SendMessage` lists a transcript path as
 `(transcripts can't be attached)`. `/transcripts` always exists (empty until she has a transcript).
+A copy keeps a DM's privacy (D14): the runner records, uncapped, every private chat whose
+transcript a command touched (the call is a DM call) and the sha256 of every private day it served;
+a file the command saves with exactly those bytes gets a `files-index.json` entry with the DM's
+key (`attachmentId: "transcript"`), as does a `Write`/`Edit` whose result equals a private day she
+was shown this turn (by `Read` or `Bash`). Such a file counts as from the DM like a DM download,
+and `SendMessage` refuses it (`a copy of a private chat's transcript can't be attached`). A file
+she changed afterwards (an excerpt, her own words) no longer matches and is hers.
 
 **The store (§18.2).**
 - Writes: a line that sorts after the day's last line is *appended* (the common case, so a busy
   room does not rewrite its day file per message); edits, deletes, out-of-order gap fills and every
   forget rewrite the day atomically. This differs from "atomic per day file": a crash mid-append can
-  leave a torn last line, which readers skip and the next rewrite drops.
+  leave a torn last line, which readers skip, the next append starts on a new line after, and the
+  next rewrite drops. An in-memory cache per conversation (512 conversations; its meta and, for the
+  4 most recent days, the ids and last line), checked against each file's size and mtime, makes an
+  append one `stat` and no parse.
 - `store.json` `startedAt` is written when the cast first starts: no line older than it is ever
   written (no backfill), and the first dream's window starts there.
 - A room is written only while some waifu is cast in it (`castOf`, threads inheriting). Before each
   write the writer compares the cast with what it last saw for that room (read from the access
   files once per process) and opens or closes intervals; boot reconciles every room. A live message
-  opens an interval no later than its own time (it was sent before it arrived). There is no timer:
-  a cast change shows in the access files with the room's next message.
+  opens an interval no later than its own time (it was sent before it arrived); a REST page opens
+  one at now. An interval closes at the oldest message of the event that showed the change, and
+  at boot just after the room's newest stored line (the removal happened while the app was down,
+  at a time nobody knows), so a catch-up never shows a removed waifu what was said after she left.
+  There is no timer: a cast change shows in the access files with the room's next message.
 - DMs are not listed in the access files: a DM is visible whole to the waifu whose DM it is, and to
   nobody else.
 - REST pages reach the writer as a new cache event, `page` (catch-up, tail checks, older pages),
-  with the forget floor already applied; a stale page cannot bring back an id a Discord delete or a
-  forget removed (`meta.json` `removed`). An edit replaces only a line the store has.
+  with the forget floor already applied; a stale page cannot bring back an id a forget removed
+  (`meta.json` `removed`, kept for good) or a Discord delete removed in the last day (`deleted`, id →
+  time, pruned after `DELETED_MEMORY_MS`). A DM forget floor keeps the remembered ids above it. An
+  edit replaces only a line the store has; it is marked edited when the message has `editedAt` (or
+  the line already was), and an update that changes nothing (an embed unfurl, a pin) writes nothing.
 - A forgotten person's messages from before their forget are never written (the forget records,
-  as for ReadMessages); with unreadable records a gap fill waits and live messages are written.
+  as for ReadMessages), nor anyone's line from before it that mentions them by id (`mentions`, or
+  the id in the text); the forget paths make the writer read the records again
+  (`TranscriptWriter.noteForget`). The records hold no names, so a late gap fill of a message that
+  names them only by name is kept (the forget's own scrub removed every such line the store had).
+  With unreadable records a gap fill waits and live messages are written.
 - Line fields: `id`, `at`, `authorId`, `author` (her config name for a waifu), `waifu?`, `reply?`
   (an id), `text` (mentions as `@Name`, custom emoji as `:name:`, no attachment lines), `files?`,
   `edited?`, `mentions?` (user ids, for forget).
@@ -2517,13 +2537,17 @@ and `Edit` answer `error: transcripts are read-only`; `SendMessage` lists a tran
 the target, else `↩<the target's author>` when the target is that day, else `↩`. A message's later
 lines continue indented by two spaces (each stays greppable). Folders follow her handles
 (`handles.json`), with `server-xxxx/channel-xxxx` (or `dm/user-xxxx`) for a conversation she has no
-handle for. `ls` (readdir) reports the stored day file's size; `stat` the rendered size.
+handle for. `ls` (readdir) and the dashboard's listing report the stored day file's size (no day
+is rendered to list a folder); `stat` and a read the rendered size. A view reads each
+conversation's refs once.
 
 **Dreaming (§18.4).**
 - The system block is the spec's text plus `In /transcripts (read-only) her own lines are written as
   "you".`; the opening message is the instruction (`DREAM_INSTRUCTION`), `Her files: …`, the window
   (`The dream window starts <day time>. Read these transcript files (N lines in all):` and one line
-  per file with `the whole file` or `the lines after HH:MM` and its line count) and her time line.
+  per file with `the whole file` or `from line N on, after the HH:MM line` and its line count: a
+  line number as `Read` numbers the rendered file, since several lines can share a minute) and her
+  time line.
 - Sessions split by whole day files (oldest first); one day larger than `life.dreamWindowMaxChars`
   is a session of its own. A session that is not the last says the rest comes later.
 - An empty window calls no model: the report line says `nothing new since the last dream`. An
@@ -2535,12 +2559,15 @@ handle for. `ls` (readdir) reports the stored day file's size; `stat` the render
   choice (400 `model_not_available` / `unsupported_effort`); `null` unsets it. Settings → Life has a
   "Dreaming" section (the ModelPicker) and a "Dreaming limits" form.
 - The forget's notes scrub keeps its old session (her identity and persona, 30 rounds).
+- Nightly maintenance dreams with `life.dreamModel` even when her own model is unavailable; a
+  pending forget scrub needs her own model, so while one waits, neither runs.
 
 **Forget (§18.5).** The owner's job part `transcripts` runs after `archive` (before
 `record-copies`); by then the `dms` part has already removed the DM transcripts at the floor
 (`dmForget` does it for every DM forget), so the part counts the room lines it removed
 (`transcriptLines` in the response). Removal by name uses the unique, non-weak names with word
-boundaries (§7.5 "removable"); a shared name removes nothing here. A DM `/forget everything`
+boundaries (§7.5 "removable"); a shared name removes nothing here. A line's text names them by a
+whole word; its author only by the whole name ("Kevin's Mom" is not Kevin). A DM `/forget everything`
 removes the person's room lines in step 3 of her scrub, so a rate-limited one does it at her
 nightly maintenance (its DM transcript goes at once, with the DM data). Her dream cursor drops the
 DM's entry on every forget of it.
@@ -2556,6 +2583,14 @@ Remote Access and for the assistant), and a DM entry is listed as `[private chat
 `PUT`/`DELETE` there answer 400 `ReadOnlyFile`. `waifus files <waifu> /transcripts` (or `--root
 transcripts`) lists and prints them; `waifus help dreaming` is a resource topic. The assistant's
 `list_files` takes `root: transcripts`.
+
+**Known limitations.**
+- Days are the host's local days when a line is written. After a host time zone change, lines
+  written near midnight before it stay in the day file of the old zone, so a day file can hold a
+  few lines another zone would put in the next or previous day (each line keeps its exact time).
+- The dream cursor is per conversation (time and id of the last line covered). A gap fill that
+  lands behind it later (a REST catch-up of older messages) and an edit of a line behind it are
+  not dreamed again; the lines are in `/transcripts` for her to grep.
 
 ## 19. She summarises herself before her memory fills (owner request, 2026-10-26)
 
@@ -2654,6 +2689,11 @@ unchanged in the rest turn (cache simulation); goldens for the notice and the ne
   than asking her again. At most one rest notice per epoch.
 - A provider overflow in the rest turn goes down the mid-turn compaction path (§5.6), and that path
   ends the turn.
+- Compaction never keeps a rest turn (`restTurnIds`: a turn opened by the notice), finished or
+  interrupted, so the notice never reaches the next epoch.
+- Her text in a rest turn is her summary: the owner's views hide it like `<life_so_far>` unless a
+  local request asks for private content (`scanDmContent` `restTurns`; the dashboard log, `/print
+  life`, Remote Access and the assistant).
 - Tests: `tests/lifeRest.test.ts` (order against the running turn and queued wakes, refused tools,
   accepted, too short, failed, interrupted turn, interrupted compaction, switch off, warning
   dropped), the cache simulation `tests/eval/cacheHit.test.ts` ("the rest turn": same tools and

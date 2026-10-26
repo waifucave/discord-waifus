@@ -18,7 +18,8 @@ use her files, Bash, reminders and watches, but SendMessage, React, WebSearch an
 "finish your summary first". Queued wakes wait until after it. If her final reply is at least
 `life.restSummaryMinChars` (default 200) characters, a new epoch starts from that summary alone
 (Life shows "rested (her own summary)"); a shorter reply, a failed turn or a cap means compaction
-summarises for her as before. One rest notice per epoch. `life.restNotice = false` turns it off
+summarises for her as before. One rest notice per epoch. What she writes in a rest turn is her
+summary, so like her `<life_so_far>` it is hidden in the owner's views unless revealed on the host. `life.restNotice = false` turns it off
 (her time line then warns her that her memory is nearly full, as before).
 
 **Notifications.** Several messages in one place (a burst, or wakes queued while she was busy)
@@ -94,7 +95,7 @@ column, and nothing is saved), and a file changed since it was read is a conflic
 read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
 
 Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`,
-and her DM transcripts under `/transcripts/dm/`) are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
+her DM transcripts under `/transcripts/dm/`, and an exact copy of one in her home) are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
 a DM is shown without its words, and `watches.json` itself then reads as a redacted, read-only copy
 (changing or deleting it needs the reveal on the host). Over Remote Access, and for the dashboard assistant, they stay
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a

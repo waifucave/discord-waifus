@@ -106,14 +106,18 @@ her folders (`src/life/bash/`: `bashWorker.ts`, `runner.ts`, the pure-JS `image`
 wall clock terminates it and nothing is saved; `tests/bashIsolation.test.ts` is the escape suite.
 **Transcripts (spec §18)**: `src/life/transcripts/`: one shared store `user/transcripts/<conversationKey>/<day>.jsonl`
 (host-time-zone days, kept forever; `store.json` `startedAt` = no backfill; `meta.json` keeps a DM
-forget floor and the ids a forget or a Discord delete removed, so a REST page never writes them again;
-`access/<waifuId>.json` her room intervals, opened/closed by comparing the cast before each write) written
+forget floor, the ids a forget removed (for good) and those a Discord delete removed (a day), so a REST
+page never writes them again; an in-memory cache per conversation keeps an append to one stat;
+`access/<waifuId>.json` her room intervals, opened/closed by comparing the cast before each write, closed
+at the event's oldest message or, at boot, after the room's newest line) written
 by `TranscriptWriter` (`writer.ts`, owned by `LivingCast`, fed by every cache event incl. the cache's
 `page` event for REST pages; one queue per conversation, in-order lines appended, edits/deletes/forgets
 rewrite the day atomically); `view.ts` renders her read-only `/transcripts/<server>/<room>[/<thread>]/<day>.md`
 and `/transcripts/dm/<name>/` (her DMs only; rooms only inside her intervals) for `Read`, the API and
 Bash, where the worker's guarded filesystem mounts it lazily (stat/list/read asked over the message port
-per command, never copied; writes fail `EROFS: transcripts are read-only`); `SendMessage` never attaches it.
+per command, never copied; writes fail `EROFS: transcripts are read-only`); `SendMessage` never attaches it,
+nor a file whose bytes are a private day she was served (`HomeStore.recordTranscriptCopies` gives such a copy
+its DM origin in `files-index.json`).
 Worker files import only npm packages and `node:` builtins (Node runs them as stripped TS in
 source). `ReadMessages` downloads attachments into `/tmp/<place>/` through the attachment fetcher
 (`fetchFile`); `Read` shows images (bytes cached as `file:<sha256>`, pinned for the epoch, indexed
