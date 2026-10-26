@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import fastify, { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createProviderCredentialsLookup } from "../models/credentials.js";
-import { curatedCatalog, installedCatalog } from "../models/catalog.js";
+import { curatedCatalog, installedCatalog, offListRoutes } from "../models/catalog.js";
 import type { AssistantModelClient } from "./assistant/service.js";
 import { clearModelWarnings, readModelWarnings } from "../models/modelWarnings.js";
 import { decisionModelCatalog } from "../life/detector/catalog.js";
@@ -1300,7 +1300,11 @@ async function modelsResponse(dataRoot: string) {
     catalogVersion: curated.catalogVersion,
     maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok,
     models: curated.models.map((model) => ({ ...model, credentialsConfigured: Boolean(lookup(model.providerId)) })),
-    hidden: curated.hidden
+    hidden: curated.hidden,
+    available: offListRoutes({ allowed: config.models.allowed, maxOutputUsdPerMTok: config.models.maxOutputUsdPerMTok }).map((model) => ({
+      ...model,
+      credentialsConfigured: Boolean(lookup(model.providerId))
+    }))
   };
 }
 

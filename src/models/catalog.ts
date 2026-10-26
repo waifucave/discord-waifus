@@ -234,6 +234,15 @@ export function curatedCatalog(options: CuratedCatalogOptions = {}): CuratedCata
   return { catalogVersion: catalog.catalogVersion, models, hidden };
 }
 
+/**
+ * Curated routes the allow list leaves out that would be offered if allowed (the default allow list's
+ * routes the installed catalog has and every filter passes), so the dashboard can switch them back on.
+ */
+export function offListRoutes(options: CuratedCatalogOptions & { allowed: readonly string[] }): CuratedModel[] {
+  const allowed = new Set(options.allowed);
+  return curatedCatalog({ ...options, allowed: DEFAULT_ALLOWED_ROUTES.filter((id) => !allowed.has(id)) }).models;
+}
+
 export function findCuratedModel(route: ModelRoute, curated: CuratedCatalog): CuratedModel | undefined {
   const id = routeKey(route);
   return curated.models.find((model) => model.id === id);

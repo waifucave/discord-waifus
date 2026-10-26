@@ -43,6 +43,7 @@ type ModelsBody = {
   maxOutputUsdPerMTok: number;
   models: Array<{ id: string; providerId: string; modelId: string; efforts: string[]; contributor: boolean; credentialsConfigured: boolean }>;
   hidden: Array<{ id: string; reason: string }>;
+  available: Array<{ id: string; credentialsConfigured: boolean }>;
 };
 
 describe("GET /api/models (Living cast §9.2)", () => {
@@ -62,6 +63,7 @@ describe("GET /api/models (Living cast §9.2)", () => {
     // winter 0.0.56 carries every curated route, direct and through OpenRouter.
     expect(first.models.map((model) => model.id)).toEqual([...DEFAULT_ALLOWED_ROUTES]);
     expect(first.hidden).toEqual([]);
+    expect(first.available).toEqual([]);
     expect(first.models.every((model) => model.credentialsConfigured === false)).toBe(true);
     expect(first.models.find((model) => model.id === "meta/muse-spark-1.3-contributor")?.contributor).toBe(true);
     expect(first.models.find((model) => model.id === "openrouter/meta/muse-spark-1.3-contributor")?.contributor).toBe(true);
@@ -79,6 +81,10 @@ describe("GET /api/models (Living cast §9.2)", () => {
     const body = (await app.inject({ method: "GET", url: "/api/models" })).json<ModelsBody>();
     expect(body.models.map((model) => model.id)).toEqual(["openai/gpt-6-luna"]);
     expect(body.hidden).toEqual([{ id: "openai/gpt-6.1-sol", reason: "over_price_cap" }]);
+    // The curated routes left off the list that would be offered, so the dashboard can switch them back on.
+    expect(body.available.map((model) => model.id)).toContain("deepseek/deepseek-flash");
+    expect(body.available.map((model) => model.id)).not.toContain("openai/gpt-6-luna");
+    expect(body.available.map((model) => model.id)).not.toContain("openai/gpt-6.1-sol");
     // A write is validated against the same view.
     const refused = await app.inject({
       method: "POST",
