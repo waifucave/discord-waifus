@@ -2466,3 +2466,93 @@ Settings → Life shows the dream model with the ModelPicker ("Dream model — d
 
 A feature release (3.2.0). No migration of data beyond creating the store; maintenance's old
 instruction is replaced.
+
+### 18.9 As built (2026-10-26)
+
+Every choice §18 left open, and every place where the build differs from the text above. The code
+(`src/life/transcripts/`, `src/life/dream.ts`) is the authority for exact strings; the goldens show
+the changed prompt and tool texts (`life-system-prompt.txt`) and a dream session (`life-dream.txt`,
+which replaces `life-maintenance.txt`).
+
+**The lazy mount (§18.3).** just-bash takes any `IFileSystem`, and her Bash already runs over the
+app's own guarded one (`bashWorker.ts`), so `/transcripts` is routed there: `stat`, `exists`,
+`readdir`, `readFile*` and `realpath` under `/transcripts` ask the host over the worker's message
+port (`{type: "transcripts", op: stat|list|read}`); the host answers from a `TranscriptView` built
+for the call (`runner.ts`), which reads the folder list once and renders a day file only when it
+is stat'ed or read (16 rendered days kept for the call). Nothing is copied into the worker's
+in-memory filesystem, so a command pays only for the days it opens (a test runs `ls`/`head` over
+120 days of a 10 MB store well inside time and memory bounds). CPython sees the same mount through
+just-bash's filesystem bridge (`os.listdir('/')` is `['home', 'tmp', 'transcripts']`). Every write,
+`rm`, `mv`, `mkdir`, `touch`, `chmod` and redirection there fails with `EROFS: transcripts are
+read-only` (the shell prints `<path>: transcripts are read-only`); `cp` *out of* `/transcripts`
+into her folders works (a quote she keeps becomes her file). `Read` renders the same view; `Write`
+and `Edit` answer `error: transcripts are read-only`; `SendMessage` lists a transcript path as
+`(transcripts can't be attached)`. `/transcripts` always exists (empty until she has a transcript).
+
+**The store (§18.2).**
+- Writes: a line that sorts after the day's last line is *appended* (the common case, so a busy
+  room does not rewrite its day file per message); edits, deletes, out-of-order gap fills and every
+  forget rewrite the day atomically. This differs from "atomic per day file": a crash mid-append can
+  leave a torn last line, which readers skip and the next rewrite drops.
+- `store.json` `startedAt` is written when the cast first starts: no line older than it is ever
+  written (no backfill), and the first dream's window starts there.
+- A room is written only while some waifu is cast in it (`castOf`, threads inheriting). Before each
+  write the writer compares the cast with what it last saw for that room (read from the access
+  files once per process) and opens or closes intervals; boot reconciles every room. A live message
+  opens an interval no later than its own time (it was sent before it arrived). There is no timer:
+  a cast change shows in the access files with the room's next message.
+- DMs are not listed in the access files: a DM is visible whole to the waifu whose DM it is, and to
+  nobody else.
+- REST pages reach the writer as a new cache event, `page` (catch-up, tail checks, older pages),
+  with the forget floor already applied; a stale page cannot bring back an id a Discord delete or a
+  forget removed (`meta.json` `removed`). An edit replaces only a line the store has.
+- A forgotten person's messages from before their forget are never written (the forget records,
+  as for ReadMessages); with unreadable records a gap fill waits and live messages are written.
+- Line fields: `id`, `at`, `authorId`, `author` (her config name for a waifu), `waifu?`, `reply?`
+  (an id), `text` (mentions as `@Name`, custom emoji as `:name:`, no attachment lines), `files?`,
+  `edited?`, `mentions?` (user ids, for forget).
+
+**Rendering.** A day file starts with `# <handle> · Sat 24 Oct 2026`; a line is `HH:MM Name: text
+[file: a.png]` plus ` (edited)`; a reply shows `↩#ref` when the conversation's ref table has one for
+the target, else `↩<the target's author>` when the target is that day, else `↩`. A message's later
+lines continue indented by two spaces (each stays greppable). Folders follow her handles
+(`handles.json`), with `server-xxxx/channel-xxxx` (or `dm/user-xxxx`) for a conversation she has no
+handle for. `ls` (readdir) reports the stored day file's size; `stat` the rendered size.
+
+**Dreaming (§18.4).**
+- The system block is the spec's text plus `In /transcripts (read-only) her own lines are written as
+  "you".`; the opening message is the instruction (`DREAM_INSTRUCTION`), `Her files: …`, the window
+  (`The dream window starts <day time>. Read these transcript files (N lines in all):` and one line
+  per file with `the whole file` or `the lines after HH:MM` and its line count) and her time line.
+- Sessions split by whole day files (oldest first); one day larger than `life.dreamWindowMaxChars`
+  is a session of its own. A session that is not the last says the rest comes later.
+- An empty window calls no model: the report line says `nothing new since the last dream`. An
+  aborted dream is not reported (it runs again; sessions that finished keep their cursor).
+- The report line is `kind: "maintenance"` with `dream: true`, `windowStart`, `conversations`,
+  `lines`, `sessions`, `rounds`, `changed`, `summary`.
+- `life.dreamModel` that is no longer offered falls back to her model; its `effort` is used with it,
+  her own `effort` with hers. `PUT /api/config` checks a changed `life.dreamModel` like every model
+  choice (400 `model_not_available` / `unsupported_effort`); `null` unsets it. Settings → Life has a
+  "Dreaming" section (the ModelPicker) and a "Dreaming limits" form.
+- The forget's notes scrub keeps its old session (her identity and persona, 30 rounds).
+
+**Forget (§18.5).** The owner's job part `transcripts` runs after `archive` (before
+`record-copies`); by then the `dms` part has already removed the DM transcripts at the floor
+(`dmForget` does it for every DM forget), so the part counts the room lines it removed
+(`transcriptLines` in the response). Removal by name uses the unique, non-weak names with word
+boundaries (§7.5 "removable"); a shared name removes nothing here. A DM `/forget everything`
+removes the person's room lines in step 3 of her scrub, so a rate-limited one does it at her
+nightly maintenance (its DM transcript goes at once, with the DM data). Her dream cursor drops the
+DM's entry on every forget of it.
+
+**Prompt.** `<life>` gains the sentence in §18.3; `Read`'s description says "from your folders or
+/transcripts" and `Bash`'s says `/transcripts can be read and searched but not changed` (both in
+the harness hash: each life's first turn after the upgrade starts with a configuration-change
+compaction, as for any harness change).
+
+**API, CLI.** `HER_ROOTS` gains `transcripts`; its listing has no `usage`; `/transcripts/dm` and a
+DM transcript need a local `includePrivate=1` (403 `PrivateContentLocalOnly` otherwise, always over
+Remote Access and for the assistant), and a DM entry is listed as `[private chat redacted]`;
+`PUT`/`DELETE` there answer 400 `ReadOnlyFile`. `waifus files <waifu> /transcripts` (or `--root
+transcripts`) lists and prints them; `waifus help dreaming` is a resource topic. The assistant's
+`list_files` takes `root: transcripts`.
