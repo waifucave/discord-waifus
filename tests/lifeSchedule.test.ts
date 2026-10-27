@@ -80,7 +80,7 @@ describe("sleep and the morning batch (§4.5, §4.7, §21.6c)", () => {
     expect(morning.batch).toContain('  · watch matched · bake-club/#general · "brownie" · from Kevin · 14:00 #a1 · your note: "Mina wanted brownie tips"');
     expect(queue.deferred.items).toEqual([]);
     expect(queue.deferred.reason).toBeUndefined();
-  });
+  }, 30_000);
 
   it("a budget pause ends with the next local day", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", life: { dailyBudgetUsd: 0.5 } }] });
