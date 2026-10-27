@@ -169,9 +169,5 @@ is salvaged on read.
 
 ## Spec differs
 
-- §7.5 lists seven job parts; the code has eight (`transcripts` between `archive` and
-  `record-copies`, as §18.5 adds).
-- §7.5 step 4 has a waifu without a model skip her notes scrub; as built the session first falls
-  back to `life.dreamModel` and is skipped only when neither is offered.
 - §18.5 "their whole DM transcripts" is done as "everything at or below the floor at the forget's
   time".

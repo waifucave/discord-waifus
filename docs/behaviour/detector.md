@@ -117,5 +117,3 @@ answer, `fallback:anyone`/`fallback:none`, or `nobody_around`. Served by
 - Before §24 (and in §4.3) the `anyone` draw weighted busy ×1 and asleep ×0 and `all` woke every cast
   waifu in the channel; as built (unreleased) only waifus around are candidates, all weighted ×3 ×
   recency, and `all` wakes only them.
-- §4.3 describes the 30-minute stale rule as behaviour; in code it is only an instruction the model
-  applies using `minutesAgo`.

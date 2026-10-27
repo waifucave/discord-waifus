@@ -152,8 +152,6 @@ home, the transcripts and her dream cursor's DM entry. See [privacy-and-forget.m
 
 ## Spec differs
 
-- §7.3 / §18.4 put the run "30 minutes into her sleep window"; as built (§21.6c) it is 15 minutes
-  asleep in her bed time, and a bed time without that has no dream.
 - §16.8's maintenance also tidied reminders and watches; the dream leaves `~/life/` alone entirely.
 - §18.2 says writes are "atomic per day file"; appends are plain appends (a torn last line is skipped
   by readers and dropped at the next rewrite).

@@ -363,8 +363,6 @@ turn's text and any lone `<summary>` text unless revealed on the host
 
 ## Spec differs
 
-- §5.6 says a failed summary falls back to "truncation"; the code keeps her previous summary and the
-  kept turns (it does not empty the summary) and backs off 5 minutes.
 - §5.2 lists the follow-up turn as re-armed; as built a follow-up that fails itself gets none.
 - §5.1 names `currentTurn.wakeIds` only; the code also stores the wakes themselves (`currentTurn.wakes`)
   so a mid-turn compaction can repeat them.

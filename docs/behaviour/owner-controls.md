@@ -159,6 +159,3 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | | `dm.allowDms` / `dm.rateLimit` / `dm.notifyWhenLimited` | false / 30 per 60 min / true | DMs |
 | | `dm.limitNotice` / `dm.sleepNotice` | built-in / none | Automatic DMs (≤ 300) |
 | | `customInstructions` | "" | Appended after the persona (≤ 4,000) |
-
-## Docs differ
-
