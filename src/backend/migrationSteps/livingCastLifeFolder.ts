@@ -154,21 +154,22 @@ export async function migrateLivingCastLifeFolder(dataRoot: string, o: { now?: (
         continue;
       }
       // Before anything moves: a `life` of her own steps aside, and the marker says what is to come.
-      // Nothing to do (no old file, no `life` of hers): no marker either (the app writes it when it
-      // runs her life), so the data root stays as it was.
+      // A `life/` folder holding only the app's file names is the app's (a waifu the app wrote for,
+      // e.g. her profile, before it ran her life). Nothing to do (no old file, no `life` of hers): no
+      // marker either (the app writes it when it touches her home), so the data root stays as it was.
       const lifeName = homeNames.find((name) => key(name) === "life");
-      if (!lifeName && !homeNames.some((name) => LIFE_FOLDER_MOVES.some((move) => key(move.from) === key(name)))) continue;
-      let notes: string | undefined;
-      if (lifeName) {
-        const lifeKind = await kind(path.join(home, lifeName));
-        if (lifeKind === "dir") {
-          notes = await freeName(home, "life-notes");
-        } else if (lifeKind) {
-          await archive(dataRoot, id, path.join(home, lifeName), lifeName);
-          counts.archived += 1;
-        }
-      }
+      const lifeKind = lifeName ? await kind(path.join(home, lifeName)) : undefined;
+      const appsOwn = lifeKind === "dir" && (await list(path.join(home, lifeName!))).every((entry) => APP_FILE_NAMES.has(key(entry)));
+      const ownFolder = lifeKind === "dir" && !appsOwn;
       const hasOld = homeNames.some((name) => LIFE_FOLDER_MOVES.some((move) => key(move.from) === key(name)));
+      if (!hasOld && !ownFolder && !(lifeKind && lifeKind !== "dir")) continue;
+      let notes: string | undefined;
+      if (ownFolder) {
+        notes = await freeName(home, "life-notes");
+      } else if (lifeName && lifeKind && lifeKind !== "dir") {
+        await archive(dataRoot, id, path.join(home, lifeName), lifeName);
+        counts.archived += 1;
+      }
       marker = { version: 1, state: "moving", parts: [], ...(notes ? { notes } : {}), epoch: hasOld || notes !== undefined };
       await mkdir(lifeDir, { recursive: true, mode: 0o700 });
       await atomicWriteJson(markerFile, marker);
@@ -245,18 +246,21 @@ async function moveFiles(dataRoot: string, waifuId: string, home: string, counts
 }
 
 /** The app's names in `~/life/` after the moves: a path there is never her renamed notes folder's. */
-const APP_LIFE_NAMES = new Set(LIFE_FOLDER_MOVES.map((move) => key(move.to)));
+/** The names the app keeps in `~/life/` (and `schedule.json`, her day). */
+const APP_FILE_NAMES = new Set([...LIFE_FOLDER_MOVES.map((move) => key(move.to)), key("schedule.json")]);
+
+/** Set on a provenance index or journal once its paths were rewritten: a re-run never maps them twice. */
+const REWRITTEN = "lifeFolderV1";
 
 /**
- * Old path below her home → new one: the moved files, and her own `life/` folder renamed. Mapping a
- * path twice (a crash between a rewrite and its record) gives the same result: a path already in
- * the app's `life/` keeps its place.
+ * Old path below her home → new one: the moved files, and her own `life/` folder renamed (every
+ * path in it, whatever its name). A file is rewritten once (`REWRITTEN`).
  */
 function pathMapping(notes: string | undefined): (virtual: unknown) => string | undefined {
   return (virtual) => {
     if (typeof virtual !== "string") return undefined;
-    const own = /^(\/home\/[^/]+)\/life(?:\/([^/]+)(\/.*)?)?$/iu.exec(virtual);
-    if (notes && own && !(own[2] && !own[3] && APP_LIFE_NAMES.has(key(own[2])))) return `${own[1]}/${notes}${own[2] ? `/${own[2]}${own[3] ?? ""}` : ""}`;
+    const own = /^(\/home\/[^/]+)\/life(\/.*)?$/iu.exec(virtual);
+    if (notes && own) return `${own[1]}/${notes}${own[2] ?? ""}`;
     const match = /^(\/home\/[^/]+)\/([^/]+)$/u.exec(virtual);
     if (!match) return undefined;
     const to = LIFE_FOLDER_MOVES.find((move) => key(move.from) === key(match[2]!))?.to;
@@ -271,7 +275,7 @@ async function rewriteIndex(file: string, mapPath: (virtual: unknown) => string 
     counts.unreadable += 1;
     return false;
   }
-  if (read.kind !== "ok" || !isObject(read.value) || !Array.isArray(read.value.entries)) return true;
+  if (read.kind !== "ok" || !isObject(read.value) || !Array.isArray(read.value.entries) || read.value[REWRITTEN] === true) return true;
   let changed = false;
   const entries = read.value.entries.map((entry) => {
     if (!isObject(entry)) return entry;
@@ -281,7 +285,7 @@ async function rewriteIndex(file: string, mapPath: (virtual: unknown) => string 
     return { ...entry, path: next };
   });
   if (!changed) return true;
-  await atomicWriteJson(file, { ...read.value, entries });
+  await atomicWriteJson(file, { ...read.value, entries, [REWRITTEN]: true });
   counts.rewritten += 1;
   return true;
 }
@@ -296,7 +300,7 @@ async function rewriteJournals(dir: string, mapPath: (virtual: unknown) => strin
       counts.unreadable += 1;
       ok = false;
     }
-    if (read.kind !== "ok" || !isObject(read.value)) continue;
+    if (read.kind !== "ok" || !isObject(read.value) || read.value[REWRITTEN] === true) continue;
     const journal = read.value;
     let changed = false;
     const map = (value: unknown) => {
@@ -308,7 +312,7 @@ async function rewriteJournals(dir: string, mapPath: (virtual: unknown) => strin
     const deletes = Array.isArray(journal.deletes) ? journal.deletes.map(map) : journal.deletes;
     const dirs = Array.isArray(journal.dirs) ? journal.dirs.map(map) : journal.dirs;
     if (!changed) continue;
-    await atomicWriteJson(file, { ...journal, writes, deletes, dirs });
+    await atomicWriteJson(file, { ...journal, writes, deletes, dirs, [REWRITTEN]: true });
     counts.rewritten += 1;
   }
   return ok;

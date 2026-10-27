@@ -268,3 +268,39 @@ describe("living-cast-bed-time-v1 (§21.6c)", () => {
     expect(await read(root, "user/waifus/broken/waifu.json")).toBe("{ not json");
   });
 });
+
+describe("living-cast-life-folder-v1: homes the app already wrote for (re-review)", () => {
+  async function bareRoot(): Promise<string> {
+    const root = await makeTempRoot("dc-waifus-life-folder-");
+    roots.push(root);
+    return root;
+  }
+
+  it("a life/ folder holding only the app's files is the app's: never renamed to life-notes/", async () => {
+    const root = await bareRoot();
+    await write(root, "user/waifus/mira/home/life/profile.json", '{"username":"mira"}\n');
+    await write(root, "user/waifus/mira/home/life/schedule.json", '{"date":"2026-11-02","busy":[]}\n');
+    const before = await snapshot(root);
+    expect(await migrateLivingCastLifeFolder(root, { now: () => NOW })).toBeUndefined();
+    expect(await snapshot(root)).toEqual(before);
+    // With an old file at the top as well, it moves into that folder.
+    await write(root, "user/waifus/mira/home/watches.json", WATCHES);
+    await migrateLivingCastLifeFolder(root, { now: () => NOW });
+    expect(await read(root, "user/waifus/mira/home/life/watches.json")).toBe(WATCHES);
+    expect(await read(root, "user/waifus/mira/home/life/profile.json")).toBe('{"username":"mira"}\n');
+    expect(await read(root, "user/waifus/mira/home/life-notes/profile.json")).toBeUndefined();
+  });
+
+  it("her own note named like an app file moves with her folder, and its index entry follows", async () => {
+    const root = await bareRoot();
+    await write(root, "user/waifus/aria/home/life/goals.md", "my goals\n");
+    await write(root, "user/waifus/aria/home/life/places.md", "her own note named places.md\n");
+    await write(root, "user/waifus/aria/home/places.md", "# places\n");
+    await write(root, "user/waifus/aria/life/files-index.json", json({ entries: [{ sha256: "a", placeKey: "g_1_2", messageId: "1", authorId: "1", attachmentId: "1", downloadedAt: NOW.toISOString(), path: "/home/aria/life/places.md", size: 3 }] }));
+    await migrateLivingCastLifeFolder(root, { now: () => NOW });
+    expect(await read(root, "user/waifus/aria/home/life-notes/places.md")).toBe("her own note named places.md\n");
+    expect(await read(root, "user/waifus/aria/home/life/places.md")).toBe("# places\n");
+    const index = JSON.parse((await read(root, "user/waifus/aria/life/files-index.json"))!) as { entries: Array<{ path: string }> };
+    expect(index.entries.map((entry) => entry.path)).toEqual(["/home/aria/life-notes/places.md"]);
+  });
+});

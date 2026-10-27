@@ -386,6 +386,28 @@ describe("staying in a conversation while busy (§21.4, owner addition)", () => 
 });
 
 describe("the life-folder marker (§21.6)", () => {
+  it("any write the app makes to her home writes the marker first: an owner's ~/schedule.json or her profile from the dashboard are never migrated", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }, { id: "mina", name: "Mina", botId: "mina-bot" }] });
+    const { homeStoreFor } = await import("../src/life/home/index.js");
+    const { readFile } = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { migrateLivingCastLifeFolder } = await import("../src/backend/migrationSteps/livingCastLifeFolder.js");
+    // Never run, never ticked: the owner writes a file at the top of her home over the API.
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+    const target = store.resolve("~/schedule.json");
+    if (!target.ok) throw new Error("path");
+    await store.writeText(target.path, "my shopping schedule\n", { now: w.clock.now(), timeZone: "UTC", resolvePerson: async () => undefined } as never);
+    const marker = (id: string) => readFile(path.join(w.root, "user", "waifus", id, "life", "life-folder-v1.json"), "utf8").catch(() => undefined);
+    expect(await marker("ella")).toBeDefined();
+    expect(await migrateLivingCastLifeFolder(w.root)).toBeUndefined();
+    expect(await homeOf(w).read("schedule.json")).toBe("my shopping schedule\n");
+    // The dashboard's profile rewrite (a new or edited waifu) writes it too.
+    expect(await marker("mina")).toBeUndefined();
+    await homeStoreFor(w.cast.deps, await readWaifu(w.storage, "mina")).writeProfileFromConfig();
+    expect(await marker("mina")).toBeDefined();
+    expect(await migrateLivingCastLifeFolder(w.root)).toBeUndefined();
+  });
+
   it("a life the app runs gets the marker, so a re-run of the migration leaves her home alone", async () => {
     const w = await lifeWorld(roots);
     await w.cast.scheduler.tick();

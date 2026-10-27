@@ -245,7 +245,12 @@ export class HomeStore {
     return this.path("home", lifeSegments(name));
   }
 
-  private locked<T>(work: () => Promise<T>): Promise<T> {
+  /**
+   * Every read-modify-write of her home runs here; the life-folder marker is written first, so a home
+   * the app has touched (her tools, the API, the dashboard's profile rewrite) is never migrated again.
+   */
+  private async locked<T>(work: () => Promise<T>): Promise<T> {
+    await ensureLifeFolderMarker(this.storage, this.waifuId);
     return this.storage.withLocks([lifeLocks.home(this.waifuId)], work);
   }
 
@@ -511,7 +516,6 @@ export class HomeStore {
    * it got.
    */
   async appendEntry(name: typeof REMINDERS_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>, env: CheckEnv): Promise<string> {
-    await ensureLifeFolderMarker(this.storage, this.waifuId);
     return this.locked(async () => {
       const p = this.life(name);
       const text = await this.files.readText(p).catch(() => undefined);
@@ -844,7 +848,6 @@ export class HomeStore {
 
   /** `~/life/places.md` (§16.6), written only when it would change. Returns whether it did. */
   async writePlaces(text: string): Promise<boolean> {
-    await ensureLifeFolderMarker(this.storage, this.waifuId);
     return this.locked(async () => {
       const p = this.life(PLACES_FILE);
       const current = await this.files.readText(p).catch(() => undefined);
