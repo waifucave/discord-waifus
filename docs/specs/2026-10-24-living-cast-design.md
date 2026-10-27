@@ -919,7 +919,11 @@ conversation` runs steps 0–2 only.
    *As built (2026-10-27):* without her model the session runs on `life.dreamModel` when it is set
    and offered (`notesModel: "dream"` in the report); it is skipped only when neither is. A queued
    DM scrub runs at nightly maintenance with or without a model (also when a bed time she stayed up
-   through ends), so no waifu keeps one waiting for good.
+   through ends). Step 2 (owner decision, 2026-10-27) writes the summary on the route her epoch ran
+   on, else her model, else `life.dreamModel`; with none, her summary is never emptied: summary and
+   epoch stay as they are, the other steps run (step 5 checks her files only), and the scrub stays
+   queued for step 2 alone (`summaryOnly`, report `summaryScrub: "pending"`), which runs, with the
+   epoch start and the summary check, at the next run with a model and before her next turn.
 5. **Start the epoch and verify**: a note marked as the person's own (`<!-- user:<id> -->`) or a
    `people/` note whose heading is one of their unique names is deleted whole, with its `MEMORY.md`
    links; a `people/` note headed by a shared name is listed for review. Then start the new epoch

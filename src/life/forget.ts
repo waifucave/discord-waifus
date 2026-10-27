@@ -15,8 +15,11 @@
 //      and /tmp whose hash the provenance index records for the person (their DM downloads, their
 //      attachments in rooms, and copies she moved or made), and `/tmp/dm/<handle>/` of their DM;
 //   2. summary without the person: her turn is aborted, the compaction summary is written with no
-//      kept turns and every name listed for omission (empty on failure); the new epoch waits
-//      (`pendingEpochStart`) while the per-waifu lock is held;
+//      kept turns and every name listed for omission (empty on failure) on the route her epoch ran
+//      on, else her model, else `life.dreamModel`; the new epoch waits (`pendingEpochStart`) while
+//      the per-waifu lock is held. With no model at all the step stays pending: her summary and
+//      epoch are left as they are, every other step runs, and the scrub stays queued for this step
+//      (and the epoch start after it) alone (`summaryOnly`), run once a model is back;
 //   3. other state: their wakes and pending notices, watches from the person or bound to their DM
 //      or to words naming them (in her `~/life/watches.json`), reminder notes naming them (in her
 //      `~/life/reminders.json`) and her day's text naming them (`~/life/schedule.json`), her DM read cursor and handle, maintenance.jsonl and review lines,
@@ -282,23 +285,30 @@ function mentionsPerson(text: string, userId: string, names: readonly string[]):
   return text.includes(userId) || names.some((name) => namesSomeone(text, name));
 }
 
-/** Step 2: the summary without the person (no kept turns), epoch start deferred. */
-export async function summaryWithoutPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, signal?: AbortSignal): Promise<LifeState> {
+/**
+ * Step 2: the summary without the person (no kept turns), epoch start deferred. The summary is written
+ * on the route her epoch ran on when it is still offered, else her model, else `life.dreamModel`
+ * (`scrubModelOf`). With none of them (`pending`), nothing changes: her summary is never wiped
+ * because a model is briefly unavailable; the step runs again once one is back.
+ */
+export async function summaryWithoutPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, signal?: AbortSignal): Promise<{ state: LifeState; pending?: true }> {
   const state = await readLifeState(deps.storage, waifu.id);
-  if (!state.systemSnapshot) return state;
+  if (!state.systemSnapshot) return { state };
+  const epochRoute = state.modelRoute ? deps.catalog().models.find((entry) => entry.providerId === state.modelRoute!.providerId && entry.modelId === state.modelRoute!.modelId) : undefined;
+  const chosen = scrubModelOf(deps, waifu);
+  const route = epochRoute ?? chosen?.model;
+  if (!route) return { state, pending: true };
+  const effort = epochRoute ? state.modelRoute?.effort : chosen?.effort;
   const lines = await readLifeLog(deps.storage, waifu.id, state.epoch);
-  const model = lifeModelOf(deps, waifu);
-  const harness = model ? await currentHarness(deps, waifu, model) : undefined;
-  if (!harness) {
-    return updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, summary: null, pendingEpochStart: true, pendingEpochReason: "forget" as const }));
-  }
+  // The epoch is deferred: this harness only shapes the summary request, never her next epoch.
+  const harness = await currentHarness(deps, waifu, lifeModelOf(deps, waifu) ?? route);
   const names = scrubNames(identity);
   const outcome = await compactLife(deps, {
     waifu,
     state,
     lines,
-    summaryRoute: state.modelRoute ? (deps.catalog().models.find((entry) => entry.providerId === state.modelRoute!.providerId && entry.modelId === state.modelRoute!.modelId) ?? model) : model,
-    ...(state.modelRoute?.effort ? { effort: state.modelRoute.effort } : {}),
+    summaryRoute: route,
+    ...(effort ? { effort } : {}),
     nextHarness: harness,
     reason: "forget",
     keepTurns: 0,
@@ -308,7 +318,7 @@ export async function summaryWithoutPerson(deps: LifeDeps, waifu: WaifuConfig, i
     ...(signal ? { signal } : {})
   });
   // The summary is checked by the verification step too; a line naming the id never survives.
-  return outcome.state;
+  return { state: outcome.state };
 }
 
 /**
@@ -624,8 +634,11 @@ export async function startEpochNow(deps: LifeDeps, waifu: WaifuConfig, reason: 
   return state;
 }
 
-/** Step 5: start the epoch and verify notes, summary and the snapshot. */
-export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity): Promise<Verify> {
+/**
+ * Step 5: start the epoch and verify notes, summary and the snapshot. `keepEpoch` (step 2 is still
+ * pending): only her files are verified; her summary and epoch stay as they are until it runs.
+ */
+export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { keepEpoch?: boolean } = {}): Promise<Verify> {
   const out: Verify = { removedLines: 0, removedSentences: 0, removedNotes: 0, needsReview: [] };
   const home = homeStoreFor(deps, waifu);
   // Every text file of her home (§16.9), except the ones step 3 handled by their own rules (her
@@ -646,6 +659,7 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
       notesChanged = true;
     }
   }
+  if (o.keepEpoch) return out;
   const state = await readLifeState(deps.storage, waifu.id);
   if (state.summary) {
     const summary = scrubText(state.summary, identity, "summary", out);
@@ -777,16 +791,18 @@ async function scrubNeedsReview(storage: StorageService, waifuId: string, carrie
   return removed;
 }
 
-export type ScrubPersonOutcome = ForgetScrubResult & { complete: boolean };
+/** `complete`: the notes scrub did not fail; `summaryPending`: every step ran except the summary (no model). */
+export type ScrubPersonOutcome = ForgetScrubResult & { complete: boolean; summaryPending?: true };
 
 /** The one review line a scrub without a notes session leaves (neither her model nor `life.dreamModel` is offered). */
 export const NOTES_SCRUB_SKIPPED = "(no notes session ran: she has no model; the checks below ran, but read her notes for anything else about them)";
 
 /**
- * The notes scrub's model (step 4): hers (with her effort), else `life.dreamModel` when it is set
- * and offered (`dream`), else none: the scrub then completes without a session.
+ * The scrub's model for the notes session (step 4) and the summary (step 2, after the route her
+ * epoch ran on): hers (with her effort), else `life.dreamModel` when it is set and offered
+ * (`dream`), else none: the notes session is then skipped and the summary step stays pending.
  */
-export function notesScrubModelOf(deps: Pick<LifeDeps, "catalog" | "config">, waifu: WaifuConfig): { model: CuratedModel; effort?: string; dream?: true } | undefined {
+export function scrubModelOf(deps: Pick<LifeDeps, "catalog" | "config">, waifu: WaifuConfig): { model: CuratedModel; effort?: string; dream?: true } | undefined {
   const own = lifeModelOf(deps, waifu);
   if (own) return { model: own, ...(waifu.model?.effort ? { effort: waifu.model.effort } : {}) };
   // Without her model, `dreamModelOf` is the configured dream model or nothing.
@@ -803,10 +819,10 @@ export function notesScrubModelOf(deps: Pick<LifeDeps, "catalog" | "config">, wa
  */
 export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string; tombstones?: Set<string> }): Promise<ScrubPersonOutcome> {
   const removedFiles = await scrubPersonFiles(deps, waifu, identity, o.tombstones ? { tombstones: o.tombstones } : {});
-  await summaryWithoutPerson(deps, waifu, identity, o.signal);
+  const summaryStep = await summaryWithoutPerson(deps, waifu, identity, o.signal);
   const stateReview: ReviewLine[] = [];
   await scrubOtherState(deps, waifu, identity, { review: (item) => stateReview.push(item) });
-  const chosen = notesScrubModelOf(deps, waifu);
+  const chosen = scrubModelOf(deps, waifu);
   let complete = true;
   if (chosen) {
     const session = await runNotesSession(deps, {
@@ -820,7 +836,7 @@ export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: 
     complete = session.ok;
     if (!session.ok) deps.logger.warn("Forget notes scrub failed; it stays queued and runs again", { category: "life", waifuId: waifu.id, error: session.error });
   }
-  const verify = await startEpochAndVerify(deps, waifu, identity);
+  const verify = await startEpochAndVerify(deps, waifu, identity, summaryStep.pending ? { keepEpoch: true } : {});
   // Her places file no longer lists their DM.
   await refreshPlacesFile(deps, waifu).catch(() => undefined);
   if (!chosen) verify.needsReview.unshift({ where: "notes", line: NOTES_SCRUB_SKIPPED });
@@ -838,10 +854,48 @@ export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: 
     removedFiles,
     needsReview: verify.needsReview.length,
     ...(chosen?.dream ? { notesModel: "dream" } : {}),
+    ...(summaryStep.pending ? { summaryScrub: "pending" } : {}),
     ...(!chosen ? { notesScrub: "skipped" } : complete ? {} : { notesScrub: "pending" })
   });
   deps.logger.info("Life forget scrub done", { category: "life", waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, needsReview: verify.needsReview.length, complete });
-  return { waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, removedFiles, needsReview: verify.needsReview, complete, ...(complete ? {} : { queued: true }) };
+  return {
+    waifuId: waifu.id,
+    removedLines: verify.removedLines,
+    removedSentences: verify.removedSentences,
+    removedNotes: verify.removedNotes,
+    removedFiles,
+    needsReview: verify.needsReview,
+    complete,
+    ...(summaryStep.pending ? { summaryPending: true as const } : {}),
+    ...(complete && !summaryStep.pending ? {} : { queued: true })
+  };
+}
+
+/**
+ * The step a `summaryOnly` scrub has left (§7.5 step 2, then the epoch start: step 5 for a whole
+ * scrub, at once for `/forget conversation`). False while no model can write the summary.
+ */
+export async function scrubPersonSummary(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string; conversation: boolean }): Promise<boolean> {
+  const step = await summaryWithoutPerson(deps, waifu, identity, o.signal);
+  if (step.pending) return false;
+  if (o.conversation) {
+    if ((await readLifeState(deps.storage, waifu.id)).pendingEpochStart) await startEpochNow(deps, waifu, "forget");
+    return true;
+  }
+  const verify = await startEpochAndVerify(deps, waifu, identity);
+  const now = deps.now();
+  await recordNeedsReview(deps.storage, waifu.id, now, o.source, verify.needsReview);
+  await appendMaintenanceReport(deps.storage, waifu.id, {
+    at: now.toISOString(),
+    kind: "forget",
+    source: o.source,
+    summaryScrub: "done",
+    removedLines: verify.removedLines,
+    removedSentences: verify.removedSentences,
+    removedNotes: verify.removedNotes,
+    needsReview: verify.needsReview.length
+  });
+  return true;
 }
 
 /** `scrubbedAt` keeps only the DM rate window (6 hours): an older entry is a trace of the person and nothing more. */

@@ -18,7 +18,7 @@ import { SearchUsageSchema } from "../src/shared/schemas/life.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
-import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, toolTurn, writeHerFile, writeWaifuConfig, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -474,5 +474,66 @@ describe("a queued scrub without her model (§7.5 step 4)", () => {
     expect(report).not.toHaveProperty("notesScrub");
     expect((await readNeedsReview(w.storage, "ella")).map((item) => item.line)).not.toContain(NOTES_SCRUB_SKIPPED);
     expect(await homeOf(w, "ella").read("people/kevin.md")).toBeUndefined();
+  });
+});
+
+describe("a queued forget never wipes her summary for want of a model (§7.5 step 2)", () => {
+  const SUMMARY = "Kevin passed his exam. Mina baked lemon tarts.";
+
+  /** A life with an epoch and a summary naming Kevin, then her model (and the route her epoch ran on) gone. */
+  async function livedThenModelGone(w: LifeWorld): Promise<number> {
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await liveATurn(w);
+    const epoch = (await updateLifeState(w.storage, "ella", (state) => ({ ...state, summary: SUMMARY, modelRoute: { providerId: "anthropic", modelId: "retired-model" } }))).epoch;
+    await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot", model: { providerId: "anthropic", modelId: "no-such-model" } });
+    await homeOf(w, "ella").write("me.md", "# Me\n- Kevin taught me to fold croissants.\n- I like rye bread.\n");
+    await queuePendingScrub(w.storage, "ella", KEVIN, w.clock.now(), { source: "dm_forget_everything", names: ["Kevin"], sharedNames: [] });
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    return epoch;
+  }
+
+  const TURN = [toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]), toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats!!" } }]), textTurn("so happy")];
+
+  it("her model missing: life.dreamModel rewrites the summary", async () => {
+    const w = await lifeWorld(roots, { scripts: script(...TURN, textTurn("Mina baked lemon tarts."), textTurn("nothing else about him")) });
+    await livedThenModelGone(w);
+    w.setConfig((config) => ({ ...config, life: { ...config.life, dreamModel: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } }));
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(w.ledger.lines.find((line) => line.purpose === "compaction")).toMatchObject({ modelId: "claude-haiku-5-5" });
+    const state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe("Mina baked lemon tarts.");
+    expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
+  });
+
+  it("no model at all: the summary and epoch stay, every other step runs, and the summary step runs once a model is back", async () => {
+    const w = await lifeWorld(roots, { scripts: script(...TURN, textTurn("Mina baked lemon tarts.")) });
+    const epoch = await livedThenModelGone(w);
+    const callsBefore = w.anthropic.calls.length;
+    await w.cast.scheduler.tick();
+    let state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe(SUMMARY);
+    expect(state.epoch).toBe(epoch);
+    expect(state.pendingEpochStart).toBeFalsy();
+    await expect(readFile(path.join(w.root, `user/waifus/ella/life/log/${epoch}.jsonl`), "utf8")).resolves.toBeTruthy();
+    expect(w.anthropic.calls).toHaveLength(callsBefore);
+    // The other steps ran: her notes lost the line naming him; the report says what waits.
+    expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
+    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "skipped", summaryScrub: "pending" });
+    expect(await readPendingScrubs(w.storage, "ella")).toMatchObject([{ userId: KEVIN, summaryOnly: true }]);
+    // Another night without a model: still waiting, still untouched.
+    w.clock.ms = Date.parse("2026-10-26T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect((await readLifeState(w.storage, "ella")).summary).toBe(SUMMARY);
+    expect(await readPendingScrubs(w.storage, "ella")).toHaveLength(1);
+    // Her model is back: the summary step runs before her next turn, and only it.
+    await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot" });
+    await w.cast.life("ella").runNow();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe("Mina baked lemon tarts.");
+    expect(state.epoch).toBeGreaterThan(epoch);
+    expect(w.ledger.lines.filter((line) => line.purpose === "maintenance")).toEqual([]);
+    expect((await readMaintenanceReports(w.storage, "ella")).filter((report) => report.kind === "forget").at(-1)).toMatchObject({ summaryScrub: "done" });
   });
 });

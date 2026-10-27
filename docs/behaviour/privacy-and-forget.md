@@ -87,7 +87,15 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    DM downloads, their attachments in rooms, exact copies), and `/tmp/dm/<handle>/`; run again under
    her life lock after her turn is aborted, with the hashes kept as tombstones.
 2. **Summary**: her turn is aborted; her summary is rewritten without them (no kept turns; empty on
-   failure); the new epoch waits (`pendingEpochStart`).
+   a failed call) on the route her epoch ran on, else her model, else `life.dreamModel`
+   (`forget.ts` `summaryWithoutPerson`, `scrubModelOf`); the new epoch waits (`pendingEpochStart`).
+   With **no model at all** her summary is never wiped: it and her epoch (log included) stay as they
+   are, every other step runs (step 5 checks her files only), the report says `summaryScrub:
+   "pending"`, and the queued scrub is kept for this step alone (`summaryOnly` in
+   `pending-scrubs.json`). That step, then the epoch start and the summary check, runs at the next
+   scrub run with a model (her nightly maintenance, an owner scrub at start) and before her next turn
+   once her model is back (`LivingCast.summaryStepsBeforeTurn`); the report then says `summaryScrub:
+   "done"`. A new forget of the same person queues the whole scrub again.
 3. **Other state**: their wakes (and their DM's), their lines in someone else's wake (a quote naming
    them becomes `(removed)`), pending notices, watches from or bound to them (a word naming them →
    dropped or reviewed), reminder notes naming them → `(removed)` (the reminder still fires), her day
@@ -98,10 +106,9 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    them from her notes and fixes the index, on her model, else on `life.dreamModel` (report
    `notesModel: "dream"`). Fails → the scrub stays queued. Neither model offered → skipped: one review
    line ("no notes session ran…"), `notesScrub: "skipped"` in the report, step 5's line and sentence
-   removal is all her notes get, and the scrub completes. Steps 1–3 and 5 never need a model (without
-   one her summary is cleared, not rewritten, and the epoch starts at her next turn). This holds for a
-   queued DM scrub at nightly maintenance too (also after a bed time she stayed up through), so no
-   waifu holds a pending scrub for good.
+   removal is all her notes get, and the scrub completes. Steps 1, 3 and 5 never need a model; step 2
+   waits for one as above. This holds for a queued DM scrub at nightly maintenance too (also after a
+   bed time she stayed up through), so no waifu holds more than that summary step pending.
 5. **Verify and start the epoch**: a note marked as theirs (`<!-- user:<id> -->`) or a `people/` note
    headed by a unique name is deleted whole with its MEMORY.md links; every home text file (not the
    `~/life/` special files) loses lines with the id, list items/headings naming them, and sentences in
@@ -125,7 +132,8 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
   below the floor, archived context; the floor is raised first; rate-limit counters stay), her files
   from that DM, the DM's deferred morning lines and intake mark; then her summary without the DM,
   the DM's wakes, watches bound to it, her read cursor at the floor, her dream-cursor DM entry, and
-  the epoch starts at once (old log gone).
+  the epoch starts at once (old log gone). With no model for the summary, the summary and epoch wait
+  as in step 2 (`summaryOnly`).
 - `everything`: the same DM data plus the DM state file, then the full life scrub (steps 1–5) for
   that waifu, including their lines in the rooms she can see. Not added to `forgotten.json` (other
   waifus are untouched).

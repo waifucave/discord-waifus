@@ -140,6 +140,8 @@ export async function runNotesSession(
   deps: LifeDeps,
   o: { waifu: WaifuConfig; model: CuratedModel; instruction: string; signal?: AbortSignal; kind: "maintenance" | "scrub"; effort?: string | undefined }
 ): Promise<MaintenanceOutcome> {
+  // A caller that names the effort (even as undefined) chose the route with it: `life.dreamModel`
+  // carries its own effort or none, never hers. Without the key the session runs on her model with hers.
   const effort = "effort" in o ? o.effort : o.waifu.model?.effort;
   return runSession(deps, {
     waifu: o.waifu,

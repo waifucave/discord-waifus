@@ -45,7 +45,12 @@ export type PendingScrubSource = "dm_forget_conversation" | "dm_forget_everythin
  * (their provenance entries went with them). Kept until the file step has run again under her life
  * lock, so a copy a running Bash command saved in between is still found after a crash.
  */
-export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[]; fileHashes?: string[] };
+/**
+ * `summaryOnly`: every step ran except her summary without the person (§7.5 step 2), because no model
+ * could write it (neither hers nor `life.dreamModel`); only that step (and the epoch start after it)
+ * is left. A new forget of the same person queues the whole scrub again.
+ */
+export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[]; fileHashes?: string[]; summaryOnly?: true };
 
 /** At most this many file hashes ride along in one pending scrub (the provenance index's own cap). */
 export const MAX_PENDING_FILE_HASHES = 10_000;
@@ -184,7 +189,8 @@ function completeScrub(now: Date) {
       source,
       ...(names ? { names } : {}),
       ...(sharedNames ? { sharedNames } : {}),
-      ...(fileHashes && fileHashes.length > 0 ? { fileHashes } : {})
+      ...(fileHashes && fileHashes.length > 0 ? { fileHashes } : {}),
+      ...(entry.summaryOnly === true ? { summaryOnly: true as const } : {})
     };
   };
 }
@@ -248,6 +254,21 @@ export async function dropPendingScrubHashes(storage: StorageService, waifuId: s
       const { fileHashes: _dropped, ...rest } = entry;
       return rest;
     });
+    await atomicWriteJson(file, { scrubs });
+  });
+}
+
+/**
+ * Marks scrubs whose every step but the summary ran (same user and time) as `summaryOnly`; an entry
+ * queued again meanwhile (a later time) stays whole.
+ */
+export async function markPendingScrubsSummaryOnly(storage: StorageService, waifuId: string, ran: readonly Pick<PendingScrub, "userId" | "at">[], o: { logger?: ForgetRecordLogger; now?: Date } = {}): Promise<void> {
+  if (ran.length === 0) return;
+  const file = pendingScrubsPath(storage.dataRoot, waifuId);
+  const now = o.now ?? new Date();
+  await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
+    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, now, completeScrub(now));
+    const scrubs = existing.map((entry) => (ran.some((done) => done.userId === entry.userId && done.at === entry.at) ? { ...entry, summaryOnly: true as const } : entry));
     await atomicWriteJson(file, { scrubs });
   });
 }
