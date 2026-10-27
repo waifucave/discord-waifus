@@ -87,7 +87,7 @@ House bot, in servers (`src/discord/client.ts`, `src/discord/applicationOwners.t
 
 | Command | Behaviour |
 |---|---|
-| `/wake waifu:<name> [note]` | Owner wake (note ≤ 500). Only a waifu cast in this server (autocomplete offers this server's cast); else "X isn't cast in this server." Replies "Woke X.", "X's wake is queued." or "X can't be woken right now (paused or disabled)." (also during a reload, where HTTP would queue it) |
+| `/wake waifu:<name> [note]` | Owner wake (note ≤ 500). Only a waifu cast in this server (autocomplete offers this server's cast); else "X isn't cast in this server." Replies "Woke X.", "X's wake is queued." (deferred or merged), "X can't be woken right now (paused or disabled)." or, while the cast reloads, "X's wake is queued: the cast is reloading, and it runs once the cast is back." (queued in `wakes.json` like HTTP's `queued_offline`) |
 | `/print type:<system_prompt\|notes\|life> waifu:<name> [private]` | Her system prompt (summary and the index lines from private chats hidden unless `private:true`), her `MEMORY.md` (lines that link to a file from a private chat or name a DM hidden, an index from a private chat not shown, unless `private:true`; [privacy-and-forget.md](privacy-and-forget.md)), or the last 20 life-log lines (DM content hidden unless `private:true`). Over 1,900 characters it is attached as `<type>.md` |
 
 - Only the House bot application's **owner or its team members** may run them; the list is fetched

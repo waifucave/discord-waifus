@@ -117,8 +117,8 @@ Details:
 - The owner's wake still passes guard 1, so it is dropped while the app is paused or when she is
   disabled or has no bot (it carries no server, so a paused server does not stop it). The HTTP wake route queues an `owner` wake directly in
   `wakes.json` (`outcome: "queued_offline"`) when the cast is offline or reloading; Discord's
-  `/wake` instead answers "can't be woken right now (paused or disabled)" in that case
-  ([owner-controls.md](owner-controls.md)).
+  `/wake` does the same during a reload and says so (`wakeQueue.ts` `queueOwnerWakeOffline`,
+  [owner-controls.md](owner-controls.md)).
 - Guard 5 is checked again when a turn starts (queued wakes from before the budget ran out move to
   `deferred`, except the owner's) and after every model call of a running turn (the turn ends with
   `[system] turn ended: daily budget reached`, unless it has an owner wake). Her spend counts every

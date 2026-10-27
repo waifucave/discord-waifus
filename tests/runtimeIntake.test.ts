@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureDataLayout } from "../src/config/layout.js";
 import type { DiscordGatewayFacade } from "../src/discord/client.js";
 import { conversationKey } from "../src/orchestration/context/keys.js";
+import { LifeActionError } from "../src/life/livingCast.js";
+import { readLifeFile } from "../src/life/lifeStore.js";
 import { CastRuntime } from "../src/orchestration/runtime.js";
 import { readThreads } from "../src/orchestration/stores/threads.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
@@ -116,6 +118,11 @@ describe("runtime facade", () => {
     // /print notes follows D14 like life and system_prompt: DM lines only with private:true.
     expect(notes.mock.calls).toEqual([["mina", { private: false }], ["mina", { private: true }]]);
     expect(replies).toEqual(["Woke Ella.", "I don't know that waifu.", "Mina isn't cast in this server.", "# Memory", "# Memory"]);
+    // A cast that is stopping for a reload: the wake waits in her queue, as over HTTP (queued_offline).
+    wake.mockRejectedValueOnce(new LifeActionError("offline", "The cast is not running."));
+    await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "ella", note: "after the reload", respond });
+    expect(replies.at(-1)).toBe("Ella's wake is queued: the cast is reloading, and it runs once the cast is back.");
+    expect((await readLifeFile(storage, "ella", "wakes")).immediate).toMatchObject([{ reason: "owner", note: "after the reload" }]);
     const choices: unknown[] = [];
     const collect = async (list: unknown) => void choices.push(list);
     await runtime.handleWaifuAutocomplete({ commandName: "wake", guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: collect });

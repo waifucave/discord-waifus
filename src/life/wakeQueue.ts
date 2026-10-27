@@ -77,6 +77,17 @@ export async function enqueueWake(storage: StorageService, waifuId: string, wake
 }
 
 /**
+ * An owner wake while the cast is offline or stopping for a reload (`queued_offline`): it waits in
+ * her queue and runs when the cast connects (the dashboard, the CLI and Discord's `/wake`).
+ */
+export async function queueOwnerWakeOffline(storage: StorageService, waifuId: string, note: string | undefined, now: Date): Promise<Wake> {
+  const trimmed = note?.trim().slice(0, 500);
+  const wake: Wake = { id: newWakeId(), reason: "owner", ...(trimmed ? { note: trimmed } : {}), at: now.toISOString() };
+  await enqueueWake(storage, waifuId, wake);
+  return wake;
+}
+
+/**
  * A turn's wakes go back in front of the queue (it was interrupted, compacted away or never got to
  * answer them); ids already queued are not added twice.
  */

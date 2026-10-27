@@ -34,6 +34,7 @@ import { personMatcher } from "../life/text.js";
 import { forgetConversationImageIndex } from "../discord/imageIndex.js";
 import { computeDmEligibility, dmFloorAt } from "./dm/dmStore.js";
 import { LifeActionError, LivingCast } from "../life/livingCast.js";
+import { queueOwnerWakeOffline } from "../life/wakeQueue.js";
 import type { ForgetScrubResult } from "../life/forget.js";
 import { sharedModelClient } from "../models/client.js";
 import { DEFAULT_APP_CONFIG } from "../shared/schemas/config.js";
@@ -555,17 +556,21 @@ export class CastRuntime {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");
     if (!(await this.guildCast(event.guildId)).has(waifu.id)) return event.respond(`${waifu.displayName} isn't cast in this server.`);
-    // A cast that is stopping (a reload) refuses: the wake is dropped and the owner told so.
-    const outcome = await this.cast.ownerWake(waifu.id, event.note).catch((error: unknown) => {
-      if (error instanceof LifeActionError && error.code === "offline") return "dropped" as const;
-      throw error;
+    // A cast that is stopping (a reload) refuses: the wake waits in her queue, as over HTTP
+    // (`queued_offline`), and runs once the cast is back.
+    const outcome = await this.cast.ownerWake(waifu.id, event.note).catch(async (error: unknown) => {
+      if (!(error instanceof LifeActionError && error.code === "offline")) throw error;
+      await queueOwnerWakeOffline(this.options.storage, waifu.id, event.note, this.cast.deps.now());
+      return "queued_offline" as const;
     });
     await event.respond(
       outcome === "queued"
         ? `Woke ${waifu.displayName}.`
         : outcome === "dropped"
           ? `${waifu.displayName} can't be woken right now (paused or disabled).`
-          : `${waifu.displayName}'s wake is queued.`
+          : outcome === "queued_offline"
+            ? `${waifu.displayName}'s wake is queued: the cast is reloading, and it runs once the cast is back.`
+            : `${waifu.displayName}'s wake is queued.`
     );
   }
 
