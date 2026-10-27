@@ -65,8 +65,9 @@ export function cacheRestDueNow(o: CacheRestInput): boolean {
   return true;
 }
 
-/** The decision for her, read from her state, queue, route and bed time. */
+/** The decision for her, read from her state, queue, route and bed time. Never for a waifu without her own bot. */
 export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "timeZone" | "now">, waifu: WaifuConfig, model: CuratedModel, state: LifeState): Promise<boolean> {
+  if (!waifu.botId) return false;
   const config = deps.config();
   const ttlMs = explicitCacheTtlMs(model);
   const base = { life: config.life, triggerRatio: config.compaction.triggerRatio, state, model, ttlMs };
@@ -77,8 +78,21 @@ export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "
   return cacheRestDueNow({ ...base, now, queued: await pendingWakeCount(deps.storage, waifu.id), bed });
 }
 
-/** The scheduler's question (§25): her route from her config, else no. */
-export async function cacheRestDueFor(deps: Pick<LifeDeps, "storage" | "config" | "timeZone" | "now" | "catalog">, waifu: WaifuConfig, state: LifeState): Promise<boolean> {
+/**
+ * The scheduler's question (§25): her route from her config, else no. Also no while her provider
+ * cools down or her daily budget is spent (the life loop would not run the turn: the tick would only
+ * poke her again every 15 s).
+ */
+export async function cacheRestDueFor(
+  deps: Pick<LifeDeps, "storage" | "config" | "timeZone" | "now" | "catalog" | "models">,
+  waifu: WaifuConfig,
+  state: LifeState,
+  o: { spentToday?: (waifuId: string, now: Date) => Promise<number> } = {}
+): Promise<boolean> {
   const model = waifu.model ? findCuratedModel(waifu.model, deps.catalog()) : undefined;
-  return model ? cacheRestDue(deps, waifu, model, state) : false;
+  if (!model || !(await cacheRestDue(deps, waifu, model, state))) return false;
+  if (deps.models.cooldownRemainingMs?.(model.providerId) !== undefined) return false;
+  const budget = waifu.life.dailyBudgetUsd;
+  if (budget !== null && budget !== undefined && o.spentToday && (await o.spentToday(waifu.id, deps.now())) >= budget) return false;
+  return true;
 }

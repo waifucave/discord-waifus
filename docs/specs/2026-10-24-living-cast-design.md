@@ -3329,8 +3329,10 @@ cache is still warm and start the next stretch small.
   running, there was no rest turn of either kind in this epoch, and the last request is at least
   `cacheRestMinRatio` × the trigger and below it. `cacheRestDueNow` adds: nothing queued, the cache
   not expired yet (after downtime past the TTL nothing happens), compaction not backing off, and not
-  asleep with the bed time ending within the TTL (up late or dozing it does come). The scheduler's
-  15 s tick asks for every enabled waifu and pokes her life; the life loop asks again (with the
+  asleep with the bed time ending within the TTL (up late or dozing it does come). Never for a waifu
+  without her own bot (`botId`). The scheduler's 15 s tick asks for every enabled waifu
+  (`cacheRestDueFor`, which also says no while her provider cools down or her daily budget is spent,
+  so the tick never pokes a life that would not run the turn) and pokes her life; the life loop asks again (with the
   queue) before it takes a wake, and runs it after `prepareEpoch` and after a due §19 rest.
 - **What**: `Life.restTurn` with `cache: true`, opened by `CACHE_REST_NOTICE` (the §19 notice with
   the sentence appended, so it starts with `REST_NOTICE_PREFIX`: the owner's views hide her summary

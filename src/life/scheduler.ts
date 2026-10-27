@@ -298,7 +298,7 @@ export class Scheduler {
   private async cacheRest(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
     const state = await readLifeState(deps.storage, waifu.id);
-    if (await cacheRestDueFor(deps, waifu, state)) this.o.hooks.poke(waifu.id);
+    if (await cacheRestDueFor(deps, waifu, state, { spentToday: (waifuId, now) => this.o.cost.today(waifuId, now) })) this.o.hooks.poke(waifu.id);
   }
 
   /**

@@ -12,7 +12,7 @@ vi.mock("../src/life/request.js", async (importOriginal) => {
   return { ...real, estimateRequest: (...args: Parameters<typeof real.estimateRequest>) => estimate.value ?? real.estimateRequest(...args) };
 });
 
-import { cacheRestDueAt, cacheRestDueNow, type CacheRestInput } from "../src/life/cacheRest.js";
+import { cacheRestDueAt, cacheRestDueFor, cacheRestDueNow, type CacheRestInput } from "../src/life/cacheRest.js";
 import { CACHE_REST_NOTICE, REST_NOTICE, REST_REFUSED_RESULT, REST_SUMMARY_FRAME } from "../src/life/lifeLoop.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { lifeBudget } from "../src/life/request.js";
@@ -174,6 +174,39 @@ describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
     expect(w.anthropic.calls).toHaveLength(2);
     state = await readLifeState(w.storage, "ella");
     expect(state.epoch).toBe(1);
+  });
+
+  it("is not started while her provider cools down or her daily budget is spent (no poke every tick)", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted"))] });
+    const poke = await quietAfterATurn(w, 0.6);
+    w.clock.advance(PROMPT_CACHE_TTL_MS - 5 * MINUTE);
+    const cooling = vi.spyOn(w.cast.deps.models, "cooldownRemainingMs").mockReturnValue(60_000);
+    await w.cast.scheduler.tick();
+    expect(poke).not.toHaveBeenCalled();
+    cooling.mockRestore();
+    // Her budget: what the scheduler asks (its spend comes from the usage ledger on disk).
+    const { readWaifu } = await import("../src/orchestration/stores/config.js");
+    const waifu = await readWaifu(w.storage, "ella");
+    const state = await readLifeState(w.storage, "ella");
+    expect(await cacheRestDueFor(w.cast.deps, waifu, state)).toBe(true);
+    const budgeted = { ...waifu, life: { ...waifu.life, dailyBudgetUsd: 0.5 } };
+    expect(await cacheRestDueFor(w.cast.deps, budgeted, state, { spentToday: async () => 0.2 })).toBe(true);
+    expect(await cacheRestDueFor(w.cast.deps, budgeted, state, { spentToday: async () => 0.5 })).toBe(false);
+  });
+
+  it("is not given to a waifu without her own bot", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), play(textTurn("again"))] });
+    const poke = await quietAfterATurn(w, 0.6);
+    const { readWaifu } = await import("../src/orchestration/stores/config.js");
+    const { writeWaifuConfig } = await import("./lifeFixtures.js");
+    const { botId: _botId, ...waifu } = await readWaifu(w.storage, "ella");
+    await writeWaifuConfig(w.storage, { ...waifu, id: "ella", name: "Ella" } as WaifuSeed);
+    expect((await readWaifu(w.storage, "ella")).botId).toBeUndefined();
+    w.clock.advance(PROMPT_CACHE_TTL_MS - 5 * MINUTE);
+    await w.cast.scheduler.tick();
+    expect(poke).not.toHaveBeenCalled();
+    await w.cast.life("ella").runNow();
+    expect(w.anthropic.calls).toHaveLength(1);
   });
 
   it("is never given with life.restNotice off", async () => {

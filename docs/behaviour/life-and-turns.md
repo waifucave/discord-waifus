@@ -312,7 +312,9 @@ with a large context, she rests while the cache is still warm (`src/life/cacheRe
   winter's `anthropic` adapter family) or through OpenRouter (`anthropic/…`): one hour. Every other
   route (DeepSeek, GPT, Muse Spark) never gets it.
 - **When**: the scheduler's 15 s tick pokes her life, and the life loop runs the rest turn, when all
-  hold: `life.restNotice` on; no turn running and no wake queued; her epoch running (no pending
+  hold: `life.restNotice` on; she has her own bot (`botId`); her provider is not cooling down and
+  her daily budget is not spent (otherwise the tick does not poke her); no turn running and no wake
+  queued; her epoch running (no pending
   start, no `day` compaction due, compaction not backing off); no rest turn of either kind in this
   epoch; her last request (`lastRequestTokens`) at least `life.cacheRestMinRatio` (0.5) × the trigger
   and below it; and the time is at least `lastRequestAt` + TTL − `life.cacheRestLeadMinutes` (10
