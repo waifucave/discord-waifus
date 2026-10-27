@@ -133,9 +133,15 @@ function withDayLines(entries: ReadonlyArray<{ at: string; lines: string[] }>, n
   return out;
 }
 
-/** `#k3`, or (a message without a ref) its local time, for a hint: `before 2026-10-20 17:02`. */
-function anchorText(ref: string | undefined, at: string, timeZone: string): string {
-  return ref ? `#${ref}` : `${localDayKey(new Date(at), timeZone)} ${clockText(new Date(at), timeZone)}`;
+/**
+ * `#k3`, or (a message without a ref) a local time for a hint. `before` leaves its whole minute out,
+ * so a before-hint names the next minute (`before 2026-10-20 17:03` for a 17:02 message: nothing older
+ * is skipped); `after` includes its minute.
+ */
+function anchorText(ref: string | undefined, at: string, timeZone: string, side: "before" | "after"): string {
+  if (ref) return `#${ref}`;
+  const when = new Date(Math.floor(Date.parse(at) / 60_000) * 60_000 + (side === "before" ? 60_000 : 0));
+  return `${localDayKey(when, timeZone)} ${clockText(when, timeZone)}`;
 }
 
 type Section = { text: string; ids: string[] } | { error: string };
@@ -333,10 +339,10 @@ async function pagePlace(ctx: ToolContext, place: ResolvedPlace, query: ReadQuer
     rendered.push({ at: message.createdAt, lines });
   }
   const text: string[] = [`${place.handle} (${placeLabel(place)})`];
-  if (page.hasMore && oldest) text.push(`— more before: before ${anchorText(refs.get(oldest.id), oldest.createdAt, tz)} —`);
+  if (page.hasMore && oldest) text.push(`— more before: before ${anchorText(refs.get(oldest.id), oldest.createdAt, tz, "before")} —`);
   text.push(...withDayLines(rendered, now, tz));
   if (page.messages.length === 0) text.push("(no messages)");
-  if (page.hasNewer && newest) text.push(`— more after: after ${anchorText(refs.get(newest.id), newest.createdAt, tz)} —`);
+  if (page.hasNewer && newest) text.push(`— more after: after ${anchorText(refs.get(newest.id), newest.createdAt, tz, "after")} —`);
   // Only the latest page moves her read cursor (what she has caught up on).
   if (!query.before && !query.after && !query.around && newest) await advanceReadCursor(deps.storage, ctx.waifu.id, place.placeKey, newest.id, now);
   return { text: text.join("\n"), ids };
@@ -355,7 +361,7 @@ async function readPageOf(
   const base = { conversation: place.ref, signal, ...(o.beforeId ? { beforeId: o.beforeId } : {}), ...(o.afterId ? { afterId: o.afterId } : {}), ...(o.aroundId ? { aroundId: o.aroundId } : {}) };
   let first = await deps.conversations.readPage({ ...base, limit: Math.min(MAX_MESSAGES, o.limit) });
   // A full page of 100 cannot say whether more exist (Discord pages stop at 100): one more look.
-  if (o.limit === MAX_MESSAGES && o.aroundId === undefined && first.messages.length >= MAX_MESSAGES) {
+  if (o.limit >= MAX_MESSAGES && o.aroundId === undefined && first.messages.length >= MAX_MESSAGES) {
     if (o.afterId === undefined && !first.hasMore) {
       const probe = await deps.conversations.readPage({ conversation: place.ref, signal, beforeId: first.messages[0]!.id, limit: 1 });
       first = { ...first, hasMore: probe.messages.length > 0 };
@@ -563,7 +569,7 @@ class SearchScope {
     text.push(`${matched.length} ${matched.length === 1 ? "message matches" : "messages match"}${shown.length < matched.length ? `, ${shown.length} shown` : ""} (${this.rangeText(from, to, cut)})`);
     const first = shown[0];
     const last = shown[shown.length - 1];
-    if ((start > 0 || (cut && !ascending)) && first) text.push(`— more before: before ${anchorText(refOf(first), first.at, tz)} —`);
+    if ((start > 0 || (cut && !ascending)) && first) text.push(`— more before: before ${anchorText(refOf(first), first.at, tz, "before")} —`);
     text.push(
       ...withDayLines(
         shown.map((line) => ({ at: line.at, lines: [transcriptChatLine(refOf(line) && !line.ref ? { ...line, ref: refOf(line)! } : line, { waifuId: waifu.id, timeZone: tz, refs, byId: targets })] })),
@@ -571,7 +577,7 @@ class SearchScope {
         tz
       )
     );
-    if ((start + shown.length < matched.length || (cut && ascending)) && last) text.push(`— more after: after ${anchorText(refOf(last), last.at, tz)} —`);
+    if ((start + shown.length < matched.length || (cut && ascending)) && last) text.push(`— more after: after ${anchorText(refOf(last), last.at, tz, "after")} —`);
     return { text: text.join("\n"), ids: shown.map((line) => line.id) };
   }
 }

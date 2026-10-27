@@ -323,7 +323,8 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     const page = text(await read(w, "bake-club/#general", "before 2026-09-02 max:3"));
     expect(bodies(page)).toEqual(["Mina: september 4", "Kevin: september 5", "Mina: september 6"]);
     expect(page).toContain("[10:04] Mina: september 4");
-    expect(page.split("\n")[1]).toBe("— more before: before 2026-09-01 10:04 —");
+    // `before` leaves its minute out: the hint names the next one, so nothing older is skipped.
+    expect(page.split("\n")[1]).toBe("— more before: before 2026-09-01 10:05 —");
     expect(await refsJson(w)).toEqual({});
   });
 
@@ -444,5 +445,13 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     const hundred = text(await read(w, "bake-club/#general", "max:100"));
     expect(bodies(hundred)).toHaveLength(100);
     expect(hundred.split("\n")[1]).toMatch(/^— more before: before #[0-9a-z]+ —$/u);
+    // A #ref and max:100 over the network: that message and 100 before it (two pages), and the hint.
+    postMinutes(w, ROOM, Array.from({ length: 49 }, (_, index) => `m${index + 1}`));
+    const anchor = refOf(text(await read(w, "bake-club/#general", "max:100")), ": m30");
+    const wide = text(await read(w, "bake-club/#general", `before #${anchor} max:100`));
+    expect(bodies(wide)).toHaveLength(101);
+    expect(bodies(wide).at(-1)).toMatch(/: m30$/u);
+    expect(bodies(wide)[0]).toMatch(/: n31$/u);
+    expect(wide.split("\n")[1]).toMatch(/^— more before: before #[0-9a-z]+ —$/u);
   }, 30_000);
 });
