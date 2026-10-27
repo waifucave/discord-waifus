@@ -23,9 +23,10 @@
 //      the host's recent web queries naming them, and her slice of the Living cast archive.
 //      Someone else's wake that names them keeps its place and loses the quote; her reminder or
 //      watch note naming them becomes `(removed)`;
-//   4. notes scrub: a maintenance session told to remove everything about the person (a failed
-//      session keeps the scrub queued, so it runs again; without a model it is skipped, with one
-//      review line, and the scrub completes);
+//   4. notes scrub: a maintenance session told to remove everything about the person, on her model,
+//      else on `life.dreamModel` (a failed session keeps the scrub queued, so it runs again; with
+//      neither it is skipped, with one review line, and the scrub completes: step 5's whole-line and
+//      sentence removal is all her notes get);
 //   5. start the epoch (MEMORY.md re-read, places re-listed, every old epoch log deleted) and verify
 //      every text file of her home, not only `.md` (§16.9):
 //      a note marked as the person's own (`<!-- user:<id> -->`), or a `people/` note whose heading is
@@ -74,6 +75,7 @@ import {
   updateLifeFile,
   updateLifeState
 } from "./lifeStore.js";
+import type { CuratedModel } from "../models/catalog.js";
 import { lifeModelOf } from "./lifeLoop.js";
 import { DM_REDACTED, isDmPlaceKey, isDmPlaceRef } from "./lifeView.js";
 import { runNotesSession, scrubInstruction } from "./maintenance.js";
@@ -86,7 +88,7 @@ import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
 import { foldName, hasNoWordBoundaries, isGenericName, isWeakName, namesSomeone } from "./text.js";
 import { REMOVED_TEXT, scrubWakeQueue } from "./wakeQueue.js";
-import { dropDreamCursorEntries } from "./dream.js";
+import { dreamModelOf, dropDreamCursorEntries } from "./dream.js";
 import { forgetPersonInHerTranscripts } from "./transcripts/forget.js";
 
 export const DM_SCRUB_RATE_MS = 6 * 3_600_000;
@@ -777,31 +779,51 @@ async function scrubNeedsReview(storage: StorageService, waifuId: string, carrie
 
 export type ScrubPersonOutcome = ForgetScrubResult & { complete: boolean };
 
-/** The one review line a scrub without a notes session leaves (she has no model). */
+/** The one review line a scrub without a notes session leaves (neither her model nor `life.dreamModel` is offered). */
 export const NOTES_SCRUB_SKIPPED = "(no notes session ran: she has no model; the checks below ran, but read her notes for anything else about them)";
 
 /**
+ * The notes scrub's model (step 4): hers (with her effort), else `life.dreamModel` when it is set
+ * and offered (`dream`), else none: the scrub then completes without a session.
+ */
+export function notesScrubModelOf(deps: Pick<LifeDeps, "catalog" | "config">, waifu: WaifuConfig): { model: CuratedModel; effort?: string; dream?: true } | undefined {
+  const own = lifeModelOf(deps, waifu);
+  if (own) return { model: own, ...(waifu.model?.effort ? { effort: waifu.model.effort } : {}) };
+  // Without her model, `dreamModelOf` is the configured dream model or nothing.
+  const dream = dreamModelOf(deps, waifu);
+  return dream ? { ...dream, dream: true } : undefined;
+}
+
+/**
  * Steps 2–5 for one waifu (the caller holds her life lock and has aborted her turn). `complete`
- * is false when the notes scrub (step 4) failed: the caller keeps the scrub queued. Without a model
- * there is no notes session to wait for: it is recorded as skipped (one review line) and the
- * scrub completes, so it is not retried at every start.
+ * is false when the notes scrub (step 4) failed: the caller keeps the scrub queued. Without her
+ * model the session runs on `life.dreamModel`; with neither there is no notes session to wait for:
+ * it is recorded as skipped (one review line, `notesScrub: "skipped"`), step 5 still removes the
+ * lines naming them, and the scrub completes, so it is not retried at every start or night.
  */
 export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: ForgetIdentity, o: { signal?: AbortSignal; source: string; tombstones?: Set<string> }): Promise<ScrubPersonOutcome> {
   const removedFiles = await scrubPersonFiles(deps, waifu, identity, o.tombstones ? { tombstones: o.tombstones } : {});
   await summaryWithoutPerson(deps, waifu, identity, o.signal);
   const stateReview: ReviewLine[] = [];
   await scrubOtherState(deps, waifu, identity, { review: (item) => stateReview.push(item) });
-  const model = lifeModelOf(deps, waifu);
+  const chosen = notesScrubModelOf(deps, waifu);
   let complete = true;
-  if (model) {
-    const session = await runNotesSession(deps, { waifu, model, instruction: scrubInstruction({ userId: identity.userId, names: scrubNames(identity) }), kind: "scrub", ...(o.signal ? { signal: o.signal } : {}) });
+  if (chosen) {
+    const session = await runNotesSession(deps, {
+      waifu,
+      model: chosen.model,
+      effort: chosen.effort,
+      instruction: scrubInstruction({ userId: identity.userId, names: scrubNames(identity) }),
+      kind: "scrub",
+      ...(o.signal ? { signal: o.signal } : {})
+    });
     complete = session.ok;
     if (!session.ok) deps.logger.warn("Forget notes scrub failed; it stays queued and runs again", { category: "life", waifuId: waifu.id, error: session.error });
   }
   const verify = await startEpochAndVerify(deps, waifu, identity);
   // Her places file no longer lists their DM.
   await refreshPlacesFile(deps, waifu).catch(() => undefined);
-  if (!model) verify.needsReview.unshift({ where: "notes", line: NOTES_SCRUB_SKIPPED });
+  if (!chosen) verify.needsReview.unshift({ where: "notes", line: NOTES_SCRUB_SKIPPED });
   for (const item of stateReview) if (verify.needsReview.length < MAX_REVIEW_LINES) verify.needsReview.push(item);
   const now = deps.now();
   await recordNeedsReview(deps.storage, waifu.id, now, o.source, verify.needsReview);
@@ -815,7 +837,8 @@ export async function scrubPerson(deps: LifeDeps, waifu: WaifuConfig, identity: 
     removedNotes: verify.removedNotes,
     removedFiles,
     needsReview: verify.needsReview.length,
-    ...(!model ? { notesScrub: "skipped" } : complete ? {} : { notesScrub: "pending" })
+    ...(chosen?.dream ? { notesModel: "dream" } : {}),
+    ...(!chosen ? { notesScrub: "skipped" } : complete ? {} : { notesScrub: "pending" })
   });
   deps.logger.info("Life forget scrub done", { category: "life", waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, needsReview: verify.needsReview.length, complete });
   return { waifuId: waifu.id, removedLines: verify.removedLines, removedSentences: verify.removedSentences, removedNotes: verify.removedNotes, removedFiles, needsReview: verify.needsReview, complete, ...(complete ? {} : { queued: true }) };

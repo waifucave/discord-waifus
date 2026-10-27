@@ -138,15 +138,16 @@ export async function runSession(
 /** A forget's notes scrub session (her identity and persona, her files listed, her clock). */
 export async function runNotesSession(
   deps: LifeDeps,
-  o: { waifu: WaifuConfig; model: CuratedModel; instruction: string; signal?: AbortSignal; kind: "maintenance" | "scrub" }
+  o: { waifu: WaifuConfig; model: CuratedModel; instruction: string; signal?: AbortSignal; kind: "maintenance" | "scrub"; effort?: string | undefined }
 ): Promise<MaintenanceOutcome> {
+  const effort = "effort" in o ? o.effort : o.waifu.model?.effort;
   return runSession(deps, {
     waifu: o.waifu,
     model: o.model,
     system: maintenanceSystem(o.waifu),
     opening: [o.instruction, await homeListing(deps, o.waifu), timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })],
     maxRounds: MAINTENANCE_MAX_ROUNDS,
-    ...(o.waifu.model?.effort ? { effort: o.waifu.model.effort } : {}),
+    ...(effort ? { effort } : {}),
     ...(o.signal ? { signal: o.signal } : {}),
     kind: o.kind
   });

@@ -545,13 +545,12 @@ export class LivingCast {
     // Aborted while it waited for her life lock (a shutdown, a pause, a reload): nothing starts (N1).
     if (signal.aborted) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
-    // Pending scrubs rewrite her summary with her own model; without it they wait, and so does the
-    // dream (it must never read what a waiting forget removes). With none pending, she dreams with
-    // `life.dreamModel` even when her own model is unavailable.
-    if (pending.length > 0) {
-      if (!lifeModelOf(this.deps, waifu)) return;
-      if (!signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
-    }
+    // Pending scrubs run first, with or without her model (§7.5): files by hash, DM data, transcripts,
+    // wakes and review lines never need one; her summary is cleared instead of rewritten; the notes
+    // session runs on `life.dreamModel` when her model is unavailable, and with neither her notes
+    // lose the lines naming them and the scrub completes (recorded as skipped). So no night, model
+    // or bed time can keep a scrub waiting for good, and the dream never reads what it removes.
+    if (pending.length > 0 && !signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
     // A bed time that ended without her falling asleep long enough has no dream (§21.6c).
     if (signal.aborted || o.dream === false) return;
     await runDream(this.deps, { waifu, signal });

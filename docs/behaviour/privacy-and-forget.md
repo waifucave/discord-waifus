@@ -91,8 +91,13 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    lines, the host's recent web queries naming them, her archive slice, her transcripts' DM and her
    dream cursor's DM entry.
 4. **Notes scrub**: a session with her identity and persona (30 rounds) removes everything about
-   them from her notes and fixes the index. Fails → the scrub stays queued. No model → one review
-   line, skipped, and the scrub completes.
+   them from her notes and fixes the index, on her model, else on `life.dreamModel` (report
+   `notesModel: "dream"`). Fails → the scrub stays queued. Neither model offered → skipped: one review
+   line ("no notes session ran…"), `notesScrub: "skipped"` in the report, step 5's line and sentence
+   removal is all her notes get, and the scrub completes. Steps 1–3 and 5 never need a model (without
+   one her summary is cleared, not rewritten, and the epoch starts at her next turn). This holds for a
+   queued DM scrub at nightly maintenance too (also after a bed time she stayed up through), so no
+   waifu holds a pending scrub for good.
 5. **Verify and start the epoch**: a note marked as theirs (`<!-- user:<id> -->`) or a `people/` note
    headed by a unique name is deleted whole with its MEMORY.md links; every home text file (not the
    `~/life/` special files) loses lines with the id, list items/headings naming them, and sentences in
@@ -162,8 +167,8 @@ is salvaged on read.
 
 - §7.5 lists seven job parts; the code has eight (`transcripts` between `archive` and
   `record-copies`, as §18.5 adds).
-- §7.5 step 4 says a waifu without a model has her notes scrub skipped; as built a **queued** DM
-  scrub never runs at all while she has no model (nightly maintenance returns early), so it waits.
+- §7.5 step 4 has a waifu without a model skip her notes scrub; as built the session first falls
+  back to `life.dreamModel` and is skipped only when neither is offered.
 - §18.5 "their whole DM transcripts" is done as "everything at or below the floor at the forget's
   time".
 - `/print notes` is not covered by the D14 rule in any doc; it prints `MEMORY.md` unfiltered (the

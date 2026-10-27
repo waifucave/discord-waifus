@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { DREAM_INSTRUCTION, DREAM_NOTHING_NEW } from "../src/life/dream.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
-import { queueOwnerScrubs, waifusWithLife } from "../src/life/forget.js";
+import { NOTES_SCRUB_SKIPPED, queueOwnerScrubs, readNeedsReview, waifusWithLife } from "../src/life/forget.js";
+import { homeStoreFor } from "../src/life/home/index.js";
+import { readWaifu } from "../src/orchestration/stores/config.js";
 import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { GuildMembersFileSchema } from "../src/shared/schemas/domain.js";
 import { SearchUsageSchema } from "../src/shared/schemas/life.js";
@@ -401,5 +403,76 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
     await w.cast.scheduler.tick();
     expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+  });
+});
+
+describe("a queued scrub without her model (§7.5 step 4)", () => {
+  const NO_MODEL = { id: "ella", name: "Ella", botId: "ella-bot", model: undefined };
+  const dmKey = `dm_${KEVIN}_ella`;
+
+  /** Kevin in her notes, a file from his DM, a wake of his and a dm_forget_everything scrub waiting for maintenance. */
+  async function seedQueuedForget(w: LifeWorld): Promise<void> {
+    const notes = homeOf(w, "ella");
+    await notes.write("people/kevin.md", `# Kevin\n<!-- user:${KEVIN} -->\n\n- Studies chemistry.\n`);
+    await notes.write("me.md", "# Me\n- Kevin taught me to fold croissants.\n- I like rye bread.\n");
+    await notes.write("MEMORY.md", "# Memory\n- [Kevin](people/kevin.md) — chemistry student\n- [Me](me.md) — about me\n");
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+    const target = store.resolve("/tmp/dm/kevin/a1-photo.txt");
+    if (!target.ok) throw new Error(target.error);
+    expect(await store.saveDownload(target.path, Buffer.from("kevin's photo"), { placeKey: dmKey, authorId: KEVIN, messageId: "1", attachmentId: "1", downloadedAt: w.clock.now().toISOString() })).toBe(true);
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "dm", placeKey: dmKey, fromUserId: KEVIN, fromName: "Kevin", preview: "are you there?", messageId: "900000000000000111", at: w.clock.now().toISOString() });
+    await queuePendingScrub(w.storage, "ella", KEVIN, w.clock.now(), { source: "dm_forget_everything", names: ["Kevin"], sharedNames: [] });
+  }
+
+  async function expectScrubbedWithoutModel(w: LifeWorld): Promise<void> {
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    // Files by hash, his wake, his marked note and its index line, the line naming him in prose notes.
+    expect(await homeOf(w, "ella").read("people/kevin.md")).toBeUndefined();
+    expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
+    expect(await homeOf(w, "ella").read("MEMORY.md")).toBe("# Memory\n- [Me](me.md) — about me\n");
+    await expect(readFile(path.join(w.root, "user/waifus/ella/tmp/dm/kevin/a1-photo.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.fromUserId === KEVIN)).toEqual([]);
+    // What happened is recorded: the skipped notes session in the review and the report.
+    expect((await readNeedsReview(w.storage, "ella")).map((item) => item.line)).toContain(NOTES_SCRUB_SKIPPED);
+    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ source: "pending", notesScrub: "skipped" });
+    expect(w.ledger.lines).toEqual([]);
+  }
+
+  it("nightly maintenance still runs it: everything deterministic, her notes by whole lines, and the entry clears", async () => {
+    const w = await lifeWorld(roots, { waifus: [NO_MODEL] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await seedQueuedForget(w);
+    // No bed time: maintenance at 05:00 local, the next day.
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    await expectScrubbedWithoutModel(w);
+  });
+
+  it("a night she never sleeps through (§21.6c) runs it when her bed time ends, without a model", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ ...NO_MODEL, availability: { bedTime: { enabled: true, start: "23:00", end: "07:00" } } }] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await seedQueuedForget(w);
+    w.clock.ms = Date.parse("2026-10-25T07:01:00.000Z");
+    await w.cast.scheduler.tick();
+    await expectScrubbedWithoutModel(w);
+  });
+
+  it("life.dreamModel runs the notes scrub when her own model is unavailable", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [{ ...NO_MODEL, model: { providerId: "anthropic", modelId: "no-such-model" } }],
+      scripts: script(textTurn("removed him from my notes"))
+    });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    w.setConfig((config) => ({ ...config, life: { ...config.life, dreamModel: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } }));
+    await seedQueuedForget(w);
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(w.ledger.lines[0]).toMatchObject({ purpose: "maintenance", modelId: "claude-haiku-5-5" });
+    const report = (await readMaintenanceReports(w.storage, "ella")).find((line) => line.kind === "forget");
+    expect(report).toMatchObject({ source: "pending", notesModel: "dream" });
+    expect(report).not.toHaveProperty("notesScrub");
+    expect((await readNeedsReview(w.storage, "ella")).map((item) => item.line)).not.toContain(NOTES_SCRUB_SKIPPED);
+    expect(await homeOf(w, "ella").read("people/kevin.md")).toBeUndefined();
   });
 });

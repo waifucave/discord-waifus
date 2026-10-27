@@ -10,7 +10,7 @@ import { TranscriptView } from "../src/life/transcripts/view.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
 import { closeWorlds, homeOf, lifeWorld, MINA_USER, ROOM_KEY, script, seedTranscript, toolTurn, writeWaifuConfig } from "./lifeFixtures.js";
-import { queuePendingScrub, readPendingScrubs, removePendingScrubs } from "../src/orchestration/dm/forgotten.js";
+import { queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -135,20 +135,22 @@ describe("big windows and the dream model", () => {
     expect((await readDreamCursor(w.storage, "ella")).conversations[ROOM_KEY]!.id).toBe(ids[59]);
   });
 
-  it("with her own model unavailable, she still dreams with life.dreamModel (unless a forget scrub waits)", async () => {
-    const w = await lifeWorld(roots, { scripts: script(textTurn("ok")) });
+  it("with her own model unavailable, she still dreams with life.dreamModel, after a waiting forget scrub it also serves", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("nothing about Mina here"), textTurn("ok")) });
     await seedTranscript(w, [{ text: "hello" }]);
     w.setConfig((config) => ({ ...config, life: { ...config.life, dreamModel: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } }));
     await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot", model: { providerId: "anthropic", modelId: "no-such-model" } });
     const waifu = await readWaifu(w.storage, "ella");
     const maintain = (signal: AbortSignal) => (w.cast as unknown as { maintain(waifu: unknown, signal: AbortSignal): Promise<void> }).maintain(waifu, signal);
-    // A forget scrub waiting for her model: no dream either.
+    // A forget scrub waiting for her: it runs first (its notes session on the dream model), then the dream.
     await queuePendingScrub(w.storage, "ella", MINA_USER, w.clock.now(), { source: "owner_forget", names: ["Mina"], sharedNames: [] });
     await maintain(new AbortController().signal);
-    expect(w.ledger.lines).toEqual([]);
-    await removePendingScrubs(w.storage, "ella", await readPendingScrubs(w.storage, "ella"));
-    await maintain(new AbortController().signal);
-    expect(w.ledger.lines.at(-1)).toMatchObject({ purpose: "maintenance", modelId: "claude-haiku-5-5" });
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(w.ledger.lines.map((line) => [line.purpose, line.modelId])).toEqual([
+      ["maintenance", "claude-haiku-5-5"],
+      ["maintenance", "claude-haiku-5-5"]
+    ]);
+    expect(JSON.stringify(w.anthropic.calls[1]!.request.messages[0])).toContain(DREAM_INSTRUCTION.slice(0, 40));
   });
 
   it("uses life.dreamModel when it is set, else her own model", async () => {

@@ -909,6 +909,10 @@ conversation` runs steps 0–2 only.
    next start (owner) or nightly maintenance. A waifu without a model has no session to run: it is
    recorded as skipped (one review line, `notesScrub: "skipped"` in the report), the other steps
    run and the scrub completes, so it is not retried at every start.
+   *As built (2026-10-27):* without her model the session runs on `life.dreamModel` when it is set
+   and offered (`notesModel: "dream"` in the report); it is skipped only when neither is. A queued
+   DM scrub runs at nightly maintenance with or without a model (also when a bed time she stayed up
+   through ends), so no waifu keeps one waiting for good.
 5. **Start the epoch and verify**: a note marked as the person's own (`<!-- user:<id> -->`) or a
    `people/` note whose heading is one of their unique names is deleted whole, with its `MEMORY.md`
    links; a `people/` note headed by a shared name is listed for review. Then start the new epoch

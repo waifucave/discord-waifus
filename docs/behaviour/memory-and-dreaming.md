@@ -96,12 +96,15 @@ Code: `src/life/dream.ts` `runDream`; timing `src/life/scheduler.ts` `maintenanc
 - It takes her life lock (it never overlaps a turn; a reminder that comes due waits for it), holds an
   update-activity lease, and is aborted by pause, shutdown and reload (an aborted run is not recorded
   and runs again at its next chance). `lastMaintenanceAt` is set when a run finishes.
-- **Pending forget scrubs run first.** They need her own model: while a scrub waits and she has no
-  model, neither the scrub nor the dream runs.
+- **Pending forget scrubs run first**, with or without her model, so no night, bed time or missing
+  model keeps one waiting for good (see [privacy-and-forget.md](privacy-and-forget.md), step 4): their
+  notes session runs on her model, else on `life.dreamModel`; with neither it is skipped, her notes
+  lose the lines naming them, and the scrub completes. A scrub whose notes session fails stays queued
+  for the next run; the dream still runs after it.
 
 **Model**: `life.dreamModel` when set and offered (with its effort), else her own model and effort.
-With no pending scrubs she dreams with `life.dreamModel` even when her own model is unavailable. Usage
-purpose `maintenance` (counted in her daily budget).
+She dreams with `life.dreamModel` even when her own model is unavailable. Usage purpose `maintenance`
+(counted in her daily budget).
 
 **The session**: a fresh memory keeper with **no life log and no persona**. System: "You keep
 <Name>'s memory. Her notes are files in her home, written in her own voice (keep their voice and
