@@ -13,7 +13,7 @@ import type { ModelClient } from "../models/client.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { conversationKey, type ConversationRef } from "../orchestration/context/keys.js";
 import { listDmLimitWaifuIds, listDmStates, listDmUserIds, readDmFloor } from "../orchestration/dm/dmStore.js";
-import { dropPendingScrubHashes, queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub, type PendingScrubSource } from "../orchestration/dm/forgotten.js";
+import { dropPendingScrubHashes, markPendingScrubSteps, queuePendingScrub, readPendingScrubs, removePendingScrubs, type PendingScrub, type PendingScrubSource, type PendingScrubStep } from "../orchestration/dm/forgotten.js";
 import { isKnownWaifuAuthor, listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { UsageLedger } from "../orchestration/usageLedger.js";
 import type { AppConfig } from "../shared/schemas/config.js";
@@ -34,6 +34,7 @@ import {
   scrubPerson,
   personFileHashes,
   scrubPersonFiles,
+  scrubPendingSteps,
   startEpochNow,
   summaryWithoutPerson,
   waifusWithLife,
@@ -48,9 +49,10 @@ import { OwnerNotices } from "./ownerNotices.js";
 import { IntakeMarks } from "./intakeMarks.js";
 import { homeStoreFor } from "./home/index.js";
 import { MEMORY_INDEX } from "./home/memoryIndex.js";
+import { privateNoteLines } from "./notesPrivacy.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
-import { printLifeLines, printSystemPromptText } from "./lifeView.js";
+import { NOTES_INDEX_PRIVATE, printLifeLines, printNotesText, printSystemPromptText } from "./lifeView.js";
 import { compactLife, compactRetiredTools, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
@@ -203,7 +205,7 @@ export class LivingCast {
     let life = this.lives.get(waifuId);
     if (!life) {
       this.assertRunning();
-      life = new Life(waifuId, { deps: this.deps, mutex: this.mutex, turns: this.turns, activity: this.activity, cost: this.cost });
+      life = new Life(waifuId, { deps: this.deps, mutex: this.mutex, turns: this.turns, activity: this.activity, cost: this.cost, beforeCycle: (id) => this.summaryStepsBeforeTurn(id) });
       this.lives.set(waifuId, life);
     }
     return life;
@@ -317,12 +319,21 @@ export class LivingCast {
    */
   private async runPendingScrubs(waifu: WaifuConfig, scrubs: readonly PendingScrub[], source: string, signal?: AbortSignal): Promise<ForgetScrubResult[]> {
     const done: PendingScrub[] = [];
+    const stepsLeft: Array<PendingScrub & { pendingSteps: PendingScrubStep[] }> = [];
     const results: ForgetScrubResult[] = [];
     for (const scrub of scrubs) {
       // A shutdown or pause stops between scrubs; the rest stay queued (durable) for next time.
       if (signal?.aborted) break;
       try {
         const identity = mergeIdentity(await collectIdentity(this.deps, waifu, scrub.userId), scrub);
+        // Every other step ran: only these model steps (summary, notes) are left.
+        if (scrub.pendingSteps) {
+          const conversation = scrub.source === "dm_forget_conversation";
+          const left = await scrubPendingSteps(this.deps, waifu, identity, { steps: scrub.pendingSteps, source, conversation, ...(signal ? { signal } : {}) });
+          if (left.length === 0) done.push(scrub);
+          else if (left.length !== scrub.pendingSteps.length) stepsLeft.push({ ...scrub, pendingSteps: left });
+          continue;
+        }
         // A boot-time owner scrub or a queued DM forget: her DM's intake mark names the person (F10).
         await this.dropDmMark(waifu.id, scrub.userId);
         // The hashes step 1 removed before a crash or a wait: a copy saved since is found by them.
@@ -330,14 +341,15 @@ export class LivingCast {
         if (scrub.source === "dm_forget_conversation") {
           await scrubPersonFiles(this.deps, waifu, identity, { dmOnly: true, tombstones });
           await this.dropScrubHashes(waifu.id, scrub);
-          await this.forgetConversation(waifu, identity);
-          done.push(scrub);
+          if (await this.forgetConversation(waifu, identity)) done.push(scrub);
+          else stepsLeft.push({ ...scrub, pendingSteps: ["summary"] });
           continue;
         }
         const outcome = await scrubPerson(this.deps, waifu, identity, { source, tombstones });
         await this.dropScrubHashes(waifu.id, scrub);
         results.push(outcome);
-        if (outcome.complete) done.push(scrub);
+        if (outcome.pendingSteps.length === 0) done.push(scrub);
+        else stepsLeft.push({ ...scrub, pendingSteps: outcome.pendingSteps });
       } catch (error) {
         this.deps.logger.warn("Pending scrub failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
       }
@@ -345,7 +357,25 @@ export class LivingCast {
     await removePendingScrubs(this.deps.storage, waifu.id, done, { logger: this.deps.logger, now: this.deps.now() }).catch((error: unknown) =>
       this.deps.logger.warn("Pending scrubs could not be cleared", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) })
     );
+    await markPendingScrubSteps(this.deps.storage, waifu.id, stepsLeft, { logger: this.deps.logger, now: this.deps.now() }).catch((error: unknown) =>
+      this.deps.logger.warn("Pending scrubs could not be marked", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) })
+    );
     return results;
+  }
+
+  /**
+   * Before her turns (her life lock held): a scrub whose model steps wait (§7.5: her summary without
+   * the person, the notes session; no model was there, or the call failed) runs them first, so her
+   * turn never sees that summary once a model is back. After a failed summary call it waits for the
+   * compaction backoff; without a model it stays queued.
+   */
+  private async summaryStepsBeforeTurn(waifuId: string): Promise<void> {
+    const scrubs = (await readPendingScrubs(this.deps.storage, waifuId, { logger: this.deps.logger })).filter((scrub) => scrub.pendingSteps !== undefined);
+    if (scrubs.length === 0) return;
+    const paused = (await readLifeState(this.deps.storage, waifuId)).compactionPausedUntil;
+    if (paused !== undefined && Date.parse(paused) > this.deps.now().getTime()) return;
+    const waifu = await readWaifu(this.deps.storage, waifuId);
+    await this.runPendingScrubs(waifu, scrubs, "pending");
   }
 
   /** The file step ran under her life lock: the pending scrub's file hashes are not needed any more. */
@@ -545,23 +575,26 @@ export class LivingCast {
     // Aborted while it waited for her life lock (a shutdown, a pause, a reload): nothing starts (N1).
     if (signal.aborted) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
-    // Pending scrubs rewrite her summary with her own model; without it they wait, and so does the
-    // dream (it must never read what a waiting forget removes). With none pending, she dreams with
-    // `life.dreamModel` even when her own model is unavailable.
-    if (pending.length > 0) {
-      if (!lifeModelOf(this.deps, waifu)) return;
-      if (!signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
-    }
+    // Pending scrubs run first, with or without her model (§7.5): files by hash, DM data, transcripts,
+    // wakes and review lines never need one; her summary and the notes session run on her model, else
+    // `life.dreamModel`, and with neither (or a failed call) only those steps stay queued
+    // (`pendingSteps`), her summary untouched. So no night or bed time keeps the rest waiting.
+    if (pending.length > 0 && !signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
     // A bed time that ended without her falling asleep long enough has no dream (§21.6c).
     if (signal.aborted || o.dream === false) return;
     await runDream(this.deps, { waifu, signal });
   }
 
-  /** `/forget conversation` (steps 0–2 for the DM), then the epoch starts at once so the old log goes too. */
-  private async forgetConversation(waifu: WaifuConfig, identity: ForgetIdentity): Promise<void> {
-    await summaryWithoutPerson(this.deps, waifu, identity);
+  /**
+   * `/forget conversation` (steps 0–2 for the DM), then the epoch starts at once so the old log goes
+   * too. False when no model could write the summary: the rest ran, the summary and epoch wait.
+   */
+  private async forgetConversation(waifu: WaifuConfig, identity: ForgetIdentity): Promise<boolean> {
+    const step = await summaryWithoutPerson(this.deps, waifu, identity);
     await scrubOtherState(this.deps, waifu, identity, { dmOnly: true });
+    if (step.pending) return false;
     if ((await readLifeState(this.deps.storage, waifu.id)).pendingEpochStart) await startEpochNow(this.deps, waifu, "forget");
+    return true;
   }
 
   /** Step 0 for one life, before the caller deletes any DM data (undefined: no life and no notes). */
@@ -660,12 +693,16 @@ export class LivingCast {
       .run(lifeLocks.life(waifu.id), async () => {
         await filesAgain();
         if (prepared.scope === "conversation") {
-          await this.forgetConversation(waifu, identity);
-          await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
+          if (await this.forgetConversation(waifu, identity)) await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
+          else {
+            await markPendingScrubSteps(deps.storage, waifu.id, [{ ...scrub, pendingSteps: ["summary"] }], { logger: deps.logger, now: deps.now() });
+            return { ...none, queued: true };
+          }
           return none;
         }
-        const { complete, ...result } = await scrubPerson(deps, waifu, identity, { source: prepared.source });
-        if (complete) await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
+        const { pendingSteps, ...result } = await scrubPerson(deps, waifu, identity, { source: prepared.source });
+        if (pendingSteps.length > 0) await markPendingScrubSteps(deps.storage, waifu.id, [{ ...scrub, pendingSteps }], { logger: deps.logger, now: deps.now() });
+        else await removePendingScrubs(deps.storage, waifu.id, [scrub], { logger: deps.logger, now: deps.now() });
         // Her DM's intake mark names the person (the DM floor keeps old messages out from now on).
         await this.dropDmMark(waifu.id, identity.userId);
         return result;
@@ -835,16 +872,32 @@ export class LivingCast {
 
   // ---- /print -------------------------------------------------------------------------------------------
 
-  /** Blocks A and B; `<life_so_far>` (her summary) is hidden unless `private` (§10.4, D14). */
+  /**
+   * Blocks A and B; unless `private`, `<life_so_far>` (her summary) is hidden and so are the lines of
+   * her index copy that `/print notes` leaves out (§10.4, D14).
+   */
   async printSystemPrompt(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
-    return printSystemPromptText(await readLifeState(this.deps.storage, waifuId), { private: o.private === true });
+    const state = await readLifeState(this.deps.storage, waifuId);
+    if (o.private === true || !state.systemSnapshot) return printSystemPromptText(state, { private: o.private === true });
+    const store = homeStoreFor(this.deps, await readWaifu(this.deps.storage, waifuId));
+    // The snapshot is older than her files: a link that no longer resolves counts as private.
+    return printSystemPromptText(state, { private: false, privateLine: await privateNoteLines(store, state.systemSnapshot.memoryIndex, { missingIsPrivate: true }) });
   }
 
-  async printNotes(waifuId: string): Promise<string> {
+  /**
+   * Her `MEMORY.md` (§10.4). Unless `private`, D14 as in the dashboard's file views: a line linking to
+   * a file that came from a private chat (by provenance, or under `/tmp/dm/`) or naming a DM place
+   * or path is left out; an index whose own bytes came from a private chat is not shown at all.
+   */
+  async printNotes(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
     const waifu = await readWaifu(this.deps.storage, waifuId);
     const store = homeStoreFor(this.deps, waifu);
-    const index = store.resolve(`~/${MEMORY_INDEX}`);
-    return (index.ok ? await store.files.readText(index.path).catch(() => undefined) : undefined) ?? "(no MEMORY.md yet)";
+    const index = await store.resolveExisting(`~/${MEMORY_INDEX}`);
+    const text = index.ok ? await store.files.readText(index.path).catch(() => undefined) : undefined;
+    if (text === undefined || !index.ok) return "(no MEMORY.md yet)";
+    if (o.private === true) return text;
+    if ((await store.dmOrigin(index.path).catch(() => "unknown")) !== undefined) return NOTES_INDEX_PRIVATE;
+    return printNotesText(text, { private: false, privateLine: await privateNoteLines(store, text) });
   }
 
   /** The last 20 life-log lines; unless `private`, DM content is left out by the §14.4 rule (§10.4, D14). */

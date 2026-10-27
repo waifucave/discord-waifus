@@ -9,14 +9,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { DREAM_INSTRUCTION, DREAM_NOTHING_NEW } from "../src/life/dream.js";
 import { newWakeId, enqueueWake } from "../src/life/wakeQueue.js";
-import { queueOwnerScrubs, waifusWithLife } from "../src/life/forget.js";
+import { NOTES_SCRUB_WAITING, queueOwnerScrubs, readNeedsReview, waifusWithLife } from "../src/life/forget.js";
+import { homeStoreFor } from "../src/life/home/index.js";
+import { readWaifu } from "../src/orchestration/stores/config.js";
 import { pendingScrubsPath, queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { GuildMembersFileSchema } from "../src/shared/schemas/domain.js";
 import { SearchUsageSchema } from "../src/shared/schemas/life.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
-import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, toolTurn, writeHerFile, writeWaifuConfig, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -394,12 +396,189 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     await homeOf(w, "ella").write("me.md", "# Me\n- likes tea\n");
     const result = await w.cast.forgetPerson(KEVIN);
     expect(result.scrubbed[0]).toMatchObject({ queued: true });
-    expect((await readPendingScrubs(w.storage, "ella")).map((scrub) => scrub.source)).toEqual(["owner_forget"]);
+    // Every other step ran: the entry waits for the notes session alone.
+    expect(await readPendingScrubs(w.storage, "ella")).toMatchObject([{ source: "owner_forget", pendingSteps: ["notes"] }]);
     expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "pending" });
     // Her nightly maintenance runs it again; this time the notes scrub works and the queue clears.
     w.anthropic.scripts.splice(0, w.anthropic.scripts.length, ...script(textTurn("nothing about him"), textTurn("all tidy")));
     w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
     await w.cast.scheduler.tick();
     expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+  });
+});
+
+describe("a queued scrub without her model (§7.5 step 4)", () => {
+  const NO_MODEL = { id: "ella", name: "Ella", botId: "ella-bot", model: undefined };
+  const dmKey = `dm_${KEVIN}_ella`;
+
+  /** Kevin in her notes, a file from his DM, a wake of his and a dm_forget_everything scrub waiting for maintenance. */
+  async function seedQueuedForget(w: LifeWorld): Promise<void> {
+    const notes = homeOf(w, "ella");
+    await notes.write("people/kevin.md", `# Kevin\n<!-- user:${KEVIN} -->\n\n- Studies chemistry.\n`);
+    await notes.write("me.md", "# Me\n- Kevin taught me to fold croissants.\n- I like rye bread.\n");
+    await notes.write("MEMORY.md", "# Memory\n- [Kevin](people/kevin.md) — chemistry student\n- [Me](me.md) — about me\n");
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+    const target = store.resolve("/tmp/dm/kevin/a1-photo.txt");
+    if (!target.ok) throw new Error(target.error);
+    expect(await store.saveDownload(target.path, Buffer.from("kevin's photo"), { placeKey: dmKey, authorId: KEVIN, messageId: "1", attachmentId: "1", downloadedAt: w.clock.now().toISOString() })).toBe(true);
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "dm", placeKey: dmKey, fromUserId: KEVIN, fromName: "Kevin", preview: "are you there?", messageId: "900000000000000111", at: w.clock.now().toISOString() });
+    await queuePendingScrub(w.storage, "ella", KEVIN, w.clock.now(), { source: "dm_forget_everything", names: ["Kevin"], sharedNames: [] });
+  }
+
+  async function expectScrubbedWithoutModel(w: LifeWorld): Promise<void> {
+    // Every step ran but the notes session, which waits for a model (the entry keeps only it).
+    expect(await readPendingScrubs(w.storage, "ella")).toMatchObject([{ userId: KEVIN, pendingSteps: ["notes"] }]);
+    // Files by hash, his wake, his marked note and its index line, the line naming him in prose notes.
+    expect(await homeOf(w, "ella").read("people/kevin.md")).toBeUndefined();
+    expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
+    expect(await homeOf(w, "ella").read("MEMORY.md")).toBe("# Memory\n- [Me](me.md) — about me\n");
+    await expect(readFile(path.join(w.root, "user/waifus/ella/tmp/dm/kevin/a1-photo.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.fromUserId === KEVIN)).toEqual([]);
+    // What happened is recorded: the waiting notes session in the review and the report.
+    expect((await readNeedsReview(w.storage, "ella")).map((item) => item.line)).toContain(NOTES_SCRUB_WAITING);
+    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ source: "pending", notesScrub: "pending" });
+    expect(w.ledger.lines).toEqual([]);
+  }
+
+  it("nightly maintenance still runs it: everything deterministic now, the notes session once a model is back", async () => {
+    const w = await lifeWorld(roots, { waifus: [NO_MODEL], scripts: script(textTurn("nothing else about him")) });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await seedQueuedForget(w);
+    // No bed time: maintenance at 05:00 local, the next day.
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    await expectScrubbedWithoutModel(w);
+    // Another night without a model: nothing runs, nothing is reported again.
+    const reports = (await readMaintenanceReports(w.storage, "ella")).length;
+    w.clock.ms = Date.parse("2026-10-26T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "ella")).toHaveLength(1);
+    expect((await readMaintenanceReports(w.storage, "ella")).filter((report) => report.kind === "forget")).toHaveLength(1);
+    expect((await readMaintenanceReports(w.storage, "ella")).length).toBeGreaterThanOrEqual(reports);
+    // Her model is back: the next night runs the notes session, and only then the entry clears.
+    await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot" });
+    w.clock.ms = Date.parse("2026-10-27T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["maintenance"]);
+    expect((await readMaintenanceReports(w.storage, "ella")).filter((report) => report.kind === "forget").at(-1)).toMatchObject({ notesScrub: "done" });
+  });
+
+  it("a night she never sleeps through (§21.6c) runs it when her bed time ends, without a model", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ ...NO_MODEL, availability: { bedTime: { enabled: true, start: "23:00", end: "07:00" } } }] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await seedQueuedForget(w);
+    w.clock.ms = Date.parse("2026-10-25T07:01:00.000Z");
+    await w.cast.scheduler.tick();
+    await expectScrubbedWithoutModel(w);
+  });
+
+  it("life.dreamModel runs the notes scrub when her own model is unavailable", async () => {
+    const w = await lifeWorld(roots, {
+      waifus: [{ ...NO_MODEL, model: { providerId: "anthropic", modelId: "no-such-model" } }],
+      scripts: script(textTurn("removed him from my notes"))
+    });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    w.setConfig((config) => ({ ...config, life: { ...config.life, dreamModel: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } }));
+    await seedQueuedForget(w);
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(w.ledger.lines[0]).toMatchObject({ purpose: "maintenance", modelId: "claude-haiku-5-5" });
+    const report = (await readMaintenanceReports(w.storage, "ella")).find((line) => line.kind === "forget");
+    expect(report).toMatchObject({ source: "pending", notesModel: "dream" });
+    expect(report).not.toHaveProperty("notesScrub");
+    expect((await readNeedsReview(w.storage, "ella")).map((item) => item.line)).not.toContain(NOTES_SCRUB_WAITING);
+    expect(await homeOf(w, "ella").read("people/kevin.md")).toBeUndefined();
+  });
+});
+
+describe("a queued forget never wipes her summary for want of a model (§7.5 step 2)", () => {
+  const SUMMARY = "Kevin passed his exam. Mina baked lemon tarts.";
+
+  /** A life with an epoch and a summary naming Kevin, then her model (and the route her epoch ran on) gone. */
+  async function livedThenModelGone(w: LifeWorld): Promise<number> {
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await liveATurn(w);
+    const epoch = (await updateLifeState(w.storage, "ella", (state) => ({ ...state, summary: SUMMARY, modelRoute: { providerId: "anthropic", modelId: "retired-model" } }))).epoch;
+    await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot", model: { providerId: "anthropic", modelId: "no-such-model" } });
+    await homeOf(w, "ella").write("me.md", "# Me\n- Kevin taught me to fold croissants.\n- I like rye bread.\n");
+    await queuePendingScrub(w.storage, "ella", KEVIN, w.clock.now(), { source: "dm_forget_everything", names: ["Kevin"], sharedNames: [] });
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    return epoch;
+  }
+
+  const TURN = [toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]), toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats!!" } }]), textTurn("so happy")];
+
+  it("her model missing: life.dreamModel rewrites the summary", async () => {
+    const w = await lifeWorld(roots, { scripts: script(...TURN, textTurn("Mina baked lemon tarts."), textTurn("nothing else about him")) });
+    await livedThenModelGone(w);
+    w.setConfig((config) => ({ ...config, life: { ...config.life, dreamModel: { providerId: "anthropic", modelId: "claude-haiku-5-5" } } }));
+    await w.cast.scheduler.tick();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    expect(w.ledger.lines.find((line) => line.purpose === "compaction")).toMatchObject({ modelId: "claude-haiku-5-5" });
+    const state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe("Mina baked lemon tarts.");
+    expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
+  });
+
+  it("no model at all: the summary and epoch stay, every other step runs, and the waiting steps run once a model is back", async () => {
+    const w = await lifeWorld(roots, { scripts: script(...TURN, textTurn("Mina baked lemon tarts.")) });
+    const epoch = await livedThenModelGone(w);
+    const callsBefore = w.anthropic.calls.length;
+    await w.cast.scheduler.tick();
+    let state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe(SUMMARY);
+    expect(state.epoch).toBe(epoch);
+    expect(state.pendingEpochStart).toBeFalsy();
+    await expect(readFile(path.join(w.root, `user/waifus/ella/life/log/${epoch}.jsonl`), "utf8")).resolves.toBeTruthy();
+    expect(w.anthropic.calls).toHaveLength(callsBefore);
+    // The other steps ran: her notes lost the line naming him; the report says what waits.
+    expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
+    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "pending", summaryScrub: "pending" });
+    expect(await readPendingScrubs(w.storage, "ella")).toMatchObject([{ userId: KEVIN, pendingSteps: ["summary", "notes"] }]);
+    // Another night without a model: still waiting, still untouched.
+    w.clock.ms = Date.parse("2026-10-26T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    expect((await readLifeState(w.storage, "ella")).summary).toBe(SUMMARY);
+    expect(await readPendingScrubs(w.storage, "ella")).toHaveLength(1);
+    // Her model is back: both waiting steps run before her next turn, and only they.
+    await writeWaifuConfig(w.storage, { id: "ella", name: "Ella", botId: "ella-bot" });
+    const linesBefore = w.ledger.lines.length;
+    await w.cast.life("ella").runNow();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe("Mina baked lemon tarts.");
+    expect(state.epoch).toBeGreaterThan(epoch);
+    expect(w.ledger.lines.slice(linesBefore, linesBefore + 2).map((line) => line.purpose)).toEqual(["compaction", "maintenance"]);
+    expect((await readMaintenanceReports(w.storage, "ella")).filter((report) => report.kind === "forget").at(-1)).toMatchObject({ summaryScrub: "done", notesScrub: "done" });
+  });
+
+  it("a failed summary call keeps her summary and epoch; the step runs again after the backoff", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: script(...TURN, errorTurn({ code: "server", message: "overloaded", status: 500, retryable: false }), textTurn("nothing else about him"), textTurn("Mina baked lemon tarts."))
+    });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await liveATurn(w);
+    const epoch = (await updateLifeState(w.storage, "ella", (state) => ({ ...state, summary: SUMMARY }))).epoch;
+    await queuePendingScrub(w.storage, "ella", KEVIN, w.clock.now(), { source: "dm_forget_everything", names: ["Kevin"], sharedNames: [] });
+    w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
+    await w.cast.scheduler.tick();
+    let state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe(SUMMARY);
+    expect(state.epoch).toBe(epoch);
+    expect(state.pendingEpochStart).toBeFalsy();
+    expect(state.compactionPausedUntil).toBeDefined();
+    expect(await readPendingScrubs(w.storage, "ella")).toMatchObject([{ userId: KEVIN, pendingSteps: ["summary"] }]);
+    // Inside the backoff her next cycle leaves it; after it, the step runs before her turn.
+    const calls = w.anthropic.calls.length;
+    await w.cast.life("ella").runNow();
+    expect(w.anthropic.calls).toHaveLength(calls);
+    w.clock.advance(10 * 60_000);
+    await w.cast.life("ella").runNow();
+    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
+    state = await readLifeState(w.storage, "ella");
+    expect(state.summary).toBe("Mina baked lemon tarts.");
+    expect(state.epoch).toBeGreaterThan(epoch);
   });
 });

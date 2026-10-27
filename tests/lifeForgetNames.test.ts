@@ -6,7 +6,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NOTES_SCRUB_SKIPPED, recordNeedsReview, scrubOtherState, scrubText, type ReviewLine } from "../src/life/forget.js";
+import { NOTES_SCRUB_WAITING, recordNeedsReview, scrubOtherState, scrubText, type ReviewLine } from "../src/life/forget.js";
 import { readLifeFile, readLifeState, readMaintenanceReports, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { isWeakName, namesSomeone, personMatcher } from "../src/life/text.js";
 import { EventStream } from "../src/api/eventStream.js";
@@ -250,19 +250,19 @@ describe("review lines and records (F7, F9)", () => {
     expect(Math.abs(Date.now() - Date.parse(`${day}T${hh}:${mm}:${ss}.${ms}Z`))).toBeLessThan(60_000);
   });
 
-  it("a waifu without a model finishes the owner's scrub: the notes session is recorded as skipped, once", async () => {
+  it("a waifu without a model runs every other step of the owner's scrub; the notes session waits, listed once", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", model: undefined }] });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await homeOf(w, "ella").write("me.md", "# Me\n- Kevin taught me to fold croissants.\n");
     const first = await w.cast.forgetPerson(KEVIN);
-    expect(first.scrubbed[0]).not.toHaveProperty("queued");
-    expect(first.scrubbed[0]!.needsReview[0]).toEqual({ where: "notes", line: NOTES_SCRUB_SKIPPED });
-    expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
-    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "skipped" });
+    expect(first.scrubbed[0]).toMatchObject({ queued: true });
+    expect(first.scrubbed[0]!.needsReview[0]).toEqual({ where: "notes", line: NOTES_SCRUB_WAITING });
+    expect(await readPendingScrubs(w.storage, "ella")).toMatchObject([{ userId: KEVIN, pendingSteps: ["notes"] }]);
+    expect((await readMaintenanceReports(w.storage, "ella")).find((report) => report.kind === "forget")).toMatchObject({ notesScrub: "pending" });
     // A second forget lists the skipped session once, not twice.
     await w.cast.forgetPerson(KEVIN);
     const file = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/needs-review.json"), "utf8")) as { items: Array<{ line: string }> };
-    expect(file.items.filter((item) => item.line === NOTES_SCRUB_SKIPPED)).toHaveLength(1);
+    expect(file.items.filter((item) => item.line === NOTES_SCRUB_WAITING)).toHaveLength(1);
   });
 });
 

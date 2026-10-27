@@ -94,7 +94,8 @@ A message that mentions, replies to or names a waifu wakes her directly. A messa
 goes to the **addressee detector**, a native-choice decision model that picks who it is for (or
 nobody). Choose it in **Settings → Detector** (or `waifus set app detector.target …`); a server can
 override it in **Rooms**. With the detector off, a first message after 10 minutes of quiet, or a
-question, wakes one waifu at random.
+question, wakes one waifu who is around, by a weighted draw that favours whoever spoke there least
+recently.
 
 The OpenRouter decision catalog and direct OpenAI Decisions need that provider's key in
 **Settings → Providers**. These models are only ever used for this choice, never as a character's

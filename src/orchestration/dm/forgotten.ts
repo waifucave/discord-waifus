@@ -45,7 +45,17 @@ export type PendingScrubSource = "dm_forget_conversation" | "dm_forget_everythin
  * (their provenance entries went with them). Kept until the file step has run again under her life
  * lock, so a copy a running Bash command saved in between is still found after a crash.
  */
-export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[]; fileHashes?: string[] };
+/**
+ * The model steps of a scrub (§7.5): her summary without the person (step 2) and the notes session
+ * (step 4). They stay pending when no model could run them or their call failed.
+ */
+export type PendingScrubStep = "summary" | "notes";
+const SCRUB_STEPS: readonly PendingScrubStep[] = ["summary", "notes"];
+/**
+ * `pendingSteps`: every other step ran; only these are left (and, after the summary, the epoch
+ * start). A new forget of the same person queues the whole scrub again.
+ */
+export type PendingScrub = { userId: string; at: string; source: PendingScrubSource; names?: string[]; sharedNames?: string[]; fileHashes?: string[]; pendingSteps?: PendingScrubStep[] };
 
 /** At most this many file hashes ride along in one pending scrub (the provenance index's own cap). */
 export const MAX_PENDING_FILE_HASHES = 10_000;
@@ -184,7 +194,8 @@ function completeScrub(now: Date) {
       source,
       ...(names ? { names } : {}),
       ...(sharedNames ? { sharedNames } : {}),
-      ...(fileHashes && fileHashes.length > 0 ? { fileHashes } : {})
+      ...(fileHashes && fileHashes.length > 0 ? { fileHashes } : {}),
+      ...(Array.isArray(entry.pendingSteps) ? { pendingSteps: SCRUB_STEPS.filter((step) => (entry.pendingSteps as unknown[]).includes(step)) } : {})
     };
   };
 }
@@ -247,6 +258,29 @@ export async function dropPendingScrubHashes(storage: StorageService, waifuId: s
       if (entry.userId !== userId) return entry;
       const { fileHashes: _dropped, ...rest } = entry;
       return rest;
+    });
+    await atomicWriteJson(file, { scrubs });
+  });
+}
+
+/**
+ * Records the steps still left of scrubs that ran (same user and time); an entry queued again
+ * meanwhile (a later time) stays whole. A scrub with no step left is cleared with `removePendingScrubs`.
+ */
+export async function markPendingScrubSteps(
+  storage: StorageService,
+  waifuId: string,
+  ran: ReadonlyArray<Pick<PendingScrub, "userId" | "at"> & { pendingSteps: PendingScrubStep[] }>,
+  o: { logger?: ForgetRecordLogger; now?: Date } = {}
+): Promise<void> {
+  if (ran.length === 0) return;
+  const file = pendingScrubsPath(storage.dataRoot, waifuId);
+  const now = o.now ?? new Date();
+  await storage.withLocks([`pending-scrubs:${waifuId}`], async () => {
+    const existing = await entriesForUpdate<PendingScrub>(file, "scrubs", o.logger, now, completeScrub(now));
+    const scrubs = existing.map((entry) => {
+      const done = ran.find((scrub) => scrub.userId === entry.userId && scrub.at === entry.at);
+      return done ? { ...entry, pendingSteps: SCRUB_STEPS.filter((step) => done.pendingSteps.includes(step)) } : entry;
     });
     await atomicWriteJson(file, { scrubs });
   });

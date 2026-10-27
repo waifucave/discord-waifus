@@ -15,7 +15,10 @@
 // may send (403 `PrivateContentLocalOnly` otherwise, and always for the dashboard assistant).
 // `watches.json` with a DM-bound watch reads, without `includePrivate`, as a redacted copy (that
 // watch's note and bindings `[private chat redacted]`, read-only); writing or deleting it then needs
-// `includePrivate`. Paths compare as her disk does (`/tmp/DM/…` is `/tmp/dm/…`).
+// `includePrivate`. A notes file (`.md`) with lines from private chats (a link to a DM-origin file,
+// a DM place or path named, `src/life/notesPrivacy.ts`) reads the same way: a copy with those lines
+// `[private chat redacted]`, read-only, whose `hash` is still the file's own; writing or deleting it
+// then needs `includePrivate`. Paths compare as her disk does (`/tmp/DM/…` is `/tmp/dm/…`).
 // `/transcripts` (§18.3) lists and reads the same way, read-only: a private chat's transcript is
 // listed as `[private chat redacted]` and opens only with `includePrivate=1`; PUT and DELETE there
 // answer 400 `ReadOnlyFile`.
@@ -31,6 +34,7 @@ import { isDmFolderPath, isPlacesFile, specialJsonFile, type HerPath, type HerRo
 import { formatEntries, parseStrictJson, type WatchEntry } from "../life/home/specialFiles.js";
 import { isDmPlaceKey, isDmPlaceRef } from "../life/lifeView.js";
 import type { LivingCast } from "../life/livingCast.js";
+import { isNotesFile, redactedNotesText } from "../life/notesPrivacy.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { readWaifu } from "../orchestration/stores/config.js";
 import { PRIVATE_FILE_NAME } from "../shared/constants/files.js";
@@ -241,6 +245,15 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     if (text !== undefined && (await redactedWatchesText(home, timeZone(), text)) !== undefined) throw privateRefused();
   };
 
+  /** A notes file with lines from private chats can't be replaced or deleted without includePrivate. */
+  const refusePrivateNotes = async (home: HomeStore, p: HerPath, includePrivate: boolean) => {
+    if (includePrivate || !isNotesFile(p)) return;
+    const info = await home.files.inspect(p);
+    if (info.kind !== "file") return;
+    const text = (await home.files.readBytes(p, { maxBytes: RAW_MAX_BYTES }).catch(() => undefined))?.toString("utf8");
+    if (text === undefined || (await redactedNotesText(home, text)) !== undefined) throw privateRefused();
+  };
+
   /** Assistant writes need the owner's click on the confirmation card (§16.11). */
   const refuseUnconfirmedAssistant = (request: FastifyRequest) => {
     if (request.assistantDelegation && !request.assistantDelegation.pendingActionId) {
@@ -408,7 +421,8 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const isPrivate = await isPrivateFile(home, p);
     if (isPrivate && !includePrivate) throw privateRefused();
     if (info.size > RAW_MAX_BYTES) throw new ApiError(413, `${p.display} is too large to open here`, undefined, "HomeLimit");
-    let data = await mapped(() => home.files.readBytes(p, { maxBytes: RAW_MAX_BYTES }));
+    const onDisk = await mapped(() => home.files.readBytes(p, { maxBytes: RAW_MAX_BYTES }));
+    let data = onDisk;
     let sniffed = sniffKind(data);
     // A DM-bound watch's words never leave the host without includePrivate.
     let redactedFile = false;
@@ -418,6 +432,14 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
       if (redacted !== undefined) {
         data = Buffer.from(redacted, "utf8");
         sniffed = sniffKind(data);
+        redactedFile = true;
+      }
+    }
+    // Her notes' lines from private chats stay on the host without includePrivate (D14).
+    if (!includePrivate && !redactedFile && sniffed.kind === "text" && isNotesFile(p)) {
+      const redacted = await redactedNotesText(home, data.toString("utf8"));
+      if (redacted !== undefined) {
+        data = Buffer.from(redacted, "utf8");
         redactedFile = true;
       }
     }
@@ -442,7 +464,8 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
       contentType: sniffed.contentType,
       size: data.length,
       modified: iso(info.mtimeMs),
-      hash: sha256(data),
+      // The revision is always the file on disk (a redacted copy is read-only; a reveal edits the file).
+      hash: sha256(onDisk),
       ...(sniffed.kind === "text" && !tooLarge ? { text: data.toString("utf8") } : {}),
       ...(tooLarge ? { tooLarge: true as const } : {}),
       ...(isPlacesFile(p) || redactedFile ? { readOnly: true as const } : {}),
@@ -463,6 +486,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const p = await filePath(home, request);
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
     await refusePrivateWatches(home, p, includePrivate);
+    await refusePrivateNotes(home, p, includePrivate);
     const written = await mapped(() => home.writeText(p, body.text, env(), body.expectedHash !== undefined ? { expectedHash: body.expectedHash } : {}));
     // Her profile.json is her config (§17.1): her bot follows it.
     if (written.profileChanged) void o.cast()?.deps.profileSync?.syncWaifu(waifuId).catch(() => undefined);
@@ -479,6 +503,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const p = await filePath(home, request);
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
     await refusePrivateWatches(home, p, includePrivate);
+    await refusePrivateNotes(home, p, includePrivate);
     const deleted = await mapped(() => home.deleteFile(p, env(), query.expectedHash !== undefined ? { expectedHash: query.expectedHash } : {}));
     if (!deleted) throw notFound(`${p.display} doesn't exist`);
     // No path in the answer: Remote Access keeps mutation answers for a day.

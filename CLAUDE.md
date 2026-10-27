@@ -197,8 +197,11 @@ model, over the window of transcript lines after `life/dream-cursor.json`, split
 sessions run through `runSession` in `maintenance.ts`) as a tracked background task (abortable; one
 process-wide run per waifu). The
 storage service skips writes whose content did not change. The House bot owns
-`/wake` and `/print` (`/print life|system_prompt` leave DM content out unless `private:true`, by the
-same rule as the dashboard, `src/life/lifeView.ts`): only the Discord application's owner or its team members may run them
+`/wake` and `/print` (`/print life|system_prompt|notes` leave DM content out unless `private:true`,
+`src/life/lifeView.ts`: life and system_prompt by the dashboard's rule; `notes`, and the index copy in
+system_prompt, turn every `MEMORY.md` line that links to a file from a private chat (files-index
+provenance or `/tmp/dm/`) or names a DM into `[private chat redacted]`, and an index that itself came
+from a private chat is not shown, `LivingCast.printNotes`): only the Discord application's owner or its team members may run them
 (`src/discord/applicationOwners.ts`, refreshed every 6 hours and checked again at run time;
 Administrator is only the commands' default visibility); `/wake` reaches only waifus cast in that
 server. DM bots keep `/forget`.
@@ -327,8 +330,12 @@ PUT shim in `src/api/server.ts`.
   before any DM data goes; the hashes go once the file step ran under her life lock): the owner's
   forget-user an `owner_forget` entry per life (runs now, or when that life next starts if Discord
   is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
-  or at nightly maintenance inside the 6-hour window, spec §7.3); an entry is cleared only when
-  its scrub finished (a failed notes scrub keeps it). The owner's forget-user is a durable job
+  or at nightly maintenance inside the 6-hour window, spec §7.3, with or without her model); an
+  entry is cleared only when its scrub finished: the summary without the person and the notes session
+  run on her model, else `life.dreamModel` (`forget.ts` `scrubModelOf`); with neither, or a failed or
+  aborted call, those steps alone stay queued (`pendingSteps: ["summary", "notes"]`; her summary and
+  epoch untouched, never emptied) and run at the next scrub run and before her next turn
+  (`LivingCast.summaryStepsBeforeTurn`, after the compaction backoff) once a model is back. The owner's forget-user is a durable job
   (`user/people/forget-jobs.json`, written before anything is removed; each part is recorded as
   `done` or in `failures`; `startBackend` runs only the unfinished parts before Discord connects,
   each removing only data at or below the job's floor and time; a part that failed three times is
@@ -361,7 +368,9 @@ PUT shim in `src/api/server.ts`.
 (status, log, wake, compact, reset, needs-review); her files, reminders and watches in
 `src/api/homeRoutes.ts` (§16.11: list/read/`?raw=1` bytes/PUT/DELETE through her `HomeStore`, so the
 API is held to her Write tool's checks; revision by content hash; a DM-origin file is unnamed in
-listings and opens only with a local `includePrivate=1`; assistant writes need the card's pending
+listings and opens only with a local `includePrivate=1`; a `.md` note with lines from private chats
+reads, without it, as a read-only copy with those lines redacted (`src/life/notesPrivacy.ts`, the
+`/print notes` rule; `hash` stays the file's own, PUT/DELETE need the reveal); assistant writes need the card's pending
 action id); cast-wide routes in `src/api/castRoutes.ts` (usage
 from the ledger by local day via `src/orchestration/usageReport.ts`, search usage, detector config and
 history, forget jobs, owner notices from `src/backend/castHealth.ts`); request and response schemas in
@@ -417,7 +426,7 @@ processes can coexist. `src/api/remoteAccess.ts` exposes lifecycle/status under
 `/api/remote-access`, including `POST /api/remote-access/reconnect` and
 `GET /api/remote-access/diagnostics`; assistant tools dispatch through the same API and policy.
 Identity reset is local-only. Remote management cannot stop/restart the host OS process.
-The helper reports runtime status only in answer to a command (helper 0.1.14 pushes no status
+The helper reports runtime status only in answer to a command (the pinned helper pushes no status
 events), so while it follows an enabled helper the host's `RemoteAccessService` asks again every
 5 s until the path is connected and direct, then every minute (`RUNTIME_STATUS_REFRESH_MS`); the
 summary, `runtime.json` (read by `waifus doctor`) and `host.jsonl` follow those answers.

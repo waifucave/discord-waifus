@@ -1,5 +1,6 @@
 // The owner's views of a life (Living cast spec §14.1, §14.4, §10.4, D14): the dashboard's life log
-// and `/print life` / `/print system_prompt`. DM content stays private from the owner too unless the
+// and `/print life` / `/print system_prompt` / `/print notes` (her MEMORY.md: lines linking to a file
+// from a private chat or naming a DM are left out, `redactNotesLines`). DM content stays private from the owner too unless the
 // owner asks for it on this computer: the dashboard's reveal toggle (`includePrivate=1`, local
 // requests only) and `/print … private:true` (owner-only and ephemeral) show everything.
 //
@@ -327,9 +328,44 @@ export function printLifeLines(all: readonly LifeLogLine[], o: { private: boolea
 
 export const SUMMARY_REDACTED = `${DM_REDACTED}: her summary can include things from private chats. Run /print system_prompt private:true to see it.`;
 
-/** `/print system_prompt`: blocks A and B; the `<life_so_far>` summary is hidden unless `private`. */
-export function printSystemPromptText(state: LifeState, o: { private: boolean }): string {
-  if (!state.systemSnapshot) return "(no system prompt yet: her life has not started)";
-  const shown = o.private || !state.summary?.trim() ? state : { ...state, summary: SUMMARY_REDACTED };
-  return lifeSystem(shown).join("\n\n");
+/** `/print system_prompt`: blocks A and B; the `<life_so_far>` summary is hidden unless `private`, and so are the index lines `privateLine` names. */
+export function printSystemPromptText(state: LifeState, o: { private: boolean; privateLine?: (line: string) => boolean }): string {
+  const snapshot = state.systemSnapshot;
+  if (!snapshot) return "(no system prompt yet: her life has not started)";
+  if (o.private) return lifeSystem(state).join("\n\n");
+  const memoryIndex = redactNotesLines(snapshot.memoryIndex, o.privateLine).text;
+  const summary = state.summary?.trim() ? SUMMARY_REDACTED : state.summary;
+  return lifeSystem({ ...state, summary, systemSnapshot: { ...snapshot, memoryIndex } }).join("\n\n");
+}
+
+/** A line of her notes that names a DM place or path (`dm/kevin`, `/tmp/dm/…`, `/transcripts/dm/…`, `dm_<key>`) or carries a migrated DM record's suffix. */
+export function notesLineNamesDm(line: string): boolean {
+  return namesDmPlace(line) || /\(from a private chat\b/iu.test(line);
+}
+
+/**
+ * Her notes without what is private (D14): every line that names a DM (`notesLineNamesDm`) or that
+ * `privateLine` names (a link to a DM-origin file) becomes `[private chat redacted]`, keeping its
+ * indent and list marker.
+ */
+export function redactNotesLines(text: string, privateLine?: (line: string) => boolean): { text: string; redacted: number } {
+  let redacted = 0;
+  const lines = text.split("\n").map((line) => {
+    if (!notesLineNamesDm(line) && !privateLine?.(line)) return line;
+    redacted += 1;
+    const marker = /^\s*(?:[-*+]|\d+[.)])?\s*/u.exec(line)?.[0] ?? "";
+    return `${marker}${DM_REDACTED}`;
+  });
+  return { text: lines.join("\n"), redacted };
+}
+
+export const NOTES_INDEX_PRIVATE = `${DM_REDACTED}: her MEMORY.md came from a private chat. Run /print notes private:true to see it, or open Life → Files on the host.`;
+
+/** `/print notes`: her MEMORY.md; unless `private`, the lines from private chats are left out (D14). */
+export function printNotesText(text: string, o: { private: boolean; privateLine?: (line: string) => boolean }): string {
+  if (o.private) return text;
+  const { text: shown, redacted } = redactNotesLines(text, o.privateLine);
+  if (redacted === 0) return shown;
+  const footer = `(${redacted} ${redacted === 1 ? "line" : "lines"} from private chats left out: run /print notes private:true to see them, or open Life → Files on the host.)`;
+  return `${shown.replace(/\n+$/u, "")}\n\n${footer}`;
 }

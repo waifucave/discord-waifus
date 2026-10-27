@@ -176,10 +176,5 @@ it ends). See [memory-and-dreaming.md](memory-and-dreaming.md).
 
 ## Spec differs
 
-- §21.3 shows the overnight header `- while you were asleep (…)`; with a bed time the code writes
-  `- during your bed time (<start>–<end>):` (the §23 golden that shows "while you were asleep" renders
-  `morningBatch` without the scheduler's header replacement).
-- §21.4 says held wakes are released "together as one notification"; the code releases, at a phone
-  check, only the wakes whose own release time has passed, and everything at the block's end.
 - §21.6c "exactly like the busy rule" for up late: as built any place she sent to in the last
   `busyEngagedMinutes` is open whatever woke her there.

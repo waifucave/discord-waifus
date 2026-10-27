@@ -96,12 +96,16 @@ Code: `src/life/dream.ts` `runDream`; timing `src/life/scheduler.ts` `maintenanc
 - It takes her life lock (it never overlaps a turn; a reminder that comes due waits for it), holds an
   update-activity lease, and is aborted by pause, shutdown and reload (an aborted run is not recorded
   and runs again at its next chance). `lastMaintenanceAt` is set when a run finishes.
-- **Pending forget scrubs run first.** They need her own model: while a scrub waits and she has no
-  model, neither the scrub nor the dream runs.
+- **Pending forget scrubs run first**, with or without her model, so no night or bed time keeps the
+  model-free steps waiting (see [privacy-and-forget.md](privacy-and-forget.md), steps 2 and 4): their
+  notes session and the summary without the person run on her model, else on `life.dreamModel`;
+  with neither, or a failed call, those two steps stay queued (`pendingSteps`) while everything else
+  is done (her notes lose the lines naming them; her summary is never wiped), and run once a model is
+  back. The dream still runs after them.
 
 **Model**: `life.dreamModel` when set and offered (with its effort), else her own model and effort.
-With no pending scrubs she dreams with `life.dreamModel` even when her own model is unavailable. Usage
-purpose `maintenance` (counted in her daily budget).
+She dreams with `life.dreamModel` even when her own model is unavailable. Usage purpose `maintenance`
+(counted in her daily budget).
 
 **The session**: a fresh memory keeper with **no life log and no persona**. System: "You keep
 <Name>'s memory. Her notes are files in her home, written in her own voice (keep their voice and
@@ -149,8 +153,6 @@ home, the transcripts and her dream cursor's DM entry. See [privacy-and-forget.m
 
 ## Spec differs
 
-- §7.3 / §18.4 put the run "30 minutes into her sleep window"; as built (§21.6c) it is 15 minutes
-  asleep in her bed time, and a bed time without that has no dream.
 - §16.8's maintenance also tidied reminders and watches; the dream leaves `~/life/` alone entirely.
 - §18.2 says writes are "atomic per day file"; appends are plain appends (a torn last line is skipped
   by readers and dropped at the next rewrite).

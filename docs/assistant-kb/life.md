@@ -97,19 +97,24 @@ lists who was left out and why (`leftOut`).
 - Dashboard → Life: her status (awake, busy, up late, dozing or asleep; idle or mid-turn), her queue, today's cost
   against her budget, and a live timeline of her life log.
 - `waifus life <id> [--log]`, or `GET /api/waifus/:id/life` and `GET /api/waifus/:id/life/log`.
-- `/print life` and `/print system_prompt` (House bot, owner only) in Discord.
+- `/print life`, `/print system_prompt` and `/print notes` (her `MEMORY.md`) (House bot, owner
+  only, only the owner sees the reply) in Discord.
 
 Content from private chats is hidden by default everywhere: a DM notification; every tool call,
 result and her own text in a turn that touched a DM (a web search or a room send included); a call
-that touched a DM in any other turn; and her summary. The owner can
+that touched a DM in any other turn; her summary; and, in `/print notes` and the index copy in
+`/print system_prompt`, every `MEMORY.md` line that links to a file from a private chat or names a
+DM (an index that itself came from a private chat is not shown at all). The owner can
 reveal it on the host itself (the Life screen's reveal toggle, `waifus life --private`,
 `includePrivate=1`, `/print … private:true`). Over Remote Access, and for the dashboard assistant,
 it stays hidden.
 
 ## Acting on it
 
-- **Wake**: an owner wake with an optional note she sees. It skips her bed time and budget. With
-  Discord offline it waits in her queue.
+- **Wake**: an owner wake with an optional note she sees. It skips her per-user wake limit, bed
+  time, busy holds, budget and room loop guard, but is dropped while the app is paused or when she is
+  disabled or has no bot of her own. With Discord offline, or the cast reloading, it waits in her
+  queue (`queued_offline`).
 - **Compact**: summarise her life now and start a new epoch. Needs Discord connected and a model.
 - **Reset**: start a fresh epoch with no summary. Her files (notes, reminders and watches) and
   queued wakes stay; the old log is kept for 7 days.
@@ -168,7 +173,9 @@ read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
 Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`,
 her DM transcripts under `/transcripts/dm/`, and an exact copy of one in her home) are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
 a DM is shown without its words, and `watches.json` itself then reads as a redacted, read-only copy
-(changing or deleting it needs the reveal on the host). Over Remote Access, and for the dashboard assistant, they stay
+(changing or deleting it needs the reveal on the host). A note (`.md`) whose lines link to a file from
+a private chat or name a DM reads the same way: those lines are `[private chat redacted]`, the copy is
+read-only, and its `hash` is still the real file's. Over Remote Access, and for the dashboard assistant, they stay
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
 click on its secure dashboard card applies.
 

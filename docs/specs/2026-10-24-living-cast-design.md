@@ -188,6 +188,8 @@ member's: who is it for, and would a cast member chime in? Both go in one native
   `human`; a person with no message in the chat at all stays `human`. **A cast member's message**:
   her reply or remark to a person is left to that person (`human`), a question or remark to another
   cast member is for that one, a goodbye or a line that needs no answer is `none`.
+  *As built:* the 30-minute stale rule and the follow-up rule are only instructions to the model,
+  which judges them from `minutesAgo`; no code-side timer turns a stale address into `anyone`.
 - **`chime_in`** (owner request 2026-10-25): `waifu_<i>` for each *awake* cast member, or `nobody`.
   Its instructions favour `nobody` unless one clearly has something relevant or fun to add (her
   persona fits); private matters, plans, errands and logistics are `nobody`. It is asked only when
@@ -507,6 +509,8 @@ calibration). It does not reuse the conversation planner, which works on ledger 
   line. winter has no `toolChoice: none`; the instruction says "reply with text only". Tool calls in
   the response are discarded; if there is no text, retry once with the same tools and a stronger
   text-only instruction; if that fails, fall back to truncation.
+  *As built:* "truncation" keeps her previous summary (never emptied) and the kept turns, and
+  compaction backs off for 5 minutes (`COMPACTION_FAILURE_BACKOFF_MS`) before it is tried again.
 - **Instruction** (first person; the shipped wording is in §19.7): "Write notes for your future self about your life since the last
   summary: what happened in each place, who you talked to and how it went, plans and promises, open
   threads, things you meant to do. Anything that should last longer belongs in your notes; this
@@ -813,7 +817,9 @@ links. The time line's compaction warning reminds her before her short-term memo
 ### 7.3 Nightly maintenance
 
 - When: 30 minutes into her sleep window; at `life.maintenanceHourLocal` (5) if she has no sleep
-  window. Takes the per-waifu lock, so it never overlaps a turn.
+  window. *As built (§21.6c):* once she has been asleep `life.dreamAfterAsleepMinutes` (15) in her
+  bed time, at most once per bed time; a bed time she never sleeps that long in has no dream, and
+  only pending scrubs run when it ends. Takes the per-waifu lock, so it never overlaps a turn.
 - How: a separate short session (not her life log): her model, her identity and persona, a
   maintenance instruction, only the notes tools; purpose `maintenance`; at most 30 tool rounds.
 - Task: resolve contradictions (newest fact wins), merge duplicates, fix broken index links, prune
@@ -875,7 +881,8 @@ conversation` runs steps 0–2 only.
    anything is removed, and a floor is never lowered or lost (two forgets in a row, a DM forget
    then the owner's). This part is a durable job (`user/people/forget-jobs.json`, with the names),
    written before anything is removed and cleared only when every part finished. Its parts
-   (`record`, `floors`, `dms`, `dm-directory`, `member-lists`, `archive`, `record-copies`) each
+   (`record`, `floors`, `dms`, `dm-directory`, `member-lists`, `archive`, `record-copies`; *as built*
+   eight: `transcripts`, §18.5, runs between `archive` and `record-copies`) each
    run on their own (the DM parts only once the floors are written) and are recorded in the job as
    they finish (`done`) or fail (`failures`: count, error code, time). A failed part does not stop
    the rest of the forget: the life scrubs (steps 2–5) still run, and the response lists the part
@@ -909,6 +916,19 @@ conversation` runs steps 0–2 only.
    next start (owner) or nightly maintenance. A waifu without a model has no session to run: it is
    recorded as skipped (one review line, `notesScrub: "skipped"` in the report), the other steps
    run and the scrub completes, so it is not retried at every start.
+   *As built (2026-10-27):* without her model the session runs on `life.dreamModel` when it is set
+   and offered (`notesModel: "dream"` in the report); it is skipped only when neither is. A queued
+   DM scrub runs at nightly maintenance with or without a model (also when a bed time she stayed up
+   through ends). Owner decisions (2026-10-27) replace "skipped" and step 2's empty summary: step 2
+   writes the summary on the route her epoch ran on, else her model, else `life.dreamModel`, and her
+   summary is never emptied (only `compaction.enabled = false` still does). With no model, or a
+   summary call or notes session that fails (or is aborted), that step stays pending: the other steps
+   run (step 5 checks her files only while step 2 waits; summary and epoch stay as they are), and
+   the scrub stays queued for those steps alone (`pendingSteps: ["summary", "notes"]`, report
+   `summaryScrub` / `notesScrub: "pending"`). They run at the next scrub run and before her next turn
+   (after the compaction backoff) once a model is back; the summary step then starts the epoch and
+   checks the summary, a late notes session refreshes the prompt's copy of `MEMORY.md`. The entry
+   clears only when no step is left.
 5. **Start the epoch and verify**: a note marked as the person's own (`<!-- user:<id> -->`) or a
    `people/` note whose heading is one of their unique names is deleted whole, with its `MEMORY.md`
    links; a `people/` note headed by a shared name is listed for review. Then start the new epoch
@@ -1151,6 +1171,13 @@ rule (§14.4): by default they leave out every DM tool call and result, every qu
 notification line (also when folded into a tool result), her own assistant text in a turn whose
 wakes or tool calls touched a DM place, and her `<life_so_far>` summary. The boolean option
 `private:true` shows everything; the reply stays ephemeral, so only the owner who ran it sees it.
+*As built (2026-10-27):* `/print notes` follows the same option. Without it, every `MEMORY.md` line
+that links to a file from a private chat (files-index provenance, or under `/tmp/dm/`) or names a DM
+place or path reads `[private chat redacted]`, with a footer counting them; an index whose own bytes
+came from a private chat is not shown. `/print system_prompt` hides the same lines of its index copy,
+and there a link that no longer resolves counts as private (the copy is older than her files). The
+files API (§16.11) applies the same rule to every `.md` note without `includePrivate`: a read-only
+copy with those lines redacted, whose `hash` is the file's own; PUT and DELETE then need the reveal.
 
 ## 11. Retirements and migrations
 
@@ -2394,6 +2421,8 @@ day's memories and checks her notes against what was said since the last dream.
 
 - **When**: unchanged (30 minutes into her sleep window, else `life.maintenanceHourLocal`), under
   the per-waifu lock, as the same tracked background task. Pending forget scrubs still run first.
+  *As built (§21.6c):* 15 minutes asleep in her bed time (`life.dreamAfterAsleepMinutes`), at most
+  once per bed time; none on a night she never sleeps that long.
 - **Model**: `life.dreamModel` (`{providerId, modelId, effort?}`, a route `GET /api/models` offers;
   unset by default) else her model. Usage purpose stays `maintenance`.
 - **Context**: a fresh session with no life log and no persona. System: "You keep <Name>'s memory.
@@ -2831,13 +2860,16 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
   > mood, your plans. Your day is yours to plan: keep it believable for who you are. Your sleep
   > (00:30–08:30) is fixed. Then deal with what came in overnight.
 
-  followed by the overnight batch as today (§4.4 morning batch).
+  followed by the overnight batch as today (§4.4 morning batch). *As built:* with a bed time the
+  batch opens `- during your bed time (<start>–<end>):`; `- while you were asleep (HH:MM–HH:MM):`
+  stays for a waifu without one (the §23 golden renders `morningBatch` without the scheduler's
+  header).
 - After that turn ends the loop compacts with reason `day` (A rebuilt, so `<schedule>` shows today). If the turn ended without a valid schedule for today, she has no plan today (no busy blocks) and the compaction still runs once.
 - Deferred morning (she is mid-turn, paused, or the host was down): the wake fires at the next cycle; on a host that was down all morning it fires at boot catch-up.
 
 ### 21.4 Busy holds (S4)
 
-- A wake router guard after sleep: if she is in a busy block of today's schedule and the wake is not one that gets through (S4), the wake is **held** (persisted in `wakes.json` with `heldUntil` = the next phone check inside the block, else the block's end). Held wakes are released together as one notification, with the usual one line per message (§20) and a first line `- phone check (busy: <why>)` or `- free again (<why> is over)`.
+- A wake router guard after sleep: if she is in a busy block of today's schedule and the wake is not one that gets through (S4), the wake is **held** (persisted in `wakes.json` with `heldUntil` = the next phone check inside the block, else the block's end). Held wakes are released together as one notification, with the usual one line per message (§20) and a first line `- phone check (busy: <why>)` or `- free again (<why> is over)`. *As built:* a phone check releases only the held wakes whose own phone check (as her file says now) has passed; everything held comes back at the block's end; held wakes that come due inside her bed time are deferred to the morning.
 - The detector's availability is `busy` during a block (weight ×1, §4.3) from the file.
 - The time line shows `busy: <why> until HH:MM` from the file; `availability.busy` is no longer read anywhere.
 

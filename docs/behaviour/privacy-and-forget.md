@@ -27,9 +27,9 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 | Life API `GET /api/waifus/:id/life`, `…/life/log` | Summary hidden; DM wakes' preview/note hidden (an owner note stays); log redacted; DM-turn lines marked `dm: true` | `includePrivate=1` |
 | Life screen | Same; reveal toggle "Show private chats" | Toggle (local only; disabled over Remote Access) |
 | `waifus life`, `files`, `watches` | Same | `--private` |
-| `/print life`, `/print system_prompt` | DM content and her summary hidden (ephemeral, owner only) | `private:true` |
-| `/print notes` | Prints `MEMORY.md` as it is (no DM filter; ephemeral, owner only) | — |
-| Files API / Life → Files | A DM-origin file is listed as `[private chat redacted]` with no path; reading, writing, deleting it or listing a DM folder → 403; `/transcripts/dm/…` likewise; `watches.json` with a DM-bound watch reads as a redacted, read-only copy | `includePrivate=1` |
+| `/print life`, `/print system_prompt` | DM content and her summary hidden; in the system prompt's copy of `MEMORY.md`, the lines `/print notes` hides, and lines linking to a file that no longer exists (the copy is older than her files) (ephemeral, owner only) | `private:true` |
+| `/print notes` | `MEMORY.md` with every line that links to a DM-origin file (files-index provenance, or under `/tmp/dm/`) or names a DM (`dm/…`, `dm_…`, `/tmp/dm/…`, `/transcripts/dm/…`, a migrated "(from a private chat…)" suffix) shown as `[private chat redacted]` (indent and list marker kept) and a footer counting them; a `MEMORY.md` whose own bytes came from a DM is not shown ("…Run /print notes private:true to see it, or open Life → Files on the host."); ephemeral, owner only | `private:true` |
+| Files API / Life → Files | A DM-origin file is listed as `[private chat redacted]` with no path; reading, writing, deleting it or listing a DM folder → 403; `/transcripts/dm/…` likewise; `watches.json` with a DM-bound watch reads as a redacted, read-only copy; a notes file (`.md`) whose lines link to a DM-origin file or name a DM reads as a read-only copy with those lines `[private chat redacted]` (`hash` is the real file's; PUT/DELETE → 403) | `includePrivate=1` |
 | Web searches (`GET /api/search/usage`, Life "Web searches today") | A DM turn's queries (`dm: true`, also marked later by turn id) shown as `[private chat redacted]` | `includePrivate=1` |
 | Needs-review lines | A line from her summary or queue, a DM-bound watch, or naming a DM place reads redacted (same id); the forget response always redacts them | `includePrivate=1` |
 | Dashboard assistant | Never; its tools say DM content stays redacted | Refused: 403 `PrivateContentLocalOnly` ("DM content never goes to the dashboard assistant.") |
@@ -41,6 +41,10 @@ request that came in directly over loopback (`127.x`, `::1`) gets the local prin
 dispatched by the Remote Access bridge or by the assistant carries that dispatch's principal and
 cannot reveal; `includePrivate` from it answers 403 `PrivateContentLocalOnly` ("DM content is only
 shown on the host itself (D14). Open the dashboard on that computer to reveal it.").
+
+The note-line rule is one module (`src/life/notesPrivacy.ts`, `lifeView.ts` `redactNotesLines`) used
+by `/print notes`, `/print system_prompt` and the files API. A line she wrote herself about a DM,
+without linking a DM file or naming a DM, cannot be attributed and is shown.
 
 The Life view is keyed per waifu and per reveal state; a response whose `includePrivate` does not
 match the toggle is dropped (`LifeScreen.tsx` `matchingReveal`).
@@ -82,8 +86,24 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
 1. **Files**: every file in her home and `/tmp` whose hash the provenance index has from them (their
    DM downloads, their attachments in rooms, exact copies), and `/tmp/dm/<handle>/`; run again under
    her life lock after her turn is aborted, with the hashes kept as tombstones.
-2. **Summary**: her turn is aborted; her summary is rewritten without them (no kept turns; empty on
-   failure); the new epoch waits (`pendingEpochStart`).
+2. **Summary**: her turn is aborted; her summary is rewritten without them (no kept turns) on the
+   route her epoch ran on, else her model, else `life.dreamModel` (`forget.ts`
+   `summaryWithoutPerson`, `scrubModelOf`); the new epoch waits (`pendingEpochStart`). Her summary is
+   **never emptied** for want of a model: with **no model at all**, or a summary call that **fails or
+   is aborted** (its 5-minute compaction backoff is set), her summary and her epoch (log included)
+   stay as they are and the step is left pending (report `summaryScrub: "pending"`). Only
+   `compaction.enabled = false` (the owner's choice of no summaries) still empties it.
+
+   **Pending model steps.** Steps 2 and 4 are the only ones that need a model. When either could not
+   run (no model) or failed, every other step still runs (step 5 checks her files only while step 2
+   waits) and the queued scrub is kept for those steps alone (`pendingSteps: ["summary", "notes"]` in
+   `pending-scrubs.json`). They run again at the next scrub run (her nightly maintenance, an owner
+   scrub at start) and before her next turn (`LivingCast.summaryStepsBeforeTurn`, after the
+   compaction backoff); a run with no model changes and reports nothing. When the summary step runs
+   the epoch starts and the summary is checked (`summaryScrub: "done"`); when only the notes session
+   runs, her epoch goes on and the prompt's copy of `MEMORY.md` is refreshed from the scrubbed notes
+   (`notesScrub: "done"`). The entry is cleared only when no step is left. A new forget of the same
+   person queues the whole scrub again.
 3. **Other state**: their wakes (and their DM's), their lines in someone else's wake (a quote naming
    them becomes `(removed)`), pending notices, watches from or bound to them (a word naming them →
    dropped or reviewed), reminder notes naming them → `(removed)` (the reminder still fires), her day
@@ -91,8 +111,13 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    lines, the host's recent web queries naming them, her archive slice, her transcripts' DM and her
    dream cursor's DM entry.
 4. **Notes scrub**: a session with her identity and persona (30 rounds) removes everything about
-   them from her notes and fixes the index. Fails → the scrub stays queued. No model → one review
-   line, skipped, and the scrub completes.
+   them from her notes and fixes the index, on her model, else on `life.dreamModel` (report
+   `notesModel: "dream"`). Fails, or neither model is offered → pending (see step 2;
+   `notesScrub: "pending"`); without a model one review line says so ("no notes session has run
+   yet…"), and meanwhile step 5's line and sentence removal is what her notes get. A queued DM scrub
+   runs at nightly maintenance with or without a model (also after a bed time she stayed up
+   through): everything but the pending model steps is done that night. A waifu who never gets a
+   model again keeps those steps queued (Home lists queued forget scrubs).
 5. **Verify and start the epoch**: a note marked as theirs (`<!-- user:<id> -->`) or a `people/` note
    headed by a unique name is deleted whole with its MEMORY.md links; every home text file (not the
    `~/life/` special files) loses lines with the id, list items/headings naming them, and sentences in
@@ -116,7 +141,8 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
   below the floor, archived context; the floor is raised first; rate-limit counters stay), her files
   from that DM, the DM's deferred morning lines and intake mark; then her summary without the DM,
   the DM's wakes, watches bound to it, her read cursor at the floor, her dream-cursor DM entry, and
-  the epoch starts at once (old log gone).
+  the epoch starts at once (old log gone). Without a model for the summary (or a failed call), the
+  summary and epoch wait as in step 2 (`pendingSteps: ["summary"]`).
 - `everything`: the same DM data plus the DM state file, then the full life scrub (steps 1–5) for
   that waifu, including their lines in the rooms she can see. Not added to `forgotten.json` (other
   waifus are untouched).
@@ -160,11 +186,5 @@ is salvaged on read.
 
 ## Spec differs
 
-- §7.5 lists seven job parts; the code has eight (`transcripts` between `archive` and
-  `record-copies`, as §18.5 adds).
-- §7.5 step 4 says a waifu without a model has her notes scrub skipped; as built a **queued** DM
-  scrub never runs at all while she has no model (nightly maintenance returns early), so it waits.
 - §18.5 "their whole DM transcripts" is done as "everything at or below the floor at the forget's
   time".
-- `/print notes` is not covered by the D14 rule in any doc; it prints `MEMORY.md` unfiltered (the
-  reply is ephemeral and owner-only).

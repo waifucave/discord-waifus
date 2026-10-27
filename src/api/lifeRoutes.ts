@@ -14,7 +14,7 @@ import { dismissNeedsReview, readNeedsReview, withoutPrivateReview } from "../li
 import { listLogEpochs, readLifeFile, readLifeLog, readLifeState } from "../life/lifeStore.js";
 import { scanDmContent, viewLogLine } from "../life/lifeView.js";
 import { LifeActionError, type LivingCast } from "../life/livingCast.js";
-import { enqueueWake, newWakeId } from "../life/wakeQueue.js";
+import { queueOwnerWakeOffline } from "../life/wakeQueue.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { readPendingScrubs } from "../orchestration/dm/forgotten.js";
 import { readWaifu } from "../orchestration/stores/config.js";
@@ -228,9 +228,7 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
         if (!(error instanceof LifeActionError && error.code === "offline")) throw error;
       }
     }
-    const note = body.note?.trim().slice(0, 500);
-    const wake: Wake = { id: newWakeId(), reason: "owner", ...(note ? { note } : {}), at: now().toISOString() };
-    await enqueueWake(o.storage, waifuId, wake);
+    const wake = await queueOwnerWakeOffline(o.storage, waifuId, body.note, now());
     return { waifuId, outcome: "queued_offline" as const, wakeId: wake.id };
   });
 

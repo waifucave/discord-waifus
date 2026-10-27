@@ -123,9 +123,5 @@ The remote dashboard's CSP allows scripts and styles from itself, images from it
 
 ## Docs differ
 
-- The KB says "enter or scan the invitation": the remote shell has no QR scanner; it takes a pasted
-  token or short code (the host shows the QR).
-- `CLAUDE.md` names helper 0.1.14 for "no status events"; 0.1.16 is pinned (the behaviour is the
-  same).
 - The app declares a 300 s invitation lifetime constant but does not enforce it; the helper sets
   `expiresAt`.

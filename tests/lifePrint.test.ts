@@ -5,9 +5,11 @@
 // sender's name, a note with a line break, list_watches naming a DM, a web search in a DM turn).
 import { afterEach, describe, expect, it } from "vitest";
 import { appendLifeLog, updateLifeState } from "../src/life/lifeStore.js";
-import { printSystemPromptText, scanDmContent, viewLogLine } from "../src/life/lifeView.js";
+import { homeStoreFor } from "../src/life/home/index.js";
+import { DM_REDACTED, printSystemPromptText, scanDmContent, viewLogLine } from "../src/life/lifeView.js";
+import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
-import { closeWorlds, lifeWorld } from "./lifeFixtures.js";
+import { closeWorlds, homeOf, KEVIN, lifeWorld, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -203,5 +205,83 @@ describe("/print life", () => {
     const scan = scanDmContent(lines);
     const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
     expect(shown).not.toContain("biopsy");
+  });
+});
+
+describe("/print notes (D14)", () => {
+  /** A file of Kevin's DM, downloaded to /tmp/dm/kevin/, whose bytes she also keeps in her home. */
+  async function dmDownload(w: LifeWorld, bytes: string, id: string): Promise<void> {
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+    const target = store.resolve(`/tmp/dm/kevin/a${id}-file.md`);
+    if (!target.ok) throw new Error(target.error);
+    expect(await store.saveDownload(target.path, Buffer.from(bytes), { placeKey: `dm_${KEVIN}_ella`, authorId: KEVIN, messageId: id, attachmentId: id, downloadedAt: w.clock.now().toISOString() })).toBe(true);
+  }
+
+  const MEMORY = [
+    "# Memory",
+    "- [Kevin](people/kevin.md) — chemistry student",
+    "- [Divorce papers](kept/papers.md) — what Kevin sent me",
+    "- talked with him in dm/kevin about the exam",
+    "  - see /tmp/dm/kevin/a1-file.md",
+    "- [Me](me.md) — about me",
+    ""
+  ].join("\n");
+
+  it("leaves out lines that link to a DM-origin file or name a DM place, unless private", async () => {
+    const w = await lifeWorld(roots, {});
+    await dmDownload(w, "# Papers\n- signed on monday\n", "1");
+    const notes = homeOf(w, "ella");
+    await notes.write("kept/papers.md", "# Papers\n- signed on monday\n");
+    await notes.write("people/kevin.md", "# Kevin\n- studies chemistry\n");
+    await notes.write("MEMORY.md", MEMORY);
+    const printed = await w.cast.printNotes("ella");
+    expect(printed).toContain("- [Kevin](people/kevin.md) — chemistry student");
+    expect(printed).toContain("- [Me](me.md) — about me");
+    expect(printed).not.toContain("Divorce");
+    expect(printed).not.toContain("exam");
+    expect(printed).not.toContain("a1-file");
+    expect(printed.split("\n").filter((line) => line.includes(DM_REDACTED))).toEqual([`- ${DM_REDACTED}`, `- ${DM_REDACTED}`, `  - ${DM_REDACTED}`]);
+    expect(printed).toContain("3 lines from private chats left out");
+    expect(printed).toContain("private:true");
+    expect(await w.cast.printNotes("ella", { private: true })).toBe(MEMORY);
+  });
+
+  it("refuses a MEMORY.md that came from a private chat, unless private", async () => {
+    const w = await lifeWorld(roots, {});
+    await dmDownload(w, "# Memory\n- Kevin's secret\n", "2");
+    await homeOf(w, "ella").write("MEMORY.md", "# Memory\n- Kevin's secret\n");
+    const printed = await w.cast.printNotes("ella");
+    expect(printed).not.toContain("secret");
+    expect(printed).toContain(DM_REDACTED);
+    expect(printed).toContain("Life");
+    expect(await w.cast.printNotes("ella", { private: true })).toBe("# Memory\n- Kevin's secret\n");
+  });
+
+  it("/print system_prompt leaves the same MEMORY.md lines out of its copy of the index", async () => {
+    const w = await lifeWorld(roots, {});
+    await dmDownload(w, "# Papers\n- signed on monday\n", "1");
+    await homeOf(w, "ella").write("kept/papers.md", "# Papers\n- signed on monday\n");
+    await homeOf(w, "ella").write("people/kevin.md", "# Kevin\n- studies chemistry\n");
+    await updateLifeState(w.storage, "ella", (current) => ({
+      ...current,
+      systemSnapshot: { harnessHash: "h", harness: "<life>block A</life>", memoryIndex: MEMORY, places: "- bake-club/#general", tools: [] }
+    }));
+    const hidden = await w.cast.printSystemPrompt("ella");
+    expect(hidden).toContain("- [Kevin](people/kevin.md) — chemistry student");
+    expect(hidden).not.toContain("Divorce");
+    expect(hidden).not.toContain("exam");
+    expect(await w.cast.printSystemPrompt("ella", { private: true })).toContain("Divorce papers");
+  });
+
+  it("/print system_prompt treats an index link that no longer resolves as private (her snapshot is older than her files)", async () => {
+    const w = await lifeWorld(roots, {});
+    await updateLifeState(w.storage, "ella", (current) => ({
+      ...current,
+      systemSnapshot: { harnessHash: "h", harness: "<life>block A</life>", memoryIndex: "# Memory\n- [Papers](kept/papers.md) — what Kevin sent me\n- [Me](me.md) — about me\n", places: "", tools: [] }
+    }));
+    await homeOf(w, "ella").write("me.md", "# Me\n");
+    const hidden = await w.cast.printSystemPrompt("ella");
+    expect(hidden).not.toContain("Kevin sent");
+    expect(hidden).toContain("- [Me](me.md) — about me");
   });
 });

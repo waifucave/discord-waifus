@@ -88,6 +88,8 @@ export type LifeHost = {
   activity?: LifeActivity;
   /** Her spend for the local day (§4.4 guard 5), checked again when a turn starts and while it runs. */
   cost?: DailyCost;
+  /** Runs under her life lock before each turn cycle (a forget's summary step left waiting for a model, §7.5). */
+  beforeCycle?(waifuId: string): Promise<void>;
 };
 
 /** How long a life waits before trying again when the app was sealed for an update. */
@@ -266,6 +268,9 @@ export class Life {
         this.retryAfter(SEALED_RETRY_MS);
         return;
       }
+      await this.host.beforeCycle?.(this.waifuId).catch((error: unknown) => {
+        this.deps.logger.warn("Life pre-turn work failed", { waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+      });
       // Abortable while it waits for a slot too: a forget or a pause that comes meanwhile stops the
       // cycle before it takes any wake (and the forget gets her lock right after).
       this.controller = new AbortController();
