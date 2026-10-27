@@ -8,13 +8,12 @@ and the difference is noted ("Spec differs: …").
 
 **Describes:** the code on `main` at `8895610` (package version 3.3.0; the commits after `a3304a9`
 change only the spec). Behaviour merged after the 3.3.0 release commit (`2b10731`) is marked
-**unreleased (on main)**: the richer morning summary (§23) and "Jev only sees who is around" (§24).
+**unreleased (on main)**: the richer morning summary (§23), "Jev only sees who is around" (§24) and
+the rest before the prompt cache goes cold (§25).
 
-**Pending** (specified on `main`, being built on other branches; marked "pending (spec §25/§26)"
+**Pending** (specified on `main`, being built on other branches; marked "pending (spec §26)"
 where they will change a rule, and to be finalised here when they merge):
 
-- §25 rest before the prompt cache goes cold (a rest turn about 50 minutes after her last request on
-  Anthropic-family routes when her context is large);
 - §26 the rest notice at `compaction.triggerRatio` and auto-compaction only at a new
   `compaction.emergencyRatio`, with `life.restNoticeRatio` removed and new rest/compaction wording;
 - Remote Access helper 0.1.17 (NAT public address pool).

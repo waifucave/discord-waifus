@@ -9,7 +9,9 @@ import {
   openRouterRouteOffered,
   DEFAULT_ALLOWED_ROUTES,
   DEFAULT_MAX_OUTPUT_USD_PER_MTOK,
+  explicitCacheTtlMs,
   findCuratedModel,
+  PROMPT_CACHE_TTL_MS,
   installedCatalog,
   isContributorRoute,
   openRouterReasoningReplaySupported,
@@ -220,5 +222,24 @@ describe("models config (config.toml [models])", () => {
     expect(UpdateAppConfigBodySchema.parse({ models: { maxOutputUsdPerMTok: 10 } })).toEqual({ models: { maxOutputUsdPerMTok: 10 } });
     expect(() => UpdateAppConfigBodySchema.parse({ models: { maxOutputUsdPerMTok: 10.01 } })).toThrow();
     expect(() => AppConfigSchema.parse({ models: { maxOutputUsdPerMTok: 50 } })).toThrow();
+  });
+});
+
+describe("explicitCacheTtlMs (spec §25)", () => {
+  it("is one hour for Claude on Anthropic and through OpenRouter, undefined for the other curated routes", () => {
+    const ttl = (key: string) => explicitCacheTtlMs(parseRouteKey(key)!);
+    expect(PROMPT_CACHE_TTL_MS).toBe(3_600_000);
+    for (const key of ["anthropic/claude-haiku-5-5", "openrouter/anthropic/claude-haiku-5.5", "anthropic/claude-sonnet-5-5", "openrouter/anthropic/claude-sonnet-5.5"]) expect(ttl(key), key).toBe(3_600_000);
+    for (const key of ["deepseek/deepseek-flash", "openrouter/deepseek/deepseek-v4.1-flash", "openai/gpt-6-luna", "openrouter/openai/gpt-6-luna", "openai/gpt-6.1-sol", "meta/muse-spark-1.3-contributor", "openrouter/meta/muse-spark-1.3-contributor"]) expect(ttl(key), key).toBeUndefined();
+    expect(ttl("nowhere/claude-haiku-5-5")).toBeUndefined();
+  });
+
+  it("needs prompt caching on the row and, through OpenRouter, an anthropic/ upstream", () => {
+    const catalog = cloneCatalog();
+    delete (row(catalog, "anthropic/claude-haiku-5-5") as { promptCaching?: unknown }).promptCaching;
+    expect(explicitCacheTtlMs(parseRouteKey("anthropic/claude-haiku-5-5")!, catalog)).toBeUndefined();
+    const routed = row(catalog, "openrouter/anthropic/claude-sonnet-5.5") as { upstreamId: string };
+    routed.upstreamId = "someone/claude-sonnet-5.5";
+    expect(explicitCacheTtlMs(parseRouteKey("openrouter/anthropic/claude-sonnet-5.5")!, catalog)).toBeUndefined();
   });
 });

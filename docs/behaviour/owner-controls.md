@@ -141,7 +141,8 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | | `compaction.triggerRatio` | 0.7 | Compaction trigger (pending §26: the rest point) |
 | | `life.maxLogMessages` | 400 | Log-length trigger |
 | | `life.maxInlineImagesPerEpoch` / `…BytesPerEpoch` | 8 / 12 MiB | Inline images |
-| Rest | `life.restNotice` / `restNoticeRatio` / `restSummaryMinChars` | true / 0.85 / 200 | Rest turn (pending §26: `restNoticeRatio` removed, `compaction.emergencyRatio` 0.9 added; §25: `life.cacheRestMinRatio` 0.5, `life.cacheRestLeadMinutes` 10) |
+| Rest | `life.restNotice` / `restNoticeRatio` / `restSummaryMinChars` | true / 0.85 / 200 | Rest turn (pending §26: `restNoticeRatio` removed, `compaction.emergencyRatio` 0.9 added) |
+| | `life.cacheRestMinRatio` / `cacheRestLeadMinutes` | 0.5 / 10 | Rest before her prompt cache goes cold (§25): from this share of the trigger, this many minutes before the 1-hour cache expires |
 | | `life.selfSummaryMinRatio` / `selfSummaryCooldownMinutes` | 0.3 / 120 | `<summary>` guards |
 | Dreaming | `life.dreamAfterAsleepMinutes` | 15 | Asleep before the dream |
 | | `life.maintenanceHourLocal` | 5 | Dream hour without a bed time |

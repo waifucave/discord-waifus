@@ -37,7 +37,8 @@ import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
-import { REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
+import { CACHE_REST_NOTICE, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
+import { cacheRestDue } from "./cacheRest.js";
 import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
@@ -66,7 +67,7 @@ export const CUT_OFF_RESULT = "error: your message was cut off; try shorter";
 export const INTERRUPTED_RESULT = "[interrupted]";
 export const REFUSED_RESULT = "error: not run (your reply ended in a refusal)";
 
-export { REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME } from "./rest.js";
+export { CACHE_REST_NOTICE, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME } from "./rest.js";
 
 export type LifeHostHooks = {
   /** A turn ended (tests, dashboard). */
@@ -540,9 +541,11 @@ export class Life {
     const nowMs = deps.now().getTime();
     const followUpDue = state.failedTurn !== undefined && !state.failedTurn.followUpDone && nowMs - Date.parse(state.failedTurn.at) >= FOLLOW_UP_DELAY_MS;
     const queued = await pendingWakeCount(deps.storage, this.waifuId);
-    // A rest turn may be due with nothing queued: it follows the turn that filled her memory (§19.2).
-    // So may the compaction after her morning turn (§21.3).
-    if (queued === 0 && !followUpDue && !this.restDue(state, model) && !state.dayCompactionDue) return "idle";
+    // A rest turn may be due with nothing queued: it follows the turn that filled her memory (§19.2),
+    // or she has been quiet until shortly before her prompt cache expires (§25). So may the
+    // compaction after her morning turn (§21.3).
+    const quietRest = queued === 0 && !followUpDue && (await cacheRestDue(deps, waifu, model, state));
+    if (queued === 0 && !followUpDue && !this.restDue(state, model) && !state.dayCompactionDue && !quietRest) return "idle";
     // Her provider is cooling down after a quota or billing error: the wakes wait in the queue and
     // she is poked again when the cooldown ends (review I6).
     const cooling = deps.models.cooldownRemainingMs?.(model.providerId);
@@ -566,6 +569,8 @@ export class Life {
     if (signal.aborted) return "idle";
     // Her memory is nearly full: she rests before any queued wake is delivered (§19.2, R3).
     if (this.restDue(state, model)) return this.restTurn(waifu, model, state, signal, budgetLeftUsd);
+    // Quiet with a large context, her cache about to go cold: she rests now, while it is warm (§25).
+    if (quietRest && (await cacheRestDue(deps, waifu, model, state))) return this.restTurn(waifu, model, state, signal, budgetLeftUsd, { cache: true });
     // Read now, removed once her state records them (a crash in between loses none, §4.6).
     const { wakes, quiet } = await peekImmediate(deps.storage, this.waifuId);
     if (wakes.length === 0 && !followUpDue) return "idle";
@@ -630,8 +635,12 @@ export class Life {
    * becomes the summary her new epoch starts from (§19.4) when it is long enough and the turn ended
    * normally; otherwise compaction summarises for her right away, without this turn. An interrupted
    * rest turn changes nothing and runs again at the next cycle.
+   *
+   * `cache`: the quiet-time rest before her prompt cache goes cold (§25), opened by
+   * `CACHE_REST_NOTICE`; accepted, the epoch reason is `cache_rest`; ignored, nothing else happens
+   * (the turn stays in her log, the normal triggers stay). Recorded in `state.cacheRest`.
    */
-  private async restTurn(waifu: WaifuConfig, model: CuratedModel, state: LifeState, signal: AbortSignal, budgetLeftUsd: number | undefined): Promise<TurnOutcome> {
+  private async restTurn(waifu: WaifuConfig, model: CuratedModel, state: LifeState, signal: AbortSignal, budgetLeftUsd: number | undefined, o: { cache?: boolean } = {}): Promise<TurnOutcome> {
     const deps = this.deps;
     const turnId = newTurnId();
     const selfIds = await selfAuthorIds(deps.storage, waifu);
@@ -656,21 +665,27 @@ export class Life {
       status: "turn",
       currentTurn: { id: turnId, startedAt: deps.now().toISOString(), rounds: 0, wakeIds: [], wakes: [] }
     }));
-    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: REST_NOTICE }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
-    deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate });
+    const notice = o.cache ? CACHE_REST_NOTICE : REST_NOTICE;
+    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: notice }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
+    deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate, ...(o.cache ? { before: "cache_expiry" } : {}) });
     let outcome = await this.rounds(run);
     // Interrupted (pause, shutdown, a reload): nothing changes; the rest turn runs again next cycle.
     if (run.endReason === "interrupted" || signal.aborted) return "idle";
     // A provider overflow already compacted for her (the mid-turn path).
     if (run.endReason?.startsWith("compaction:")) return outcome;
     // One rest notice per epoch: should compaction fail too, she is not asked again in this epoch.
-    await updateLifeState(deps.storage, this.waifuId, (current) => (current.epoch === state.epoch ? { ...current, restTurn: { epoch: state.epoch, turnId } } : current));
+    // The quiet-time one is counted on its own: an ignored one leaves the §19 notice to come (§25).
+    const mark = o.cache ? { cacheRest: { epoch: state.epoch, turnId } } : { restTurn: { epoch: state.epoch, turnId } };
+    await updateLifeState(deps.storage, this.waifuId, (current) => (current.epoch === state.epoch ? { ...current, ...mark } : current));
     const summary = (run.finalText ?? "").trim();
     const harness = await currentHarness(deps, waifu, model);
     const current = await readLifeState(deps.storage, this.waifuId);
     if (run.endReason === "done" && summary.length >= Math.max(1, deps.config().life.restSummaryMinChars)) {
-      const next = await startEpoch(deps, this.waifuId, { harness, summary: `${REST_SUMMARY_FRAME}\n${summary}`, kept: [], readIds: [], reason: "rest", summarized: true, strippedBlocks: 0 });
-      deps.logger.info("Life rested", { category: "life", waifuId: this.waifuId, epoch: next.epoch, summaryChars: summary.length });
+      const next = await startEpoch(deps, this.waifuId, { harness, summary: `${REST_SUMMARY_FRAME}\n${summary}`, kept: [], readIds: [], reason: o.cache ? "cache_rest" : "rest", summarized: true, strippedBlocks: 0 });
+      deps.logger.info("Life rested", { category: "life", waifuId: this.waifuId, epoch: next.epoch, summaryChars: summary.length, ...(o.cache ? { before: "cache_expiry" } : {}) });
+    } else if (o.cache) {
+      // Ignored quiet-time rest (§25): nothing else happens now; the normal triggers stay.
+      deps.logger.info("Life quiet-time rest ignored", { category: "life", waifuId: this.waifuId, reason: run.endReason, summaryChars: summary.length });
     } else {
       // Ignored (too short, failed, capped): compaction as before, leaving the rest turn out (R4).
       deps.logger.info("Life rest notice ignored; compacting", { category: "life", waifuId: this.waifuId, reason: run.endReason, summaryChars: summary.length });
@@ -733,6 +748,8 @@ export class Life {
       if (estimate > budget) return this.midTurnCompaction(run, "budget");
       let result;
       const firstCall = run.state.epochStrippedThinkingBlocks !== undefined;
+      // Her prompt cache lives from the request (§25).
+      const sentAt = deps.now().toISOString();
       try {
         result = await deps.models.stream({
           route: { providerId: run.model.providerId, modelId: run.model.modelId },
@@ -783,6 +800,7 @@ export class Life {
           ...current,
           ...(calibration ? { tokenCalibration: { ...calibration, estimator: TOKEN_ESTIMATOR_VERSION } } : {}),
           lastRequestTokens: estimate,
+          lastRequestAt: sentAt,
           epochStrippedThinkingBlocks: undefined,
           currentTurn: current.currentTurn ? { ...current.currentTurn, rounds } : current.currentTurn
         };

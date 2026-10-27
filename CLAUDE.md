@@ -104,6 +104,16 @@ rest turn opened by `REST_NOTICE` (same system blocks and tools, so the cache ho
 `[your summary before the reset]`, no kept turns, boundary reason `rest`), anything else compacts at
 once leaving the rest turn out; `state.restTurn` allows one per epoch (an interrupted compaction after
 it compacts at the next cycle). With `life.restNotice` off the time line's memory warning returns.
+She also rests before her prompt cache goes cold (§25, `cacheRest.ts`): her requests are cached for
+an hour (`PROMPT_CACHE_TTL` in `catalog.ts`, sent by `client.ts`), and on a route whose TTL is known
+(`explicitCacheTtlMs`: a Claude row with prompt caching on an `anthropic`-family provider or on
+OpenRouter with an `anthropic/` upstream, the routes winter sends the 1-hour TTL for; anything else
+never gets it) the scheduler's tick pokes her life when she is idle with nothing queued, her last
+request (`lastRequestTokens`, `lastRequestAt`) was at least `life.cacheRestMinRatio` × the trigger,
+and it is `life.cacheRestLeadMinutes` before that request + TTL (not after it expired; not asleep in
+a bed time ending within the TTL). The life loop then runs the rest turn with `CACHE_REST_NOTICE`
+(the notice plus one sentence): accepted, epoch reason `cache_rest`; ignored, nothing else happens
+(the turn stays in her log). `state.cacheRest` allows one per epoch, apart from `state.restTurn`.
 Any turn whose final reply is only `<summary>…</summary>` (§21.6b, `rest.ts` `selfSummaryOf`) starts
 such an epoch too (reason `self`) when it passes `life.restSummaryMinChars`,
 `life.selfSummaryMinRatio` × the trigger and `life.selfSummaryCooldownMinutes`; otherwise her next

@@ -271,7 +271,11 @@ const LIFE_FIELDS = {
   /** Her own `<summary>` reset (§21.6b): her last request reached this share of the compaction trigger. */
   selfSummaryMinRatio: z.number().min(0).max(0.99),
   /** Her own `<summary>` reset (§21.6b): at least this long since her last epoch start. */
-  selfSummaryCooldownMinutes: z.number().int().min(0).max(10_080)
+  selfSummaryCooldownMinutes: z.number().int().min(0).max(10_080),
+  /** Rest before her prompt cache goes cold (§25): her last request reached this share of the compaction trigger. */
+  cacheRestMinRatio: z.number().min(0).max(0.99),
+  /** Rest before her prompt cache goes cold (§25): this long before it expires. */
+  cacheRestLeadMinutes: z.number().int().min(1).max(50)
 };
 // The dream's model (spec §18.4): a route GET /api/models offers, with an optional effort; unset = her model.
 export const DreamModelSchema = z.object({
@@ -305,7 +309,9 @@ export const DEFAULT_LIFE_CONFIG = {
   restNoticeRatio: 0.85,
   restSummaryMinChars: 200,
   selfSummaryMinRatio: 0.3,
-  selfSummaryCooldownMinutes: 120
+  selfSummaryCooldownMinutes: 120,
+  cacheRestMinRatio: 0.5,
+  cacheRestLeadMinutes: 10
 };
 export const LifeConfigSchema = z
   .object({
@@ -335,6 +341,8 @@ export const LifeConfigSchema = z
     restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.default(DEFAULT_LIFE_CONFIG.restSummaryMinChars),
     selfSummaryMinRatio: LIFE_FIELDS.selfSummaryMinRatio.default(DEFAULT_LIFE_CONFIG.selfSummaryMinRatio),
     selfSummaryCooldownMinutes: LIFE_FIELDS.selfSummaryCooldownMinutes.default(DEFAULT_LIFE_CONFIG.selfSummaryCooldownMinutes),
+    cacheRestMinRatio: LIFE_FIELDS.cacheRestMinRatio.default(DEFAULT_LIFE_CONFIG.cacheRestMinRatio),
+    cacheRestLeadMinutes: LIFE_FIELDS.cacheRestLeadMinutes.default(DEFAULT_LIFE_CONFIG.cacheRestLeadMinutes),
     webFetch: WebFetchConfigSchema,
     home: HomeConfigSchema,
     tmp: TmpConfigSchema,
@@ -487,6 +495,8 @@ export const UpdateAppConfigBodySchema = z.object({
     restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.optional(),
     selfSummaryMinRatio: LIFE_FIELDS.selfSummaryMinRatio.optional(),
     selfSummaryCooldownMinutes: LIFE_FIELDS.selfSummaryCooldownMinutes.optional(),
+    cacheRestMinRatio: LIFE_FIELDS.cacheRestMinRatio.optional(),
+    cacheRestLeadMinutes: LIFE_FIELDS.cacheRestLeadMinutes.optional(),
     webFetch: z.object({
       model: WEB_FETCH_FIELDS.model.optional(),
       maxPerWaifuPerDay: WEB_FETCH_FIELDS.maxPerWaifuPerDay.optional(),

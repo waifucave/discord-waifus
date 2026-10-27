@@ -142,6 +142,8 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   tokenCalibration: TokenCalibrationSchema.optional(),
   /** The estimated size of the newest request (the time line's memory warning, §5.4). */
   lastRequestTokens: z.number().int().nonnegative().optional(),
+  /** When her newest life request was sent: her prompt cache lives from it (§25). */
+  lastRequestAt: IsoDateStringSchema.optional(),
   lastCompaction: z
     .object({ at: IsoDateStringSchema, reason: z.string(), summarized: z.boolean(), fromEpoch: z.number().int().positive() })
     .optional(),
@@ -151,6 +153,8 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
    * an ignored one be interrupted, the next cycle compacts, leaving this turn out.
    */
   restTurn: z.object({ epoch: z.number().int().positive(), turnId: z.string() }).optional(),
+  /** The quiet-time rest turn before her prompt cache went cold (§25: at most one per epoch). */
+  cacheRest: z.object({ epoch: z.number().int().positive(), turnId: z.string() }).optional(),
   /** A forget scrub wrote the summary; the new epoch starts after the scrub (§7.5 step 2). */
   pendingEpochStart: z.boolean().optional(),
   /**

@@ -278,6 +278,7 @@ export async function startEpoch(
         dayCompactionDue: undefined,
         epochStrippedThinkingBlocks: o.strippedBlocks,
         lastRequestTokens: undefined,
+        lastRequestAt: undefined,
         ...(o.first && current.systemSnapshot === null
           ? {}
           : { lastCompaction: { at: now.toISOString(), reason: o.reason, summarized: o.summarized, fromEpoch } })

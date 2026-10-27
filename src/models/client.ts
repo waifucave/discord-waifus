@@ -36,7 +36,7 @@ import {
   type WinterStopReason,
   type WinterUsage
 } from "./assemble.js";
-import { listPricedEstimate, routeKey, type ModelRoute } from "./catalog.js";
+import { listPricedEstimate, PROMPT_CACHE_TTL, routeKey, type ModelRoute } from "./catalog.js";
 import { createProviderCredentialsLookup, inlineAuthRef, type ProviderKeyLookup } from "./credentials.js";
 import { fromProviderError, ModelCallError, toModelCallError } from "./errors.js";
 import { sharedWinterRuntime, type WinterRuntime } from "./winter.js";
@@ -130,7 +130,7 @@ export const DEFAULT_OUTPUT_CAP_TOKENS = 8_192;
  * increase from system to lookback to rolling is refused, so with `cacheTtl: "1h"` the rolling TTL is
  * 1h too.
  */
-export const MESSAGE_CACHE_TTL = Object.freeze({ rolling: "1h" as const });
+export const MESSAGE_CACHE_TTL = Object.freeze({ rolling: PROMPT_CACHE_TTL });
 
 /**
  * The call's cost: the provider's own reported figure when there is one (winter W5: OpenRouter's
@@ -298,7 +298,7 @@ export class ModelClient {
         ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
         ...(request.effort !== undefined ? { effort: request.effort as TurnRequest["effort"] } : {}),
         ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-        cacheTtl: "1h",
+        cacheTtl: PROMPT_CACHE_TTL,
         messageCacheTtl: { ...MESSAGE_CACHE_TTL },
         ...(request.cacheKey !== undefined ? { cacheKey: request.cacheKey } : {}),
         ...(shouldRequestSummary(descriptor) ? { requestSummary: true } : {}),

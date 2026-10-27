@@ -177,6 +177,26 @@ function hiddenReason(
   return undefined;
 }
 
+/** The prompt cache lifetime every call asks for (`cacheTtl` and the rolling message TTL in client.ts). */
+export const PROMPT_CACHE_TTL = "1h" as const;
+export const PROMPT_CACHE_TTL_MS = 60 * 60_000;
+
+/**
+ * How long her prompt stays cached after a request on this route (Living cast spec §25), or undefined
+ * when that is not known. winter's catalog states that a route caches (`promptCaching`) but carries no
+ * lifetime fact; winter's runtime sends the explicit 1-hour TTL (`cacheTtl`, `messageCacheTtl`) only
+ * on the Anthropic Messages adapter and, through OpenRouter, for an `anthropic/…` upstream with
+ * prompt caching (every other adapter ignores it). So the TTL is derived here from the route: a Claude
+ * model (`modelFamily` `claude`) with prompt caching, on a provider of winter's `anthropic` adapter
+ * family or on OpenRouter with an `anthropic/` upstream. Anything else: undefined (no guessing).
+ */
+export function explicitCacheTtlMs(route: ModelRoute, catalog: WinterCatalog = installedCatalog()): number | undefined {
+  const descriptor = catalogModel(route, catalog);
+  if (!descriptor || descriptor.modelFamily !== "claude" || descriptor.promptCaching?.value !== true) return undefined;
+  if (descriptor.providerId === "openrouter") return descriptor.upstreamId.startsWith("anthropic/") ? PROMPT_CACHE_TTL_MS : undefined;
+  return catalogProvider(descriptor.providerId, catalog)?.family === "anthropic" ? PROMPT_CACHE_TTL_MS : undefined;
+}
+
 export function isContributorRoute(descriptor: Pick<WinterModelDescriptor, "key" | "upstreamId">): boolean {
   return /-contributor$/u.test(descriptor.upstreamId) || /-contributor$/u.test(descriptor.key);
 }

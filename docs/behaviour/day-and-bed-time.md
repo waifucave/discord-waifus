@@ -158,6 +158,10 @@ send anywhere (`state.lastSentAt`) (`src/life/clock.ts` `bedPhaseAt`):
 - `life.bedDozeMinutes = 0` means asleep as soon as she is not up late (the old hard sleep).
 - Busy blocks never apply inside a bed time (they cannot overlap it).
 - Jev: up late or dozing she is offered only where she sent in the last 10 min; asleep never.
+- The quiet-time rest before her prompt cache goes cold (spec §25,
+  [life-and-turns.md](life-and-turns.md)) does not come while she is asleep and her bed time ends
+  within the cache TTL (one hour): the morning's `day` compaction resets her anyway. Up late, dozing,
+  or asleep with more than an hour of bed time left, it can come (a quiet harness turn nobody sees).
 - The status API and Life screen show `Up late` / `Dozing` (`GET /api/waifus/:id/life`
   `availability.bed`).
 

@@ -270,20 +270,14 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
 
 ## The rest notice (she summarises herself)
 
-> **Pending (spec §25/§26):** §26 makes the rest notice fire at `compaction.triggerRatio` × budget
+> **Pending (spec §26):** §26 makes the rest notice fire at `compaction.triggerRatio` × budget
 > (0.7, about 67k of 96k) instead of `life.restNoticeRatio` × the trigger, with new wording ("[system]
 > Your memory is almost full. When this turn ends your context resets: everything you can see now goes
 > away except what you write as your final reply. Your computer stays exactly as you left it (your
 > home, /tmp and /transcripts), so anything that should last can go into your notes now. Then write,
 > in your own way, whatever you want to carry forward. Write it clearly, so you won't misunderstand it
 > later without what you can see now. Write what happened and how you feel, not rules for yourself.
-> Don't message anyone in this turn."). §25 adds a second occasion: with no turn running or queued,
-> `life.cacheRestLeadMinutes` (10) before her route's 1-hour prompt cache expires (about 50 minutes
-> after her last request), when her last request was at least `life.cacheRestMinRatio` (0.5) × the
-> rest point, on routes with a known 1-hour cache only (Anthropic models, also through OpenRouter),
-> not while asleep if her bed time ends within the cache TTL, once per epoch, never with
-> `life.restNotice` off; its notice adds "You've been quiet a while; this is a good moment to rest."
-> and an ignored one triggers nothing. The text below is what `main` does today.
+> Don't message anyone in this turn."). The text below is what `main` does today.
 
 When `life.restNotice` is on (default) and her last request reached `life.restNoticeRatio` (0.85)
 × the trigger but not the trigger itself (57,120–67,199 tokens with the defaults), the next cycle is
@@ -304,6 +298,34 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   turn out.
 - **Interrupted**: nothing recorded; the rest turn runs again next cycle.
 - A provider overflow in the rest turn goes down the mid-turn compaction path.
+
+### Before her prompt cache goes cold (§25)
+
+Her requests ask for a 1-hour prompt cache, refreshed by each request (`PROMPT_CACHE_TTL`). After an
+hour without one, her next turn pays to write her whole context again. So when she has been quiet
+with a large context, she rests while the cache is still warm (`src/life/cacheRest.ts`):
+
+- **Routes**: only where the cache lifetime is known (`explicitCacheTtlMs` in
+  `src/models/catalog.ts`): a Claude model with prompt caching on Anthropic (or another provider of
+  winter's `anthropic` adapter family) or through OpenRouter (`anthropic/…`): one hour. Every other
+  route (DeepSeek, GPT, Muse Spark) never gets it.
+- **When**: the scheduler's 15 s tick pokes her life, and the life loop runs the rest turn, when all
+  hold: `life.restNotice` on; no turn running and no wake queued; her epoch running (no pending
+  start, no `day` compaction due, compaction not backing off); no rest turn of either kind in this
+  epoch; her last request (`lastRequestTokens`) at least `life.cacheRestMinRatio` (0.5) × the trigger
+  and below it; and the time is at least `lastRequestAt` + TTL − `life.cacheRestLeadMinutes` (10
+  min), i.e. 50 minutes after her last request, and before the cache expired (after downtime past
+  the hour nothing happens). Not while she is **asleep** in a bed time that ends within the TTL
+  (the morning `day` compaction comes first); up late, dozing, or asleep with more than an hour of
+  bed time left, it does come.
+- **The turn**: the rest turn above, opened by `CACHE_REST_NOTICE`: the same notice with "You've been
+  quiet a while; this is a good moment to rest." appended; the same refusals.
+- **Accepted**: a new epoch from her summary, boundary reason `cache_rest` (Life: "rested (her own
+  summary, before her cache went cold)").
+- **Ignored** (short, failed, capped): nothing else happens; the turn stays in the epoch's log
+  (compaction never keeps it later) and the normal triggers stay, including the rest notice above.
+- **Interrupted**: nothing recorded; the next tick starts it again while the cache is warm.
+- Once per epoch (`state.cacheRest`, separate from `state.restTurn`).
 
 ## `<summary>` fresh start (self-reset)
 

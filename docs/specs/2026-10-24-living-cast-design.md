@@ -3286,6 +3286,44 @@ cache is still warm and start the next stretch small.
   a TTL; not when a wake is queued or a turn runs; not while asleep near morning; once per epoch;
   accepted → new epoch; usage ledger shows the rest turn as cache reads.
 
+### 25.1 As built (2026-10-27)
+
+- **The route's TTL** (`src/models/catalog.ts` `explicitCacheTtlMs`): winter's catalog (0.0.58) says
+  whether a row caches (`promptCaching`) but has no lifetime fact, so the app derives it in this one
+  function from what winter's runtime does: it sends the explicit TTL (`cacheTtl`,
+  `messageCacheTtl`) on the Anthropic Messages adapter and, through OpenRouter, for an `anthropic/…`
+  upstream with prompt caching (`openRouterAnthropicCaching`); every other adapter ignores it. A
+  route gets `PROMPT_CACHE_TTL_MS` (one hour, the `PROMPT_CACHE_TTL` that `client.ts` now sends) when
+  its row is a Claude model (`modelFamily` `claude`) with prompt caching, on a provider of winter's
+  `anthropic` adapter family or on OpenRouter with an `anthropic/` upstream; otherwise undefined. Of
+  the curated routes that is Haiku and Sonnet, direct and through OpenRouter.
+- **The clock**: her life state gains `lastRequestAt` (the time her newest life request was sent,
+  next to `lastRequestTokens`; both cleared at an epoch start).
+- **When** (`src/life/cacheRest.ts`): `cacheRestDueAt` is the last request + TTL − lead when the
+  rest notice is on, the epoch is running (no pending start, no `day` compaction due), no turn is
+  running, there was no rest turn of either kind in this epoch, and the last request is at least
+  `cacheRestMinRatio` × the trigger and below it. `cacheRestDueNow` adds: nothing queued, the cache
+  not expired yet (after downtime past the TTL nothing happens), compaction not backing off, and not
+  asleep with the bed time ending within the TTL (up late or dozing it does come). The scheduler's
+  15 s tick asks for every enabled waifu and pokes her life; the life loop asks again (with the
+  queue) before it takes a wake, and runs it after `prepareEpoch` and after a due §19 rest.
+- **What**: `Life.restTurn` with `cache: true`, opened by `CACHE_REST_NOTICE` (the §19 notice with
+  the sentence appended, so it starts with `REST_NOTICE_PREFIX`: the owner's views hide her summary
+  and compaction never keeps the turn, as for a rest turn). Accepted: a new epoch with reason
+  `cache_rest` (Life: "rested (her own summary, before her cache went cold)"; the status line counts
+  `rest`, `cache_rest` and `self` as "rested"). Ignored (short, failed, capped): nothing else; the
+  turn stays in the epoch's log. Interrupted: nothing is recorded; the next tick may start it again
+  while the cache is warm. `state.cacheRest = { epoch, turnId }` is separate from `state.restTurn`,
+  so an ignored quiet-time rest neither compacts at the next cycle nor stops the §19 notice later.
+- **Settings**: `life.cacheRestMinRatio` (0–0.99, default 0.5) and `life.cacheRestLeadMinutes` (1–50,
+  default 10), in Settings → Life with the other rest keys.
+- **Tests**: `tests/lifeCacheRest.test.ts` (from the tick at TTL − lead and not before, the notice
+  and refusals, accepted, small context, expired cache, a route without a TTL (DeepSeek), a queued
+  wake, ignored → nothing and once per epoch, switch off, asleep near the morning and not; the due
+  functions), `tests/modelCatalog.test.ts` (`explicitCacheTtlMs`), and the cache simulation
+  `tests/eval/cacheHit.test.ts` ("the quiet-time rest": 52 minutes quiet, at least 90% of the rest
+  request read from cache and the ledger line's `cacheReadTokens` equal to it).
+
 ## 26. Auto-compaction is the emergency, the rest notice is the norm (owner request, 2026-10-27)
 
 The thresholds are swapped so that she normally summarises herself and the summary call happens

@@ -22,6 +22,17 @@ summarises for her as before. One rest notice per epoch. What she writes in a re
 summary, so like her `<life_so_far>` it is hidden in the owner's views unless revealed on the host. `life.restNotice = false` turns it off
 (her time line then warns her that her memory is nearly full, as before).
 
+**Resting before her cache goes cold.** Her prompt is cached for an hour after each of her requests
+(Claude models, directly or through OpenRouter; other routes have no known cache lifetime and never
+get this). When she has been quiet, nothing is queued for her, and her last request was at least
+`life.cacheRestMinRatio` (default 0.5) of the compaction trigger, she gets the same rest notice
+`life.cacheRestLeadMinutes` (default 10) before that cache expires, with one more sentence ("You've
+been quiet a while; this is a good moment to rest."), so she writes her summary while her context is
+still cheap to read. Accepted, Life shows "rested (her own summary, before her cache went cold)"; if
+she ignores it nothing else happens (the normal triggers stay). Once per epoch, never while she is
+asleep in a bed time that ends within the hour (the morning resets her anyway), and never with
+`life.restNotice = false`.
+
 **A fresh start of her own.** She can also reset herself: a turn whose final reply is only
 `<summary>…</summary>` starts a new epoch from that summary alone (Life shows "rested (her
 choice)"; private like a rest summary) when it is at least `life.restSummaryMinChars` long, her last

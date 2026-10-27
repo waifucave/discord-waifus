@@ -144,3 +144,37 @@ describe("the rest turn (§19.3)", { timeout: 120_000 }, () => {
     expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "rest" });
   });
 });
+
+describe("the quiet-time rest (§25)", { timeout: 120_000 }, () => {
+  it("comes before her 1-hour cache expires and is read from it: the usage ledger shows the rest turn as cache reads", async () => {
+    const { w, server } = await realAnthropicWorld(roots, servers);
+    const isRest = (body: WireBody) => JSON.stringify(body.messages[body.messages.length - 1]).includes("You've been quiet a while");
+    const turn = lifeTurn(() => "bake-club/#general");
+    server.next = (body) => {
+      if (!isRest(body)) return turn(body);
+      estimate.value = undefined;
+      return { text: "Bake Club #general: Kevin asked what to bake next; I said lemon tarts. ".repeat(6) };
+    };
+    for (let index = 0; index < 3; index += 1) {
+      await roomWake(w, `question ${index}: what should we bake next?`, 4);
+      w.clock.advance(2 * 60_000);
+    }
+    const route = (await readLifeState(w.storage, "ella")).modelRoute!;
+    const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === route.providerId && entry.modelId === route.modelId)!;
+    estimate.value = Math.round(0.6 * w.config.compaction.triggerRatio * lifeBudget(model, w.config.life.maxContextTokens));
+    await roomWake(w, "last question: lemon or lime?", 4);
+    // Quiet for 52 minutes: the tick starts her rest turn, 8 minutes before the cache expires.
+    w.clock.advance(52 * 60_000);
+    await w.cast.scheduler.tick();
+    await w.cast.life("ella").whenIdle();
+    trace("quiet rest", server.exchanges);
+    const at = server.exchanges.findIndex((exchange) => isRest(exchange.body));
+    expect(at).toBeGreaterThan(0);
+    const rest = server.exchanges[at]!;
+    expect(rest.at - server.exchanges[at - 1]!.at).toBeGreaterThanOrEqual(50 * 60_000);
+    expect(rest.usage.read).toBeGreaterThanOrEqual(0.9 * rest.usage.total);
+    const line = w.ledger.lines.filter((entry) => entry.purpose === "life").at(-1)!;
+    expect(line.cacheReadTokens).toBe(rest.usage.read);
+    expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "cache_rest" });
+  });
+});

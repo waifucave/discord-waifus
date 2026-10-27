@@ -21,6 +21,8 @@
 //   `life.maintenanceHourLocal` without a bed time; it takes her life lock, so it never overlaps a
 //   turn. Pending scrubs run with it; a bed time that ended without one runs the pending scrubs
 //   alone (no dream).
+// - the quiet-time rest (§25): with a large context, no turn running or queued, shortly before her
+//   prompt cache expires, her life is poked; the life loop runs the rest turn (`cacheRest.ts`).
 
 import { listWaifus } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
@@ -28,6 +30,7 @@ import type { Wake, WakeQueue } from "../shared/schemas/life.js";
 import type { DailyCost } from "./budget.js";
 import { bedPhaseAt, bedTimeContaining, dayStartAt, instantOfLocal, lastBedTime, localDayKey, localParts, parseLocalDateTime, type BedPhase } from "./clock.js";
 import { bedContextOf } from "./busy.js";
+import { cacheRestDueFor } from "./cacheRest.js";
 import { busyAt } from "./home/daySchedule.js";
 import type { LifeDeps } from "./deps.js";
 import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
@@ -208,6 +211,7 @@ export class Scheduler {
         await this.releaseHeld(waifu);
         await this.morning(waifu);
         await this.maintenance(waifu);
+        await this.cacheRest(waifu);
         await this.housekeeping(waifu);
       } catch (error) {
         deps.logger.warn("Life scheduler tick failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
@@ -288,6 +292,13 @@ export class Scheduler {
       });
       return { entries: kept, ids: { ...side, watches } };
     });
+  }
+
+  /** She has been quiet with a large context and her prompt cache is about to expire (§25): her life runs the rest turn. */
+  private async cacheRest(waifu: WaifuConfig): Promise<void> {
+    const deps = this.o.deps;
+    const state = await readLifeState(deps.storage, waifu.id);
+    if (await cacheRestDueFor(deps, waifu, state)) this.o.hooks.poke(waifu.id);
   }
 
   /**

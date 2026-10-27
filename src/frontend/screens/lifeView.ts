@@ -199,9 +199,16 @@ export function fileSize(bytes: number): string {
 }
 
 /** The folders from the root to the listed one, each with the path to list it (`~` › `people`). */
-/** A new epoch's reason as the Life screen says it (§19.4: "rest" is her own summary). */
+/** A new epoch's reason as the Life screen says it (§19.4: "rest" is her own summary; §25: "cache_rest" her quiet-time one). */
 export function boundaryReasonLabel(reason: string): string {
-  return reason === "rest" ? "rested (her own summary)" : reason === "self" ? "rested (her choice)" : reason;
+  if (reason === "rest") return "rested (her own summary)";
+  if (reason === "cache_rest") return "rested (her own summary, before her cache went cold)";
+  return reason === "self" ? "rested (her choice)" : reason;
+}
+
+/** The epoch reasons where she wrote her own summary (§19, §21.6b, §25). */
+export function restedReason(reason: string | undefined): boolean {
+  return reason === "rest" || reason === "cache_rest" || reason === "self";
 }
 
 export function breadcrumbs(list: Pick<HerFilesList, "root" | "dir" | "display">): Array<{ label: string; dir: string }> {
