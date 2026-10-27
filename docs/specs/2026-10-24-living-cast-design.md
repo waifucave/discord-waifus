@@ -919,11 +919,16 @@ conversation` runs steps 0–2 only.
    *As built (2026-10-27):* without her model the session runs on `life.dreamModel` when it is set
    and offered (`notesModel: "dream"` in the report); it is skipped only when neither is. A queued
    DM scrub runs at nightly maintenance with or without a model (also when a bed time she stayed up
-   through ends). Step 2 (owner decision, 2026-10-27) writes the summary on the route her epoch ran
-   on, else her model, else `life.dreamModel`; with none, her summary is never emptied: summary and
-   epoch stay as they are, the other steps run (step 5 checks her files only), and the scrub stays
-   queued for step 2 alone (`summaryOnly`, report `summaryScrub: "pending"`), which runs, with the
-   epoch start and the summary check, at the next run with a model and before her next turn.
+   through ends). Owner decisions (2026-10-27) replace "skipped" and step 2's empty summary: step 2
+   writes the summary on the route her epoch ran on, else her model, else `life.dreamModel`, and her
+   summary is never emptied (only `compaction.enabled = false` still does). With no model, or a
+   summary call or notes session that fails (or is aborted), that step stays pending: the other steps
+   run (step 5 checks her files only while step 2 waits; summary and epoch stay as they are), and
+   the scrub stays queued for those steps alone (`pendingSteps: ["summary", "notes"]`, report
+   `summaryScrub` / `notesScrub: "pending"`). They run at the next scrub run and before her next turn
+   (after the compaction backoff) once a model is back; the summary step then starts the epoch and
+   checks the summary, a late notes session refreshes the prompt's copy of `MEMORY.md`. The entry
+   clears only when no step is left.
 5. **Start the epoch and verify**: a note marked as the person's own (`<!-- user:<id> -->`) or a
    `people/` note whose heading is one of their unique names is deleted whole, with its `MEMORY.md`
    links; a `people/` note headed by a shared name is listed for review. Then start the new epoch

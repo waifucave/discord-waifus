@@ -366,9 +366,9 @@ describe("POST /api/people/:userId/forget (Living cast §14.1, DM part)", () => 
         const done = await app.inject({ method: "POST", url: `/api/people/${USER}/forget`, payload: { confirm: true } });
         expect(done.statusCode, done.body).toBe(202);
         expect(done.json()).toMatchObject({ pending: [{ part: "archive", error: "EACCES", failures: 1, retried: true }], lives: [{ waifuId: "ella" }] });
-        // Her life scrub ran all the same (and finished: it is no longer queued).
-        expect(done.json().lives[0].queued).toBeUndefined();
-        expect(await readPendingScrubs(storage, "ella")).toEqual([]);
+        // Her life scrub ran all the same: only its notes session waits, for a model she doesn't have.
+        expect(done.json().lives[0].queued).toBe(true);
+        expect(await readPendingScrubs(storage, "ella")).toMatchObject([{ userId: USER, pendingSteps: ["notes"] }]);
         expect(await readDmState(storage, USER, "ella")).toBeUndefined();
 
         // He writes again after the forget: a new DM state and reply counters.

@@ -331,10 +331,11 @@ PUT shim in `src/api/server.ts`.
   forget-user an `owner_forget` entry per life (runs now, or when that life next starts if Discord
   is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
   or at nightly maintenance inside the 6-hour window, spec §7.3, with or without her model); an
-  entry is cleared only when its scrub finished (a failed notes scrub keeps it; the notes session and
-  the summary without the person run on her model, else `life.dreamModel`, `forget.ts`
-  `scrubModelOf`; with neither the notes session is skipped and the summary step alone stays queued
-  as `summaryOnly`, her summary and epoch untouched, run before her next turn once a model is back). The owner's forget-user is a durable job
+  entry is cleared only when its scrub finished: the summary without the person and the notes session
+  run on her model, else `life.dreamModel` (`forget.ts` `scrubModelOf`); with neither, or a failed or
+  aborted call, those steps alone stay queued (`pendingSteps: ["summary", "notes"]`; her summary and
+  epoch untouched, never emptied) and run at the next scrub run and before her next turn
+  (`LivingCast.summaryStepsBeforeTurn`, after the compaction backoff) once a model is back. The owner's forget-user is a durable job
   (`user/people/forget-jobs.json`, written before anything is removed; each part is recorded as
   `done` or in `failures`; `startBackend` runs only the unfinished parts before Discord connects,
   each removing only data at or below the job's floor and time; a part that failed three times is
