@@ -198,7 +198,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
     expect(queue.deferred.items).toEqual([wake]);
     expect(queue.deferred.places["dm_k_ella"]).toMatchObject({ dms: 1 });
     const view = { handle: () => "dm/kevin", unread: () => undefined, timeZone: "UTC" };
-    const lines = morningBatch({ reason: "sleep", since: new Date(at), until: new Date(at), places: [{ placeKey: "dm_k_ella", kind: "dm", name: "Kevin", mentions: 0, messages: 1 }], items: queue.deferred.items }, view);
+    const lines = morningBatch({ reason: "sleep", since: new Date(at), until: new Date(at), places: [{ placeKey: "dm_k_ella", kind: "dm", mentions: 0, messages: 1 }], items: queue.deferred.items }, view);
     expect(lines).toContain('  · watch matched · dm/kevin · "exam" · from Kevin · your note: "his exam"');
   });
 

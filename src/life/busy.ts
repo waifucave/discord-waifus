@@ -73,11 +73,12 @@ export type NotAroundReason = "busy" | "bed time" | "asleep";
  */
 export async function aroundIn(deps: Pick<LifeDeps, "storage" | "config" | "timeZone">, waifu: WaifuConfig, placeKey: string, now: Date): Promise<{ around: true } | { around: false; why: NotAroundReason }> {
   const state = await readLifeState(deps.storage, waifu.id);
-  const availability = await availabilityFor(deps, waifu, now, state);
+  const day = await dayPlanFor(deps, waifu);
+  const availability = availabilityAt(waifu.availability, now, deps.timeZone, { day, bed: bedContextOf(deps, state) });
   if (availability.state === "asleep") return { around: false, why: "asleep" };
   if (availability.bed) return sentRecently(state.recentSends, placeKey, now, deps.config().life.busyEngagedMinutes) ? { around: true } : { around: false, why: "bed time" };
   if (availability.state === "busy") {
-    const busy = busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone);
+    const busy = busyAt(day, now, deps.timeZone);
     return busy && placeOpen(state.busyOpen, placeKey, now, busy.end) ? { around: true } : { around: false, why: "busy" };
   }
   return { around: true };

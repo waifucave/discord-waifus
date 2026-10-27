@@ -33,14 +33,16 @@ import type { LifeDeps } from "./deps.js";
 import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
 import { checkEnvFor, dayPlanFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { onceKey, type ReminderEntry, type WatchEntry } from "./home/specialFiles.js";
-import { morningBatch, morningGreeting, type MorningPlace } from "./notifications.js";
+import { morningBatch, morningGreeting, type MorningLine, type MorningPlace, type NotificationView } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
 import { deferForBudget, deferHeld, enqueueWake, hasDeferred, newWakeId, releaseHeld as releaseHeldWakes, takeDeferred } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
-import { selfAuthorIds } from "./people.js";
+import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
+import { readDmFloor } from "../orchestration/dm/dmStore.js";
+import { wakeShowsDm } from "./lifeView.js";
 import { refsForMessages } from "./messageRefs.js";
 import { messagesOf } from "./wakeMessages.js";
 import { snowflakeTime } from "../discord/refStore.js";
@@ -129,6 +131,11 @@ export function maintenanceDue(
 }
 
 export { dayStartAt } from "./clock.js";
+
+/** How many times the morning batch is built again when a wake was deferred while it was built. */
+const MORNING_BUILD_ATTEMPTS = 5;
+/** The night of a room may start this much before the pause: the hold of the burst that began it (§4.2: 60 s at most, typing aside). */
+const NIGHT_LEAD_MS = 10 * 60_000;
 
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -367,46 +374,54 @@ export class Scheduler {
       if (queue.deferred.reason !== "budget" && (hasDeferred(queue) || queue.deferred.reason)) await deferForBudget(deps.storage, waifu.id);
       return;
     }
-    const places = await this.morningPlaces(waifu, queue.deferred);
-    const handles = new Map<string, string>();
-    for (const key of [...places.map((place) => place.placeKey), ...queue.deferred.items.flatMap((item) => (item.placeKey ? [item.placeKey] : []))]) {
-      handles.set(key, await handleOf(deps.storage, waifu.id, key));
-    }
-    const refs = await this.morningRefs(places, queue.deferred.items, now);
-    const view = { timeZone: deps.timeZone, handle: (key: string) => handles.get(key) ?? key, unread: () => undefined, ref: (key: string, id: string) => refs.get(key)?.get(id) };
     const linesPerPlace = deps.config().life.morningLinesPerPlace;
     const bedTime = waifu.availability.bedTime;
     const dayKey = localDayKey(now, deps.timeZone);
     // The morning wake of her day: the greeting, then the overnight batch (one id per day).
-    const dayWake = (overnight: string[]): Wake => ({
+    const dayWake = (overnight: string[], dm: boolean): Wake => ({
       id: `w-day-${dayKey}`,
       reason: "morning",
       day: dayKey,
       batch: [morningGreeting({ now, timeZone: deps.timeZone, ...(bedTime.enabled ? { bedTime } : {}), overnight: overnight.length > 0 }), ...overnight],
+      ...(dm ? { dm: true } : {}),
       at: now.toISOString()
     });
-    let released = await takeDeferred(deps.storage, waifu.id, (deferred) => {
-      const since = deferred.since ? new Date(deferred.since) : now;
-      const header =
-        deferred.reason === "budget"
-          ? morningBatch({ reason: "budget", since, until: now, places, items: deferred.items, linesPerPlace }, view)
-          : morningBatch({ reason: "sleep", since, until: now, places, items: deferred.items, linesPerPlace }, view).map((line, index) =>
-              index === 0 && bedTime.enabled ? `- during your bed time (${bedTime.start}–${bedTime.end}):` : line
-            );
-      if (dayDue) return dayWake(header.length > 1 ? header : []);
-      // Today's day wake was deferred (her budget ran out before she read it, then rose again): it
-      // comes back as itself, greeting first, so her day compaction still follows (§21.3).
-      const todays = deferred.items.find((item) => item.day === dayKey);
-      if (todays) {
-        const greeting = todays.batch?.find((line) => line.startsWith("[system]"));
-        return { id: todays.id, reason: "morning", day: dayKey, batch: [...(greeting ? [greeting] : []), ...(header.length > 1 ? header : [])], at: now.toISOString() };
+    // The batch is built from the deferred wakes as read, then taken only if they are still exactly
+    // those (a wake deferred meanwhile would lose its lines): otherwise it is built again.
+    let released: Wake | undefined;
+    for (let attempt = 0, deferred = queue.deferred; ; attempt += 1) {
+      const built = await this.morningView(waifu, deferred, now);
+      const toWake = (locked: WakeQueue["deferred"]): Wake | undefined => {
+        const since = locked.since ? new Date(locked.since) : now;
+        const o = { since, until: now, places: built.places, items: built.items, linesPerPlace };
+        const header =
+          locked.reason === "budget"
+            ? morningBatch({ ...o, reason: "budget" }, built.view)
+            : morningBatch({ ...o, reason: "sleep" }, built.view).map((line, index) => (index === 0 && bedTime.enabled ? `- during your bed time (${bedTime.start}–${bedTime.end}):` : line));
+        const overnight = header.length > 1 ? header : [];
+        // D14: a batch showing anything from a DM makes her turn a DM turn.
+        const dm = overnight.length > 0 && built.dm;
+        if (dayDue) return dayWake(overnight, dm);
+        // Today's day wake was deferred (her budget ran out before she read it, then rose again): it
+        // comes back as itself, greeting first, so her day compaction still follows (§21.3).
+        const todays = locked.items.find((item) => item.day === dayKey);
+        if (todays) {
+          const greeting = todays.batch?.find((line) => line.startsWith("[system]"));
+          return { id: todays.id, reason: "morning", day: dayKey, batch: [...(greeting ? [greeting] : []), ...overnight], ...(dm ? { dm: true } : {}), at: now.toISOString() };
+        }
+        if (overnight.length === 0) return undefined;
+        return { id: newWakeId(), reason: "morning", batch: overnight, ...(dm ? { dm: true } : {}), at: now.toISOString() };
+      };
+      const taken = await takeDeferred(deps.storage, waifu.id, toWake, attempt < MORNING_BUILD_ATTEMPTS - 1 ? deferred : undefined);
+      if (!taken.conflict) {
+        released = taken.wake;
+        break;
       }
-      if (header.length <= 1) return undefined;
-      return { id: newWakeId(), reason: "morning", batch: header, at: now.toISOString() };
-    });
+      deferred = (await readLifeFile(deps.storage, waifu.id, "wakes")).deferred;
+    }
     if (dayDue) {
       if (!released) {
-        released = dayWake([]);
+        released = dayWake([], false);
         await enqueueWake(deps.storage, waifu.id, released);
       }
       await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastDayStart: dayStart.toISOString() }));
@@ -419,10 +434,70 @@ export class Scheduler {
   }
 
   /**
+   * What the morning summary shows (§23): its places, the deferred items it lists, handles and refs,
+   * and whether any of it comes from a DM (D14). Lines at or below a DM's forget floor and lines or
+   * watch matches from a forgotten person (at or before the forget) are left out; with unreadable
+   * forget records no line is shown (counts stay).
+   */
+  private async morningView(waifu: WaifuConfig, deferred: WakeQueue["deferred"], now: Date): Promise<{ places: MorningPlace[]; items: Wake[]; view: NotificationView; dm: boolean }> {
+    const deps = this.o.deps;
+    const forgotten = await forgottenPeople(deps.storage).catch(() => undefined);
+    const floors = new Map<string, string | undefined>();
+    const floorOf = async (key: string) => {
+      const ref = parseConversationKey(key);
+      if (ref?.kind !== "dm") return undefined;
+      if (!floors.has(key)) floors.set(key, await readDmFloor(deps.storage, ref.userId, ref.waifuId).catch(() => undefined));
+      return floors.get(key);
+    };
+    const kept = async (key: string, message: { id: string; fromUserId?: string | undefined }, fallbackAt: string) => {
+      if (!forgotten) return false;
+      const floor = await floorOf(key);
+      if (floor && compareIds(message.id, floor) <= 0) return false;
+      const time = snowflakeTime(message.id);
+      return !message.fromUserId || !isRemovedMessage({ authorId: message.fromUserId, createdAt: time !== undefined ? new Date(time).toISOString() : fallbackAt }, forgotten);
+    };
+    const items: Wake[] = [];
+    for (const item of deferred.items) {
+      const watch = item.reason === "watch" || item.reasons?.includes("watch") === true;
+      if (!watch || !item.placeKey) {
+        items.push(item);
+        continue;
+      }
+      // A watch match quotes the message: shown only while that message may be. With unreadable
+      // forget records only her note and the place are left.
+      if (!forgotten) {
+        const { messages: _messages, matched: _matched, fromName: _fromName, fromUserId: _fromUserId, preview: _preview, ...bare } = item;
+        items.push(bare);
+        continue;
+      }
+      const messages = messagesOf(item);
+      const shown = [];
+      for (const message of messages) if (await kept(item.placeKey, message, item.at)) shown.push(message);
+      if (messages.length > 0 && shown.length === 0) continue;
+      if (messages.length === 0 && item.fromUserId && isRemovedMessage({ authorId: item.fromUserId, createdAt: item.at }, forgotten)) continue;
+      items.push(messages.length > 0 ? { ...item, messages: shown } : item);
+    }
+    const places = await this.morningPlaces(waifu, deferred, kept);
+    const handles = new Map<string, string>();
+    for (const key of [...places.map((place) => place.placeKey), ...items.flatMap((item) => (item.placeKey ? [item.placeKey] : []))]) {
+      handles.set(key, await handleOf(deps.storage, waifu.id, key));
+    }
+    const refs = await this.morningRefs(places, items, now);
+    const view: NotificationView = { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: () => undefined, ref: (key, id) => refs.get(key)?.get(id) };
+    // From a DM: a DM's lines or count, a DM watch or timeout, an earlier batch that showed one.
+    const dm = places.some((place) => place.kind === "dm") || items.some((item) => wakeShowsDm(item));
+    return { places, items, view, dm };
+  }
+
+  /**
    * Per place: mentions from the deferred counters, messages counted from the conversation cache
    * since the pause began (with their time span), and the summary's message lines (§23).
    */
-  private async morningPlaces(waifu: WaifuConfig, deferred: WakeQueue["deferred"]): Promise<MorningPlace[]> {
+  private async morningPlaces(
+    waifu: WaifuConfig,
+    deferred: WakeQueue["deferred"],
+    kept: (key: string, message: { id: string; fromUserId?: string | undefined }, fallbackAt: string) => Promise<boolean>
+  ): Promise<MorningPlace[]> {
     const deps = this.o.deps;
     const since = deferred.since ? Date.parse(deferred.since) : deps.now().getTime();
     const self = new Set(await selfAuthorIds(deps.storage, waifu));
@@ -433,26 +508,33 @@ export class Scheduler {
       const ref = parseConversationKey(key);
       if (!ref) continue;
       const counters = deferred.places[key];
-      const lines = (counters?.lines ?? []).map((line) => {
+      const lines: MorningLine[] = [];
+      for (const line of counters?.lines ?? []) {
+        if (!(await kept(key, line, deferred.since ?? deps.now().toISOString()))) continue;
         const at = snowflakeTime(line.id);
-        return { id: line.id, ...(line.fromName !== undefined ? { fromName: line.fromName } : {}), preview: line.preview, reasons: line.reasons ?? [], ...(at !== undefined ? { at: new Date(at) } : {}) };
-      });
-      // The night starts at the pause, or at the first message it kept when that came just before.
-      const from = Math.min(since, ...lines.flatMap((line) => (line.at ? [line.at.getTime()] : [])));
+        lines.push({ id: line.id, ...(line.fromName !== undefined ? { fromName: line.fromName } : {}), preview: line.preview, reasons: line.reasons ?? [], ...(at !== undefined ? { at: new Date(at) } : {}) });
+      }
+      // The night starts at the pause, or at the first message it kept when that came just before
+      // (a burst's hold); never earlier than NIGHT_LEAD_MS before it (a wake held in an afternoon
+      // busy block and moved to the night must not stretch the night to the afternoon).
+      const from = Math.max(since - NIGHT_LEAD_MS, Math.min(since, ...lines.flatMap((line) => (line.at ? [line.at.getTime()] : []))));
       const night = deps.conversations.bufferedMessages(ref).filter((message) => !self.has(message.authorId) && Date.parse(message.createdAt) >= from);
       const messages = night.length;
       const place = places.find((candidate) => candidate.placeKey === key);
-      const extra = { ...(lines.length > 0 ? { lines } : {}), ...(counters?.earlier ? { earlier: counters.earlier } : {}) };
+      const dropped = (counters?.lines?.length ?? 0) - lines.length;
+      let earlier = counters?.earlier ?? 0;
       if (ref.kind === "dm") {
-        const count = Math.max(counters?.dms ?? 0, messages, lines.length + (counters?.earlier ?? 0));
-        if (count > 0) out.push({ placeKey: key, kind: "dm", ...(place?.userName ? { name: place.userName } : {}), mentions: 0, messages: count, ...extra });
+        // DM wakes deferred before the lines were kept (an upgrade night) count as earlier ones.
+        if (lines.length > 0) earlier = Math.max(earlier, (counters?.dms ?? 0) - lines.length - dropped);
+        const count = Math.max((counters?.dms ?? 0) - dropped, messages, lines.length + earlier);
+        if (count > 0) out.push({ placeKey: key, kind: "dm", mentions: 0, messages: count, ...(lines.length > 0 ? { lines } : {}), ...(earlier > 0 ? { earlier } : {}) });
         continue;
       }
-      const mentions = Math.max(counters?.mentions ?? 0, lines.length + (counters?.earlier ?? 0));
+      const mentions = Math.max(counters?.mentions ?? 0, lines.length + earlier);
       const total = Math.max(messages, mentions + (counters?.detector ?? 0));
-      const times = [...night.map((message) => Date.parse(message.createdAt)), ...lines.flatMap((line) => (line.at ? [line.at.getTime()] : []))].filter(Number.isFinite);
+      const times = [...night.map((message) => Date.parse(message.createdAt)), ...lines.flatMap((line) => (line.at && line.at.getTime() >= from ? [line.at.getTime()] : []))].filter(Number.isFinite);
       const span = times.length > 0 ? { span: { from: new Date(Math.min(...times)), to: new Date(Math.max(...times)) } } : {};
-      if (mentions > 0 || total > 0) out.push({ placeKey: key, kind: place?.kind ?? "room", mentions, messages: total, ...extra, ...span });
+      if (mentions > 0 || total > 0) out.push({ placeKey: key, kind: place?.kind ?? "room", mentions, messages: total, ...(lines.length > 0 ? { lines } : {}), ...(earlier > 0 ? { earlier } : {}), ...span });
     }
     return out;
   }

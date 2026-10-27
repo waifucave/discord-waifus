@@ -22,7 +22,8 @@ minutes old: `anyone`), active human (a live exchange between people: `human`), 
 another person, with the expected `chime_in` answer: the fitting cast member when she is awake,
 `nobody` when she is asleep or busy, and so left out of the cast as in production since §24, or
 nothing invites comment) and waifu author (the newest
-message is a cast member's; she is left out of the cast). Each request is built by the production
+message is a cast member's; she is left out of the cast) and absent waifu (aimed at a cast member
+who is not around, by a nickname or in her own exchange: `human` or `none`, never someone else). Each request is built by the production
 `detectorQuestion` and answered by the production `AddresseeDetector`, so the state, the
 `waifu_<i>`/`human`/`anyone`/`all`/`none` choices, the `chime_in` question (only cast members who
 are around are in the cast at all, spec §24), the transport, the answer validation and the Laya
@@ -39,8 +40,8 @@ npm run benchmark:decisions -- --live --suite=addressee --targets=openrouter:typ
 Reported per target: exact-choice accuracy (failed calls count as wrong), accuracy of answered
 calls, multi-class Brier score and ECE over the single-answer cases, p50/p95 latency, cost from
 the usage the API reports, accuracy per group, the error codes and the missed cases, and for
-`chime_in` the labelled cases answered right plus any pick of a cast member who is not awake (must
-be 0). `--cases=` runs only the named cases. `chat:`
+`chime_in` the labelled cases answered right (a cast member who is not around is not in the cast
+at all, §24). `--cases=` runs only the named cases. `chat:`
 targets are not detector targets and are skipped; `laya:` targets need host-local
 `DC_WAIFUS_LAYA_PYTHON` (as in production) and get one unscored warm-up. No private replay
 dataset exists for this suite yet. Recorded live runs (2026-10-25, `openrouter:typesafe/jev-1.14`):

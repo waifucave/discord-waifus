@@ -15,7 +15,7 @@ import { CASES, RUBRICS } from "./decision-benchmark/cases.js";
 import { replayCases } from "./decision-benchmark/replay.js";
 import { LOOP_CASES, LOOP_RUBRICS, lexicalLoopBaseline, loopReplayCases, summarizeLoops } from "./decision-benchmark/loops.js";
 import { QUESTION_NAMES, isPredicateOnlyTarget, parseAnswers, requestBody, selectBenchmarkTargets, summarize, type Result } from "./decision-benchmark/core.js";
-import { ADDRESSEE_CASES, addresseeQuestion, expectedChimeChoices, expectedChoices, notAwakeChoices, summarizeAddressee, type AddresseeResult } from "./decision-benchmark/addressee.js";
+import { ADDRESSEE_CASES, addresseeQuestion, expectedChimeChoices, expectedChoices, summarizeAddressee, type AddresseeResult } from "./decision-benchmark/addressee.js";
 import { AddresseeDetector } from "../src/life/detector/decider.js";
 import { decisionRequest } from "../src/life/detector/protocol.js";
 import type { UsageLedger, UsageLedgerLine } from "../src/orchestration/usageLedger.js";
@@ -341,9 +341,8 @@ async function addresseeSuite(): Promise<void> {
         for (const sample of ordered) {
           const question = addresseeQuestion(target, sample);
           const chimeExpected = expectedChimeChoices(question, sample);
-          const notAwake = notAwakeChoices(question);
           const result: AddresseeResult = { caseId: sample.id, group: sample.group, run, latencyMs: 0, expected: expectedChoices(question, sample),
-            ...(chimeExpected ? { chimeExpected } : {}), ...(notAwake.length > 0 ? { notAwake } : {}) };
+            ...(chimeExpected ? { chimeExpected } : {}) };
           line = undefined;
           const before = performance.now();
           try {

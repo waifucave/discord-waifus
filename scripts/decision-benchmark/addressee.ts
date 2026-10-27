@@ -112,6 +112,10 @@ export const ADDRESSEE_CASES: AddresseeCase[] = [
   sample("C05", "joins_in", "human", [["Lena", "ugh this game is so hard", 3], ["Sam", "Lena are you still stuck on the fire boss? I finally beat it last night", 1]], { chime: ["nobody"], availability: { yuki: "asleep" } }),
   sample("C06", "joins_in", "human", [["Kevin", "hey sam", 3], ["Sam", "Kevin have you read anything good lately? I need a new novel", 1]], { chime: ["nobody"], availability: { mina: "busy" } }),
   sample("C07", "joins_in", "human", [["Lena", "on my way out", 3], ["Kevin", "Lena can you pick up the kids at 5? I'm stuck at work", 1]], { chime: ["nobody"] }),
+  // Aimed at a cast member who is not around (§24: left out of the cast): by a nickname the intake's
+  // name rule does not catch, or continuing her own exchange. It must not go to one who is around.
+  sample("AB1", "absent_waifu", ["human", "none"], [["Kevin", "morning all", 4], ["Kevin", "ari did you ever finish that tart recipe?", 1]], { availability: { aria: "asleep" } }),
+  sample("AB2", "absent_waifu", ["human", "none"], [["Kevin", "Aria which flour do you use for scones?", 6], ["Aria", "cake flour, always! and cold butter", 5], ["Kevin", "and how long do they bake?", 1]], { availability: { aria: "busy" } }),
   // The newest message is a cast member's: she is never an option.
   sample("WA1", "waifu_author", "human", [["Kevin", "Aria what are you baking today?", 3], ["Aria", "lemon tarts!! want one, Kevin?", 1]], { author: "aria" }),
   sample("WA2", "waifu_author", "mina", [["Aria", "Mina, settle this: tarts or cake?", 1]], { author: "aria" }),
@@ -153,11 +157,6 @@ export function expectedChimeChoices(question: DetectorQuestion, sample: Address
   return sample.chime?.map((label) => asChoice(question, label));
 }
 
-/** The `waifu_<i>` choices of cast members who are not awake in this question. */
-export function notAwakeChoices(question: DetectorQuestion): string[] {
-  return question.candidates.flatMap((member, index) => (member.availability !== undefined && member.availability !== "awake" ? [`waifu_${index}`] : []));
-}
-
 export type AddresseeResult = {
   caseId: string;
   group: string;
@@ -174,8 +173,6 @@ export type AddresseeResult = {
   chimeExpected?: string[];
   chimeChoice?: string;
   chimeProbabilities?: Record<string, number>;
-  /** The choices of cast members who were not awake (a chime-in pick of one is a hard error). */
-  notAwake?: string[];
 };
 
 function percentile(values: number[], fraction: number): number | null {
@@ -225,8 +222,6 @@ export function summarizeAddressee(results: AddresseeResult[]) {
       return {
         labelled: labelled.length,
         correct: labelled.filter(right).length,
-        // A chime-in pick of an asleep or busy cast member, in any case (must stay 0).
-        notAwakePicks: results.filter((r) => r.chimeChoice !== undefined && (r.notAwake ?? []).includes(r.chimeChoice)).length,
         misses: labelled.filter((r) => !right(r)).map((r) => ({ id: r.caseId, run: r.run, expected: r.chimeExpected, choice: r.chimeChoice ?? r.error ?? "not_asked" }))
       };
     })()

@@ -5,11 +5,13 @@
 // redacted one by one (D14); a budget pause batch reads the same.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { snowflakeAt } from "../src/discord/refStore.js";
-import { readLifeFile, updateLifeFile } from "../src/life/lifeStore.js";
-import { DM_REDACTED, redactDmNotifications } from "../src/life/lifeView.js";
+import { readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
+import { DM_REDACTED, printLifeLines, redactDmNotifications, scanDmContent, viewLogLine, wakeShowsDm } from "../src/life/lifeView.js";
+import { updateDmLimit } from "../src/orchestration/dm/dmStore.js";
+import { recordForgottenPerson } from "../src/orchestration/dm/forgotten.js";
 import { morningBatch, type MorningPlace, type NotificationView } from "../src/life/notifications.js";
 import { MAX_WAKE_MESSAGES } from "../src/life/wakeMessages.js";
-import { scrubWakeQueue, withDeferred } from "../src/life/wakeQueue.js";
+import { scrubWakeQueue, takeDeferred, withDeferred } from "../src/life/wakeQueue.js";
 import type { Wake, WakeQueue } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
 import { CHANNEL, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
@@ -56,7 +58,6 @@ describe("the morning summary (§23)", () => {
       {
         placeKey: DM_KEY,
         kind: "dm",
-        name: "Kevin",
         mentions: 0,
         messages: 2,
         lines: [
@@ -187,43 +188,169 @@ describe("the morning summary (§23)", () => {
   });
 
   it("the refs in her morning resolve: she replies to the mention and reacts to the DM", async () => {
-    const sleeper = { id: "ella", name: "Ella", botId: "ella-bot", availability: { bedTime: { enabled: true, start: "00:30", end: "08:30" } }, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } };
-    const w: LifeWorld = await lifeWorld(roots, {
-      waifus: [sleeper],
-      scripts: script(
-        textTurn("(evening)"),
-        toolTurn([
-          { name: "SendMessage", input: { place: "bake-club/#general", text: "saving you the best one", reply_to: "#a0" } },
-          { name: "React", input: { place: "dm/kevin", ref: "#a0", emoji: "👍" } }
-        ]),
-        textTurn("(morning done)")
-      )
-    });
-    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    w.clock.ms = at("2026-10-23T20:00:00Z");
-    await w.cast.scheduler.tick();
-    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-23 20:10", note: "say goodnight" }]));
-    w.clock.ms = at("2026-10-23T20:10:00Z");
-    await w.cast.scheduler.tick();
-    await w.cast.life("ella").runNow();
-    // Asleep: Kevin's DM and Mina's mention wait for the morning.
-    w.clock.ms = at("2026-10-24T02:00:00Z");
-    const dm = w.discord.post(dmOf("ella"), "are you coming saturday?");
-    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
-    w.cast.intake.flushDms();
-    w.clock.ms = at("2026-10-24T03:00:00Z");
-    const mention = w.discord.post(ROOM, `<@${ELLA_BOT}> save me a lemon tart`, { authorId: MINA_USER, authorName: "Mina", mentions: { [ELLA_BOT]: "Ella" } });
-    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: mention.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: mention });
-    await w.cast.settle();
-    w.cast.intake.flushDetector();
-    await w.cast.settle();
-    w.clock.ms = at("2026-10-24T08:31:00Z");
-    await w.cast.scheduler.tick();
-    await w.cast.life("ella").runNow();
-    const morning = JSON.stringify(w.anthropic.calls[1]!.request.messages);
-    expect(morning).toContain('· dm/kevin · 02:00 #a0 \\"are you coming saturday?\\"');
-    expect(morning).toContain('· mention · 03:00 #a0 from Mina \\"<@Ella> save me a lemon tart\\"');
+    const w = await sleeperWorld(
+      toolTurn([
+        { name: "SendMessage", input: { place: "bake-club/#general", text: "saving you the best one", reply_to: "#a0" } },
+        { name: "React", input: { place: "dm/kevin", ref: "#a0", emoji: "👍" } }
+      ]),
+      textTurn("(morning done)")
+    );
+    const dm = await nightDm(w, "2026-10-24T02:00:00Z", "are you coming saturday?");
+    const mention = await nightMention(w, "2026-10-24T03:00:00Z", "save me a lemon tart");
+    await morning(w);
+    const text = JSON.stringify(w.anthropic.calls[1]!.request.messages);
+    expect(text).toContain('· dm/kevin · 02:00 #a0 \\"are you coming saturday?\\"');
+    expect(text).toContain('· mention · 03:00 #a0 from Mina \\"<@Ella> save me a lemon tart\\"');
     expect(w.discord.sent.find((sent) => sent.content === "saving you the best one")).toMatchObject({ replyToMessageId: mention.id });
     expect(w.discord.reactions).toContainEqual(expect.objectContaining({ messageId: dm.id, emoji: "👍" }));
   }, 30_000);
 });
+
+describe("the morning summary's privacy (§23, D14, review)", () => {
+  /** Everything of her life log as the owner sees it, with or without the local reveal. */
+  async function ownerView(w: LifeWorld, includePrivate: boolean): Promise<string> {
+    const epoch = (await readLifeState(w.storage, "ella")).epoch;
+    const lines = [];
+    for (let index = 1; index <= epoch; index += 1) lines.push(...(await readLifeLog(w.storage, "ella", index)));
+    const scan = scanDmContent(lines);
+    return JSON.stringify(lines.map((line) => viewLogLine(line, scan, { includePrivate }).view)) + printLifeLines(lines, { private: includePrivate });
+  }
+
+  it("a morning whose batch shows a DM line is a DM turn: her text there is hidden without the local reveal", async () => {
+    const w = await sleeperWorld(textTurn("kevin wants to meet at the lake at noon"));
+    await nightDm(w, "2026-10-24T02:00:00Z", "are you free tomorrow? secret plans");
+    await morning(w);
+    const queueView = await ownerView(w, false);
+    expect(queueView).not.toContain("meet at the lake");
+    expect(queueView).not.toContain("secret plans");
+    expect(await ownerView(w, true)).toContain("meet at the lake");
+  }, 30_000);
+
+  it("a morning with only room lines stays an ordinary turn", async () => {
+    const w = await sleeperWorld(textTurn("mina wants a lemon tart"));
+    await nightMention(w, "2026-10-24T03:00:00Z", "save me a lemon tart");
+    await morning(w);
+    expect(await ownerView(w, false)).toContain("mina wants a lemon tart");
+  }, 30_000);
+
+  it("an earlier unread batch with a DM line keeps the morning it rides in a DM turn", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const earlier: Wake = { id: "w-old", reason: "morning", batch: ["- during your bed time (00:30–08:30):", "  · DMs:", '    · dm/kevin · 02:00 #a0 "secret"'], dm: true, at: w.clock.now().toISOString() };
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, earlier, "budget", w.clock.now()));
+    await w.cast.scheduler.tick();
+    const [released] = (await readLifeFile(w.storage, "ella", "wakes")).immediate;
+    expect(released).toMatchObject({ reason: "morning", dm: true });
+    expect(released!.batch).toContain('    · dm/kevin · 02:00 #a0 "secret"');
+    expect(wakeShowsDm(released!)).toBe(true);
+  });
+
+  it("DM lines at or below the DM's forget floor and lines from a forgotten person are left out", async () => {
+    const w = await sleeperWorld(textTurn("(morning)"));
+    const dm = await nightDm(w, "2026-10-24T02:00:00Z", "my old secret");
+    await nightDm(w, "2026-10-24T02:30:00Z", "and a new one");
+    await nightMention(w, "2026-10-24T03:00:00Z", "the plan is on", { authorId: MINA_USER, authorName: "Mina" });
+    // A DM floor written by a /forget whose scrub has not run, and Mina forgotten meanwhile.
+    await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, floorMessageId: dm.id }));
+    await recordForgottenPerson(w.storage, MINA_USER, new Date(at("2026-10-24T04:00:00Z")));
+    w.clock.ms = at("2026-10-24T08:31:00Z");
+    await w.cast.scheduler.tick();
+    const batch = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!.batch!.join("\n");
+    expect(batch).not.toContain("my old secret");
+    expect(batch).toContain('"and a new one"');
+    expect(batch).not.toContain("the plan is on");
+  }, 30_000);
+
+  it("a rate-limited DM /forget drops the DM's waiting lines at once, before its scrub runs", async () => {
+    const w = await sleeperWorld(textTurn("(morning)"));
+    await nightDm(w, "2026-10-24T02:00:00Z", "forget this please");
+    expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places[DM_KEY]!.lines).toHaveLength(1);
+    // Inside the 6-hour window: the scrub only queues (it would wait for her dream).
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, scrubbedAt: { [KEVIN]: new Date(w.clock.ms - 60_000).toISOString() } }));
+    const prepared = await w.cast.prepareForget({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "conversation" });
+    expect(prepared?.rateLimited).toBe(true);
+    expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places[DM_KEY]).toBeUndefined();
+  }, 30_000);
+});
+
+describe("the morning batch's bookkeeping (review)", () => {
+  it("taking the deferred batch refuses when it changed since it was read", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
+    const now = w.clock.now();
+    const first: Wake = { id: "d1", reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, messageId: idAt("2026-10-24T13:00:00Z"), preview: "one", at: now.toISOString() };
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, first, "sleep", now));
+    const read = (await readLifeFile(w.storage, "ella", "wakes")).deferred;
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, { ...first, id: "d2", messageId: idAt("2026-10-24T13:01:00Z"), preview: "two" }, "sleep", now));
+    const taken = await takeDeferred(w.storage, "ella", () => ({ id: "m", reason: "morning", batch: ["x"], at: now.toISOString() }), read);
+    expect(taken).toEqual({ wake: undefined, conflict: true });
+    expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places[DM_KEY]!.lines).toHaveLength(2);
+    expect((await takeDeferred(w.storage, "ella", () => undefined, (await readLifeFile(w.storage, "ella", "wakes")).deferred)).conflict).toBe(false);
+  });
+
+  it("an afternoon line moved into the night does not stretch the night's span; old DM wakes count as earlier", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    // The deferred batch as a night left it: since 22:00, a mention held from 14:00 moved into it,
+    // and a DM whose first two wakes were deferred before lines were kept (an upgrade night).
+    const afternoon = idAt("2026-10-24T14:00:00Z");
+    const night = idAt("2026-10-25T02:00:00Z");
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({
+      ...queue,
+      deferred: {
+        reason: "sleep",
+        since: "2026-10-24T22:00:00.000Z",
+        places: {
+          [ROOM_KEY]: { mentions: 1, messages: 0, dms: 0, detector: 0, fromUserIds: [MINA_USER], names: {}, lines: [{ id: afternoon, fromUserId: MINA_USER, fromName: "Mina", preview: "<@Ella> you around?", reasons: ["mention"] }] },
+          [DM_KEY]: { mentions: 0, messages: 0, dms: 3, detector: 0, fromUserIds: [KEVIN], names: {}, lines: [{ id: night, fromUserId: KEVIN, fromName: "Kevin", preview: "still up?", reasons: ["dm"] }] }
+        },
+        items: []
+      }
+    }));
+    w.clock.ms = at("2026-10-25T08:00:00Z");
+    await w.cast.scheduler.tick();
+    const batch = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!.batch!;
+    expect(batch).toContain("  · bake-club/#general: 1 mention, 1 message");
+    expect(batch).toContainEqual(expect.stringMatching(/^ {4}· mention · Sat 14:00 #\w+ from Mina "<@Ella> you around\?"$/u));
+    expect(batch).toContainEqual(expect.stringMatching(/^ {4}· dm\/\w+ · \+2 earlier · 02:00 #\w+ "still up\?"$/u));
+  });
+});
+
+const SLEEPER = { id: "ella", name: "Ella", botId: "ella-bot", availability: { bedTime: { enabled: true, start: "00:30", end: "08:30" } }, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } };
+
+/** A sleeper whose life has begun (an evening reminder turn); `morning` is her next scripted turn. */
+async function sleeperWorld(...morningTurns: Parameters<typeof script>): Promise<LifeWorld> {
+  const w = await lifeWorld(roots, { waifus: [SLEEPER], scripts: script(textTurn("(evening)"), ...morningTurns) });
+  vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+  w.clock.ms = at("2026-10-23T20:00:00Z");
+  await w.cast.scheduler.tick();
+  await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-23 20:10", note: "say goodnight" }]));
+  w.clock.ms = at("2026-10-23T20:10:00Z");
+  await w.cast.scheduler.tick();
+  await w.cast.life("ella").runNow();
+  return w;
+}
+
+async function nightDm(w: LifeWorld, iso: string, text: string) {
+  w.clock.ms = at(iso);
+  const message = w.discord.post(dmOf("ella"), text);
+  await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
+  w.cast.intake.flushDms();
+  await w.cast.settle();
+  return message;
+}
+
+async function nightMention(w: LifeWorld, iso: string, text: string, o: { authorId?: string; authorName?: string } = {}) {
+  w.clock.ms = at(iso);
+  const message = w.discord.post(ROOM, `<@${ELLA_BOT}> ${text}`, { authorId: o.authorId ?? MINA_USER, authorName: o.authorName ?? "Mina", mentions: { [ELLA_BOT]: "Ella" } });
+  await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
+  await w.cast.settle();
+  w.cast.intake.flushDetector();
+  await w.cast.settle();
+  return message;
+}
+
+async function morning(w: LifeWorld): Promise<void> {
+  w.clock.ms = at("2026-10-24T08:31:00Z");
+  await w.cast.scheduler.tick();
+  await w.cast.life("ella").runNow();
+}

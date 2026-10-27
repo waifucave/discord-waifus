@@ -44,7 +44,9 @@ then watch matches (with the matching message's time and ref), timed-out watches
 Times are her local `HH:MM`, with the weekday when not on the morning's day. At most
 `life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
 `+N earlier`. Every line has its ref, so she can reply or react without reading first; DM lines are
-redacted in the owner's views like any DM notification.
+redacted in the owner's views like any DM notification, and a morning that shows anything from a DM
+is a DM turn (what she does in it is private too). Lines from a forgotten person or below a DM's
+forget floor are never shown.
 
 ## Her day
 

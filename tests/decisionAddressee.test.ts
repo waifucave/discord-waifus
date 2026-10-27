@@ -1,12 +1,12 @@
 // The addressee benchmark suite (Living cast spec §4.3, §12), offline: the cases, the production
 // question and request, the production detector over a fake decisions endpoint, and the scores.
 import { describe, expect, it } from "vitest";
-import { ADDRESSEE_CASES, addresseeQuestion, expectedChimeChoices, expectedChoices, notAwakeChoices, summarizeAddressee, type AddresseeResult } from "../scripts/decision-benchmark/addressee.js";
+import { ADDRESSEE_CASES, addresseeQuestion, expectedChimeChoices, expectedChoices, summarizeAddressee, type AddresseeResult } from "../scripts/decision-benchmark/addressee.js";
 import { AddresseeDetector } from "../src/life/detector/decider.js";
 import { decisionRequest } from "../src/life/detector/protocol.js";
 import type { UsageLedgerLine } from "../src/orchestration/usageLedger.js";
 
-const GROUPS = ["addressed_by_name", "reply_to_waifu", "human_to_human", "open_question", "whole_cast", "follow_up", "link_dump", "multilingual", "ambiguous", "stale_human", "active_human", "joins_in", "waifu_author"];
+const GROUPS = ["addressed_by_name", "reply_to_waifu", "human_to_human", "open_question", "whole_cast", "follow_up", "link_dump", "multilingual", "ambiguous", "stale_human", "active_human", "joins_in", "waifu_author", "absent_waifu"];
 
 describe("addressee cases", () => {
   it("cover the spec's groups with unique ids and labels every target can answer", () => {
@@ -29,9 +29,14 @@ describe("addressee cases", () => {
     const asleep = addresseeQuestion("openrouter:typesafe/jev-1.14", byId("C04"));
     expect(asleep.candidates.map((member) => member.waifuId)).toEqual(["mina", "yuki"]);
     expect(Object.keys(asleep.questions["chime_in"]!.criteria)).toEqual(["waifu_0", "waifu_1", "nobody"]);
-    expect(notAwakeChoices(asleep)).toEqual([]);
     expect(expectedChimeChoices(asleep, byId("C04"))).toEqual(["nobody"]);
     expect(addresseeQuestion("openrouter:typesafe/jev-1.14", byId("C06")).candidates.map((member) => member.waifuId)).toEqual(["aria", "yuki"]);
+    // Aimed at Aria, who is not around: she is no option, and neither answer gives it to someone else.
+    for (const id of ["AB1", "AB2"]) {
+      const absent = addresseeQuestion("openrouter:typesafe/jev-1.14", byId(id));
+      expect(absent.candidates.map((member) => member.waifuId)).toEqual(["mina", "yuki"]);
+      expect(expectedChoices(absent, byId(id))).toEqual(["human", "none"]);
+    }
     expect(expectedChimeChoices(addresseeQuestion("openrouter:typesafe/jev-1.14", byId("C01")), byId("C01"))).toEqual(["waifu_0"]);
     for (const sample of ADDRESSEE_CASES) {
       const question = addresseeQuestion("openrouter:typesafe/jev-1.14", sample);

@@ -58,7 +58,7 @@ import { TranscriptWriter } from "./transcripts/writer.js";
 import { WebTools } from "./search.js";
 import { abortableSleep, KeyedMutex, Semaphore } from "./sync.js";
 import { createWebBackend, LifeWebFetchCache, type WebBackend } from "./web/index.js";
-import { newWakeId, pendingWakeCount } from "./wakeQueue.js";
+import { dropDeferredOf, newWakeId, pendingWakeCount } from "./wakeQueue.js";
 import { WakeRouter, type RouteOutcome } from "./wakeRouter.js";
 import type { OcrTextLookup } from "../orchestration/context/images.js";
 
@@ -594,6 +594,11 @@ export class LivingCast {
     // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10),
     // and her files from them (§16.9 step 1; `conversation`: only what came from the DM).
     await this.dropDmMark(o.waifuId, o.userId);
+    // What waits for her morning from them goes now too (§23): a rate-limited DM forget's scrub can
+    // wait for her dream, and her morning would show their DM lines first.
+    await dropDeferredOf(deps.storage, o.waifuId, { userId: o.userId, dmKey: conversationKey({ kind: "dm", waifuId: o.waifuId, userId: o.userId }), everything: o.scope === "everything" }).catch((error: unknown) => {
+      deps.logger.warn("Forget could not drop the person's deferred wakes", { waifuId: o.waifuId, message: error instanceof Error ? error.message : String(error) });
+    });
     const tombstones = new Set<string>(fileHashes);
     await scrubPersonFiles(deps, waifu, identity, { dmOnly, tombstones }).catch((error: unknown) => {
       deps.logger.warn("Forget could not delete her files from the person", { waifuId: o.waifuId, message: error instanceof Error ? error.message : String(error) });

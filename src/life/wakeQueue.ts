@@ -249,14 +249,24 @@ export function hasDeferred(queue: WakeQueue): boolean {
   return queue.deferred.items.length > 0 || Object.keys(queue.deferred.places).length > 0;
 }
 
-/** Moves the deferred batch out (the caller turns it into a `morning` wake). */
+/**
+ * Moves the deferred batch out (the caller turns it into a `morning` wake). With `expected` (the
+ * batch the caller built the wake from, read before), nothing changes when the batch is no longer
+ * that one (a wake was deferred meanwhile): `conflict` says so and the caller builds it again.
+ */
 export async function takeDeferred(
   storage: StorageService,
   waifuId: string,
-  toWake: (deferred: WakeQueue["deferred"]) => Wake | undefined
-): Promise<Wake | undefined> {
+  toWake: (deferred: WakeQueue["deferred"]) => Wake | undefined,
+  expected?: WakeQueue["deferred"]
+): Promise<{ wake: Wake | undefined; conflict: boolean }> {
   let released: Wake | undefined;
+  let conflict = false;
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    if (expected !== undefined && JSON.stringify(queue.deferred) !== JSON.stringify(expected)) {
+      conflict = true;
+      return queue;
+    }
     if (!hasDeferred(queue)) {
       if (queue.deferred.reason === undefined && queue.deferred.since === undefined) return queue;
       return { ...queue, deferred: { places: {}, items: [] } };
@@ -265,7 +275,31 @@ export async function takeDeferred(
     const cleared = { ...queue, deferred: { places: {}, items: [] } };
     return released ? withImmediate(cleared, released) : cleared;
   });
-  return released;
+  return { wake: released, conflict };
+}
+
+/**
+ * Forget, at once (before the life scrub runs, which a DM user's rate limit can put off until her
+ * dream): what waits for her morning from the person goes. Their DM's deferred place and items go
+ * whole; elsewhere their kept lines go (the full scrub later also takes quotes that name them).
+ */
+export async function dropDeferredOf(storage: StorageService, waifuId: string, o: { userId: string; dmKey: string; everything: boolean }): Promise<void> {
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    const places: Record<string, DeferredPlace> = {};
+    for (const [key, place] of Object.entries(queue.deferred.places)) {
+      if (key === o.dmKey) continue;
+      if (!o.everything || !place.lines) {
+        places[key] = place;
+        continue;
+      }
+      const { lines: all, ...rest } = place;
+      const lines = all!.filter((line) => line.fromUserId !== o.userId);
+      places[key] = { ...rest, ...(lines.length > 0 ? { lines } : {}) };
+    }
+    const items = queue.deferred.items.filter((item) => item.placeKey !== o.dmKey && !(o.everything && item.fromUserId === o.userId && item.reason !== "reminder"));
+    const next = { ...queue.deferred, places, items };
+    return JSON.stringify(next) === JSON.stringify(queue.deferred) ? queue : { ...queue, deferred: next };
+  });
 }
 
 /**

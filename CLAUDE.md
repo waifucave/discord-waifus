@@ -164,7 +164,8 @@ write `~/life/schedule.json`, then the overnight batch (spec §23, `notification
 one line per message with time, ref and preview, rooms by most mentions with the night's span and one
 line per message that addressed her, watch matches with their message's time and ref; at most
 `life.morningLinesPerPlace` per DM or room, the first saying `+N earlier`; the lines come from
-`wakes.json` `deferred.places[*].lines`, the newest 50 per place, refs via `messageRefs.ts`); never folded mid-turn; the turn after it
+`wakes.json` `deferred.places[*].lines`, the newest 50 per place, refs via `messageRefs.ts`; DM-floor and
+forgotten people's lines left out; a batch showing a DM sets the wake's `dm`, so the turn is a DM turn, D14); never folded mid-turn; the turn after it
 sets `dayCompactionDue`, so the next cycle compacts with reason `day` (an epoch of at most three
 turns is kept whole, no summary) and block A shows today's plan; the harness hash leaves the plan out, so midday edits never force a compaction) and starts
 maintenance once she has been asleep `life.dreamAfterAsleepMinutes` in her bed time (once per bed

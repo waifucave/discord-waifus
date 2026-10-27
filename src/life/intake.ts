@@ -647,10 +647,11 @@ export class Intake {
     }
     const newestMessage = page.messages.find((message) => message.id === newestId);
     if (newestMessage && !burst.waifuAuthored) this.lastHumanAt.set(placeKey, newestMessage.createdAt);
-    // `waifu_<i>` and `anyone` wake one waifu; `all` wakes every cast waifu here (not only the
-    // question's candidates), staggered like an @everyone. A waifu a watch woke is skipped (D-c),
-    // and so is the author of a waifu's burst; the router defers the asleep and the over-budget ones
-    // as for any wake (and applies the room loop guard to a waifu's burst).
+    // `waifu_<i>` and `anyone` wake one waifu; `all` wakes every waifu around here (§24: the
+    // question's cast, without the Laya cap), staggered like an @everyone. Whoever is not around
+    // was left out above and is never woken from here. A waifu a watch woke is skipped (D-c), and so
+    // is the author of a waifu's burst; the router still applies its guards (and the room loop guard
+    // to a waifu's burst).
     let chosen: string[] = [];
     if (choice.startsWith("waifu_")) chosen = [question.candidates[Number(choice.slice(6))]?.waifuId].filter((id): id is string => Boolean(id));
     else if (choice === "anyone" || choice === "fallback:anyone") {

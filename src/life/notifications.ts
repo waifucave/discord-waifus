@@ -262,7 +262,6 @@ export type MorningLine = { id: string; fromName?: string; preview: string; reas
 export type MorningPlace = {
   placeKey: string;
   kind: "room" | "thread" | "dm";
-  name?: string;
   mentions: number;
   messages: number;
   /** Oldest first: every kept DM message, a room's messages that addressed her (§23). */
