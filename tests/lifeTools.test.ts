@@ -186,21 +186,23 @@ describe("ReadMessages (§6.2) and React (§6.4)", () => {
     const w = await lifeWorld(roots);
     for (let index = 1; index <= 20; index += 1) w.discord.post(ROOM, `message ${index}`, index % 2 ? {} : { authorId: MINA_USER, authorName: "Mina" });
     const ctx = await ctxFor(w);
-    const first = text(await run("ReadMessages", { place: "bake-club/#general", limit: 5 }, ctx));
+    const first = text(await run("ReadMessages", { place: "bake-club/#general", query: "max:5" }, ctx));
     const lines = first.split("\n");
     expect(lines[0]).toBe("bake-club/#general (Bake Club › #general)");
-    expect(lines.slice(1, 6).map((line) => line.replace(/^\[\d\d:\d\d #[0-9a-z]+\] /u, ""))).toEqual(["Mina: message 16", "Kevin: message 17", "Mina: message 18", "Kevin: message 19", "Mina: message 20"]);
-    const footer = lines[lines.length - 1]!;
-    expect(footer).toMatch(/^— older messages available; pass before:"#[0-9a-z]+" —$/u);
-    const before = /before:"(#[0-9a-z]+)"/u.exec(footer)![1]!;
-    const older = text(await run("ReadMessages", { place: "bake-club/#general", limit: 2, before }, ctx));
+    expect(lines[1]).toMatch(/^— more before: before #[0-9a-z]+ —$/u);
+    expect(lines.slice(2, 7).map((line) => line.replace(/^\[\d\d:\d\d #[0-9a-z]+\] /u, ""))).toEqual(["Mina: message 16", "Kevin: message 17", "Mina: message 18", "Kevin: message 19", "Mina: message 20"]);
+    const before = /before (#[0-9a-z]+) —/u.exec(lines[1]!)![1]!;
+    // The ref is included: message 16 and the two before it.
+    const older = text(await run("ReadMessages", { place: "bake-club/#general", query: `before ${before} max:2` }, ctx));
     expect(older).toContain("message 14");
     expect(older).toContain("message 15");
-    expect(await run("ReadMessages", { place: "bake-club/#general", before: "#zzzz" }, ctx)).toEqual({ content: "error: message too old", isError: true });
-    for (const limit of [0, 51]) expect((await run("ReadMessages", { place: "bake-club/#general", limit }, ctx)).isError).toBe(true);
+    expect(older).toContain("message 16");
+    expect(older).not.toContain("message 13");
+    expect(await run("ReadMessages", { place: "bake-club/#general", query: "before #zzzz" }, ctx)).toEqual({ content: "error: message too old", isError: true });
+    for (const max of [0, 101]) expect((await run("ReadMessages", { place: "bake-club/#general", query: `max:${max}` }, ctx)).isError).toBe(true);
     // The owner forgot Mina: her messages so far read as (removed).
     await recordForgottenPerson(w.storage, MINA_USER, w.clock.now());
-    const after = text(await run("ReadMessages", { place: "bake-club/#general", limit: 2 }, ctx));
+    const after = text(await run("ReadMessages", { place: "bake-club/#general", query: "max:2" }, ctx));
     expect(after).toMatch(/someone: \(removed\)/u);
     expect(after).not.toContain("message 20");
     const state = await readLifeFile(w.storage, "ella", "reads");
@@ -211,7 +213,7 @@ describe("ReadMessages (§6.2) and React (§6.4)", () => {
     const w = await lifeWorld(roots);
     w.discord.post(ROOM, "we won the bake-off!");
     const ctx = await ctxFor(w);
-    const read = text(await run("ReadMessages", { place: "bake-club/#general", limit: 1 }, ctx));
+    const read = text(await run("ReadMessages", { place: "bake-club/#general", query: "max:1" }, ctx));
     const ref = /#([0-9a-z]+)\]/u.exec(read)![1]!;
     expect(text(await run("React", { place: "bake-club/#general", ref: `#${ref}`, emoji: "🎉" }, ctx))).toBe("reacted");
     expect(w.discord.reactions).toMatchObject([{ placeKey: ROOM_KEY, emoji: "🎉", botId: "ella-bot" }]);

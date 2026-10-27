@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { isOnlyToolCallSyntax, stripCopiedHeader, stripLeadingTranscriptHeader, typingDelayMs } from "../src/life/outbound.js";
 import { foldName, isWeakName, namesSomeone, normalizeName, wordBoundaryIncludes } from "../src/life/text.js";
-import { entryHeader, entryLine, type LineMessage } from "../src/life/render.js";
+import { entryHeader, entryLine, replyMark, type LineMessage } from "../src/life/render.js";
 
 describe("outbound checks (spec §6.3)", () => {
   it("typing delay is 30 ms per character, clamped to 0.6–4.5 s", () => {
@@ -16,6 +16,7 @@ describe("outbound checks (spec §6.3)", () => {
     expect(stripLeadingTranscriptHeader("[14:02 #k3] [14:03 #k4 ↩#a1] hello")).toBe("hello");
     expect(stripCopiedHeader("[14:02 #k3] Ella: hello there", ["Ella"])).toBe("hello there");
     expect(stripCopiedHeader("[14:05] hi", ["Ella"])).toBe("hi");
+    expect(stripCopiedHeader("[14:02 #k4] Ella ↩#k3: sure thing", ["Ella"])).toBe("sure thing");
     expect(stripCopiedHeader("at [14:02] we met", ["Ella"])).toBe("at [14:02] we met");
   });
 
@@ -66,19 +67,21 @@ describe("message lines (moved from the context engine's transcript renderer, sp
     expect(entryLine({ ...kevin, id: "9", authorName: "" }, view)).toBe("[14:02] Unknown: text");
   });
 
-  it("marks replies `↩#ref`, `↩you` and `↩Name`", () => {
-    expect(entryHeader(reply, view)).toBe("[14:02 #k4 ↩#k3]");
-    expect(entryHeader(replyToMe, view)).toBe("[14:02 #k5 ↩you]");
+  it("marks replies `↩#ref`, `↩you` and `↩Name` after the name (§22.1)", () => {
+    expect(entryHeader(reply, view)).toBe("[14:02 #k4]");
+    expect(entryLine(reply, view)).toBe("[14:02 #k4] Kevin ↩#k3: text");
+    expect(entryLine(replyToMe, view)).toBe(`[14:02 #k5] ${replyToMe.authorName} ↩you: ${replyToMe.body}`);
     const olderKevin: LineMessage = { ...kevin, id: "9", replyToId: "8" };
     const lookupOlder = (id: string) => (id === "8" ? { ...kevin, id: "8" } : byId.get(id));
-    expect(entryHeader(olderKevin, { ...view, lookup: lookupOlder })).toBe("[14:02 ↩Kevin]");
+    expect(replyMark(olderKevin, { ...view, lookup: lookupOlder })).toBe("Kevin");
     // A reply to something unknown and unreferenced shows no marker.
-    expect(entryHeader({ ...kevin, id: "10", replyToId: "404" }, view)).toBe("[14:02]");
+    expect(replyMark({ ...kevin, id: "10", replyToId: "404" }, view)).toBeUndefined();
+    expect(entryLine({ ...kevin, id: "10", replyToId: "404" }, view)).toBe("[14:02] Kevin: text");
   });
 
   it("shows times in the owner's time zone", () => {
     const message: LineMessage = { ...reply, body: "agreed" };
-    expect(entryLine(message, view)).toBe("[14:02 #k4 ↩#k3] Kevin: agreed");
-    expect(entryHeader(message, { ...view, timeZone: "Europe/Berlin" })).toBe("[16:02 #k4 ↩#k3]");
+    expect(entryLine(message, view)).toBe("[14:02 #k4] Kevin ↩#k3: agreed");
+    expect(entryHeader(message, { ...view, timeZone: "Europe/Berlin" })).toBe("[16:02 #k4]");
   });
 });

@@ -32,6 +32,6 @@ The dream window starts Sat 24 Oct 13:30. Read these transcript files (2 lines i
 === 2 user ===
 --- tool result call_1_Bash ---
 # bake-club/#general · Sat 24 Oct 2026
-13:30 Kevin: my exam got moved to monday :(
-13:31 you: noooo, more time to study at least
+[13:30] Kevin: my exam got moved to monday :(
+[13:31] you: noooo, more time to study at least
 exit 0

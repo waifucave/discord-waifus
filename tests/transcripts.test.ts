@@ -265,13 +265,14 @@ describe("the transcript store", () => {
     expect(await mina.read(["dm", "user-0003", "2026-10-24.md"])).toBeUndefined();
   });
 
-  it("renders a day as HH:MM Name ↩ref: text [file: …], her lines as you, no ids", async () => {
+  it("renders a day as [HH:MM #ref] Name ↩#ref: text [file: …] with refs given at ingest, her lines as you, no ids (§22.1)", async () => {
     const { w, writer } = await world();
     const hi = w.discord.post(ROOM, "who wants cake?", { attachments: [{ id: "900000000000000001", url: "https://cdn.discordapp.com/a/cake.png", filename: "cake.png", size: 10 }] });
     await feed(writer, create(ROOM, hi));
     await feed(writer, create(ROOM, w.discord.post(ROOM, "me!", { authorId: ELLA_BOT, authorName: "Ella", bot: true, replyTo: hi.id }), true));
     const text = (await new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: "UTC", now: w.clock.now }).read(["bake-club", "general", "2026-10-24.md"]))!;
-    expect(text).toBe("# bake-club/#general · Sat 24 Oct 2026\n14:00 Kevin: who wants cake? [file: cake.png]\n14:00 you ↩Kevin: me!\n");
+    expect(text).toBe("# bake-club/#general · Sat 24 Oct 2026\n[14:00 #a0] Kevin: who wants cake? [file: cake.png]\n[14:00 #a1] you ↩#a0: me!\n");
+    expect((await readTranscriptDay(w.root, ROOM_KEY, "2026-10-24")).map((line) => line.ref)).toEqual(["a0", "a1"]);
     expect(text).not.toContain(hi.id);
   });
 });
@@ -288,7 +289,7 @@ describe("/transcripts in her computer", () => {
     const w = await seeded();
     expect((await run(w, "Bash", { command: "ls /" })).text).toBe("home\ntmp\ntranscripts\nexit 0");
     expect((await run(w, "Bash", { command: "ls /transcripts/bake-club/general" })).text).toBe("2026-10-24.md\nexit 0");
-    expect((await run(w, "Bash", { command: "grep -rn Lianne /transcripts" })).text).toContain("/transcripts/bake-club/general/2026-10-24.md:3:14:00 Lianne: Lianne says hi");
+    expect((await run(w, "Bash", { command: "grep -rn Lianne /transcripts" })).text).toContain("/transcripts/bake-club/general/2026-10-24.md:3:[14:00 #a1] Lianne: Lianne says hi");
     expect((await run(w, "Bash", { command: "cat /transcripts/bake-club/general/2026-10-24.md | wc -l" })).text).toBe("3\nexit 0");
     expect((await run(w, "Bash", { command: "python3 -c \"print(open('/transcripts/bake-club/general/2026-10-24.md').read().count('kingdom'))\"" }, "ella")).text).toBe("1\nexit 0");
     const read = await run(w, "Read", { file_path: "/transcripts/bake-club/general/2026-10-24.md" });
@@ -360,7 +361,7 @@ describe("/transcripts in her computer", () => {
     const started = Date.now();
     const result = await run(w, "Bash", { command: "echo hi && ls /transcripts/bake-club/general | wc -l && head -2 /transcripts/bake-club/general/2026-07-01.md | tail -1" });
     const elapsed = Date.now() - started;
-    expect(result.text).toBe(`hi\n120\n12:00 Kevin: ${filler} 0\nexit 0`);
+    expect(result.text).toBe(`hi\n120\n[12:00] Kevin: ${filler} 0\nexit 0`);
     // A copy of the store would be read in full; this reads one day of 120.
     expect(elapsed).toBeLessThan(10_000);
     expect(process.memoryUsage.rss() - before).toBeLessThan(200 * 1024 * 1024);

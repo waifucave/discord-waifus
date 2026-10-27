@@ -35,6 +35,8 @@ const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.jsonl$/u;
 export const TranscriptLineSchema = z.object({
   /** The Discord message id. */
   id: z.string().min(1),
+  /** Its ref (§22.1: assigned when the line is written; lines written before 3.3.0 have none). */
+  ref: z.string().optional(),
   /** When it was written (ISO). */
   at: z.string().min(1),
   authorId: z.string().min(1),
@@ -142,6 +144,25 @@ export async function readTranscriptDay(dataRoot: string, key: string, day: stri
     return [];
   }
   return parseLines(raw).sort(compareLines);
+}
+
+/**
+ * The line a ref names in a conversation (§22.1: a ref pruned from `refs.json` still resolves while
+ * its line exists), searched newest day first; refs grow with time, so a day whose refs are all
+ * older than the one wanted ends the search.
+ */
+export async function findTranscriptRef(dataRoot: string, key: string, ref: string): Promise<TranscriptLine | undefined> {
+  const wanted = /^[0-9a-z]{2,8}$/u.test(ref) ? parseInt(ref, 36) : Number.NaN;
+  if (!Number.isFinite(wanted)) return undefined;
+  const days = await listTranscriptDays(dataRoot, key);
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const lines = await readTranscriptDay(dataRoot, key, days[index]!);
+    const found = lines.find((line) => line.ref === ref);
+    if (found) return found;
+    const counters = lines.flatMap((line) => (line.ref ? [parseInt(line.ref, 36)] : [])).filter(Number.isFinite);
+    if (counters.length > 0 && Math.max(...counters) < wanted) return undefined;
+  }
+  return undefined;
 }
 
 /** The day file's size and time (undefined when there is none). */
@@ -409,7 +430,7 @@ export async function editTranscriptLine(env: TranscriptEnv, key: string, line: 
     if (index < 0) return false;
     const current = lines[index]!;
     const { edited: _edited, ...rest } = line;
-    const next: TranscriptLine = TranscriptLineSchema.parse({ ...rest, at: current.at, ...(line.edited || current.edited ? { edited: true } : {}) });
+    const next: TranscriptLine = TranscriptLineSchema.parse({ ...rest, at: current.at, ...(rest.ref ?? current.ref ? { ref: rest.ref ?? current.ref } : {}), ...(line.edited || current.edited ? { edited: true } : {}) });
     if (JSON.stringify(next) === JSON.stringify(current)) return false;
     lines[index] = next;
     await writeDay(env.dataRoot, key, day, lines);

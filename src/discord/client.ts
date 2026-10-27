@@ -169,11 +169,12 @@ export interface DiscordGatewayFacade {
   }): Promise<{ messageId: string }>;
   sendDirectTyping?(input: { waifuId: string; userId: string }): Promise<void>;
   /**
-   * Living cast §6.2: up to `limit` messages older than `beforeId` (oldest first), read with the House
-   * bot (guild channels) or the waifu's own bot (DMs). The conversation cache's `readPage` uses it for
-   * older pages.
+   * Living cast §6.2, §22.2: one page of Discord's channel-messages API (`before`, `after` or
+   * `around` a message id, at most 100; oldest first), read with the House bot (guild channels) or
+   * the waifu's own bot (DMs). The conversation cache's `readPage` uses it when its buffer does not
+   * cover a page.
    */
-  fetchMessagesBefore?(input: { conversation: ConversationRef; beforeId: string; limit: number; signal?: AbortSignal }): Promise<RawDiscordMessage[]>;
+  fetchMessagesPage?(input: { conversation: ConversationRef; before?: string; after?: string; around?: string; limit: number; signal?: AbortSignal }): Promise<RawDiscordMessage[]>;
   /** Living cast §6.4: a reaction from the waifu's own bot (guild channel or her DM with the user). */
   addReaction?(input: { waifuId: string; botId: string; conversation: ConversationRef; messageId: string; emoji: string }): Promise<void>;
   /** Living cast §10.2: the role ids of a waifu bot's own member in a guild (single-member fetch). */
@@ -983,13 +984,15 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
   }
 
-  async fetchMessagesBefore(input: { conversation: ConversationRef; beforeId: string; limit: number; signal?: AbortSignal }): Promise<RawDiscordMessage[]> {
+  async fetchMessagesPage(input: { conversation: ConversationRef; before?: string; after?: string; around?: string; limit: number; signal?: AbortSignal }): Promise<RawDiscordMessage[]> {
     throwIfAborted(input.signal);
     const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
+    // One anchor per request (Discord's rule): around, else after, else before, else the newest.
+    const anchor = input.around !== undefined ? { around: input.around } : input.after !== undefined ? { after: input.after } : input.before !== undefined ? { before: input.before } : {};
     if (input.conversation.kind === "dm") {
       const { client, botId } = this.dmClient(input.conversation.waifuId);
       const channel = await this.dmChannel(client, botId, input.conversation.userId);
-      const page = await channel.messages.fetch({ limit, before: input.beforeId });
+      const page = await channel.messages.fetch({ limit, ...anchor });
       return [...page.values()]
         .map((message) => toRawDiscordMessage(message as unknown as DiscordMessageLike))
         .sort((a, b) => compareIds(a.id, b.id));
@@ -997,7 +1000,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const client = this.houseClient();
     const channel = await client.channels.fetch(input.conversation.channelId);
     if (!channel || !("messages" in channel)) return [];
-    const page = await channel.messages.fetch({ limit, before: input.beforeId });
+    const page = await channel.messages.fetch({ limit, ...anchor });
     const houseIds = [...botAuthorIds([this.options.house]), client.user?.id];
     const guildId = input.conversation.guildId;
     return withoutAuthors([...page.values()] as unknown as DiscordMessageLike[], houseIds)

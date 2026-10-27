@@ -3,11 +3,12 @@
 // never changes and is never reused (the counter only grows, also across pruning).
 //
 // This module is the ONLY writer of `user/conversations/<key>/refs.json` (under the `refs:<key>`
-// lock, which the DM forget also takes): `ReadMessages`, sends and notices assign refs in
-// message-id order. Writing the first ref creates the conversation directory, which the durable image
-// index needs before it records anything (src/discord/imageIndex.ts). Refs older than 10,000
-// messages or 30 days in that place are pruned on write; a pruned or unknown ref resolves to nothing
-// (`error: message too old` for the tools).
+// lock, which the DM forget also takes): the transcript writer at ingest (§22.1), `ReadMessages`,
+// sends and notices assign refs in message-id order. Writing the first ref creates the conversation
+// directory, which the durable image index needs before it records anything
+// (src/discord/imageIndex.ts). Refs older than 10,000 messages or 30 days in that place are pruned on
+// write; a pruned ref still resolves through its transcript line (`findTranscriptRef`, read by the
+// life's `messageIdForRef`), and an unknown one to nothing (`error: message too old` for the tools).
 
 import { createRevisionedBase } from "../shared/schemas/common.js";
 import { ConversationRefsSchema, REF_COUNTER_START, type ConversationRefs } from "../shared/schemas/context.js";
@@ -45,6 +46,18 @@ export function normalizeRef(input: string): string | undefined {
 export function snowflakeTime(id: string): number | undefined {
   if (!/^\d{15,20}$/.test(id)) return undefined;
   return Number((BigInt(id) >> 22n) + DISCORD_EPOCH_MS);
+}
+
+/** The smallest snowflake of a millisecond (§22.2: a time anchor becomes a message id). */
+export function snowflakeAt(ms: number): string {
+  const offset = BigInt(Math.max(0, Math.floor(ms))) - DISCORD_EPOCH_MS;
+  return (offset > 0n ? offset << 22n : 0n).toString();
+}
+
+/** A snowflake moved by `delta` (an inclusive anchor: `before` the next id, `after` the previous). */
+export function shiftId(id: string, delta: number): string {
+  const next = BigInt(id) + BigInt(delta);
+  return (next > 0n ? next : 0n).toString();
 }
 
 /**

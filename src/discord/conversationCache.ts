@@ -291,43 +291,74 @@ export class ConversationMessageCache implements ConversationMessageSource {
   // ---- pages (Living cast §6.2) ----------------------------------------------------------------
 
   /**
-   * One page of a conversation's current messages for `ReadMessages`: the newest `limit` messages
-   * older than `beforeId` (the newest overall without it), oldest first, and whether older ones
-   * exist. Stateless: served from the buffer when the conversation is trusted and the buffer covers
-   * the page, otherwise from REST; it never touches `fetchSince`'s late-message state or the buffer.
-   * The forget floor applies.
+   * One page of a conversation's current messages for `ReadMessages` (§6.2, §22.2), oldest first:
+   * the newest `limit` older than `beforeId` (the newest overall without it); with `afterId` the
+   * oldest `limit` newer than it (and older than `beforeId` when both are given: a range); with
+   * `aroundId` about half before and half after it. `hasMore`: older ones exist beyond the page;
+   * `hasNewer`: newer ones (inside the range) do. Stateless: served from the buffer when the
+   * conversation is trusted and the buffer covers the page, otherwise from REST (Discord's
+   * before/after/around, at most 100); it never touches `fetchSince`'s late-message state or the
+   * buffer. The forget floor applies.
    */
-  async readPage(input: { conversation: ConversationRef; beforeId?: string; limit: number; signal?: AbortSignal }): Promise<{ messages: RawDiscordMessage[]; hasMore: boolean }> {
+  async readPage(input: {
+    conversation: ConversationRef;
+    beforeId?: string;
+    afterId?: string;
+    aroundId?: string;
+    limit: number;
+    signal?: AbortSignal;
+  }): Promise<{ messages: RawDiscordMessage[]; hasMore: boolean; hasNewer: boolean }> {
     throwIfAborted(input.signal);
     const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
     const floor = this.floors.get(conversationKey(input.conversation));
     const keep = (message: RawDiscordMessage) =>
-      (floor === undefined || compareIds(message.id, floor) > 0) && (input.beforeId === undefined || compareIds(message.id, input.beforeId) < 0);
+      (floor === undefined || compareIds(message.id, floor) > 0) &&
+      (input.beforeId === undefined || compareIds(message.id, input.beforeId) < 0) &&
+      (input.afterId === undefined || compareIds(message.id, input.afterId) > 0);
     const page = (messages: RawDiscordMessage[]) => {
-      const sorted = messages.filter(keep).sort((a, b) => compareIds(a.id, b.id));
-      return { messages: sorted.slice(-limit), more: sorted.length > limit };
+      const sorted = [...new Map(messages.filter(keep).map((message) => [message.id, message])).values()].sort((a, b) => compareIds(a.id, b.id));
+      if (input.aroundId !== undefined) {
+        const at = sorted.findIndex((message) => compareIds(message.id, input.aroundId!) >= 0);
+        const center = at < 0 ? sorted.length : at;
+        let start = Math.max(0, center - Math.floor(limit / 2));
+        const end = Math.min(sorted.length, start + limit);
+        start = Math.max(0, end - limit);
+        return { messages: sorted.slice(start, end), more: start > 0, newer: end < sorted.length };
+      }
+      if (input.afterId !== undefined) return { messages: sorted.slice(0, limit), more: false, newer: sorted.length > limit };
+      return { messages: sorted.slice(-limit), more: sorted.length > limit, newer: false };
     };
     const buf = this.attached ? this.buffers.get(conversationKey(input.conversation)) : undefined;
     if (buf && this.trusted(buf) && !this.tailCheckDue(buf) && buf.coversFrom !== undefined) {
       const served = page([...buf.messages.values()]);
       const complete = buf.coversFrom === "0" || (floor !== undefined && compareIds(floor, buf.coversFrom) >= 0);
-      if (served.more || complete) return { messages: served.messages, hasMore: served.more };
+      // The buffer holds everything from `coversFrom` to now: a page starting inside it is whole.
+      const anchor = input.afterId ?? input.aroundId;
+      const inside = anchor !== undefined && compareIds(buf.coversFrom, anchor) <= 0 && (input.aroundId === undefined || served.more);
+      if (served.more || complete || inside) return { messages: served.messages, hasMore: served.more, hasNewer: served.newer };
     }
     const discord = this.d.discord();
-    if (!discord) return { messages: [], hasMore: false };
+    if (!discord) return { messages: [], hasMore: false, hasNewer: false };
     let fetched: RawDiscordMessage[];
-    if (input.beforeId === undefined) {
-      const result = await this.rest({ conversation: input.conversation, afterMessageId: floor ?? null, maxMessages: limit + 1, ...(input.signal ? { signal: input.signal } : {}) });
+    const signal = input.signal ? { signal: input.signal } : {};
+    if (input.beforeId === undefined && input.afterId === undefined && input.aroundId === undefined) {
+      const result = await this.rest({ conversation: input.conversation, afterMessageId: floor ?? null, maxMessages: limit + 1, ...signal });
       fetched = result.messages;
-    } else if (discord.fetchMessagesBefore) {
-      fetched = await discord.fetchMessagesBefore({ conversation: input.conversation, beforeId: input.beforeId, limit: limit + 1, ...(input.signal ? { signal: input.signal } : {}) });
+    } else if (discord.fetchMessagesPage) {
+      const anchor =
+        input.aroundId !== undefined
+          ? { around: input.aroundId, limit: Math.min(100, limit + 2) }
+          : input.afterId !== undefined
+            ? { after: input.afterId, limit: Math.min(100, limit + 1) }
+            : { before: input.beforeId!, limit: Math.min(100, limit + 1) };
+      fetched = await discord.fetchMessagesPage({ conversation: input.conversation, ...anchor, ...signal });
     } else {
       fetched = buf ? [...buf.messages.values()] : [];
     }
     await this.resolveMentions(input.conversation, fetched, input.signal);
     this.emitPage(input.conversation, fetched);
     const served = page(fetched);
-    return { messages: served.messages, hasMore: served.more };
+    return { messages: served.messages, hasMore: served.more, hasNewer: served.newer };
   }
 
   // ---- reactions -------------------------------------------------------------------------------

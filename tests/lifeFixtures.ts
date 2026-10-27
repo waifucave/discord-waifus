@@ -139,9 +139,20 @@ export class FakeDiscord implements DiscordGatewayFacade {
     return filterSinceCursor(all, i.afterMessageId, i.maxMessages, false);
   }
 
-  async fetchMessagesBefore(i: { conversation: ConversationRef; beforeId: string; limit: number }) {
-    const older = this.messages(i.conversation).filter((message) => BigInt(message.id) < BigInt(i.beforeId));
-    return older.slice(-i.limit);
+  /** Discord's channel-messages page: before / after / around one id, at most `limit`, oldest first. */
+  readonly pageRequests: Array<{ before?: string; after?: string; around?: string; limit: number }> = [];
+  async fetchMessagesPage(i: { conversation: ConversationRef; before?: string; after?: string; around?: string; limit: number }) {
+    this.pageRequests.push({ ...(i.before ? { before: i.before } : {}), ...(i.after ? { after: i.after } : {}), ...(i.around ? { around: i.around } : {}), limit: i.limit });
+    const all = this.messages(i.conversation);
+    if (i.around !== undefined) {
+      const at = all.findIndex((message) => BigInt(message.id) >= BigInt(i.around!));
+      const center = at < 0 ? all.length : at;
+      const start = Math.max(0, center - Math.floor(i.limit / 2));
+      return all.slice(start, start + i.limit);
+    }
+    if (i.after !== undefined) return all.filter((message) => BigInt(message.id) > BigInt(i.after!)).slice(0, i.limit);
+    if (i.before !== undefined) return all.filter((message) => BigInt(message.id) < BigInt(i.before!)).slice(-i.limit);
+    return all.slice(-i.limit);
   }
 
   private botAuthor(botId: string | undefined): { authorId: string; authorName: string } {

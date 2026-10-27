@@ -168,7 +168,7 @@ describe("DM transcripts over HTTP (D14)", () => {
     const day = (await w.app.inject({ method: "GET", url: "/api/waifus/ella/files/transcripts/server-0001/channel-0002/2026-10-24.md" })).json();
     expect(day).toMatchObject({ kind: "text", readOnly: true });
     // The host's time zone renders the clock.
-    expect(day.text).toMatch(/\d\d:\d\d Kevin: I passed my exam/u);
+    expect(day.text).toMatch(/\[\d\d:\d\d(?: #[0-9a-z]+)?\] Kevin: I passed my exam/u);
 
     // The DM folder lists people: local reveal only.
     expect((await w.app.inject({ method: "GET", url: "/api/waifus/ella/files?dir=/transcripts/dm" })).statusCode).toBe(403);

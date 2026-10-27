@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { assignConversationRefs, resolveConversationRef, snowflakeTime } from "../../discord/refStore.js";
+import { assignConversationRefs, normalizeRef, resolveConversationRef, shiftId, snowflakeAt, snowflakeTime } from "../../discord/refStore.js";
 import { compareIds } from "../../discord/rawMessage.js";
 import { EMPTY_GUILD_DIRECTORY, formatBytes, imageRef, isImageAttachment, renderDiscordMessage, type RawAttachment } from "../../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../../orchestration/context/types.js";
@@ -16,15 +16,20 @@ import { readDmFloor, readDmLimitIfExists, readDmState, updateDmLimit, updateExi
 import { readActiveChatParticipants } from "../../orchestration/stores/participants.js";
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { OutgoingFile } from "../../discord/client.js";
-import { clockText } from "../clock.js";
+import { clockText, dayText, localDayKey } from "../clock.js";
 import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
 import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
-import { placeLabel, resolvePlace, type ResolvedPlace } from "../places.js";
-import { entryHeader, type LineMessage, type LineView } from "../render.js";
+import { placeLabel, placesWithHandles, resolvePlace, type ResolvedPlace } from "../places.js";
+import { notePlace } from "../placeRecorder.js";
+import { entryHeader, entryLine, type LineMessage, type LineView } from "../render.js";
+import { compareLines, findTranscriptRef, listTranscriptDays, readTranscriptDay, readTranscriptsStartedAt, dayInsideIntervals, insideIntervals, type TranscriptLine } from "../transcripts/store.js";
+import { transcriptChatLine, transcriptFolders, type TranscriptFolder } from "../transcripts/view.js";
+import { transcriptText } from "../transcripts/writer.js";
+import { DEFAULT_MAX, DEFAULT_RANGE_MAX, fold, matchesSearch, MAX_MESSAGES, parseReadQuery, QUERY_SYNTAX, type ReadQuery } from "./readQuery.js";
 import type { LifeDeps } from "../deps.js";
 import { noteDmFile, pathArg, storeOf } from "./files.js";
 import { transcriptsSegments } from "../transcripts/view.js";
@@ -49,17 +54,32 @@ async function directoryFor(deps: LifeDeps, place: ResolvedPlace): Promise<Guild
   return deps.directory.view(place.guildId).catch(() => EMPTY_GUILD_DIRECTORY);
 }
 
+/**
+ * The message a ref names in a place: from `refs.json`, else (§22.1: a ref pruned there) from the
+ * transcript line that carries it.
+ */
 async function messageIdForRef(deps: LifeDeps, place: ResolvedPlace, ref: string): Promise<string | undefined> {
-  return resolveConversationRef(deps.storage, place.placeKey as never, ref);
+  const known = await resolveConversationRef(deps.storage, place.placeKey as never, ref);
+  if (known) return known;
+  const normalized = normalizeRef(ref);
+  if (!normalized) return undefined;
+  return (await findTranscriptRef(deps.storage.dataRoot, place.placeKey, normalized).catch(() => undefined))?.id;
 }
 
-// ---- ReadMessages -------------------------------------------------------------------------------
+// ---- ReadMessages (§6.2, §22.2) ------------------------------------------------------------------
 
 const ReadInput = z.object({
   place: z.string().min(1),
-  limit: z.number().int().min(1).max(50).default(15),
+  query: z.string().max(2000).optional(),
+  // Before §22 the tool took these; an old habit still reads (as `max:` and `before #ref`).
+  limit: z.number().int().min(1).max(100).optional(),
   before: z.string().min(1).optional()
 });
+
+/** At most this many places in one call (or `everywhere` with people: or search:). */
+export const MAX_READ_PLACES = 5;
+const EVERYWHERE = "everywhere";
+const CANT_READ = "error: messages can't be read right now";
 
 function reactionLine(deps: LifeDeps, place: ResolvedPlace, messageId: string): string | undefined {
   const reactions = deps.conversations.reactionsFor(place.ref, messageId);
@@ -67,39 +87,144 @@ function reactionLine(deps: LifeDeps, place: ResolvedPlace, messageId: string): 
   return `  reactions: ${reactions.map((reaction) => (reaction.count > 1 ? `${reaction.emoji} ${reaction.count}` : reaction.emoji)).join(" · ")}`;
 }
 
-/** Renders one page for her (also used by `/print life` previews of what she read). */
+/** Lines with their time: a `— Sat 24 Oct —` line starts each day when the page is not all today. */
+function withDayLines(entries: ReadonlyArray<{ at: string; lines: string[] }>, now: Date, timeZone: string): string[] {
+  const today = localDayKey(now, timeZone);
+  const days = entries.map((entry) => localDayKey(new Date(entry.at), timeZone));
+  const allToday = days.every((day) => day === today);
+  const out: string[] = [];
+  let previous: string | undefined;
+  entries.forEach((entry, index) => {
+    const day = days[index]!;
+    if (!allToday && day !== previous) out.push(`— ${dayText(new Date(entry.at), timeZone)} —`);
+    previous = day;
+    out.push(...entry.lines);
+  });
+  return out;
+}
+
+type Section = { text: string; ids: string[] } | { error: string };
+
+function hasRefAnchor(query: ReadQuery): boolean {
+  return [query.before, query.after, query.around].some((anchor) => anchor?.kind === "ref");
+}
+
+/**
+ * Reads one or more places (§22.2). Without people: or search:, each place is a page of its
+ * conversation (the latest, or before / after / around an anchor, or a range); with them, its
+ * transcript (her access intervals apply) plus what the cache holds that is not written yet.
+ */
 export async function readMessagesTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(ReadInput, input);
   if (!parsed.ok) return parsed.output;
   const { deps, waifu } = ctx;
   const args = parsed.value;
-  const place = await resolvePlace(deps.storage, waifu.id, args.place);
-  if (!place) return toolError(UNKNOWN_PLACE);
-  let beforeId: string | undefined;
-  if (args.before) {
-    beforeId = await messageIdForRef(deps, place, args.before);
-    if (!beforeId) return toolError(MESSAGE_TOO_OLD);
+  const now = deps.now();
+  let text = args.query?.trim() ?? "";
+  if (args.before) text = `${text} before #${args.before.trim().replace(/^#/u, "")}`;
+  if (args.limit && !/(^|\s)max\b/iu.test(text)) text = `${text} max:${args.limit}`;
+  const read = parseReadQuery(text.trim(), { now, timeZone: deps.timeZone });
+  if (!read.ok) return toolError(read.error);
+  const query = read.query;
+  const filtered = query.people !== undefined || query.search !== undefined;
+  const wanted = args.place.trim();
+  let places: ResolvedPlace[];
+  const everywhere = wanted.toLowerCase() === EVERYWHERE;
+  if (everywhere) {
+    if (!filtered) return toolError(`error: "everywhere" needs people: or search: in the query\n${QUERY_SYNTAX}`);
+    places = await placesWithHandles(deps.storage, waifu.id);
+  } else {
+    const handles = wanted.split(",").map((handle) => handle.trim()).filter((handle) => handle.length > 0);
+    if (handles.length > MAX_READ_PLACES) return toolError(`error: at most ${MAX_READ_PLACES} places at once (or "everywhere" with people: or search:)`);
+    places = [];
+    for (const handle of handles) {
+      const place = await resolvePlace(deps.storage, waifu.id, handle);
+      if (!place) return toolError(UNKNOWN_PLACE);
+      if (!places.some((known) => known.placeKey === place.placeKey)) places.push(place);
+    }
+    if (places.length === 0) return toolError(UNKNOWN_PLACE);
   }
-  let forgotten;
+  if (places.length > 1 && hasRefAnchor(query)) return toolError("error: a #ref belongs to one place; read one place with it");
+  let forgotten: Awaited<ReturnType<typeof forgottenPeople>>;
   try {
     forgotten = await forgottenPeople(deps.storage);
   } catch {
-    return toolError("error: messages can't be read right now");
+    return toolError(CANT_READ);
   }
-  // A forgotten DM's floor (§7.5) holds on the read path itself, not only in the cache: after a
-  // restart the cache floor may not be loaded yet, and nothing at or below it may ever be shown.
-  let dmFloor: string | undefined;
-  if (place.kind === "dm" && place.userId) {
-    try {
-      dmFloor = await readDmFloor(deps.storage, place.userId, waifu.id);
-    } catch {
-      return toolError("error: messages can't be read right now");
-    }
+  const search = filtered ? await SearchScope.open(ctx) : undefined;
+  const sections: string[] = [];
+  const ids: string[] = [];
+  for (const place of places) {
+    const section = search ? await search.place(place, query, forgotten, { quiet: everywhere }) : await pagePlace(ctx, place, query, forgotten);
+    if (!section) continue;
+    if ("error" in section) return toolError(section.error);
+    // D14: a place whose messages are in the result is a place this call touched.
+    notePlace(place.placeKey);
+    sections.push(section.text);
+    ids.push(...section.ids);
   }
-  const raw = await deps.conversations.readPage({ conversation: place.ref, ...(beforeId ? { beforeId } : {}), limit: args.limit, signal: ctx.signal });
+  if (sections.length === 0) sections.push(search ? search.nothing(query) : "(no messages)");
+  if (ids.length > 0) {
+    await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, readMessageIds: [...new Set([...current.readMessageIds, ...ids])] }));
+  }
+  return { content: sections.join("\n\n"), messageIds: ids };
+}
+
+/** A forgotten DM's floor (§7.5), read on the read path itself (after a restart the cache may not know it yet). */
+async function floorOf(ctx: ToolContext, place: ResolvedPlace): Promise<string | undefined | "unreadable"> {
+  if (place.kind !== "dm" || !place.userId) return undefined;
+  try {
+    return await readDmFloor(ctx.deps.storage, place.userId, ctx.waifu.id);
+  } catch {
+    return "unreadable";
+  }
+}
+
+/** One page of a place's conversation (§22.2 unfiltered): the latest, before / after / around, or a range. */
+async function pagePlace(ctx: ToolContext, place: ResolvedPlace, query: ReadQuery, forgotten: Awaited<ReturnType<typeof forgottenPeople>>): Promise<Section> {
+  const { deps } = ctx;
+  const floor = await floorOf(ctx, place);
+  if (floor === "unreadable") return { error: CANT_READ };
+  const dmFloor = floor;
+  // Anchors → message ids. A #ref is included (`before #c1` reads #c1 and what is before it).
+  const refId = async (ref: string) => messageIdForRef(deps, place, ref);
+  let beforeId: string | undefined;
+  let afterId: string | undefined;
+  let aroundId: string | undefined;
+  const range = (query.before !== undefined && query.after !== undefined) || query.around?.kind === "day";
+  if (query.around?.kind === "day") {
+    afterId = shiftId(snowflakeAt(query.around.start.getTime()), -1);
+    beforeId = snowflakeAt(query.around.end.getTime());
+  } else if (query.around) {
+    aroundId = query.around.kind === "ref" ? await refId(query.around.ref) : snowflakeAt(query.around.at.getTime());
+    if (!aroundId) return { error: MESSAGE_TOO_OLD };
+  }
+  if (query.before) {
+    const anchor = query.before;
+    const id = anchor.kind === "ref" ? await refId(anchor.ref) : undefined;
+    if (anchor.kind === "ref" && !id) return { error: MESSAGE_TOO_OLD };
+    beforeId = anchor.kind === "ref" ? shiftId(id!, 1) : snowflakeAt(anchor.kind === "time" ? anchor.at.getTime() : anchor.start.getTime());
+  }
+  if (query.after) {
+    const anchor = query.after;
+    const id = anchor.kind === "ref" ? await refId(anchor.ref) : undefined;
+    if (anchor.kind === "ref" && !id) return { error: MESSAGE_TOO_OLD };
+    afterId = shiftId(anchor.kind === "ref" ? id! : snowflakeAt(anchor.kind === "time" ? anchor.at.getTime() : anchor.start.getTime()), -1);
+  }
+  const max = query.max ?? (range ? DEFAULT_RANGE_MAX : DEFAULT_MAX);
+  // One side anchored on a #ref: that message and `max` more.
+  const inclusive = !range && ((query.before?.kind === "ref" && !query.after) || (query.after?.kind === "ref" && !query.before)) ? 1 : 0;
+  const raw = await deps.conversations.readPage({
+    conversation: place.ref,
+    ...(beforeId ? { beforeId } : {}),
+    ...(afterId ? { afterId } : {}),
+    ...(aroundId ? { aroundId } : {}),
+    limit: Math.min(MAX_MESSAGES, max + inclusive),
+    signal: ctx.signal
+  });
   const kept = dmFloor ? raw.messages.filter((message) => aboveFloor(message.id, dmFloor)) : raw.messages;
   // Nothing below the floor is "older" for her.
-  const page = { ...raw, messages: kept, hasMore: raw.hasMore && kept.length === raw.messages.length };
+  const page = { messages: kept, hasMore: raw.hasMore && kept.length === raw.messages.length, hasNewer: raw.hasNewer };
   const now = deps.now();
   const tz = deps.timeZone;
   const dir = await directoryFor(deps, place);
@@ -111,7 +236,7 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
     ? deps.conversations.deletedIds(place.ref).filter((id) => compareIds(id, oldest) > 0 && compareIds(id, newest) < 0)
     : [];
   const refs = await assignConversationRefs(deps.storage, place.placeKey as never, ids, now);
-  const auto = place.kind === "dm" && place.userId ? new Set((await readDmLimitIfExists(deps.storage, place.userId, waifu.id))?.autoMessageIds ?? []) : new Set<string>();
+  const auto = place.kind === "dm" && place.userId ? new Set((await readDmLimitIfExists(deps.storage, place.userId, ctx.waifu.id))?.autoMessageIds ?? []) : new Set<string>();
   const lookup = new Map<string, RawDiscordMessage>();
   for (const message of [...deps.conversations.bufferedMessages(place.ref), ...page.messages]) if (aboveFloor(message.id, dmFloor)) lookup.set(message.id, message);
   const view: LineView = {
@@ -120,17 +245,17 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
     selfAuthorIds: ctx.selfAuthorIds,
     timeZone: tz
   };
-  const text: string[] = [`${place.handle} (${placeLabel(place)})`];
   const entries: Array<{ id: string; deleted?: boolean; message?: RawDiscordMessage }> = [
     ...page.messages.map((message) => ({ id: message.id, message })),
     ...deleted.filter((id) => refs.has(id)).map((id) => ({ id, deleted: true }))
   ].sort((a, b) => compareIds(a.id, b.id));
   const downloads = new Downloads(ctx, place);
   downloads.plan(entries.flatMap((entry) => (entry.message && (ctx.selfAuthorIds.includes(entry.message.authorId) || !isRemovedMessage(entry.message, forgotten)) ? [entry.message] : [])));
+  const rendered: Array<{ at: string; lines: string[] }> = [];
   for (const entry of entries) {
     if (entry.deleted) {
       const at = snowflakeTime(entry.id);
-      text.push(`[${at !== undefined ? clockText(new Date(at), tz) : "--:--"} #${refs.get(entry.id)}] (message deleted)`);
+      rendered.push({ at: new Date(at ?? now.getTime()).toISOString(), lines: [`[${at !== undefined ? clockText(new Date(at), tz) : "--:--"} #${refs.get(entry.id)}] (message deleted)`] });
       continue;
     }
     const message = entry.message!;
@@ -145,27 +270,178 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
     };
     // A removed message's attachments are never downloaded (§16.3.1).
     if (!self && isRemovedMessage(message, forgotten)) {
-      text.push(`${entryHeader({ ...line, replyToId: undefined } as LineMessage, view)} someone: (removed)`);
+      rendered.push({ at: message.createdAt, lines: [`${entryHeader(line, view)} someone: (removed)`] });
       continue;
     }
-    const lines = await downloads.forMessage(message, refs.get(message.id) ?? "m");
-    const rendered = renderDiscordMessage(message, dir, tz, { conversationKey: place.placeKey, attachmentText: (attachment) => lines.get(attachment) });
-    if (!rendered) continue;
-    let body = rendered.body;
+    const files = await downloads.forMessage(message, refs.get(message.id) ?? "m");
+    const output = renderDiscordMessage(message, dir, tz, { conversationKey: place.placeKey, attachmentText: (attachment) => files.get(attachment) });
+    if (!output) continue;
+    let body = output.body;
     if (auto.has(message.id)) body = `[auto] ${body}`;
     if (message.editedAt) body = body ? `${body} (edited)` : "(edited)";
-    text.push(body ? `${entryHeader(line, view)} ${line.authorName}: ${body}` : `${entryHeader(line, view)} ${line.authorName}:`);
+    const lines = [entryLine({ ...line, body }, view)];
     const reactions = reactionLine(deps, place, message.id);
-    if (reactions) text.push(reactions);
+    if (reactions) lines.push(reactions);
+    rendered.push({ at: message.createdAt, lines });
   }
+  const text: string[] = [`${place.handle} (${placeLabel(place)})`];
+  if (page.hasMore && oldest && refs.get(oldest)) text.push(`— more before: before #${refs.get(oldest)} —`);
+  text.push(...withDayLines(rendered, now, tz));
   if (page.messages.length === 0) text.push("(no messages)");
-  if (page.hasMore && oldest && refs.get(oldest)) text.push(`— older messages available; pass before:"#${refs.get(oldest)}" —`);
-  await updateLifeState(deps.storage, waifu.id, (current) => ({
-    ...current,
-    readMessageIds: [...new Set([...current.readMessageIds, ...ids])]
-  }));
-  if (!beforeId && newest) await advanceReadCursor(deps.storage, waifu.id, place.placeKey, newest, now);
-  return { content: text.join("\n"), messageIds: ids };
+  if (page.hasNewer && newest && refs.get(newest)) text.push(`— more after: after #${refs.get(newest)} —`);
+  // Only the latest page moves her read cursor (what she has caught up on).
+  if (!query.before && !query.after && !query.around && newest) await advanceReadCursor(deps.storage, ctx.waifu.id, place.placeKey, newest, now);
+  return { text: text.join("\n"), ids };
+}
+
+/**
+ * people: / search: (§22.2) over her transcripts (the store, her access intervals) and what the cache
+ * holds that is not written yet. Opened once per call (her folders are listed once).
+ */
+class SearchScope {
+  private constructor(
+    private readonly ctx: ToolContext,
+    private readonly folders: Map<string, TranscriptFolder>,
+    private readonly startedAt: string | undefined
+  ) {}
+
+  static async open(ctx: ToolContext): Promise<SearchScope> {
+    const folders = await transcriptFolders({ storage: ctx.deps.storage, waifuId: ctx.waifu.id }).catch(() => [] as TranscriptFolder[]);
+    const startedAt = await readTranscriptsStartedAt(ctx.deps.storage.dataRoot);
+    return new SearchScope(ctx, new Map(folders.map((folder) => [folder.key, folder])), startedAt);
+  }
+
+  /** The days searched, as she reads them: from the anchor (or when transcripts begin) to the anchor (or today). */
+  private range(lower: number | undefined, upper: number | undefined): string {
+    const tz = this.ctx.deps.timeZone;
+    const now = this.ctx.deps.now();
+    const begins = this.startedAt ? Date.parse(this.startedAt) : undefined;
+    const from = lower !== undefined && (begins === undefined || lower >= begins) ? localDayKey(new Date(lower), tz) : begins !== undefined ? `${localDayKey(new Date(begins), tz)} (when your transcripts begin)` : "the start";
+    const to = localDayKey(new Date(upper !== undefined ? Math.min(upper, now.getTime()) : now.getTime()), tz);
+    return `searched ${from} – ${to}`;
+  }
+
+  /** The reply when nothing matched anywhere. */
+  nothing(query: ReadQuery): string {
+    const bounds = this.boundsOf(query);
+    return `no messages match (${this.range(bounds.lowerMs, bounds.upperMs)})`;
+  }
+
+  /** Time bounds of the anchors that are times or days (refs are resolved per place). */
+  private boundsOf(query: ReadQuery): { lowerMs?: number; upperMs?: number } {
+    const out: { lowerMs?: number; upperMs?: number } = {};
+    if (query.after && query.after.kind !== "ref") out.lowerMs = query.after.kind === "time" ? query.after.at.getTime() : query.after.start.getTime();
+    if (query.before && query.before.kind !== "ref") out.upperMs = query.before.kind === "time" ? query.before.at.getTime() : query.before.start.getTime();
+    if (query.around?.kind === "day") {
+      out.lowerMs = query.around.start.getTime();
+      out.upperMs = query.around.end.getTime();
+    }
+    return out;
+  }
+
+  async place(place: ResolvedPlace, query: ReadQuery, forgotten: Awaited<ReturnType<typeof forgottenPeople>>, o: { quiet: boolean }): Promise<Section | undefined> {
+    const { deps, waifu } = this.ctx;
+    const tz = deps.timeZone;
+    const now = deps.now();
+    const floor = await floorOf(this.ctx, place);
+    if (floor === "unreadable") return { error: CANT_READ };
+    // Bounds: ids for #refs (inclusive), times for the rest.
+    const bounds = this.boundsOf(query);
+    let lowerId: string | undefined;
+    let upperId: string | undefined;
+    let center: { id?: string; ms?: number } | undefined;
+    for (const [side, anchor] of [["after", query.after], ["before", query.before], ["around", query.around]] as const) {
+      if (anchor?.kind !== "ref") continue;
+      const id = await messageIdForRef(deps, place, anchor.ref);
+      if (!id) return { error: MESSAGE_TOO_OLD };
+      if (side === "after") lowerId = id;
+      else if (side === "before") upperId = id;
+      else center = { id };
+    }
+    if (query.around?.kind === "time") center = { ms: query.around.at.getTime() };
+    const lowerMs = bounds.lowerMs ?? (lowerId ? snowflakeTime(lowerId) : undefined);
+    const upperMs = bounds.upperMs ?? (upperId ? snowflakeTime(upperId) : undefined);
+    // Her transcript of this place (rooms: only inside her intervals), the days the bounds allow.
+    const folder = this.folders.get(place.placeKey);
+    const lines: TranscriptLine[] = [];
+    if (folder) {
+      const dataRoot = deps.storage.dataRoot;
+      const firstDay = lowerMs !== undefined ? localDayKey(new Date(lowerMs), tz) : undefined;
+      const lastDay = upperMs !== undefined ? localDayKey(new Date(upperMs), tz) : undefined;
+      for (const day of await listTranscriptDays(dataRoot, folder.key)) {
+        if ((firstDay && day < firstDay) || (lastDay && day > lastDay)) continue;
+        if (!folder.dm && folder.intervals && !dayInsideIntervals(folder.intervals, day, tz, now)) continue;
+        for (const line of await readTranscriptDay(dataRoot, folder.key, day)) {
+          if (!folder.dm && folder.intervals && !insideIntervals(folder.intervals, line.at)) continue;
+          lines.push(line);
+        }
+      }
+    }
+    // What the cache holds that the transcript does not have yet.
+    const written = new Set(lines.map((line) => line.id));
+    const lastWritten = lines.reduce<string | undefined>((latest, line) => (latest === undefined || compareIds(line.id, latest) > 0 ? line.id : latest), undefined);
+    const dir = await directoryFor(deps, place);
+    for (const message of deps.conversations.bufferedMessages(place.ref)) {
+      if (written.has(message.id) || (lastWritten !== undefined && compareIds(message.id, lastWritten) <= 0)) continue;
+      if (!aboveFloor(message.id, floor)) continue;
+      const self = this.ctx.selfAuthorIds.includes(message.authorId);
+      if (!self && isRemovedMessage(message, forgotten)) continue;
+      const body = transcriptText(message, dir, tz);
+      if (body === undefined) continue;
+      const files = [...message.attachments, ...message.snapshots.flatMap((snapshot) => snapshot.attachments)].map((attachment) => attachment.filename);
+      lines.push({
+        id: message.id,
+        at: message.createdAt,
+        authorId: message.authorId,
+        author: self ? waifu.name : message.authorName,
+        ...(self ? { waifu: waifu.id } : {}),
+        ...(message.referenceMessageId ? { reply: message.referenceMessageId } : {}),
+        text: body,
+        ...(files.length > 0 ? { files } : {})
+      });
+    }
+    lines.sort(compareLines);
+    const byId = new Map(lines.map((line) => [line.id, line] as const));
+    const people = query.people;
+    const matched = lines.filter((line) => {
+      const at = Date.parse(line.at);
+      if (lowerId !== undefined ? compareIds(line.id, lowerId) < 0 : lowerMs !== undefined && at < lowerMs) return false;
+      if (upperId !== undefined ? compareIds(line.id, upperId) > 0 : upperMs !== undefined && at >= upperMs) return false;
+      if (people && !people.some((name) => (name === "you" ? line.waifu === waifu.id : fold(line.author) === name))) return false;
+      if (query.search && !matchesSearch([line.text, ...(line.files ?? [])].join(" "), query.search)) return false;
+      return true;
+    });
+    if (matched.length === 0 && o.quiet) return undefined;
+    const range = (query.before !== undefined && query.after !== undefined) || query.around?.kind === "day";
+    const max = query.max ?? (range ? DEFAULT_RANGE_MAX : DEFAULT_MAX);
+    let start: number;
+    if (center) {
+      const at = matched.findIndex((line) => (center!.id !== undefined ? compareIds(line.id, center!.id) >= 0 : Date.parse(line.at) >= center!.ms!));
+      start = Math.max(0, (at < 0 ? matched.length : at) - Math.floor(max / 2));
+      start = Math.max(0, Math.min(start, matched.length - max));
+    } else if (query.after && !query.before) {
+      start = 0;
+    } else {
+      start = Math.max(0, matched.length - max);
+    }
+    const shown = matched.slice(start, start + max);
+    const refs = await assignConversationRefs(deps.storage, place.placeKey as never, shown.filter((line) => !line.ref).map((line) => line.id), now);
+    const refOf = (line: TranscriptLine) => line.ref ?? refs.get(line.id);
+    const text: string[] = [`${place.handle} (${placeLabel(place)})`];
+    text.push(`${matched.length} ${matched.length === 1 ? "message matches" : "messages match"}${shown.length < matched.length ? `, ${shown.length} shown` : ""} (${this.range(lowerMs, upperMs)})`);
+    const first = shown[0];
+    const last = shown[shown.length - 1];
+    if (start > 0 && first && refOf(first)) text.push(`— more before: before #${refOf(first)} —`);
+    text.push(
+      ...withDayLines(
+        shown.map((line) => ({ at: line.at, lines: [transcriptChatLine(line.ref ? line : { ...line, ...(refs.get(line.id) ? { ref: refs.get(line.id)! } : {}) }, { waifuId: waifu.id, timeZone: tz, refs, byId })] })),
+        now,
+        tz
+      )
+    );
+    if (start + shown.length < matched.length && last && refOf(last)) text.push(`— more after: after #${refOf(last)} —`);
+    return { text: text.join("\n"), ids: shown.map((line) => line.id) };
+  }
 }
 
 // ---- attachment downloads (§16.3.1) ---------------------------------------------------------------
@@ -528,7 +804,13 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
 }
 
 function readMessagesDescription(retentionDays: number): string {
-  return `Read the latest messages in one of your places (a room, thread or private chat). Lines look like \`[14:02 #k3] Kevin: text\`; \`#k3\` is the message's ref. Files people sent are saved in /tmp ${keptForText(retentionDays)} and shown by their path; open them with Read. Pass before with a ref to read older messages.`;
+  return [
+    `Read messages in your places (a room, thread or private chat; up to 5 handles separated by commas, or everywhere with people: or search:). Lines look like \`[14:02 #k3] Kevin ↩#k1: text\`; \`#k3\` is the message's ref. Files people sent are saved in /tmp ${keptForText(retentionDays)} and shown by their path; open them with Read.`,
+    "query (optional; empty = the latest messages), terms in any order:",
+    "before|after|around <#ref | 2026-10-25 17:02 | 2026-10-25 | 17:02 | yesterday 17:02> (a #ref is included; before + after = a range) · max:N (1–100, default 15)",
+    "people:Name, Name (you = yourself) · search:words, other words (any one of them; every word of it must appear)",
+    "Examples: query \"around #k3 max:10\"; place \"everywhere\" with query \"people:Kevin search:exam, test after 2026-10-20\"."
+  ].join("\n");
 }
 
 const SEND_DESCRIPTION =
@@ -603,9 +885,8 @@ export const messageTools: LifeTool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        place: { type: "string", description: "A place handle from places.md, like bake-club/#general or dm/kevin." },
-        limit: { type: "integer", minimum: 1, maximum: 50, description: "How many messages (default 15)." },
-        before: { type: "string", description: "A message ref like #a0: read messages older than it." }
+        place: { type: "string", description: "A place handle from ~/life/places.md, like bake-club/#general or dm/kevin; several separated by commas (at most 5), or everywhere (with people: or search:)." },
+        query: { type: "string", description: "Optional: before|after|around an anchor, max:N, people:Names, search:words (see the description)." }
       },
       required: ["place"],
       additionalProperties: false

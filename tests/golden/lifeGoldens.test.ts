@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectorQuestion } from "../../src/life/detector/decider.js";
 import { availabilityAt, timeLine } from "../../src/life/clock.js";
 import { buildBlockA } from "../../src/life/lifeHarness.js";
+import { TranscriptView } from "../../src/life/transcripts/view.js";
 import { readWaifu } from "../../src/orchestration/stores/config.js";
 import { readLifeState, updateLifeState } from "../../src/life/lifeStore.js";
 import { lifeBudget } from "../../src/life/request.js";
@@ -380,5 +381,21 @@ describe("Living cast goldens", () => {
       ["01:40, over an hour into her bed time", "2026-10-25T01:40:00Z", "2026-10-25T00:28:00Z"]
     ].map(([label, iso, sent]) => `${label}: ${timeLine({ now: new Date(iso!), timeZone: "UTC", status: availabilityAt(waifu.availability, new Date(iso!), "UTC", bed(sent)) })}`);
     await expect(`${schedule}\n\n${lines.join("\n")}\n`).toMatchFileSnapshot("./__snapshots__/life-bed-time.txt");
+  });
+
+  it("a transcript day: refs given at ingest, replies after the name, like ReadMessages (§22.1)", async () => {
+    const w = await lifeWorld(roots);
+    await w.cast.transcripts.start();
+    const feed = async (message: ReturnType<LifeWorld["discord"]["post"]>, own = false) => {
+      w.cast.transcripts.onCacheEvent({ type: "create", conversation: ROOM, message, own });
+      await w.cast.transcripts.settle();
+      return message;
+    };
+    const cake = await feed(w.discord.post(ROOM, "who wants cake?", { attachments: [{ id: "900000000000000001", url: "https://cdn.discordapp.com/a/cake.png", filename: "cake.png", size: 10 }] }));
+    const mina = await feed(w.discord.post(ROOM, "me!! and Ella too", { authorId: MINA_USER, authorName: "Mina", replyTo: cake.id }));
+    const own = await feed(w.discord.post(ROOM, "obviously", { authorId: ELLA_BOT, authorName: "Ella", bot: true, replyTo: mina.id }), true);
+    await feed(w.discord.post(ROOM, "save one for later\nplease", { authorId: MINA_USER, authorName: "Mina", replyTo: own.id }));
+    const view = new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: "UTC", now: w.clock.now });
+    await expect(await view.read(["bake-club", "general", "2026-10-24.md"])).toMatchFileSnapshot("./__snapshots__/life-transcript-day.txt");
   });
 });
