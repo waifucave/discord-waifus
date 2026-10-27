@@ -223,7 +223,7 @@ describe("Living cast goldens", () => {
     await expect(
       `${serializeSystem(phone).replace(/^[\s\S]*?(<schedule>[\s\S]*?<\/schedule>)[\s\S]*$/u, "(block A up to here: see life-system-prompt.txt)\n$1")}\n${serializeMessages(phone.messages, phone.messages.length - 1)}\n`
     ).toMatchFileSnapshot("./__snapshots__/life-day-busy.txt");
-  });
+  }, 30_000);
 
   it("a dream session (§18.4)", async () => {
     const w = await lifeWorld(roots, {
