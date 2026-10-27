@@ -2812,6 +2812,14 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 - The detector's availability is `busy` during a block (weight ×1, §4.3) from the file.
 - The time line shows `busy: <why> until HH:MM` from the file; `availability.busy` is no longer read anywhere.
 
+- **Staying in a conversation while busy** (owner addition, 2026-10-27): once something that gets
+  through (S4) has woken her in a place and she **sends a message there**, that place is *open* for
+  her for `life.busyEngagedMinutes` (default 10) after her latest send there: wakes that would be
+  held in that place (a detector pick, a chime-in, a follow-up) get through, so she can keep
+  chatting. Every send of hers there extends it. When it lapses she is back to busy in that place
+  and only S4 wakes (a mention, a reply, her name, a DM) reach her again. Other places stay held.
+  The open places are kept in her life state (survive a restart) and end with the busy block.
+
 ### 21.5 Prompt
 
 - `<schedule>` renders the sleep line and today's plan from the file (busy blocks with why, phone checks, mood, plans, note), or "No plan for today yet." It is part of block A (snapshotted per epoch, §21.3 compaction refreshes it). `scheduleInPrompt = false` keeps it out of the prompt (the file still works).
@@ -2821,7 +2829,7 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 
 - Tools: `ScheduleWake` writes `~/life/reminders.json`; `WatchFor` `~/life/watches.json`; descriptions updated. Path rules, special files, the files index (provenance entries' paths), pending Bash change sets, forget scrub rules (reminders/watches as today; `schedule.json` text fields scrubbed like notes), "never attached by SendMessage" (all of `~/life/`), and dreaming: **dreaming leaves `~/life/` alone** (it tidies notes and `MEMORY.md` only).
 - `places.md` is generated at `~/life/places.md` (read-only as today).
-- API/CLI/dashboard: her files, reminders and watches routes keep their URLs but read the new paths; Life → Files shows `life/`; the Cast editor drops busy blocks (sleep stays); the settings registry drops `availability.busy`; `life.dayStartHourLocal` (default 8) is added.
+- API/CLI/dashboard: her files, reminders and watches routes keep their URLs but read the new paths; Life → Files shows `life/`; the Cast editor drops busy blocks (sleep stays); the settings registry drops `availability.busy`; `life.dayStartHourLocal` (default 8) and `life.busyEngagedMinutes` (default 10) are added.
 - Migration (`living-cast-life-folder-v1`, once): per waifu move `home/schedule.json` → `home/life/reminders.json`, `home/watches.json`, `home/profile.json`, `home/places.md` → `home/life/`, rewriting files-index paths; a name collision is resolved by keeping the newer file and archiving the other under `user/.archive/living-cast/life-folder/`. A second step archives and drops `availability.busy` from every waifu config (the archive keeps the old blocks). Each life gets a pending epoch start (the harness changed).
 - Prebuilt cast: busy blocks removed; personas keep any wording about routines (she uses it to plan her day).
 
