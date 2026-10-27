@@ -2837,6 +2837,24 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 - Migration (`living-cast-life-folder-v1`, once): per waifu move `home/schedule.json` → `home/life/reminders.json`, `home/watches.json`, `home/profile.json`, `home/places.md` → `home/life/`, rewriting files-index paths; a name collision is resolved by keeping the newer file and archiving the other under `user/.archive/living-cast/life-folder/`. A second step archives and drops `availability.busy` from every waifu config (the archive keeps the old blocks). Each life gets a pending epoch start (the harness changed).
 - Prebuilt cast: busy blocks removed; personas keep any wording about routines (she uses it to plan her day).
 
+### 21.6b Resetting when she wants to (owner addition, 2026-10-27)
+
+- If the final reply of any turn is **only** `<summary>…</summary>` (whitespace around it allowed,
+  nothing else), the text inside is accepted as her summary exactly like an accepted rest turn
+  (§19.4: a new epoch whose log holds only that summary; her home, `/tmp` and `/transcripts`
+  untouched), with epoch reason `self`; the Life screen shows "rested (her choice)". The rest
+  turn's privacy rule (her summary is hidden from the owner's views without a local reveal) applies.
+- Guards (each a setting): the summary is at least `life.restSummaryMinChars` (200); her last
+  request was at least `life.selfSummaryMinRatio` (0.3) × the compaction trigger; at least
+  `life.selfSummaryCooldownMinutes` (120) since her last epoch start. When a guard fails nothing
+  resets and the text stays an ordinary private thought; the next notification's time line says
+  once "(your summary was not used: <reason>)".
+- `<life>` gains: "When you want a fresh start (after big changes to your notes or your day, or when
+  old conversations have run their course), end a turn with only <summary>…</summary>: your context
+  resets to that summary; your home and files stay as they are."
+- Queued wakes wait for the new epoch, as after a rest turn. Tests: accepted, each guard, text
+  outside the tag, privacy, cooldown across restarts, golden for the `<life>` sentence.
+
 ### 21.7 Tests
 
 Migration (moves, collisions, index paths, busy dropped and archived, idempotent re-run); the schedule file's checks (each rule, line and column); the morning wake (notification text, overnight batch after it, compaction `day` after the turn, no-plan path, no-sleep-window hour, boot catch-up); busy holds (each S4 class through or held, release at phone check and block end as one notification, holds survive restart); detector availability and time line from the file; prompt goldens (`<schedule>` with a plan and without, `<life>` sentence, morning notification); forget scrubs `schedule.json` text; dreaming refuses writes under `~/life/`.
