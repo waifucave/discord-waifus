@@ -432,6 +432,34 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     await expect(lifeTool("ReadMessages")!.run({ place: "bake-club/#general", query: "search:tea" }, ctx)).rejects.toThrow("stop");
   });
 
+  it("everywhere names the places its size limit cut, also when nothing matched", async () => {
+    const { SEARCH_LIMITS } = await import("../src/life/tools/messages.js");
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-10-20T00:00:00.000Z");
+    await w.cast.transcripts.start();
+    for (const day of ["21", "22", "23", "24"]) await fedAt(w, `2026-10-${day}T09:00:00.000Z`, ROOM, `tea on day ${day}`);
+    await fedAt(w, "2026-10-24T10:00:00.000Z", RECIPES, "tea cake");
+    w.clock.ms = Date.parse("2026-10-24T14:00:00.000Z");
+    const bytes = SEARCH_LIMITS.bytes;
+    SEARCH_LIMITS.bytes = 1;
+    try {
+      const nothing = text(await read(w, "everywhere", "search:pineapple"));
+      expect(nothing).toMatch(/^no messages match \(searched /u);
+      const cut = nothing.split("\n\n").at(-1)!;
+      expect(cut).toMatch(/^— the search reached its size limit; /u);
+      // The first place read one day before the budget ran out; the other wasn't read at all.
+      expect(cut).toMatch(/not searched: bake-club\/#(general|recipes); searched only in part: bake-club\/#(general|recipes) /u);
+      const found = text(await read(w, "everywhere", "search:tea"));
+      expect(found.split("\n\n").at(-1)).toMatch(/^— the search reached its size limit; /u);
+      // A named place says it in its own section; no extra line.
+      const named = text(await read(w, "bake-club/#general", "search:pineapple"));
+      expect(named).not.toContain("— the search reached its size limit");
+    } finally {
+      SEARCH_LIMITS.bytes = bytes;
+    }
+    expect(text(await read(w, "everywhere", "search:pineapple"))).not.toContain("size limit");
+  });
+
   it("people:Max 5 is a name; the old limit field counts only without a max term; max:100 still says when there is more", async () => {
     const parse = (query: string) => parseReadQuery(query, { now: NOW, timeZone: TZ });
     expect(parse("people:Max 5")).toEqual({ ok: true, query: { people: ["max 5"] } });

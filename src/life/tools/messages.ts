@@ -209,6 +209,10 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
     ids.push(...section.ids);
   }
   if (sections.length === 0) sections.push(search ? search.nothing(query) : "(no messages)");
+  // With `everywhere` a place with no match has no section: one line names the places the size
+  // limit cut (named places say it in their own section).
+  const cut = everywhere ? search?.cutLine() : undefined;
+  if (cut) sections.push(cut);
   if (ids.length > 0) {
     const added = ids.slice(-MAX_READ_IDS_PER_CALL);
     await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, readMessageIds: [...new Set([...current.readMessageIds, ...added])] }));
@@ -393,6 +397,18 @@ async function readPageOf(
  */
 class SearchScope {
   private bytesLeft = SEARCH_LIMITS.bytes;
+  /** Places the limits left unread (none of their days) or read only in part, by handle. */
+  readonly notSearched: string[] = [];
+  readonly partly: string[] = [];
+
+  /** The line saying which places the limits cut, when any (also when nothing matched). */
+  cutLine(): string | undefined {
+    const parts = [
+      ...(this.notSearched.length > 0 ? [`not searched: ${this.notSearched.join(", ")}`] : []),
+      ...(this.partly.length > 0 ? [`searched only in part: ${this.partly.join(", ")}`] : [])
+    ];
+    return parts.length > 0 ? `— the search reached its size limit; ${parts.join("; ")} (add before or after, or name fewer places) —` : undefined;
+  }
 
   private constructor(
     private readonly ctx: ToolContext,
@@ -543,6 +559,7 @@ class SearchScope {
         }
       }
     }
+    if (cut) (scanned.length === 0 ? this.notSearched : this.partly).push(place.handle);
     matched.sort(compareLines);
     if (matched.length === 0 && o.quiet) return undefined;
     const range = (query.before !== undefined && query.after !== undefined) || query.around?.kind === "day";
