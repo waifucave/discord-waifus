@@ -31,10 +31,31 @@ export const CompactionSettingsSchema = z
     keepRecent: fields.keepRecent.default(DEFAULT_COMPACTION_SETTINGS.keepRecent),
     waitTimeoutMs: fields.waitTimeoutMs.default(DEFAULT_COMPACTION_SETTINGS.waitTimeoutMs)
   })
-  // The emergency comes after the rest point (§26).
-  .refine((settings) => settings.emergencyRatio > settings.triggerRatio, { message: "compaction.emergencyRatio must be greater than compaction.triggerRatio", path: ["emergencyRatio"] })
   .default({ ...DEFAULT_COMPACTION_SETTINGS });
 export type CompactionSettings = z.infer<typeof CompactionSettingsSchema>;
+
+// The emergency comes after the rest point (§26). A stored config is never refused for it (before
+// §26 the trigger could be up to 0.95, above the new emergency default): loading moves the emergency
+// above the trigger (`withEmergencyAboveTrigger`); an update that would break it is refused
+// (`CompactionRatiosSchema`, a 400 for `PUT /api/config`).
+
+/** The emergency just above a rest point at or over it: 0.04 higher, at most 0.99. */
+export function emergencyAbove(triggerRatio: number): number {
+  return Math.min(0.99, Math.round((triggerRatio + 0.04) * 100) / 100);
+}
+
+/** The settings with `emergencyRatio` greater than `triggerRatio` (moved up when it is not). */
+export function withEmergencyAboveTrigger<T extends { triggerRatio: number; emergencyRatio: number }>(settings: T): T {
+  return settings.emergencyRatio > settings.triggerRatio ? settings : { ...settings, emergencyRatio: emergencyAbove(settings.triggerRatio) };
+}
+
+/** What an update must satisfy: the emergency above the rest point. */
+export const CompactionRatiosSchema = z
+  .object({ triggerRatio: z.number(), emergencyRatio: z.number() })
+  .refine((settings) => settings.emergencyRatio > settings.triggerRatio, {
+    message: "compaction.emergencyRatio must be greater than compaction.triggerRatio",
+    path: ["emergencyRatio"]
+  });
 
 // Per-server partial override: every key optional, no defaults.
 export const CompactionOverrideSchema = z.object({

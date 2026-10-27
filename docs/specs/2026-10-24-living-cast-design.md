@@ -3382,13 +3382,18 @@ only when that failed or there is no room left:
   the trigger) and the §21.6b guard (`selfSummaryMinRatio` × the trigger) stay relative to the rest
   point.
 - **Setting**: `compaction.emergencyRatio` (0.35–0.99, default 0.9) in the compaction settings
-  (`src/shared/schemas/compaction.ts`); the schema refuses a value not greater than `triggerRatio`
-  (a `refine` on the compaction object, so `PUT /api/config` answers 400). It is app-wide only
-  (per-server compaction overrides do not take it). The registry help for `compaction.triggerRatio`
+  (`src/shared/schemas/compaction.ts`). An update that leaves it not greater than `triggerRatio` is
+  refused (`mergeAppConfigPatch` checks `CompactionRatiosSchema`: a 400 for `PUT /api/config`, an
+  error for `waifus set`), but a stored config never stops the host: `loadAppConfig` moves the
+  emergency to `emergencyAbove(triggerRatio)` (+0.04, at most 0.99) when it is not above the trigger
+  (a trigger up to 0.95 was valid before §26). It is app-wide only (per-server compaction overrides
+  do not take it). The registry help for `compaction.triggerRatio`
   now calls it the rest point.
 - **Migration**: `living-cast-drop-rest-notice-ratio-v1` (`migrationSteps/livingCastRestNoticeRatio.ts`,
   once, after `living-cast-bed-time-v1`, before the schema stamp) deletes `life.restNoticeRatio` from
-  `config.toml`, copying the file first to `user/.archive/living-cast/rest-notice-ratio/config.toml`
+  `config.toml` and, when `compaction.triggerRatio` is 0.9 or more with no `emergencyRatio`, writes
+  `emergencyRatio = emergencyAbove(triggerRatio)`, copying the file first to
+  `user/.archive/living-cast/rest-notice-ratio/config.toml`
   (its own path: the L2 step's `config.toml` copy already exists on upgraded hosts). The key is gone
   from the schema, the registry, the CLI and the Settings form.
 - **Life screen**: `boundaryReasonLabel` says "rested (…)" for `rest`, `cache_rest` and `self`, and

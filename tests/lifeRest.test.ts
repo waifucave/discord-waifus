@@ -16,6 +16,7 @@ vi.mock("../src/life/request.js", async (importOriginal) => {
 import { autoCompactionRatio, REST_NOTICE, REST_REFUSED_RESULT, REST_SUMMARY_FRAME } from "../src/life/lifeLoop.js";
 import { boundaryReasonLabel, lastEpochWord } from "../src/frontend/screens/lifeView.js";
 import { AppConfigSchema, DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
+import { mergeAppConfigPatch } from "../src/config/appConfig.js";
 import { readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { lifeBudget } from "../src/life/request.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
@@ -308,11 +309,11 @@ describe("the rest notice is the norm, auto-compaction the emergency (§26)", ()
     expect(autoCompactionRatio({ ...config, life: { ...config.life, restNotice: false } })).toBe(0.7);
   });
 
-  it("compaction.emergencyRatio defaults to 0.9 and must be greater than compaction.triggerRatio", () => {
+  it("compaction.emergencyRatio defaults to 0.9; an update must keep it greater than compaction.triggerRatio", () => {
     expect(AppConfigSchema.parse({}).compaction).toMatchObject({ triggerRatio: 0.7, emergencyRatio: 0.9 });
-    expect(() => AppConfigSchema.parse({ compaction: { triggerRatio: 0.8, emergencyRatio: 0.8 } })).toThrow(/emergencyRatio/u);
-    expect(() => AppConfigSchema.parse({ compaction: { emergencyRatio: 0.6 } })).toThrow(/emergencyRatio/u);
-    expect(AppConfigSchema.parse({ compaction: { triggerRatio: 0.6, emergencyRatio: 0.95 } }).compaction.emergencyRatio).toBe(0.95);
+    expect(() => mergeAppConfigPatch(DEFAULT_APP_CONFIG, { compaction: { triggerRatio: 0.8, emergencyRatio: 0.8 } })).toThrow(/emergencyRatio/u);
+    expect(() => mergeAppConfigPatch(DEFAULT_APP_CONFIG, { compaction: { emergencyRatio: 0.6 } })).toThrow(/emergencyRatio/u);
+    expect(mergeAppConfigPatch(DEFAULT_APP_CONFIG, { compaction: { triggerRatio: 0.6, emergencyRatio: 0.95 } }).compaction.emergencyRatio).toBe(0.95);
     expect("restNoticeRatio" in AppConfigSchema.parse({}).life).toBe(false);
   });
 

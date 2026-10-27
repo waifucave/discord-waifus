@@ -139,7 +139,7 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | | `life.bedDozeMinutes` | 60 | Dozing before asleep (0 = hard sleep) |
 | Context | `life.maxContextTokens` | 96,000 | Budget cap |
 | | `compaction.triggerRatio` | 0.7 | The rest point: her rest notice (with `life.restNotice` off, compaction) |
-| | `compaction.emergencyRatio` | 0.9 | Emergency summary: auto-compaction between turns (must be > `triggerRatio`) |
+| | `compaction.emergencyRatio` | 0.9 | Emergency summary: auto-compaction between turns (an update must keep it > `triggerRatio`; a stored config with it at or below the trigger loads with it moved to the trigger + 0.04, at most 0.99, and the upgrade writes that for a trigger of 0.9 or more) |
 | | `life.maxLogMessages` | 400 | Log-length trigger |
 | | `life.maxInlineImagesPerEpoch` / `…BytesPerEpoch` | 8 / 12 MiB | Inline images |
 | Rest | `life.restNotice` / `restSummaryMinChars` | true / 200 | Rest turn (`life.restNoticeRatio` was removed in §26) |

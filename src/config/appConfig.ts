@@ -7,6 +7,7 @@ import {
   UpdateAppConfigBodySchema,
   type UpdateAppConfigBody
 } from "../shared/schemas/config.js";
+import { CompactionRatiosSchema, withEmergencyAboveTrigger } from "../shared/schemas/compaction.js";
 import { atomicWriteText } from "../storage/atomic.js";
 import { resolveDataPath } from "./paths.js";
 
@@ -14,8 +15,9 @@ export async function loadAppConfig(dataRoot: string): Promise<AppConfig> {
   const configPath = resolveDataPath(dataRoot, "config.toml");
   try {
     const raw = await readFile(configPath, "utf8");
-    const parsed = parse(raw);
-    return AppConfigSchema.parse(parsed);
+    const parsed = AppConfigSchema.parse(parse(raw));
+    // Never refuse to start over the compaction ratios (§26): the emergency moves above the trigger.
+    return { ...parsed, compaction: withEmergencyAboveTrigger(parsed.compaction) };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return DEFAULT_APP_CONFIG;
@@ -48,7 +50,7 @@ export function mergeAppConfigPatch(
   const life: Record<string, unknown> = { ...current.life, ...patch.life };
   // An explicit null unsets the dream model (the dream uses her own model again).
   if (patch.life && Object.prototype.hasOwnProperty.call(patch.life, "dreamModel") && patch.life.dreamModel === null) delete life["dreamModel"];
-  return AppConfigSchema.parse({
+  const merged = AppConfigSchema.parse({
     ...current,
     ...patch,
     http: { ...current.http, ...patch.http },
@@ -77,6 +79,9 @@ export function mergeAppConfigPatch(
     detector: { ...current.detector, ...patch.detector },
     updates: { ...current.updates, ...patch.updates }
   });
+  // An update never leaves the emergency at or below the rest point (§26): a ZodError, so a 400.
+  CompactionRatiosSchema.parse(merged.compaction);
+  return merged;
 }
 
 export async function updateAppConfig(
