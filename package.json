@@ -68,11 +68,11 @@
   },
   "license": "MIT",
   "optionalDependencies": {
-    "@waifucave/ts-connect-darwin-arm64": "0.1.16",
-    "@waifucave/ts-connect-win32-x64": "0.1.16",
-    "@waifucave/ts-connect-win32-arm64": "0.1.16",
-    "@waifucave/ts-connect-linux-x64": "0.1.16",
-    "@waifucave/ts-connect-linux-arm64": "0.1.16"
+    "@waifucave/ts-connect-darwin-arm64": "0.1.17",
+    "@waifucave/ts-connect-win32-x64": "0.1.17",
+    "@waifucave/ts-connect-win32-arm64": "0.1.17",
+    "@waifucave/ts-connect-linux-x64": "0.1.17",
+    "@waifucave/ts-connect-linux-arm64": "0.1.17"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
