@@ -62,28 +62,24 @@ describe("detector question (§4.3)", () => {
 });
 
 describe("the anyone draw and the fallback (§4.3)", () => {
-  it("weights awake ×3, busy ×1, asleep or over budget ×0, and longer since she spoke is likelier", () => {
-    const members = [
-      { waifuId: "asleep", availability: "unavailable" as const },
-      { waifuId: "busy", availability: "busy" as const, minutesSinceSpoke: 600 },
-      { waifuId: "awake", availability: "awake" as const, minutesSinceSpoke: 600 }
-    ];
-    const counts = new Map<string, number>();
-    for (let index = 0; index < 400; index += 1) {
-      const chosen = drawAnyone(members, () => (index + 0.5) / 400)!;
-      counts.set(chosen, (counts.get(chosen) ?? 0) + 1);
-    }
-    expect(counts.get("asleep")).toBeUndefined();
-    expect(counts.get("awake")! / counts.get("busy")!).toBeCloseTo(3, 0);
-    // Recency: equally available, the one silent longer wins most draws.
+  it("draws among the cast members who are around (§24), each ×3, longer since she spoke likelier", () => {
+    // Equally around, the one silent longer wins most draws.
     const recency = [
-      { waifuId: "just-spoke", availability: "awake" as const, minutesSinceSpoke: 0 },
-      { waifuId: "quiet", availability: "awake" as const, minutesSinceSpoke: 300 }
+      { waifuId: "just-spoke", minutesSinceSpoke: 0 },
+      { waifuId: "quiet", minutesSinceSpoke: 300 }
     ];
     let quiet = 0;
     for (let index = 0; index < 100; index += 1) if (drawAnyone(recency, () => (index + 0.5) / 100) === "quiet") quiet += 1;
     expect(quiet).toBeGreaterThan(70);
-    expect(drawAnyone([{ waifuId: "x", availability: "unavailable" }], () => 0.5)).toBeUndefined();
+    // Same recency, same weight: no availability weighting any more.
+    const counts = new Map<string, number>();
+    for (let index = 0; index < 400; index += 1) {
+      const chosen = drawAnyone([{ waifuId: "a", minutesSinceSpoke: 600 }, { waifuId: "b", minutesSinceSpoke: 600 }], () => (index + 0.5) / 400)!;
+      counts.set(chosen, (counts.get(chosen) ?? 0) + 1);
+    }
+    expect(counts.get("a")).toBe(200);
+    // Nobody around: nobody is drawn.
+    expect(drawAnyone([], () => 0.5)).toBeUndefined();
   });
 
   it("falls back to anyone only for a question or the first human message in 10 minutes", () => {

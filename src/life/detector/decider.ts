@@ -8,6 +8,8 @@
 // never wakes her).
 // `chime_in` (asked only when some cast member is awake and the room's chime-in interval allows it):
 // `waifu_<i>` for each awake cast member, or `nobody`; used only when the addressee is `human`.
+// The cast is only the waifus who are around in that place (§24): awake, or busy / in her bed time
+// with the place open for her; the others are left out of every choice and the `anyone` draw.
 // The state is the one-shot state shape trimmed: date, now, the cast (option, id, names, persona
 // ≤ 300 chars, availability) and the last 12 messages (OCR text included, `replyTo` naming the author
 // a Discord reply answers, ≤ 8,000 characters, newest kept). Targets are the existing native-choice
@@ -26,8 +28,13 @@ export const DETECTOR_MAX_MESSAGES = 12;
 export const DETECTOR_MAX_CHAT_CHARS = 8_000;
 /** At most one chime-in per room (channel or thread) in this window, counted from when one was routed (owner decision). */
 export const CHIME_IN_INTERVAL_MS = 10 * 60_000;
+/** The history's choice when no cast member was around in the place (§24): no question was asked. */
+export const NOBODY_AROUND = "nobody_around";
 
-/** Her availability now (§4.5): over her daily budget counts as `asleep` (she cannot act). */
+/**
+ * Her availability in the state. Production only offers cast members who are around in the place
+ * (§24), always `awake`; the other values remain for the decision benchmark's older cases.
+ */
 export type DetectorAvailability = "awake" | "busy" | "asleep";
 
 export type DetectorCastMember = { waifuId: string; names: string[]; persona: string; availability?: DetectorAvailability };
@@ -245,17 +252,15 @@ export class AddresseeDetector {
   }
 }
 
-/** The weighted `anyone` draw (§4.3): availability (awake ×3, busy ×1, asleep or over budget ×0) × recency. */
-export function drawAnyone(
-  members: Array<{ waifuId: string; availability: "awake" | "busy" | "unavailable"; minutesSinceSpoke?: number }>,
-  random: () => number
-): string | undefined {
+/**
+ * The weighted `anyone` draw (§4.3, §24): over the cast members who are around in the place (the
+ * caller leaves the others out), each ×3 × recency.
+ */
+export function drawAnyone(members: Array<{ waifuId: string; minutesSinceSpoke?: number }>, random: () => number): string | undefined {
   const weights = members.map((member) => {
-    const base = member.availability === "awake" ? 3 : member.availability === "busy" ? 1 : 0;
     // Longer since she last spoke in this place is likelier (never spoke = the longest).
     const minutes = member.minutesSinceSpoke ?? 24 * 60;
-    const recency = 1 + Math.log1p(Math.max(0, minutes) / 10);
-    return base * recency;
+    return 3 * (1 + Math.log1p(Math.max(0, minutes) / 10));
   });
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   if (total <= 0) return undefined;
@@ -264,7 +269,7 @@ export function drawAnyone(
     roll -= weights[index]!;
     if (roll < 0) return members[index]!.waifuId;
   }
-  return [...members].reverse().find((_member, index) => weights[members.length - 1 - index]! > 0)?.waifuId;
+  return members[members.length - 1]?.waifuId;
 }
 
 /** §4.3 fallback without a target or on failure: `anyone` only for the first human message in 10 minutes or a question. */

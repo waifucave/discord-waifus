@@ -62,6 +62,27 @@ export async function availabilityFor(deps: Pick<LifeDeps, "storage" | "config" 
   return availabilityAt(waifu.availability, now, deps.timeZone, { day: await dayPlanFor(deps, waifu), bed: bedContextOf(deps, current) });
 }
 
+/** Why the detector leaves her out of a place (§24): busy, in her bed time (up late or dozing), asleep. */
+export type NotAroundReason = "busy" | "bed time" | "asleep";
+
+/**
+ * Is she around in this place for the addressee detector (§24)? Awake (no busy block, outside her
+ * bed time) she is; busy, only where the place is open for her (`busyOpen`, as the router reads it,
+ * §21.4); up late or dozing in her bed time, only where she sent in the last
+ * `life.busyEngagedMinutes` (§21.6c); asleep, never.
+ */
+export async function aroundIn(deps: Pick<LifeDeps, "storage" | "config" | "timeZone">, waifu: WaifuConfig, placeKey: string, now: Date): Promise<{ around: true } | { around: false; why: NotAroundReason }> {
+  const state = await readLifeState(deps.storage, waifu.id);
+  const availability = await availabilityFor(deps, waifu, now, state);
+  if (availability.state === "asleep") return { around: false, why: "asleep" };
+  if (availability.bed) return sentRecently(state.recentSends, placeKey, now, deps.config().life.busyEngagedMinutes) ? { around: true } : { around: false, why: "bed time" };
+  if (availability.state === "busy") {
+    const busy = busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone);
+    return busy && placeOpen(state.busyOpen, placeKey, now, busy.end) ? { around: true } : { around: false, why: "busy" };
+  }
+  return { around: true };
+}
+
 /**
  * She sent a message in a place: her last send (`lastSentAt`, her bed time's clock, §21.6c) and the
  * place's latest send (`recentSends`, kept for `life.busyEngagedMinutes`) are recorded. While she is

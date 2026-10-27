@@ -21,15 +21,17 @@ describe("addressee cases", () => {
     expect(expectedChoices(addresseeQuestion("laya:english", ADDRESSEE_CASES[1]!), ADDRESSEE_CASES[1]!)).toEqual(["waifu_1"]);
   });
 
-  it("leave a waifu author out of the cast, and offer chime-in only to awake cast members", () => {
+  it("leave a waifu author and anyone not around out of the cast (§24); chime-in is offered to the rest", () => {
     const byId = (id: string) => ADDRESSEE_CASES.find((sample) => sample.id === id)!;
     const authored = addresseeQuestion("openrouter:typesafe/jev-1.14", byId("WA2"));
     expect(authored.candidates.map((member) => member.waifuId)).toEqual(["mina", "yuki"]);
     expect(expectedChoices(authored, byId("WA2"))).toEqual(["waifu_0"]);
     const asleep = addresseeQuestion("openrouter:typesafe/jev-1.14", byId("C04"));
-    expect(Object.keys(asleep.questions["chime_in"]!.criteria)).toEqual(["waifu_1", "waifu_2", "nobody"]);
-    expect(notAwakeChoices(asleep)).toEqual(["waifu_0"]);
+    expect(asleep.candidates.map((member) => member.waifuId)).toEqual(["mina", "yuki"]);
+    expect(Object.keys(asleep.questions["chime_in"]!.criteria)).toEqual(["waifu_0", "waifu_1", "nobody"]);
+    expect(notAwakeChoices(asleep)).toEqual([]);
     expect(expectedChimeChoices(asleep, byId("C04"))).toEqual(["nobody"]);
+    expect(addresseeQuestion("openrouter:typesafe/jev-1.14", byId("C06")).candidates.map((member) => member.waifuId)).toEqual(["aria", "yuki"]);
     expect(expectedChimeChoices(addresseeQuestion("openrouter:typesafe/jev-1.14", byId("C01")), byId("C01"))).toEqual(["waifu_0"]);
     for (const sample of ADDRESSEE_CASES) {
       const question = addresseeQuestion("openrouter:typesafe/jev-1.14", sample);

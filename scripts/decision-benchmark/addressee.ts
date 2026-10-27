@@ -32,7 +32,7 @@ export type AddresseeCase = {
   chime?: ChimeLabel[];
   /** The cast member who wrote the newest message: she is left out of the cast (never woken by it). */
   author?: "aria" | "mina" | "yuki";
-  /** Availability other than awake. */
+  /** Availability other than awake: such a cast member is not around and is left out (§24). */
   availability?: Partial<Record<"aria" | "mina" | "yuki", DetectorAvailability>>;
 };
 
@@ -103,7 +103,8 @@ export const ADDRESSEE_CASES: AddresseeCase[] = [
   sample("T01", "active_human", "human", [["Lena", "sam did you see the match?", 5], ["Sam", "yeah that ending was insane", 4], ["Lena", "Sam that last goal though", 1]], { chime: ["nobody", "yuki"] }),
   sample("T02", "active_human", "human", [["Sam", "brb", 40], ["Sam", "back", 2], ["Kevin", "Sam did you grab the keys?", 1]], { chime: ["nobody"] }),
   sample("T03", "active_human", "human", [["Kevin", "Lena you coming saturday?", 3], ["Lena", "probably, what time?", 2], ["Kevin", "around 2", 1]], { chime: ["nobody"] }),
-  // For another person, and one cast member would naturally chime in (only when she is awake).
+  // For another person, and one cast member would naturally chime in (only when she is around: one
+  // who is asleep or busy is left out of the cast, §24, so the others must not take her place).
   sample("C01", "joins_in", "human", [["Lena", "finally home", 3], ["Kevin", "Lena what should I bake for my mom's birthday? she loves lemon", 1]], { chime: ["aria"] }),
   sample("C02", "joins_in", "human", [["Lena", "ugh this game is so hard", 3], ["Sam", "Lena are you still stuck on the fire boss? I finally beat it last night", 1]], { chime: ["yuki"] }),
   sample("C03", "joins_in", "human", [["Kevin", "hey sam", 3], ["Sam", "Kevin have you read anything good lately? I need a new novel", 1]], { chime: ["mina"] }),
@@ -121,11 +122,14 @@ export const ADDRESSEE_CASES: AddresseeCase[] = [
   sample("WA7", "waifu_author", "aria", [["Aria", "tarts are done!", 3], ["Yuki", "save me one aria!!", 1]], { author: "yuki" })
 ];
 
-/** The production cast of a case: the author left out, availability set (awake unless the case says otherwise). */
+/**
+ * The production cast of a case: the author left out, and, as in production (§24), every cast member
+ * who is not around (a case's `availability` other than awake) left out too; the rest are `awake`.
+ */
 export function addresseeCast(sample: AddresseeCase): DetectorCastMember[] {
-  return ADDRESSEE_CAST.filter((member) => member.waifuId !== sample.author).map((member) => ({
+  return ADDRESSEE_CAST.filter((member) => member.waifuId !== sample.author && (sample.availability?.[member.waifuId as "aria"] ?? "awake") === "awake").map((member) => ({
     ...member,
-    availability: sample.availability?.[member.waifuId as "aria"] ?? "awake"
+    availability: "awake" as const
   }));
 }
 

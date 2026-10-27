@@ -69,7 +69,11 @@ reach her), then *dozing* until `life.bedDozeMinutes` (60) after the later of th
 and her last send (like busy, but what waits is kept for the morning), then *asleep*: only her own
 reminders and the owner's wakes reach her, a DM gets the sleep notice once per bed time, and
 everything else waits for the morning wake at the bed time's end. A send of hers starts the clock
-again. The detector counts her up late as awake, dozing as busy and asleep as asleep.
+again. The addressee detector only offers waifus who are around in that place: awake, or busy or
+up late or dozing in a place she sent to in the last `life.busyEngagedMinutes` (she joined in
+there). The others (busy, in bed time, asleep or over budget) are left out of its choices and of
+its "anyone" draw; when nobody is around, a message for "anyone" wakes nobody. The detector history
+lists who was left out and why (`leftOut`).
 
 ## Seeing it
 

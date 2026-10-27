@@ -248,8 +248,10 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   a turn that touched a private chat is hidden).
 - `GET/PUT /api/detector/config` `{target}`: the app-wide addressee detector (`""` = none);
   `GET /api/detector/history?guildId` its recent decisions in one server (`choice`,
-  `probabilities`, `woke`, and when present `authorWaifuId` for a waifu's message and `chimeIn`
-  `{choice, probabilities, woke?}`).
+  `probabilities`, `woke`, and when present `authorWaifuId` for a waifu's message, `chimeIn`
+  `{choice, probabilities, woke?}` and `leftOut` `[{waifuId, why}]`: cast members who were not
+  around there, `why` one of `busy`, `bed time`, `asleep`, `budget`; `choice` is `nobody_around`
+  when nobody was, and no question was asked).
 - `GET /api/owner-notices`: what needs the owner's attention (the notices, unfinished forget jobs,
   migrations that left unreadable data alone, kept copies of unreadable forget records, queued
   forget scrubs, intake pause and marks); `waifus doctor` and `waifus status` show the same.

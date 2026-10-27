@@ -14,6 +14,8 @@ import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_BOT
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
+// Every test here boots, crashes and restarts a world (some run Bash): slow under full-suite load.
+vi.setConfig({ testTimeout: 30_000 });
 afterEach(async () => {
   await closeWorlds();
   for (const root of roots.splice(0)) await removeTempRoot(root);
@@ -190,7 +192,7 @@ describe("crash repair of her file tools (review minors)", () => {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, "call_b.applied"), "{}");
     expect(await repaired(w)).toMatchObject({ content: "[interrupted by a restart] the command ran and its changes were saved" });
-  }, 30_000);
+  });
 });
 
 describe("catch-up never takes a routed message twice (review I3)", () => {

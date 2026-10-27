@@ -3202,3 +3202,31 @@ is available, a message for "anyone" wakes nobody. The previous busy weight (×1
 draw is removed; available waifus keep weight ×3 × recency. Detector history records who was left
 out and why (`busy`, `bed time`, `asleep`). Tests: each state in/out, open place keeps her in, the
 `anyone` draw with nobody available, history entries, the benchmark fixtures updated.
+
+### 24.1 As built (2026-10-27)
+
+- **Who is around** (`busy.ts` `aroundIn`, read by `Intake.runDetector` per place): the same rules the
+  wake router applies, so Jev never offers someone the router would hold or defer there. Awake (no
+  busy block, outside her bed time): around. In a busy block: around only where `busyOpen` has the
+  place for this block (§21.9: opened by a send after a wake that got through there), which is the
+  router's reading of "she joined in first". In her bed time (up late or dozing): around only where
+  `recentSends` has a send within `life.busyEngagedMinutes`; dozing therefore always leaves her out
+  (her last send is older than that by definition). Asleep: never. Over her daily budget she is also
+  left out, with reason `budget` (a fourth reason beside `busy`, `bed time`, `asleep`; before §24 the
+  state called it `asleep`).
+- **The question**: the cast is only the waifus around (the author of a waifu's burst still left
+  out); each is shown `availability: "awake"`, so the `chime_in` instructions and options are
+  unchanged. `all` wakes the waifus around (no longer every cast waifu here), `anyone` draws among
+  them (×3 × recency, `drawAnyone` takes no availability any more); a waifu her watch woke stays a
+  candidate and is still skipped when chosen (D-c).
+- **Nobody around**: no detector call (also no fallback), nothing wakes anyone or is deferred, and
+  the history entry has `choice: "nobody_around"`.
+- **History**: `leftOut: [{ waifuId, why }]` (`why` ∈ `busy | bed time | asleep | budget`), present
+  only when someone was left out. The dashboard needed no change (Rooms shows only the time of the
+  last decision).
+- **Benchmark** (`scripts/decision-benchmark/addressee.ts`): `addresseeCast` leaves a case's
+  non-awake members out, as production does; C04–C06 now check that nobody else chimes in in their
+  place. `notAwakeChoices` is kept (it is always empty now). The recorded live runs are from before.
+- Tests: `tests/lifeWakes.test.ts` "Jev only sees who is around (§24)" (busy with and without an
+  open place, up late here and elsewhere, dozing, asleep, nobody around, budget and `all`),
+  `tests/lifeDetector.test.ts` (the draw), `tests/decisionAddressee.test.ts`.

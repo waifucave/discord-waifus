@@ -64,7 +64,10 @@ everything else, a person's burst or a waifu's own burst (her lines per place, 1
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
 chime-in for 10 minutes (`CHIME_IN_INTERVAL_MS`), `chime_in`; with `human` a chime-in pick gets a soft
-`detector` wake with `chimeIn`; the state carries each member's availability and each line's
+`detector` wake with `chimeIn`; only waifus around in the place are candidates (spec §24, `busy.ts`
+`aroundIn`: awake, or busy / in bed time with the place open for her; the rest are in the history's
+`leftOut` with why; nobody around = no call, choice `nobody_around`; the `anyone` draw is ×3 × recency
+over them); the state carries each line's
 `minutesAgo` (a stale address to someone gone 30+ minutes reads as `anyone`); no loop cap on
 waifu-only rounds beyond the optional room loop guard and daily budgets) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
 per-user wake limit, bed time (§21.6c: asleep, only `reminder` and `owner` get through, the rest is

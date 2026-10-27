@@ -45,9 +45,9 @@ import {
   CHIME_IN_INTERVAL_MS,
   detectorQuestion,
   drawAnyone,
+  NOBODY_AROUND,
   fallbackIsAnyone,
   type DetectorAnswer,
-  type DetectorAvailability,
   type DetectorCastMember,
   type DetectorMessage
 } from "./detector/decider.js";
@@ -61,7 +61,7 @@ import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
 import { fireWatches, type FiredWatch } from "./watches.js";
 import { homeStoreFor } from "./home/index.js";
-import { availabilityFor } from "./busy.js";
+import { aroundIn, type NotAroundReason } from "./busy.js";
 import { TypingHolds, type HoldTiming } from "./intakeHold.js";
 import { newWakeId } from "./wakeQueue.js";
 import { joinMessages } from "./wakeMessages.js";
@@ -590,10 +590,20 @@ export class Intake {
         ...(imageText.some(Boolean) ? { imageText: imageText.filter(Boolean) } : {})
       });
     }
+    // Only the waifus who are around here are offered (§24): the others are left out of every
+    // choice and the `anyone` draw, and the history says why.
     const cast: DetectorCastMember[] = [];
+    const around: WaifuConfig[] = [];
+    const leftOut: Array<{ waifuId: string; why: NotAroundReason | "budget" }> = [];
     for (const waifu of waifus) {
+      const why = await this.notAroundWhy(waifu, placeKey, now);
+      if (why) {
+        leftOut.push({ waifuId: waifu.id, why });
+        continue;
+      }
+      around.push(waifu);
       const names = this.namesOf(waifu, burst.guildId, await selfAuthorIds(deps.storage, waifu));
-      cast.push({ waifuId: waifu.id, names: names.length > 0 ? names : [waifu.name], persona: waifu.persona, availability: await this.availabilityOf(waifu, now) });
+      cast.push({ waifuId: waifu.id, names: names.length > 0 ? names : [waifu.name], persona: waifu.persona, availability: "awake" });
     }
     let choice: string | undefined;
     let probabilities: Record<string, number> = {};
@@ -602,7 +612,10 @@ export class Intake {
     // The chime-in question is only asked while the room's interval allows one (§4.3).
     const chimeAllowed = await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now);
     const question = detectorQuestion({ target: target || "openai:gpt-6-luna", now, timeZone: deps.timeZone, cast, messages, chimeIn: chimeAllowed });
-    if (target && this.o.detector) {
+    if (cast.length === 0) {
+      // Nobody is around here: no question, and nothing wakes anyone (§24).
+      choice = NOBODY_AROUND;
+    } else if (target && this.o.detector) {
       try {
         const answer = await this.o.detector.decide({
           target,
@@ -641,9 +654,9 @@ export class Intake {
     let chosen: string[] = [];
     if (choice.startsWith("waifu_")) chosen = [question.candidates[Number(choice.slice(6))]?.waifuId].filter((id): id is string => Boolean(id));
     else if (choice === "anyone" || choice === "fallback:anyone") {
-      const drawn = await this.drawFor(waifus.filter((waifu) => !watched.has(waifu.id)), conversation, now);
+      const drawn = await this.drawFor(around.filter((waifu) => !watched.has(waifu.id)), conversation, now);
       if (drawn) chosen = [drawn];
-    } else if (choice === "all") chosen = waifus.map((waifu) => waifu.id);
+    } else if (choice === "all") chosen = around.map((waifu) => waifu.id);
     chosen = chosen.filter((id) => !watched.has(id) && id !== authorWaifuId);
     const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
     const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
@@ -692,6 +705,7 @@ export class Intake {
       choice,
       probabilities,
       ...(woke.length > 0 ? { woke } : {}),
+      ...(leftOut.length > 0 ? { leftOut } : {}),
       ...(authorWaifuId ? { authorWaifuId } : {}),
       ...(chimeAnswer ? { chimeIn: { choice: chimeAnswer.choice, probabilities: chimeAnswer.probabilities, ...(chimedIn ? { woke: chimedIn } : {}) } } : {}),
       ...(target ? { target } : {}),
@@ -700,14 +714,13 @@ export class Intake {
     return chimedIn ? [...woke, chimedIn] : woke;
   }
 
-  /** Her availability for the detector's state (§4.5): over her daily budget she counts as asleep. */
-  private async availabilityOf(waifu: WaifuConfig, now: Date): Promise<DetectorAvailability> {
-    // Her bed time counts (§21.6c): up late is awake, dozing busy, asleep asleep.
-    const state = (await availabilityFor(this.deps, waifu, now)).state;
-    if (state === "asleep") return "asleep";
+  /** Why she is not around in this place for the detector (§24); undefined when she is. Over her daily budget she cannot act. */
+  private async notAroundWhy(waifu: WaifuConfig, placeKey: string, now: Date): Promise<NotAroundReason | "budget" | undefined> {
+    const here = await aroundIn(this.deps, waifu, placeKey, now);
+    if (!here.around) return here.why;
     const budget = waifu.life.dailyBudgetUsd;
-    if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) return "asleep";
-    return state;
+    if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) return "budget";
+    return undefined;
   }
 
   /** No chime-in was routed in this room for CHIME_IN_INTERVAL_MS (this process, else the history file). */
@@ -726,18 +739,15 @@ export class Intake {
     }
   }
 
+  /** The `anyone` draw over the waifus who are around (§24), by how long since each spoke here. */
   private async drawFor(waifus: WaifuConfig[], conversation: ConversationRef, now: Date): Promise<string | undefined> {
     const deps = this.deps;
     const buffered = deps.conversations.bufferedMessages(conversation);
     const members = [];
     for (const waifu of waifus) {
-      const state = await availabilityFor(deps, waifu, now);
-      let availability: "awake" | "busy" | "unavailable" = state.state === "awake" ? "awake" : state.state === "busy" ? "busy" : "unavailable";
-      const budget = waifu.life.dailyBudgetUsd;
-      if (availability !== "unavailable" && budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) availability = "unavailable";
       const selfIds = await selfAuthorIds(deps.storage, waifu);
       const last = [...buffered].reverse().find((message) => selfIds.includes(message.authorId));
-      members.push({ waifuId: waifu.id, availability, ...(last ? { minutesSinceSpoke: (now.getTime() - Date.parse(last.createdAt)) / 60_000 } : {}) });
+      members.push({ waifuId: waifu.id, ...(last ? { minutesSinceSpoke: (now.getTime() - Date.parse(last.createdAt)) / 60_000 } : {}) });
     }
     return drawAnyone(members, deps.random);
   }

@@ -443,9 +443,9 @@ describe("addressee detector (§4.3)", () => {
     const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, availability: sleeping }] });
     w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 0.8, nobody: 0.2 } } };
     await say(w, "Sam what should I bake for my mom? she loves lemon");
-    // Only the awake one is offered; the state says who is asleep.
-    expect(w.detector.questions[0]).toEqual({ addressee: ["waifu_0", "waifu_1", "human", "anyone", "all", "none"], chime_in: ["waifu_0", "nobody"] });
-    expect(JSON.parse(w.detector.states[0]!).cast.map((member: { availability: string }) => member.availability)).toEqual(["awake", "asleep"]);
+    // Only the awake one is offered at all (§24): the asleep one is left out of the cast.
+    expect(w.detector.questions[0]).toEqual({ addressee: ["waifu_0", "human", "anyone", "all", "none"], chime_in: ["waifu_0", "nobody"] });
+    expect(JSON.parse(w.detector.states[0]!).cast.map((member: { id: string; availability: string }) => [member.id, member.availability])).toEqual([["ella", "awake"]]);
     const [wake] = (await queued(w, "ella")).immediate;
     expect(wake).toMatchObject({ reason: "detector", chimeIn: true, fromName: "Kevin" });
     const view = { handle: () => "bake-club/#general", unread: () => undefined, timeZone: "UTC" };
@@ -852,5 +852,83 @@ describe("edits and deletes (§4.2, §10.3)", () => {
     const queue = await queued(w, "ella");
     expect(queue.immediate).toHaveLength(200);
     expect(queue.immediate[0]).toMatchObject({ reasons: ["mention", "watch"], count: 2 });
+  });
+});
+
+describe("Jev only sees who is around (§24)", () => {
+  const BED_13_15 = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+  const history = async (w: LifeWorld) =>
+    DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8"))).entries;
+  const minutesAgo = (w: LifeWorld, minutes: number) => new Date(w.clock.ms - minutes * 60_000).toISOString();
+
+  it("busy: left out unless the place is open for her (she joined in there)", async () => {
+    const w = await world();
+    await writeHerFile(w, "life/schedule.json", JSON.stringify({ date: "2026-10-24", busy: [{ from: "13:00", to: "16:00", why: "studio shift" }] }), "mina");
+    w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
+    await say(w, "anyone know a good scone recipe?");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    expect(await reasons(w, "ella")).toEqual(["detector"]);
+    expect(await reasons(w, "mina")).toEqual([]);
+    expect((await history(w)).at(-1)).toMatchObject({ choice: "anyone", woke: ["ella"], leftOut: [{ waifuId: "mina", why: "busy" }] });
+    // She sent here during the block after a wake that got through: the place is open, she is around.
+    await updateLifeState(w.storage, "mina", (state) => ({ ...state, busyOpen: { [ROOM_KEY]: { until: new Date(w.clock.ms + 10 * 60_000).toISOString(), blockEnd: "2026-10-24T16:00:00.000Z" } } }));
+    await say(w, "and what about jam?");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella", "mina"]);
+    expect((await history(w)).at(-1)!.leftOut).toBeUndefined();
+  });
+
+  it("bed time: up late or dozing, only where she sent within life.busyEngagedMinutes; asleep never", async () => {
+    const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, availability: BED_13_15 }] });
+    w.detector.answer = { choice: "none", probabilities: { none: 1 } };
+    // Up late, chatting here: around.
+    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: minutesAgo(w, 2), recentSends: { [ROOM_KEY]: minutesAgo(w, 2) } }));
+    await say(w, "so who's up");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella", "mina"]);
+    // Up late, but chatting somewhere else: not here.
+    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: minutesAgo(w, 2), recentSends: { "dm_300000000000000003_mina": minutesAgo(w, 2) } }));
+    await say(w, "still nobody?");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    expect((await history(w)).at(-1)!.leftOut).toEqual([{ waifuId: "mina", why: "bed time" }]);
+    // Dozing (her last send 20 minutes ago): left out.
+    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: minutesAgo(w, 20), recentSends: { [ROOM_KEY]: minutesAgo(w, 20) } }));
+    await say(w, "hello?");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    expect((await history(w)).at(-1)!.leftOut).toEqual([{ waifuId: "mina", why: "bed time" }]);
+    // Asleep (an hour into her bed time, no send since): left out.
+    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: undefined, recentSends: {} }));
+    await say(w, "ok then");
+    expect((await history(w)).at(-1)!.leftOut).toEqual([{ waifuId: "mina", why: "asleep" }]);
+  });
+
+  it("nobody around: no question, an `anyone` message wakes nobody, and the history says why", async () => {
+    const w = await world({ waifus: TWO.map((waifu) => ({ ...waifu, availability: BED_13_15 })) });
+    w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
+    await say(w, "anyone around?");
+    expect(w.detector.calls).toEqual([]);
+    expect(await reasons(w, "ella")).toEqual([]);
+    expect(await reasons(w, "mina")).toEqual([]);
+    expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places).toEqual({});
+    expect((await history(w)).at(-1)).toMatchObject({
+      choice: "nobody_around",
+      leftOut: [
+        { waifuId: "ella", why: "asleep" },
+        { waifuId: "mina", why: "asleep" }
+      ]
+    });
+    expect((await history(w)).at(-1)!.woke).toBeUndefined();
+  });
+
+  it("over her daily budget she is left out (`budget`); `all` wakes only who is around", async () => {
+    const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, life: { dailyBudgetUsd: 0.5 } }] });
+    const day = w.clock.now().toISOString().slice(0, 10);
+    await mkdir(path.join(w.root, "user/usage"), { recursive: true });
+    await appendFile(path.join(w.root, "user/usage", `${day}.jsonl`), `${JSON.stringify({ at: w.clock.now().toISOString(), waifuId: "mina", purpose: "life", costUsd: 0.75 })}\n`);
+    w.detector.answer = { choice: "all", probabilities: { all: 1 } };
+    await say(w, "what can you all do");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    expect(await reasons(w, "ella")).toEqual(["detector"]);
+    expect(await reasons(w, "mina")).toEqual([]);
+    expect((await readLifeFile(w.storage, "mina", "wakes")).deferred.places).toEqual({});
+    expect((await history(w)).at(-1)).toMatchObject({ choice: "all", woke: ["ella"], leftOut: [{ waifuId: "mina", why: "budget" }] });
   });
 });
