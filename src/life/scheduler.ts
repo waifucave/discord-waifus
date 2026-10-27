@@ -388,6 +388,13 @@ export class Scheduler {
               index === 0 && bedTime.enabled ? `- during your bed time (${bedTime.start}–${bedTime.end}):` : line
             );
       if (dayDue) return dayWake(header.length > 1 ? header : []);
+      // Today's day wake was deferred (her budget ran out before she read it, then rose again): it
+      // comes back as itself, greeting first, so her day compaction still follows (§21.3).
+      const todays = deferred.items.find((item) => item.day === dayKey);
+      if (todays) {
+        const greeting = todays.batch?.find((line) => line.startsWith("[system]"));
+        return { id: todays.id, reason: "morning", day: dayKey, batch: [...(greeting ? [greeting] : []), ...(header.length > 1 ? header : [])], at: now.toISOString() };
+      }
       if (header.length <= 1) return undefined;
       return { id: newWakeId(), reason: "morning", batch: header, at: now.toISOString() };
     });

@@ -155,6 +155,22 @@ describe("the morning wake (§21.3)", () => {
     expect((await queue(w)).immediate).toEqual([]);
   });
 
+  it("a day wake deferred for her budget comes back as the day wake (greeting first, day kept) once she is under budget again", async () => {
+    const { deferImmediate } = await import("../src/life/wakeQueue.js");
+    const w = await lifeWorld(roots, { waifus: [SLEEPER] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    w.clock.ms = at("2026-10-24T09:00:00Z");
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, lastDayStart: "2026-10-24T08:30:00.000Z" }));
+    await enqueueWake(w.storage, "ella", { id: "w-day-2026-10-24", reason: "morning", day: "2026-10-24", batch: ["[system] Good morning, it's Sat 24 Oct."], at: w.clock.now().toISOString() });
+    await deferImmediate(w.storage, "ella", "budget", w.clock.now(), () => false);
+    expect((await queue(w)).immediate).toEqual([]);
+    // The owner raised her budget (there is none here): the next tick releases it.
+    await w.cast.scheduler.tick();
+    const [released] = (await queue(w)).immediate;
+    expect(released).toMatchObject({ id: "w-day-2026-10-24", reason: "morning", day: "2026-10-24" });
+    expect(released!.batch![0]).toBe("[system] Good morning, it's Sat 24 Oct.");
+  });
+
   it("is never folded into a running turn: it opens the next one", async () => {
     let world: LifeWorld | undefined;
     const dayWake: Wake = { id: "w-day-2026-10-24", reason: "morning", day: "2026-10-24", batch: ["[system] Good morning, it's Sat 24 Oct."], at: "2026-10-24T14:00:00.000Z" };
