@@ -261,6 +261,7 @@ describe("/print notes (D14)", () => {
     const w = await lifeWorld(roots, {});
     await dmDownload(w, "# Papers\n- signed on monday\n", "1");
     await homeOf(w, "ella").write("kept/papers.md", "# Papers\n- signed on monday\n");
+    await homeOf(w, "ella").write("people/kevin.md", "# Kevin\n- studies chemistry\n");
     await updateLifeState(w.storage, "ella", (current) => ({
       ...current,
       systemSnapshot: { harnessHash: "h", harness: "<life>block A</life>", memoryIndex: MEMORY, places: "- bake-club/#general", tools: [] }
@@ -270,5 +271,17 @@ describe("/print notes (D14)", () => {
     expect(hidden).not.toContain("Divorce");
     expect(hidden).not.toContain("exam");
     expect(await w.cast.printSystemPrompt("ella", { private: true })).toContain("Divorce papers");
+  });
+
+  it("/print system_prompt treats an index link that no longer resolves as private (her snapshot is older than her files)", async () => {
+    const w = await lifeWorld(roots, {});
+    await updateLifeState(w.storage, "ella", (current) => ({
+      ...current,
+      systemSnapshot: { harnessHash: "h", harness: "<life>block A</life>", memoryIndex: "# Memory\n- [Papers](kept/papers.md) — what Kevin sent me\n- [Me](me.md) — about me\n", places: "", tools: [] }
+    }));
+    await homeOf(w, "ella").write("me.md", "# Me\n");
+    const hidden = await w.cast.printSystemPrompt("ella");
+    expect(hidden).not.toContain("Kevin sent");
+    expect(hidden).toContain("- [Me](me.md) — about me");
   });
 });

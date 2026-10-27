@@ -173,7 +173,9 @@ read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
 Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`,
 her DM transcripts under `/transcripts/dm/`, and an exact copy of one in her home) are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
 a DM is shown without its words, and `watches.json` itself then reads as a redacted, read-only copy
-(changing or deleting it needs the reveal on the host). Over Remote Access, and for the dashboard assistant, they stay
+(changing or deleting it needs the reveal on the host). A note (`.md`) whose lines link to a file from
+a private chat or name a DM reads the same way: those lines are `[private chat redacted]`, the copy is
+read-only, and its `hash` is still the real file's. Over Remote Access, and for the dashboard assistant, they stay
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
 click on its secure dashboard card applies.
 

@@ -48,9 +48,8 @@ import { runDream } from "./dream.js";
 import { OwnerNotices } from "./ownerNotices.js";
 import { IntakeMarks } from "./intakeMarks.js";
 import { homeStoreFor } from "./home/index.js";
-import { markdownLinks, type HomeStore } from "./home/homeStore.js";
 import { MEMORY_INDEX } from "./home/memoryIndex.js";
-import { isDmFolderPath } from "./home/pathRules.js";
+import { privateNoteLines } from "./notesPrivacy.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import { NOTES_INDEX_PRIVATE, printLifeLines, printNotesText, printSystemPromptText } from "./lifeView.js";
@@ -877,7 +876,8 @@ export class LivingCast {
     const state = await readLifeState(this.deps.storage, waifuId);
     if (o.private === true || !state.systemSnapshot) return printSystemPromptText(state, { private: o.private === true });
     const store = homeStoreFor(this.deps, await readWaifu(this.deps.storage, waifuId));
-    return printSystemPromptText(state, { private: false, privateLine: await this.privateNoteLines(store, state.systemSnapshot.memoryIndex) });
+    // The snapshot is older than her files: a link that no longer resolves counts as private.
+    return printSystemPromptText(state, { private: false, privateLine: await privateNoteLines(store, state.systemSnapshot.memoryIndex, { missingIsPrivate: true }) });
   }
 
   /**
@@ -893,20 +893,7 @@ export class LivingCast {
     if (text === undefined || !index.ok) return "(no MEMORY.md yet)";
     if (o.private === true) return text;
     if ((await store.dmOrigin(index.path).catch(() => "unknown")) !== undefined) return NOTES_INDEX_PRIVATE;
-    return printNotesText(text, { private: false, privateLine: await this.privateNoteLines(store, text) });
-  }
-
-  /** Which lines of an index link to one of her files from a private chat (D14); an unreadable files index counts every link as private. */
-  private async privateNoteLines(store: HomeStore, text: string): Promise<(line: string) => boolean> {
-    const filesIndex = await store.readIndex().catch(() => undefined);
-    const privateTargets = new Set<string>();
-    for (const target of new Set(markdownLinks(text))) {
-      const resolved = await store.resolveExisting(target.startsWith("/") || target.startsWith("~") ? target : `~/${target}`).catch(() => undefined);
-      if (!resolved?.ok) continue;
-      const origin = !filesIndex ? "unknown" : isDmFolderPath(resolved.path) ? "dm" : await store.dmOrigin(resolved.path, filesIndex).catch(() => "unknown");
-      if (origin !== undefined) privateTargets.add(target);
-    }
-    return (line) => privateTargets.size > 0 && markdownLinks(line).some((target) => privateTargets.has(target));
+    return printNotesText(text, { private: false, privateLine: await privateNoteLines(store, text) });
   }
 
   /** The last 20 life-log lines; unless `private`, DM content is left out by the §14.4 rule (§10.4, D14). */

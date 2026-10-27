@@ -188,7 +188,8 @@ A file counts as **from a DM** when it is under `/tmp/dm/` (any spelling), or it
 from a DM place, or it is an exact copy of a DM transcript day she was served (`HomeStore.dmOrigin`,
 `recordTranscriptCopies`). Touching one in any tool marks the call as a DM call, so the owner's views
 hide it (D14). In the dashboard/API such a file is listed as `[private chat redacted]` without a path
-and opens only with a local reveal. A copy she changed (an excerpt, her own words) no longer matches
+and opens only with a local reveal; a note's line that links to one (or names a DM) reads
+`[private chat redacted]` in a read-only copy of that note ([privacy-and-forget.md](privacy-and-forget.md)). A copy she changed (an excerpt, her own words) no longer matches
 and is hers.
 
 ## `/tmp` expiry

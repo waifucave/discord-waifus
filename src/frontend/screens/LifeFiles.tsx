@@ -271,7 +271,8 @@ function FileViewer({
         </div>
       )}
       {shown?.readOnly && !shown.redacted && <span className="t-small t-mute">Kept up to date by the app: she can read it, nobody changes it.</span>}
-      {shown?.redacted && <span className="t-small t-mute">A watch here is bound to a private chat, so its words are hidden and the file can't be changed here; reveal private chats on the host to edit it.</span>}
+      {shown?.redacted && shown.special === "watches" && <span className="t-small t-mute">A watch here is bound to a private chat, so its words are hidden and the file can't be changed here; reveal private chats on the host to edit it.</span>}
+      {shown?.redacted && shown.special !== "watches" && <span className="t-small t-mute">Lines from private chats are hidden, so the file can't be changed here; reveal private chats on the host to edit it.</span>}
       {shown?.special && <span className="t-small t-mute">Every save is checked; a problem is shown with its line and column and nothing is saved.</span>}
       {shown?.tooLarge && <span className="t-small t-mute">Too large to edit here.</span>}
       {(editable || shown?.text !== undefined) && draft !== undefined && (

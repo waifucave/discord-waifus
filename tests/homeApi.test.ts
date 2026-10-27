@@ -284,4 +284,39 @@ describe("D14 by any spelling (review S3, S4)", { timeout: 30_000 }, () => {
     await w.home.files.writeBytes(w.home.life("watches.json"), Buffer.from(`[{"id": "w1", "timeout": "${later}", "note": "biopsy", "when": [{"place": "dm/kevin"}]},]`));
     expect((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/ella/files/~/life/watches.json" })).statusCode).toBe(403);
   });
+
+  it("a notes file reads without its lines from private chats unless a local reveal (also for the assistant), read-only, with the real file's hash", async () => {
+    const w = await world();
+    await dmFiles(w);
+    const memory = "# Memory\n- [Kevin](people/kevin.md) — likes lemon cake\n- [Menu](kept-menu.txt) — the brownies he sent\n- talked in dm/kevin about Oslo\n";
+    await w.home.files.writeBytes(w.home.home("MEMORY.md"), Buffer.from(memory));
+    await w.home.files.writeBytes(w.home.path("home", ["people", "kevin.md"]), Buffer.from("# Kevin\n- likes lemon cake\n"));
+    const delegation = { conversationId: "c1" };
+    for (const [principal, via] of [[remote(), undefined], [createLocalRequestPrincipal(), delegation], [createLocalRequestPrincipal(), undefined]] as const) {
+      const answer = await dispatchInternal(w.app, principal, via, { method: "GET", url: "/api/waifus/ella/files/~/MEMORY.md" });
+      expect(answer.statusCode).toBe(200);
+      expect(answer.body).not.toContain("brownies");
+      expect(answer.body).not.toContain("Oslo");
+      const file = HerFileResponseSchema.parse(answer.json());
+      expect(file).toMatchObject({ redacted: true, readOnly: true, private: true });
+      expect(file.text).toBe(`# Memory\n- [Kevin](people/kevin.md) — likes lemon cake\n- ${PRIVATE_FILE_NAME}\n- ${PRIVATE_FILE_NAME}\n`);
+      // The revision is the file on disk, not the copy shown.
+      expect(file.hash).toBe(sha256(memory));
+      const rawBytes = await dispatchInternal(w.app, principal, via, { method: "GET", url: "/api/waifus/ella/files/~/MEMORY.md?raw=1" });
+      expect(rawBytes.body).not.toContain("Oslo");
+    }
+    // A note with nothing private reads as it is.
+    const plainNote = HerFileResponseSchema.parse((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/ella/files/~/people/kevin.md" })).json());
+    expect(plainNote.redacted).toBeUndefined();
+    expect(plainNote.readOnly).toBeUndefined();
+    // Writing the redacted copy back, or deleting the file, would lose her private lines: refused.
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "PUT", url: "/api/waifus/ella/files/~/MEMORY.md", headers: { "idempotency-key": Buffer.alloc(32, 0x63).toString("base64url") }, payload: { text: "# Memory\n", expectedHash: sha256(memory) } })).statusCode).toBe(403);
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "DELETE", url: `/api/waifus/ella/files/~/MEMORY.md?expectedHash=${sha256(memory)}`, headers: { "idempotency-key": Buffer.alloc(32, 0x64).toString("base64url") } })).statusCode).toBe(403);
+    // Locally with the reveal: the whole file, editable with the same hash.
+    const local = HerFileResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/files/~/MEMORY.md?includePrivate=1" })).json());
+    expect(local.text).toBe(memory);
+    expect(local.redacted).toBeUndefined();
+    expect(local.hash).toBe(sha256(memory));
+    expect((await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/MEMORY.md?includePrivate=1", payload: { text: "# Memory\n", expectedHash: local.hash } })).statusCode).toBe(200);
+  });
 });

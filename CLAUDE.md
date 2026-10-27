@@ -367,7 +367,9 @@ PUT shim in `src/api/server.ts`.
 (status, log, wake, compact, reset, needs-review); her files, reminders and watches in
 `src/api/homeRoutes.ts` (§16.11: list/read/`?raw=1` bytes/PUT/DELETE through her `HomeStore`, so the
 API is held to her Write tool's checks; revision by content hash; a DM-origin file is unnamed in
-listings and opens only with a local `includePrivate=1`; assistant writes need the card's pending
+listings and opens only with a local `includePrivate=1`; a `.md` note with lines from private chats
+reads, without it, as a read-only copy with those lines redacted (`src/life/notesPrivacy.ts`, the
+`/print notes` rule; `hash` stays the file's own, PUT/DELETE need the reveal); assistant writes need the card's pending
 action id); cast-wide routes in `src/api/castRoutes.ts` (usage
 from the ledger by local day via `src/orchestration/usageReport.ts`, search usage, detector config and
 history, forget jobs, owner notices from `src/backend/castHealth.ts`); request and response schemas in

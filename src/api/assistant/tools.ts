@@ -1036,7 +1036,8 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Read one of a waifu's files by path (`~/people/kevin.md`, `/home/<name>/MEMORY.md`, `/tmp/…`, `/transcripts/<server>/<room>/<day>.md`; a relative path " +
       "is under her home). Text files come back with their text and a hash; images and PDFs only with their size and " +
-      "type (the owner opens them in the dashboard). Files from private chats are refused.",
+      "type (the owner opens them in the dashboard). Files from private chats are refused; a note's lines from private chats " +
+      "come back as [private chat redacted] and that file is then read-only for you.",
     parameters: {
       type: "object",
       properties: { waifuId: { type: "string" }, path: { type: "string" } },
