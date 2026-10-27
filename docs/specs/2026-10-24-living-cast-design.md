@@ -2790,7 +2790,11 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 
 - `date` (her local date, required); `mood` (≤ 200 chars); `busy` (≤ 12 blocks, `HH:MM` local, `from` < `to`, no overlaps, inside her waking hours, `why` ≤ 120 chars); `phoneChecks` (≤ 24 times, inside a busy block to matter; outside one they are harmless); `plans` (≤ 20, optional `at`, `what` ≤ 200 chars; informational, she sets reminders herself if she wants a wake); `note` (≤ 500 chars). Unknown keys are refused.
 - A special file like `watches.json` (strict JSON with line and column, written through `homeStore`, a stale whole-file Write gets "changed since you read it"). A file whose `date` is not today counts as **no plan today** (no busy blocks); it is never deleted, she overwrites it.
-- **Live**: the wake router, the detector's availability and her time line read the file on every use. Her own edits during the day take effect at once there; the system prompt's copy updates at the next compaction (no forced compaction for a midday edit).
+- **Live**: the wake router, the detector's availability and her time line read the file on every use. Her own edits during the day take effect at once there; the system prompt's copy updates at the next compaction (no forced compaction for a midday edit). A successful
+  Write, Edit or Bash change of `~/life/schedule.json` **or `MEMORY.md`** (both have a copy in her
+  system prompt) adds to its tool result: "The copy of <file> in your system prompt still shows the
+  old version; it updates at your next summary. The file itself is current." (owner addition,
+  2026-10-27; once per file per turn).
 - Sleep stays the owner's (`availability.sleep`); she cannot set sleep in this file.
 
 ### 21.3 The morning wake
