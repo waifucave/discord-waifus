@@ -157,7 +157,11 @@ fires reminders from her file (routed under a deterministic wake id before remov
 timeouts (`watch_timeout`), releases held wakes at her phone checks, refreshes `places.md` (≤1/min;
 also at every turn start), expires `/tmp` (first tick, then hourly), sends the day wake when her
 bed time ends (else at `life.dayStartHourLocal`; id `w-day-<date>`: the greeting asking her to
-write `~/life/schedule.json`, then the overnight batch; never folded mid-turn; the turn after it
+write `~/life/schedule.json`, then the overnight batch (spec §23, `notifications.ts` `morningBatch`: DMs
+one line per message with time, ref and preview, rooms by most mentions with the night's span and one
+line per message that addressed her, watch matches with their message's time and ref; at most
+`life.morningLinesPerPlace` per DM or room, the first saying `+N earlier`; the lines come from
+`wakes.json` `deferred.places[*].lines`, the newest 50 per place, refs via `messageRefs.ts`); never folded mid-turn; the turn after it
 sets `dayCompactionDue`, so the next cycle compacts with reason `day` (an epoch of at most three
 turns is kept whole, no summary) and block A shows today's plan; the harness hash leaves the plan out, so midday edits never force a compaction) and starts
 maintenance once she has been asleep `life.dreamAfterAsleepMinutes` in her bed time (once per bed

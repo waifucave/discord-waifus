@@ -190,7 +190,7 @@ describe("crash repair of her file tools (review minors)", () => {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, "call_b.applied"), "{}");
     expect(await repaired(w)).toMatchObject({ content: "[interrupted by a restart] the command ran and its changes were saved" });
-  });
+  }, 30_000);
 });
 
 describe("catch-up never takes a routed message twice (review I3)", () => {

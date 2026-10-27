@@ -2,9 +2,13 @@
 --- text ---
 <notifications>
 - during your bed time (13:00–15:00):
-  · bake-club/#general: 1 mention, 1 message
-  · DMs: Kevin (3 messages)
-  · watch matched · bake-club/#general · "brownie" · from Mina · your note: "Mina wanted brownie tips"
+  · DMs:
+    · dm/kevin · 14:00 #a0 "hey"
+    · dm/kevin · 14:00 #a1 "are you up?"
+    · dm/kevin · 14:00 #a2 "ok sleep well"
+  · bake-club/#general: 1 mention, 1 message (14:00)
+    · mention · 14:00 #a0 from Kevin "<@Ella> you awake?"
+  · watch matched · bake-club/#general · "brownie" · from Mina · 14:00 #a1 · your note: "Mina wanted brownie tips"
   · watch timed out (Sat 14:20) · your note: "check if the bake sale flyer is up"
 </notifications>
 --- text ---

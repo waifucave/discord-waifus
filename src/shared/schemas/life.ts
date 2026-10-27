@@ -280,7 +280,15 @@ export const DeferredPlaceSchema = z.object({
   detector: z.number().int().nonnegative().default(0),
   fromUserIds: z.array(z.string()).default([]),
   /** Display names, by user id (for the morning batch). */
-  names: z.record(z.string(), z.string()).default({})
+  names: z.record(z.string(), z.string()).default({}),
+  /**
+   * The morning summary's message lines (§23): every message of a deferred DM wake, and of a room
+   * wake the messages that addressed her (a mention or reply, her name, a role or `@everyone`), each
+   * with its reasons; oldest first, the newest `MAX_WAKE_MESSAGES`.
+   */
+  lines: z.array(WakeMessageSchema).optional(),
+  /** Lines older than `lines` that were left out of it. */
+  earlier: z.number().int().positive().optional()
 });
 export type DeferredPlace = z.infer<typeof DeferredPlaceSchema>;
 

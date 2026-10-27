@@ -58,6 +58,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxWakesPerUserPerHour` | integer 1–200 | `20` | Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line. |
 | `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches may fire per day. |
 | `life.notificationLinesPerPlace` | integer 1–50 | `8` | Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out. |
+| `life.morningLinesPerPlace` | integer 1–50 | `8` | Her morning summary lists the night's DMs and the room messages that talked to her, one line per message with its time; at most this many per DM or room (the newest), the first saying how many earlier ones were left out. |
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |
 | `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of her nightly dream (and queued forget scrubs) for a waifu with no bed time (with one, she dreams once she has been asleep life.dreamAfterAsleepMinutes). |
 | `life.dayStartHourLocal` | integer 0–23 [hour 0–23] | `8` | Local hour of the morning wake (she writes today's schedule in ~/life/schedule.json) for a waifu with no bed time; with one, it comes when her bed time ends. |

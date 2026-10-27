@@ -3153,3 +3153,35 @@ built in 3.3.0). This section makes what waited richer: the morning wake's singl
   reminders she had while asleep that she already handled are not repeated.
 - Tests: golden for the example above; caps and `+N earlier`; refs resolve in SendMessage/React;
   D14 redaction; a budget pause batch uses the same format.
+
+### 23.1 As built (2026-10-27)
+
+- **Kept lines** (`wakeQueue.ts` `morningLinesOf`, `withDeferred`): a deferred wake adds its
+  messages to `wakes.json` `deferred.places[<key>].lines` (`WakeMessageSchema`: id, sender, preview,
+  reasons; matches and notes stay on the watch item): in a DM every message, in a room only the
+  messages whose own reasons include `mention` (replies are mentions), `name`, `role` or `everyone`,
+  so detector picks, chime-ins and follow-ups stay counts. The newest `MAX_WAKE_MESSAGES` (50) per
+  place are kept, older ones counted in `earlier` (a DM burst's own `earlier` adds to it). Both
+  fields are optional, so an older queue parses unchanged; a DM with no kept lines (such
+  a queue) keeps one count line `· dm/kevin: 3 messages`. Forget scrubs the lines like a wake's
+  messages (the person's go, a quote naming them becomes `(removed)`).
+- **Times** come from the message id (Discord snowflake). A line's time, a room span's ends and the
+  budget header's `since` show the weekday when not on the morning's local day; the sleep header is
+  unchanged. A span whose ends read the same is one time (`(14:00)`). The night of a room starts at
+  the pause or at the first message it kept, whichever is earlier (the message that started the
+  pause counts).
+- **Counts**: a room's mentions are the larger of the counter and its kept lines (+ `earlier`); a
+  DM's messages the largest of the counter, the cache count and its kept lines.
+- **Line formats**: `    · dm/kevin · +N earlier · 02:14 #d3 "…"` and `    · mention · 03:02 #c41
+  from Lianne "…"` (labels as in §4.7, joined with `, `); `+N earlier` goes after the handle or
+  label of the first shown line. The `· DMs:` line is a header with nothing quoted, so D14 redacts
+  each DM line from its first quote and leaves room lines alone (no change in `lifeView.ts`).
+- **Order**: DMs, rooms by most mentions (ties in their earlier order), watch matches, watch
+  timeouts, reminders (only a budget pause defers them), follow-ups and an earlier unread batch.
+- **Refs** (`messageRefs.ts` `refsForMessages`, shared with ReadMessages): `refs.json`, then the
+  transcript line's ref, then a new one; the cached messages before the named ones are passed too so
+  a newly assigned ref keeps message order.
+- **Setting**: `life.morningLinesPerPlace` (1–50, default 8), Settings → Life "Wakes".
+- Tests: `tests/lifeMorningSummary.test.ts`; goldens `life-morning-summary.txt` (new, the example
+  above), `life-morning.txt` and `life-day-morning.txt` (the DMs as lines, the mention line, the
+  span, the watch match's time and ref).

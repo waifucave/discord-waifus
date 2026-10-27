@@ -36,6 +36,16 @@ or a watch match is on the line of the message it belongs to, and a message arou
 not for her has a line with no reason. At most `life.notificationLinesPerPlace` (default 8)
 lines per place, the newest; the first then says `+N earlier`.
 
+**The morning summary.** What waited for her morning (her bed time, or a budget pause) comes as one
+summary with times: each DM one line per message (time, ref, preview), each room its counts with
+the night's time span and then one line per message that talked to her (a mention or reply, her
+name, a role or `@everyone`; ordinary chatter stays a count), rooms with the most mentions first,
+then watch matches (with the matching message's time and ref), timed-out watches and reminders.
+Times are her local `HH:MM`, with the weekday when not on the morning's day. At most
+`life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
+`+N earlier`. Every line has its ref, so she can reply or react without reading first; DM lines are
+redacted in the owner's views like any DM notification.
+
 ## Her day
 
 Every morning she writes her own day in `~/life/schedule.json`: when her bed time ends (or at

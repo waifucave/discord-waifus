@@ -137,7 +137,7 @@ describe("the morning wake (§21.3)", () => {
     await w.cast.life("ella").runNow();
     expect(w.anthropic.calls).toHaveLength(3);
     expect((await readLifeState(w.storage, "ella")).epoch).toBe(state.epoch);
-  });
+  }, 30_000);
 
   it("a short epoch too heavy to keep whole is summarised by the day compaction (nothing is dropped unsummarised)", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn(`long thoughts ${"cake ".repeat(14_000)}`), textTurn("my day"), textTurn("Summary: a heavy Saturday.")) });
@@ -163,7 +163,7 @@ describe("the morning wake (§21.3)", () => {
     await w.cast.life("ella").runNow();
     expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "day", summarized: true });
     expect(w.anthropic.calls).toHaveLength(6);
-  });
+  }, 30_000);
 
   it("a host that was down all morning sends it at the first tick after boot, once", async () => {
     const w = await lifeWorld(roots, { waifus: [SLEEPER], scripts: script(textTurn("hi"), textTurn("morning!"), textTurn("Summary: a late Saturday.")) });

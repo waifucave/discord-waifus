@@ -2,15 +2,17 @@
 //
 // - `immediate`: wakes waiting for her next turn (≤ 200 entries; beyond that, a wake for a place
 //   that already has an entry merges into it as a counter).
-// - `deferred`: what arrived while she slept or was over her daily budget: per-place counters plus
-//   every reminder and watch match with its note. Never dropped; released as one `morning` wake.
+// - `deferred`: what arrived while she slept or was over her daily budget: per-place counters (with
+//   the morning summary's message lines, §23: a DM's messages and a room's messages that addressed
+//   her, the newest 50 per place) plus every reminder and watch match with its note. Never dropped;
+//   released as one `morning` wake.
 // - `held`: wakes held while she is busy (§21.4), released together at her next phone check or the
 //   busy block's end (scheduler); they never start a turn while held.
 // - `userWakes`: the per-user wake limit's last-hour timestamps (§4.4 guard 3); `quiet`: the
 //   "+N more from Kevin" lines that ride along with the next turn without starting one.
 
 import { randomBytes } from "node:crypto";
-import type { DeferredPlace, Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
+import type { DeferredPlace, Wake, WakeMessage, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
 import { readLifeFile, updateLifeFile } from "./lifeStore.js";
 import { joinMessages, messagesOf } from "./wakeMessages.js";
@@ -119,9 +121,33 @@ export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "bu
     else if (wake.reason === "detector") place.detector += count;
     if (wake.fromUserId && !place.fromUserIds.includes(wake.fromUserId)) place.fromUserIds = [...place.fromUserIds, wake.fromUserId];
     if (wake.fromUserId && wake.fromName) place.names = { ...place.names, [wake.fromUserId]: wake.fromName };
+    // The morning summary's lines (§23): a DM's messages, a room's messages that addressed her.
+    const lines = morningLinesOf(wake);
+    if (lines.length > 0) {
+      const joined = joinMessages([place.lines ?? [], lines], (place.earlier ?? 0) + (isDmKey(wake.placeKey) ? (wake.earlier ?? 0) : 0));
+      place.lines = joined.messages;
+      if (joined.earlier > 0) place.earlier = joined.earlier;
+    }
     deferred.places[wake.placeKey] = place;
   }
   return { ...queue, deferred };
+}
+
+const isDmKey = (placeKey: string) => placeKey.startsWith("dm_");
+
+/**
+ * The messages of a deferred wake the morning summary lists (§23): in a DM every one, in a room
+ * those that addressed her (their own reasons include a mention, reply, her name, a role or
+ * `@everyone`). A line keeps id, sender, preview and reasons (a watch match has its own line).
+ */
+export function morningLinesOf(wake: Wake): WakeMessage[] {
+  if (!wake.placeKey) return [];
+  const dm = isDmKey(wake.placeKey);
+  return messagesOf(wake).flatMap((message) => {
+    if (!dm && !message.reasons.some((reason) => MENTION_REASONS.has(reason))) return [];
+    const { matched: _matched, note: _note, ...line } = message;
+    return [line];
+  });
 }
 
 export async function deferWake(storage: StorageService, waifuId: string, wake: Wake, reason: "sleep" | "budget", now: Date): Promise<void> {
@@ -335,6 +361,17 @@ export async function scrubWakeQueue(
   }
 ): Promise<number> {
   let removed = 0;
+  // Their messages in someone else's wake go; a quote of another message that names them goes (§20).
+  const scrubMessages = (list: readonly WakeMessage[]): WakeMessage[] =>
+    list.flatMap((message) => {
+      if (message.fromUserId === o.userId) return [];
+      const kept = { ...message };
+      if (o.mentions(kept.preview)) kept.preview = REMOVED_TEXT;
+      else o.review?.(kept.preview);
+      if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
+      if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
+      return [kept];
+    });
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
     // The person's own wakes (and their DM's) go; someone else's wake that mentions them keeps its
     // place in her queue, and only what it quoted goes (its preview, note, match or batch lines).
@@ -347,16 +384,7 @@ export async function scrubWakeQueue(
         const next: Wake = { ...wake };
         let changed = false;
         if (next.messages) {
-          // Their messages in someone else's wake go; a quote of another message that names them goes (§20).
-          const messages = next.messages.flatMap((message) => {
-            if (message.fromUserId === o.userId) return [];
-            const kept = { ...message };
-            if (o.mentions(kept.preview)) kept.preview = REMOVED_TEXT;
-            else o.review?.(kept.preview);
-            if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
-            if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
-            return [kept];
-          });
+          const messages = scrubMessages(next.messages);
           if (JSON.stringify(messages) !== JSON.stringify(next.messages)) {
             changed = true;
             if (messages.length > 0) next.messages = messages;
@@ -392,7 +420,11 @@ export async function scrubWakeQueue(
       }
       const names = { ...place.names };
       delete names[o.userId];
-      places[key] = { ...place, fromUserIds: place.fromUserIds.filter((id) => id !== o.userId), names };
+      const { lines: oldLines, ...rest } = place;
+      // The morning summary's lines (§23) are scrubbed like a wake's messages.
+      const lines = oldLines ? scrubMessages(oldLines) : undefined;
+      if (oldLines && JSON.stringify(lines) !== JSON.stringify(oldLines)) removed += 1;
+      places[key] = { ...rest, fromUserIds: place.fromUserIds.filter((id) => id !== o.userId), names, ...(lines && lines.length > 0 ? { lines } : {}) };
     }
     const quiet = queue.quiet.filter((line) => {
       const drop = line.userId === o.userId || (line.placeKey !== undefined && o.placeKeys.has(line.placeKey));

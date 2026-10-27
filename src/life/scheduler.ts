@@ -41,6 +41,10 @@ import { deferForBudget, deferHeld, enqueueWake, hasDeferred, newWakeId, release
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import { selfAuthorIds } from "./people.js";
+import { refsForMessages } from "./messageRefs.js";
+import { messagesOf } from "./wakeMessages.js";
+import { snowflakeTime } from "../discord/refStore.js";
+import { compareIds } from "../discord/rawMessage.js";
 
 export const DEFAULT_TICK_MS = 15_000;
 /** `~/places.md` is rewritten at most this often (§16.6; also at every turn start). */
@@ -368,7 +372,9 @@ export class Scheduler {
     for (const key of [...places.map((place) => place.placeKey), ...queue.deferred.items.flatMap((item) => (item.placeKey ? [item.placeKey] : []))]) {
       handles.set(key, await handleOf(deps.storage, waifu.id, key));
     }
-    const view = { timeZone: deps.timeZone, handle: (key: string) => handles.get(key) ?? key, unread: () => undefined };
+    const refs = await this.morningRefs(places, queue.deferred.items, now);
+    const view = { timeZone: deps.timeZone, handle: (key: string) => handles.get(key) ?? key, unread: () => undefined, ref: (key: string, id: string) => refs.get(key)?.get(id) };
+    const linesPerPlace = deps.config().life.morningLinesPerPlace;
     const bedTime = waifu.availability.bedTime;
     const dayKey = localDayKey(now, deps.timeZone);
     // The morning wake of her day: the greeting, then the overnight batch (one id per day).
@@ -383,8 +389,8 @@ export class Scheduler {
       const since = deferred.since ? new Date(deferred.since) : now;
       const header =
         deferred.reason === "budget"
-          ? morningBatch({ reason: "budget", since, until: now, places, items: deferred.items }, view)
-          : morningBatch({ reason: "sleep", since, until: now, places, items: deferred.items }, view).map((line, index) =>
+          ? morningBatch({ reason: "budget", since, until: now, places, items: deferred.items, linesPerPlace }, view)
+          : morningBatch({ reason: "sleep", since, until: now, places, items: deferred.items, linesPerPlace }, view).map((line, index) =>
               index === 0 && bedTime.enabled ? `- during your bed time (${bedTime.start}–${bedTime.end}):` : line
             );
       if (dayDue) return dayWake(header.length > 1 ? header : []);
@@ -412,7 +418,10 @@ export class Scheduler {
     }
   }
 
-  /** Per place: mentions from the deferred counters, messages counted from the conversation cache since the pause began. */
+  /**
+   * Per place: mentions from the deferred counters, messages counted from the conversation cache
+   * since the pause began (with their time span), and the summary's message lines (§23).
+   */
   private async morningPlaces(waifu: WaifuConfig, deferred: WakeQueue["deferred"]): Promise<MorningPlace[]> {
     const deps = this.o.deps;
     const since = deferred.since ? Date.parse(deferred.since) : deps.now().getTime();
@@ -424,16 +433,56 @@ export class Scheduler {
       const ref = parseConversationKey(key);
       if (!ref) continue;
       const counters = deferred.places[key];
-      const messages = deps.conversations.bufferedMessages(ref).filter((message) => !self.has(message.authorId) && Date.parse(message.createdAt) >= since).length;
+      const lines = (counters?.lines ?? []).map((line) => {
+        const at = snowflakeTime(line.id);
+        return { id: line.id, ...(line.fromName !== undefined ? { fromName: line.fromName } : {}), preview: line.preview, reasons: line.reasons ?? [], ...(at !== undefined ? { at: new Date(at) } : {}) };
+      });
+      // The night starts at the pause, or at the first message it kept when that came just before.
+      const from = Math.min(since, ...lines.flatMap((line) => (line.at ? [line.at.getTime()] : [])));
+      const night = deps.conversations.bufferedMessages(ref).filter((message) => !self.has(message.authorId) && Date.parse(message.createdAt) >= from);
+      const messages = night.length;
       const place = places.find((candidate) => candidate.placeKey === key);
+      const extra = { ...(lines.length > 0 ? { lines } : {}), ...(counters?.earlier ? { earlier: counters.earlier } : {}) };
       if (ref.kind === "dm") {
-        const count = Math.max(counters?.dms ?? 0, messages);
-        if (count > 0) out.push({ placeKey: key, kind: "dm", ...(place?.userName ? { name: place.userName } : {}), mentions: 0, messages: count });
+        const count = Math.max(counters?.dms ?? 0, messages, lines.length + (counters?.earlier ?? 0));
+        if (count > 0) out.push({ placeKey: key, kind: "dm", ...(place?.userName ? { name: place.userName } : {}), mentions: 0, messages: count, ...extra });
         continue;
       }
-      const mentions = counters?.mentions ?? 0;
+      const mentions = Math.max(counters?.mentions ?? 0, lines.length + (counters?.earlier ?? 0));
       const total = Math.max(messages, mentions + (counters?.detector ?? 0));
-      if (mentions > 0 || total > 0) out.push({ placeKey: key, kind: place?.kind ?? "room", mentions, messages: total });
+      const times = [...night.map((message) => Date.parse(message.createdAt)), ...lines.flatMap((line) => (line.at ? [line.at.getTime()] : []))].filter(Number.isFinite);
+      const span = times.length > 0 ? { span: { from: new Date(Math.min(...times)), to: new Date(Math.max(...times)) } } : {};
+      if (mentions > 0 || total > 0) out.push({ placeKey: key, kind: place?.kind ?? "room", mentions, messages: total, ...extra, ...span });
+    }
+    return out;
+  }
+
+  /** The refs of every message the morning summary names (§23), per place (§22.1: stored, else assigned). */
+  private async morningRefs(places: readonly MorningPlace[], items: readonly Wake[], now: Date): Promise<Map<string, Map<string, string>>> {
+    const deps = this.o.deps;
+    const wanted = new Map<string, Set<string>>();
+    const want = (key: string, id: string) => {
+      const set = wanted.get(key) ?? new Set<string>();
+      set.add(id);
+      wanted.set(key, set);
+    };
+    for (const place of places) for (const line of place.lines ?? []) want(place.placeKey, line.id);
+    for (const item of items) {
+      if (!item.placeKey || (item.reason !== "watch" && !item.reasons?.includes("watch"))) continue;
+      if (item.messageId) want(item.placeKey, item.messageId);
+      for (const message of messagesOf(item)) want(item.placeKey, message.id);
+    }
+    const out = new Map<string, Map<string, string>>();
+    for (const [key, ids] of wanted) {
+      // The cached messages before them get their refs too, so refs stay in message order (§4.7).
+      const conversation = parseConversationKey(key);
+      const newest = [...ids].reduce((a, b) => (compareIds(a, b) >= 0 ? a : b));
+      const before = conversation ? deps.conversations.bufferedMessages(conversation).filter((message) => !ids.has(message.id) && compareIds(message.id, newest) < 0) : [];
+      const messages = [
+        ...before.map((message) => ({ id: message.id, at: message.createdAt })),
+        ...[...ids].map((id) => ({ id, at: new Date(snowflakeTime(id) ?? now.getTime()).toISOString() }))
+      ];
+      out.set(key, await refsForMessages(deps, key, messages, now).catch(() => new Map<string, string>()));
     }
     return out;
   }
