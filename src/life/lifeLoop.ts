@@ -370,9 +370,8 @@ export class Life {
    * summary (§19.4), when the guards allow it; otherwise the text stays a private thought and her
    * next time line says why it was not used. Queued wakes wait for the new epoch.
    */
-  private async selfSummary(run: TurnRun, rounds: number, summary: string): Promise<TurnOutcome> {
+  private async selfSummaryRefusal(run: TurnRun, summary: string): Promise<string | undefined> {
     const deps = this.deps;
-    const outcome = await this.finishIdle(run, rounds, "done");
     const config = deps.config();
     const state = await readLifeState(deps.storage, this.waifuId);
     const trigger = config.compaction.triggerRatio * lifeBudget(run.model, config.life.maxContextTokens);
@@ -388,8 +387,14 @@ export class Life {
     if (refused) {
       await updateLifeState(deps.storage, this.waifuId, (current) => ({ ...current, selfSummaryRefused: refused }));
       deps.logger.info("Life summary not used", { category: "life", waifuId: this.waifuId, reason: refused });
-      return outcome;
     }
+    return refused;
+  }
+
+  /** Her summary passed the guards: the turn ends and a new epoch starts from it alone (reason `self`). */
+  private async selfSummary(run: TurnRun, rounds: number, summary: string): Promise<TurnOutcome> {
+    const deps = this.deps;
+    await this.finishIdle(run, rounds, "done");
     const harness = await currentHarness(deps, run.waifu, run.model);
     const next = await startEpoch(deps, this.waifuId, { harness, summary: `${REST_SUMMARY_FRAME}\n${summary}`, kept: [], readIds: [], reason: "self", summarized: true, strippedBlocks: 0 });
     deps.logger.info("Life rested on her own", { category: "life", waifuId: this.waifuId, epoch: next.epoch, summaryChars: summary.length });
@@ -803,7 +808,8 @@ export class Life {
       if (calls.length === 0) {
         // Only `<summary>…</summary>`: she wants a fresh start (§21.6b; the rest turn has its own).
         const summary = run.rest || result.finishReason === "length" ? undefined : selfSummaryOf(result.text);
-        if (summary !== undefined) return this.selfSummary(run, rounds, summary);
+        // Accepted, it ends the turn; refused, the turn ends as any other (a DM still gets the nudge).
+        if (summary !== undefined && !(await this.selfSummaryRefusal(run, summary))) return this.selfSummary(run, rounds, summary);
         if (!unsentChecked && direct() && result.text.trim() && run.scratch.sentPlaces.size === 0 && !overBudget()) {
           unsentChecked = true;
           await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: UNSENT_REPLY_NOTE }, { type: "text", text: await this.timeLineText(run.waifu, estimate, run.model) }] });

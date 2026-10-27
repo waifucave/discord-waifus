@@ -27,7 +27,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { conversationKey } from "../src/orchestration/context/keys.js";
 import type { Wake } from "../src/shared/schemas/life.js";
 import { textTurn, type ScriptedTurn } from "./modelFakes.js";
-import { CHANNEL_2, closeWorlds, GUILD, homeOf, lifeWorld, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld, type WaifuSeed } from "./lifeFixtures.js";
+import { CHANNEL_2, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld, type WaifuSeed } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -527,6 +527,20 @@ describe("a fresh start when she wants one (§21.6b)", () => {
     const [third, fourth] = w.anthropic.calls.slice(2).map((call) => lastText(call.request));
     expect(third).toContain(`(your summary was not used: ${reason})`);
     expect(fourth).not.toContain("your summary was not used");
+  });
+
+  it("a refused summary in a DM turn still gets the unsent-reply nudge, which says why it was not used", async () => {
+    const { UNSENT_REPLY_NOTE } = await import("../src/life/lifeLoop.js");
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi"), textTurn("<summary>short</summary>"), textTurn("(nothing to add)")) });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await beginLife(w);
+    const dm = w.discord.post(dmOf("ella"), "are you there?");
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "dm", placeKey: `dm_${KEVIN}_ella`, fromUserId: KEVIN, fromName: "Kevin", messageId: dm.id, preview: "are you there?", at: w.clock.now().toISOString() });
+    await w.cast.life("ella").runNow();
+    const nudge = lastText(w.anthropic.calls[2]!.request);
+    expect(nudge).toContain(UNSENT_REPLY_NOTE.slice(0, 40));
+    expect(nudge).toContain("(your summary was not used: it is shorter than 200 characters)");
+    expect((await readLifeState(w.storage, "ella")).epoch).toBe(1);
   });
 
   it("the cooldown counts from her last epoch start, across a restart", async () => {
