@@ -286,20 +286,20 @@ describe("her changes are checked and saved all or nothing (§16.3.5, §16.12)",
     const rm = await bash("rm /tmp/k2.md && echo gone");
     expect(rm.text).toContain("deleted: /tmp/k2.md");
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
-    for (const command of ["echo x > ~/places.md", "rm ~/places.md", "mv ~/places.md ~/p.md", "sed -i s/a/b/ ~/places.md"]) {
+    for (const command of ["echo x > ~/life/places.md", "rm ~/life/places.md", "mv ~/life/places.md ~/p.md", "sed -i s/a/b/ ~/life/places.md"]) {
       const places = await bash(command);
       expect(exitOf(places.text), command).not.toBe(0);
       expect(places.text).not.toMatch(/changed: [^\n]*places\.md|deleted: [^\n]*places\.md/u);
     }
-    expect(await herFile(w, "ella", "home/places.md")).toContain("# Your places");
+    expect(await herFile(w, "ella", "home/life/places.md")).toContain("# Your places");
   });
 
   it("a command that breaks watches.json saves nothing, with the exact problem", async () => {
-    const result = await bash("echo 'kept?' > ~/ok.md; printf '[{\"timeout\": \"2026-10-25 10:00\", \"note\": \"x\", \"when\": []},]' > ~/watches.json");
+    const result = await bash("echo 'kept?' > ~/ok.md; printf '[{\"timeout\": \"2026-10-25 10:00\", \"note\": \"x\", \"when\": []},]' > ~/life/watches.json");
     expect(result.isError).toBe(true);
     expect(result.text).toMatch(/\nerror: changes not saved: watches\.json line 1, column \d+: /u);
     expect(await herFile(w, "ella", "home/ok.md")).toBeUndefined();
-    expect(await herFile(w, "ella", "home/watches.json")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/life/watches.json")).toBeUndefined();
   });
 
   it("a change set over her home's limits saves nothing", async () => {

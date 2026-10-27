@@ -38,30 +38,7 @@ const TimeOfDaySchema = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
 export type TimeOfDay = z.infer<typeof TimeOfDaySchema>;
 
-type DailyInterval = {
-  start: string;
-  end: string;
-};
-
-function timeOfDayMinutes(value: string): number {
-  const [hours = "0", minutes = "0"] = value.split(":");
-  return Number(hours) * 60 + Number(minutes);
-}
-
-function dailyIntervalRanges(interval: DailyInterval): Array<[number, number]> {
-  const start = timeOfDayMinutes(interval.start);
-  const end = timeOfDayMinutes(interval.end);
-  if (start < end) return [[start, end]];
-  return [[start, 24 * 60], [0, end]];
-}
-
-function dailyIntervalsOverlap(a: DailyInterval, b: DailyInterval): boolean {
-  return dailyIntervalRanges(a).some(([aStart, aEnd]) =>
-    dailyIntervalRanges(b).some(([bStart, bEnd]) => Math.max(aStart, bStart) < Math.min(aEnd, bEnd))
-  );
-}
-
-const WaifuSleepScheduleSchema = z
+const WaifuBedTimeSchema = z
   .object({
     enabled: z.boolean().default(false),
     start: TimeOfDaySchema.default("23:00"),
@@ -72,7 +49,7 @@ const WaifuSleepScheduleSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["end"],
-        message: "Sleep end time must differ from start time."
+        message: "Bed time end must differ from its start."
       });
     }
   })
@@ -81,50 +58,22 @@ const WaifuSleepScheduleSchema = z
     start: "23:00",
     end: "07:00"
   });
-export type WaifuSleepSchedule = z.infer<typeof WaifuSleepScheduleSchema>;
+export type WaifuBedTime = z.infer<typeof WaifuBedTimeSchema>;
 
-const WaifuBusyIntervalSchema = z
-  .object({
-    start: TimeOfDaySchema,
-    end: TimeOfDaySchema,
-    reason: z.string().min(1)
-  })
-  .superRefine((value, ctx) => {
-    if (value.start === value.end) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["end"],
-        message: "Busy end time must differ from start time."
-      });
-    }
-  });
-export type WaifuBusyInterval = z.infer<typeof WaifuBusyIntervalSchema>;
-
+// Only her bed time is the owner's (spec §21 S3, §21.6c): her busy times come from her own
+// `~/life/schedule.json`. The owner-set busy blocks were archived and dropped by the
+// `living-cast-drop-busy-v1` migration; a stray `busy` key is stripped. `bedTime` was `sleep`
+// before `living-cast-bed-time-v1` renamed it.
 export const WaifuAvailabilitySchema = z
   .object({
-    sleep: WaifuSleepScheduleSchema,
-    busy: z.array(WaifuBusyIntervalSchema).default([])
-  })
-  .superRefine((value, ctx) => {
-    for (let i = 0; i < value.busy.length; i += 1) {
-      for (let j = i + 1; j < value.busy.length; j += 1) {
-        if (dailyIntervalsOverlap(value.busy[i], value.busy[j])) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["busy", j],
-            message: "Busy intervals cannot overlap."
-          });
-        }
-      }
-    }
+    bedTime: WaifuBedTimeSchema
   })
   .default({
-    sleep: {
+    bedTime: {
       enabled: false,
       start: "23:00",
       end: "07:00"
-    },
-    busy: []
+    }
   });
 export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 

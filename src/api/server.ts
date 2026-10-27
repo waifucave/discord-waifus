@@ -965,7 +965,15 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     runtime: () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime
   });
   // Living cast §14.1: lives, usage, search, the detector, forget jobs and owner notices.
-  registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused });
+  // Bed time settings for the status view: the running cast's live config, else the file read at most every 5 s.
+  let bedSettingsCache: { at: number; value: Promise<{ busyEngagedMinutes: number; bedDozeMinutes: number }> } | undefined;
+  const bedSettings = async () => {
+    const live = currentCast()?.cast?.deps.config().life;
+    if (live) return live;
+    if (!bedSettingsCache || Date.now() - bedSettingsCache.at > 5_000) bedSettingsCache = { at: Date.now(), value: loadAppConfig(options.dataRoot).then((config) => config.life) };
+    return bedSettingsCache.value;
+  };
+  registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused, bedSettings });
   // Living cast §16.11: her files, reminders and watches.
   registerHomeRoutes(app, { storage, cast: () => currentCast()?.cast });
   registerCastRoutes(app, { storage, dataRoot: options.dataRoot, isPaused: () => options.runtime.paused, liveNotices, applyConfigPatch });

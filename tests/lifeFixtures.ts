@@ -139,9 +139,20 @@ export class FakeDiscord implements DiscordGatewayFacade {
     return filterSinceCursor(all, i.afterMessageId, i.maxMessages, false);
   }
 
-  async fetchMessagesBefore(i: { conversation: ConversationRef; beforeId: string; limit: number }) {
-    const older = this.messages(i.conversation).filter((message) => BigInt(message.id) < BigInt(i.beforeId));
-    return older.slice(-i.limit);
+  /** Discord's channel-messages page: before / after / around one id, at most `limit`, oldest first. */
+  readonly pageRequests: Array<{ before?: string; after?: string; around?: string; limit: number }> = [];
+  async fetchMessagesPage(i: { conversation: ConversationRef; before?: string; after?: string; around?: string; limit: number }) {
+    this.pageRequests.push({ ...(i.before ? { before: i.before } : {}), ...(i.after ? { after: i.after } : {}), ...(i.around ? { around: i.around } : {}), limit: i.limit });
+    const all = this.messages(i.conversation);
+    if (i.around !== undefined) {
+      const at = all.findIndex((message) => BigInt(message.id) >= BigInt(i.around!));
+      const center = at < 0 ? all.length : at;
+      const start = Math.max(0, center - Math.floor(i.limit / 2));
+      return all.slice(start, start + i.limit);
+    }
+    if (i.after !== undefined) return all.filter((message) => BigInt(message.id) > BigInt(i.after!)).slice(0, i.limit);
+    if (i.before !== undefined) return all.filter((message) => BigInt(message.id) < BigInt(i.before!)).slice(-i.limit);
+    return all.slice(-i.limit);
   }
 
   private botAuthor(botId: string | undefined): { authorId: string; authorName: string } {
@@ -218,7 +229,7 @@ export async function writeWaifuConfig(storage: StorageService, seed: WaifuSeed)
       enabled: true,
       model: { providerId: "anthropic", modelId: "claude-haiku-5-5" },
       persona: `${seed.name} is a sunny baker.`,
-      availability: { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [] },
+      availability: { bedTime: { enabled: false, start: "23:00", end: "07:00" } },
       dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" },
       ...seed
     })
@@ -466,9 +477,9 @@ export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relat
   await store.writeText(target.path, content, checkEnvFor(w.cast.deps, waifuId));
 }
 
-/** Her reminder or watch file, parsed. */
-export async function herEntries(w: Pick<LifeWorld, "root">, name: "schedule.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
-  const text = await homeOf(w, waifuId).read(name);
+/** Her reminder or watch file (in `~/life/`), parsed. */
+export async function herEntries(w: Pick<LifeWorld, "root">, name: "reminders.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
+  const text = await homeOf(w, waifuId).read(`life/${name}`);
   return text?.trim() ? (JSON.parse(text) as Array<Record<string, unknown>>) : [];
 }
 

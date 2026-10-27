@@ -14,15 +14,18 @@ Everything configurable on a character: persona, style, model, schedule, DMs.
   `effort` must be one the route lists. `null` unsets it.
 - `botId` — which Discord bot entry (Settings → App → Discord bots) she posts with (without one she cannot post).
 - `username`, `bio`, `nicknames` — her own bot's Discord profile (see "Discord profile" below).
-- `availability` — optional sleep window and busy blocks.
+- `availability` — `bedTime` (`enabled`, `start`, `end`, HH:mm local): her bed time, a soft one (up
+  late while she keeps chatting, then dozing, then asleep; see life.md "Her day"). Her busy times
+  are her own, in `~/life/schedule.json`; there are no owner-set busy blocks.
 - `customInstructions` — optional free text (max 4000 characters, default empty) appended to her
   prompt after the persona, for extra behaviour rules that don't belong in the character sketch.
-- `scheduleInPrompt` — boolean, default true. When false, her schedule (what she is doing right
-  now) is left out of the prompt. Shown in the dashboard as "Mention her schedule in the prompt".
+- `scheduleInPrompt` — boolean, default true. When false, her `<schedule>` (her bed time and
+  today's plan) is left out of the prompt. Shown in the dashboard as "Mention her schedule in the prompt".
 - `dm` — private chats with her own bot (see discord-setup.md "Direct messages"):
   `allowDms` (default false), `rateLimit` (`{maxReplies, windowMinutes}`, default 30 per 60, `null`
   = unlimited, counted per Discord user), `notifyWhenLimited` (default true) and `limitNotice` (max
-  300 characters, "" = the built-in notice).
+  300 characters, "" = the built-in notice), `sleepNotice` (sent once per bed time to someone who
+  DMs her while she is asleep, "" = none).
 
 ## Discord profile
 
@@ -45,7 +48,7 @@ every change to these fields, her images or her bot link.
   on Discord is downloaded once and kept as hers (not uploaded back); uploading replaces it.
 
 She can change her own `username`, `bio` and `nicknames` too: they are also her file
-`~/profile.json` (see life.md); her edit becomes these fields, and changing them here rewrites it.
+`~/life/profile.json` (see life.md); her edit becomes these fields, and changing them here rewrites it.
 
 `null` unsets each field. Only fields that differ from what her bot shows are sent. A rate limit is
 recorded with its retry time and retried by the app; nothing is sent again before then.
@@ -63,10 +66,11 @@ at upgrade; writes that still send them are accepted and ignored.
 > **Living cast.** She lives one continuous life: wakes (mentions, replies, her name, DMs, her
 > reminders and watches, the addressee detector), reads before answering, may stay quiet, and keeps
 > notes in her own folder (her home `/home/<name>`, backed by `user/waifus/<id>/home/`, with
-> `MEMORY.md` as the index and her reminders and watches in `schedule.json` and `watches.json`;
+> `MEMORY.md` as the index, and her day, reminders and watches in `~/life/schedule.json`,
+> `~/life/reminders.json` and `~/life/watches.json`;
 > files people send land in her `/tmp`; what was said where she is stays readable in her
-> read-only `/transcripts`), and a nightly dream checks her notes against what was said that day. See the life doc. She sleeps in
-> her sleep window (wakes are held for a morning summary), stops at her daily budget
+> read-only `/transcripts`), and a nightly dream checks her notes against what was said that day. See the life doc. She plans her
+> own day each morning, has a soft bed time (what waits comes in the morning), stops at her daily budget
 > (`life.dailyBudgetUsd`) and can search and read the web.
 
 Images are fetched with the app config `discord.images` limits; only images up to 3.75 MiB are

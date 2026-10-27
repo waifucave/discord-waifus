@@ -10,11 +10,12 @@
 // forget cannot bring them back), ids a forget or a Discord delete removed and DM lines at or below a
 // forget floor are never written. Edits replace a line (marked edited); deletes remove it. Access
 // intervals open and close at the time of the oldest message in the event (catch-up after downtime
-// never shows a removed waifu what was said after she left).
+// never shows a removed waifu what was said after she left). Every line gets its message's ref when
+// it is written (§22.1, `refStore`, in message order), so refs are on every message she can read.
 
 import type { ConversationCacheEvent } from "../../discord/conversationCache.js";
-import { snowflakeTime } from "../../discord/refStore.js";
-import { conversationKey, type ConversationRef } from "../../orchestration/context/keys.js";
+import { assignConversationRefs, snowflakeTime } from "../../discord/refStore.js";
+import { conversationKey, type ConversationKey, type ConversationRef } from "../../orchestration/context/keys.js";
 import { EMPTY_GUILD_DIRECTORY, renderDiscordMessage } from "../../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../../orchestration/context/types.js";
 import { readForgottenPeople } from "../../orchestration/dm/forgotten.js";
@@ -36,6 +37,7 @@ import {
   readTranscriptDay,
   readTranscriptAccess,
   reconcileRoomAccess,
+  transcriptHasLine,
   transcriptsStartedAt,
   type TranscriptEnv,
   type TranscriptLine
@@ -282,6 +284,7 @@ export class TranscriptWriter {
     const startedAt = await transcriptsStartedAt(this.deps.storage.dataRoot, now);
     const forgotten = await this.forgottenPeople();
     const authors = await this.authorMap();
+    const lines: TranscriptLine[] = [];
     for (const message of messages) {
       const own = authors.has(message.authorId);
       // Unreadable forget records: a gap fill (old messages) waits; live messages are new.
@@ -291,7 +294,22 @@ export class TranscriptWriter {
       if (!line) continue;
       // A line from before a forget that mentions the forgotten person (anyone's, hers too).
       if (forgotten !== "unreadable" && forgotten.some((person) => Date.parse(line.at) <= Date.parse(person.at) && lineCarriesPerson(line, { userId: person.userId, names: [], at: new Date(person.at) }))) continue;
-      await addTranscriptLine(this.env, key, line, { startedAt });
+      if (Date.parse(line.at) < Date.parse(startedAt)) continue;
+      lines.push(line);
+    }
+    if (lines.length === 0) return;
+    // Refs at ingest (§22.1), only for lines not written yet: a line already there keeps its own (a
+    // REST page sends old messages again). A failure leaves the lines without one.
+    const fresh: TranscriptLine[] = [];
+    for (const line of lines) if (!(await transcriptHasLine(this.env, key, line))) fresh.push(line);
+    if (fresh.length === 0) return;
+    const refs = await assignConversationRefs(this.deps.storage, key as ConversationKey, fresh.map((line) => line.id), now).catch((error: unknown) => {
+      this.deps.logger.warn("Transcript refs could not be assigned", { category: "life", message: error instanceof Error ? error.message : String(error) });
+      return new Map<string, string>();
+    });
+    for (const line of fresh) {
+      const ref = refs.get(line.id);
+      await addTranscriptLine(this.env, key, ref ? { ...line, ref } : line, { startedAt });
     }
   }
 

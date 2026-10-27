@@ -71,7 +71,7 @@ describe("step 3 with weak and unique names (F3)", () => {
     await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", preview: "ok so are we baking saturday @Ella?", messageId: "900000000000000111", at: now });
     await writeHerFile(
       w,
-      "schedule.json",
+      "life/reminders.json",
       JSON.stringify([
         { at: "2026-10-24 15:00", note: "check the sourdough starter is ok" },
         { at: "2026-10-24 15:00", note: "buy flour" }
@@ -82,7 +82,7 @@ describe("step 3 with weak and unique names (F3)", () => {
     const waifu = { id: "ella", name: "Ella", displayName: "Ella" } as Parameters<typeof scrubOtherState>[1];
     await scrubOtherState(deps, waifu, { userId: "300000000000000099", names: [], sharedNames: ["ok"] }, { review: (item) => review.push(item) });
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.map((wake) => wake.preview)).toEqual(["ok so are we baking saturday @Ella?"]);
-    expect((await herEntries(w, "schedule.json")).map((reminder) => reminder["note"])).toEqual(["check the sourdough starter is ok", "buy flour"]);
+    expect((await herEntries(w, "reminders.json")).map((reminder) => reminder["note"])).toEqual(["check the sourdough starter is ok", "buy flour"]);
     expect(review).toEqual([
       { where: "wakes", line: "ok so are we baking saturday @Ella?" },
       { where: "reminders", line: "check the sourdough starter is ok" }
@@ -93,7 +93,7 @@ describe("step 3 with weak and unique names (F3)", () => {
     const w = await lifeWorld(roots);
     const now = w.clock.now().toISOString();
     await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", preview: "did Quillon pass the exam @Ella?", messageId: "900000000000000111", at: now });
-    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "ask Quillon about the exam" }]));
+    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "ask Quillon about the exam" }]));
     const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
     const waifu = { id: "ella", name: "Ella", displayName: "Ella" } as Parameters<typeof scrubOtherState>[1];
     await scrubOtherState(deps, waifu, { userId: KEVIN, names: ["Quillon"], sharedNames: [] });
@@ -101,7 +101,7 @@ describe("step 3 with weak and unique names (F3)", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]).toMatchObject({ fromUserId: MINA_USER, messageId: "900000000000000111" });
     expect(wakes[0]!.preview).toBeUndefined();
-    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([["r1", "(removed)"]]);
+    expect((await herEntries(w, "reminders.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([["r1", "(removed)"]]);
   });
 });
 
@@ -134,7 +134,7 @@ describe("the traffic matcher and watch words (third review, minor 1 and 4)", ()
   it("a watch goes only when its word names the person; a word inside one of their names is listed", async () => {
     const w = await lifeWorld(roots);
     const watch = (word: string, note: string) => ({ timeout: "2026-10-24 15:00", once: false, note, when: [{ words: [word] }] });
-    await writeHerFile(w, "watches.json", JSON.stringify([watch("sourdough", "Mina's sourdough question"), watch("bake sale", "the bake sale plan"), watch("kevin", "an exam"), watch("kevin from the bake sale", "him")]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([watch("sourdough", "Mina's sourdough question"), watch("bake sale", "the bake sale plan"), watch("kevin", "an exam"), watch("kevin from the bake sale", "him")]));
     const deps = (w.cast as unknown as { deps: Parameters<typeof scrubOtherState>[0] }).deps;
     const waifu = { id: "ella", name: "Ella", displayName: "Ella" } as Parameters<typeof scrubOtherState>[1];
     const review: ReviewLine[] = [];

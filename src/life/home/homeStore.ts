@@ -3,9 +3,11 @@
 // files, ReadMessages downloads — goes through this store, under one lock per waifu
 // (`home:<id>`), so the same path rules, limits and special-file checks hold for all of them:
 //
-// - `~/places.md` is the app's: she can read it, nobody else writes it (§16.6);
-// - `~/schedule.json` and `~/watches.json` are checked on every write (specialFiles.ts); a bad
-//   write is refused with the exact problem and nothing is saved;
+// - her app-managed files live in `~/life/` (§21 S1); `~/life/places.md` is the app's: she can
+//   read it, nobody else writes it (§16.6);
+// - `~/life/reminders.json`, `watches.json` (specialFiles.ts), `profile.json` (profileFile.ts) and
+//   `schedule.json`, her day (daySchedule.ts), are checked on every write; a bad write is refused
+//   with the exact problem and nothing is saved;
 // - home ≤ `life.home.maxBytes` and `life.home.maxFiles`, `/tmp` ≤ `life.tmp.maxBytes`, a file
 //   written by Write/Edit/PUT ≤ 256 KiB; a name that differs from another in its folder only by case
 //   or Unicode normalisation is refused;
@@ -30,22 +32,30 @@ import { resolvePlace } from "../places.js";
 import { HerFiles, HerFilesError, type HerEntry } from "./herFiles.js";
 import {
   collisionKey,
+  DAY_SCHEDULE_FILE,
+  deleteReachesPlaces,
   herSlug,
   isDmFolderPath,
+  isLifeDirPath,
   isPlacesFile,
+  lifeSegments,
   MEMORY_FILE,
   parseVirtual,
   pathKey,
   PLACES_FILE,
   PROFILE_FILE,
+  REMINDERS_FILE,
   resolveHerPath,
-  SCHEDULE_FILE,
+  specialFileName,
   specialJsonFile,
   WATCHES_FILE,
   type HerPath,
   type HerRoot,
-  type ResolvedHerPath
+  type LifeFileName,
+  type ResolvedHerPath,
+  type SpecialKind
 } from "./pathRules.js";
+import { checkDayScheduleText, readDayPlan, type DayPlan } from "./daySchedule.js";
 import {
   checkScheduleText,
   checkWatchesText,
@@ -172,6 +182,23 @@ type Journal = z.infer<typeof JournalSchema>;
 
 /** Hashes by host path, size and mtime (the dashboard's private flags, DM-origin checks). */
 const HASH_CACHE = new Map<string, { size: number; mtimeMs: number; sha: string }>();
+
+/** Lives whose life-folder marker is known to exist (per data root), so it is checked once per process. */
+const MARKED = new Set<string>();
+
+/**
+ * The app runs her life on the `~/life/` layout: the marker `living-cast-life-folder-v1` reads tells
+ * a re-run (after a lost ledger) to leave her home alone, also for a waifu created after the upgrade.
+ * Written only when missing (a migration in progress keeps its own).
+ */
+export async function ensureLifeFolderMarker(storage: StorageService, waifuId: string): Promise<void> {
+  const id = `${storage.dataRoot}\0${waifuId}`;
+  if (MARKED.has(id)) return;
+  const file = storage.dataPath(lifePaths.lifeFolderMarker(waifuId));
+  const exists = await stat(file).then(() => true, () => false);
+  if (!exists) await atomicWriteJson(file, { version: 1, state: "done" });
+  MARKED.add(id);
+}
 const HASH_CACHE_MAX = 5_000;
 
 type Planned = { path: HerPath; data?: Buffer; kind: "write" | "delete" | "dir" };
@@ -213,7 +240,17 @@ export class HomeStore {
     return this.path("home", [name]);
   }
 
-  private locked<T>(work: () => Promise<T>): Promise<T> {
+  /** One of her `~/life/` files (§21 S1). */
+  life(name: LifeFileName): HerPath {
+    return this.path("home", lifeSegments(name));
+  }
+
+  /**
+   * Every read-modify-write of her home runs here; the life-folder marker is written first, so a home
+   * the app has touched (her tools, the API, the dashboard's profile rewrite) is never migrated again.
+   */
+  private async locked<T>(work: () => Promise<T>): Promise<T> {
+    await ensureLifeFolderMarker(this.storage, this.waifuId);
     return this.storage.withLocks([lifeLocks.home(this.waifuId)], work);
   }
 
@@ -268,16 +305,21 @@ export class HomeStore {
 
   // ---- her reminder and watch files ------------------------------------------------------------------
 
-  async readScheduleText(): Promise<string | undefined> {
-    return this.files.readText(this.home(SCHEDULE_FILE)).catch(() => undefined);
+  async readRemindersText(): Promise<string | undefined> {
+    return this.files.readText(this.life(REMINDERS_FILE)).catch(() => undefined);
   }
 
   async readWatchesText(): Promise<string | undefined> {
-    return this.files.readText(this.home(WATCHES_FILE)).catch(() => undefined);
+    return this.files.readText(this.life(WATCHES_FILE)).catch(() => undefined);
   }
 
-  async readSchedule(timeZone: string): Promise<ReminderEntry[]> {
-    return readScheduleEntries(await this.readScheduleText(), timeZone);
+  async readReminders(timeZone: string): Promise<ReminderEntry[]> {
+    return readScheduleEntries(await this.readRemindersText(), timeZone);
+  }
+
+  /** Her day as saved (`~/life/schedule.json`, §21.2); a file that fails the checks is no plan. */
+  async readDay(): Promise<DayPlan | undefined> {
+    return readDayPlan(await this.files.readText(this.life(DAY_SCHEDULE_FILE)).catch(() => undefined));
   }
 
   /** Her watches with how they resolved (bindings of a watch the side file lacks resolve to nothing). */
@@ -304,11 +346,19 @@ export class HomeStore {
       if (!checked.ok) throw new HomeError(checked.error, "special");
       return { data, profile: checked.fields };
     }
-    const text = data === undefined ? "[]\n" : data.toString("utf8");
-    if (data !== undefined && !isTextBytes(data)) throw new HomeError(`error: ${p.segments[0]} must be text (JSON)`, "special");
+    if (data !== undefined && !isTextBytes(data)) throw new HomeError(`error: ${specialFileName(special)} must be text (JSON)`, "special");
     if (special === "schedule") {
+      // Her day (§21.2): deleting it is no plan today; busy blocks stay in her waking hours.
+      if (data === undefined) return {};
+      const waifu = await readWaifu(this.storage, this.waifuId);
+      const checked = checkDayScheduleText(data.toString("utf8"), { bedTime: waifu.availability.bedTime });
+      if (!checked.ok) throw new HomeError(checked.error, "special");
+      return { data };
+    }
+    const text = data === undefined ? "[]\n" : data.toString("utf8");
+    if (special === "reminders") {
       const ids = await this.readScheduleIds();
-      const previous = readScheduleEntries(await this.readScheduleText(), env.timeZone);
+      const previous = readScheduleEntries(await this.readRemindersText(), env.timeZone);
       const checked = checkScheduleText(text, { now: env.now, timeZone: env.timeZone, previous, nextId: ids.nextId });
       if (!checked.ok) throw new HomeError(checked.error, "special");
       return { ...(data !== undefined ? { data: checked.rewritten ? Buffer.from(checked.text, "utf8") : data } : {}), scheduleIds: { ...ids, nextId: checked.nextId } };
@@ -465,9 +515,9 @@ export class HomeStore {
    * under one hold of her home lock, so nothing the app rewrites in between is lost. Returns the id
    * it got.
    */
-  async appendEntry(name: typeof SCHEDULE_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>, env: CheckEnv): Promise<string> {
+  async appendEntry(name: typeof REMINDERS_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>, env: CheckEnv): Promise<string> {
     return this.locked(async () => {
-      const p = this.home(name);
+      const p = this.life(name);
       const text = await this.files.readText(p).catch(() => undefined);
       let entries: Array<Record<string, unknown>> = [];
       if (text?.trim()) {
@@ -477,7 +527,7 @@ export class HomeStore {
         } catch {
           value = undefined;
         }
-        if (!Array.isArray(value)) throw new HomeError(`error: ~/${name} can't be read as a list right now; fix it first (Read it to see why)`, "special");
+        if (!Array.isArray(value)) throw new HomeError(`error: ${p.display} can't be read as a list right now; fix it first (Read it to see why)`, "special");
         entries = value as Array<Record<string, unknown>>;
       }
       const before = new Set(entries.map((existing) => existing["id"]));
@@ -577,7 +627,7 @@ export class HomeStore {
       };
       for (const virtual of changes.deletes) {
         const p = await parse(virtual);
-        if (isPlacesFile(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
+        if (deleteReachesPlaces(p)) throw new HomeError(`error: ${PLACES_REFUSED}`, "places");
         plan.push({ path: p, kind: "delete" });
       }
       for (const virtual of changes.dirs) plan.push({ path: await parse(virtual), kind: "dir" });
@@ -610,8 +660,8 @@ export class HomeStore {
       }
       // Her special files: the result of the whole set is checked once.
       const side: { watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields } = {};
-      for (const name of [SCHEDULE_FILE, WATCHES_FILE, PROFILE_FILE]) {
-        const target = this.home(name);
+      for (const name of [REMINDERS_FILE, WATCHES_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as const) {
+        const target = this.life(name);
         const write = [...effective].reverse().find((step) => step.kind === "write" && step.path.virtual === target.virtual);
         const removed = effective.some((step) => step.kind === "delete" && (step.path.virtual === target.virtual || target.virtual.startsWith(`${step.path.virtual}/`)));
         if (!write && !removed) continue;
@@ -716,14 +766,29 @@ export class HomeStore {
    * Rewrites her reminders (a reminder fired, or moved to its next time). A file that does not read
    * cleanly is left alone (`false`): the caller's fired list keeps it from firing twice.
    */
-  async rewriteSchedule(timeZone: string, transform: (entries: ReminderEntry[]) => ReminderEntry[]): Promise<boolean> {
+  async rewriteReminders(timeZone: string, transform: (entries: ReminderEntry[]) => ReminderEntry[]): Promise<boolean> {
     return this.locked(async () => {
-      const text = await this.readScheduleText();
+      const text = await this.readRemindersText();
       const entries = readScheduleEntries(text, timeZone);
       if (text?.trim() && !wellFormed(text, entries.length)) return false;
       const next = transform(entries);
       if (JSON.stringify(next) === JSON.stringify(entries)) return true;
-      await this.files.writeBytes(this.home(SCHEDULE_FILE), Buffer.from(scheduleText(next), "utf8"));
+      await this.files.writeBytes(this.life(REMINDERS_FILE), Buffer.from(scheduleText(next), "utf8"));
+      return true;
+    });
+  }
+
+  /**
+   * Rewrites her day (`~/life/schedule.json`; forget's scrub, §21.6). Only a file that passes its
+   * checks is rewritten, and only when something changed. Returns whether it wrote.
+   */
+  async rewriteDay(transform: (plan: DayPlan) => DayPlan): Promise<boolean> {
+    return this.locked(async () => {
+      const plan = readDayPlan(await this.files.readText(this.life(DAY_SCHEDULE_FILE)).catch(() => undefined));
+      if (!plan) return false;
+      const next = transform(plan);
+      if (JSON.stringify(next) === JSON.stringify(plan)) return false;
+      await this.files.writeBytes(this.life(DAY_SCHEDULE_FILE), Buffer.from(`${JSON.stringify(next, null, 2)}\n`, "utf8"));
       return true;
     });
   }
@@ -738,7 +803,7 @@ export class HomeStore {
       const next = transform(entries, ids);
       if (clean && JSON.stringify(next.entries) !== JSON.stringify(entries)) {
         const written = watchesText(next.entries);
-        await this.files.writeBytes(this.home(WATCHES_FILE), Buffer.from(written, "utf8"));
+        await this.files.writeBytes(this.life(WATCHES_FILE), Buffer.from(written, "utf8"));
         next.ids = { ...next.ids, sourceHash: sha256(written) };
       }
       if (JSON.stringify(next.ids) !== JSON.stringify(ids)) await this.writeSide(lifePaths.watchIds(this.waifuId), next.ids);
@@ -769,7 +834,7 @@ export class HomeStore {
     return this.locked(async () => {
       const waifu = await readWaifu(this.storage, this.waifuId);
       const servers = await profileServers(this.storage);
-      const p = this.home(PROFILE_FILE);
+      const p = this.life(PROFILE_FILE);
       const current = await this.files.readText(p).catch(() => undefined);
       if (current !== undefined) {
         const checked = checkProfileText(current, { name: waifu.name, servers });
@@ -781,10 +846,10 @@ export class HomeStore {
     });
   }
 
-  /** `~/places.md` (§16.6), written only when it would change. Returns whether it did. */
+  /** `~/life/places.md` (§16.6), written only when it would change. Returns whether it did. */
   async writePlaces(text: string): Promise<boolean> {
     return this.locked(async () => {
-      const p = this.home(PLACES_FILE);
+      const p = this.life(PLACES_FILE);
       const current = await this.files.readText(p).catch(() => undefined);
       if (current === text) return false;
       await this.files.writeBytes(p, Buffer.from(text, "utf8"));
@@ -802,7 +867,7 @@ export class HomeStore {
       const ids = await this.readWatchIds();
       if (sha256(text) === ids.sourceHash || (!text.trim() && Object.keys(ids.watches).length === 0)) return "same";
       try {
-        const checked = await this.checkSpecial(this.home(WATCHES_FILE), Buffer.from(text, "utf8"), { ...env, now: new Date(0) });
+        const checked = await this.checkSpecial(this.life(WATCHES_FILE), Buffer.from(text, "utf8"), { ...env, now: new Date(0) });
         if (checked.watchIds) await this.writeSide(lifePaths.watchIds(this.waifuId), { ...checked.watchIds, sourceHash: sha256(text), fired: ids.fired });
         return "updated";
       } catch {
@@ -947,11 +1012,12 @@ export class HomeStore {
   // ---- private files (SendMessage, §16.3.2) --------------------------------------------------------------------
 
   /**
-   * Her private files right now: `~/MEMORY.md`, every file it links to, her reminders, watches and
-   * places. Copies under other names are hers to share.
+   * Her private files right now: `~/MEMORY.md`, every file it links to, and everything in `~/life/`
+   * (her day, reminders, watches, profile and places, §21.6; `isPrivateFile` covers the whole
+   * folder). Copies under other names are hers to share.
    */
   async privateFiles(): Promise<Set<string>> {
-    const out = new Set([MEMORY_FILE, SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE].map((name) => pathKey(this.home(name).virtual)));
+    const out = new Set([pathKey(this.home(MEMORY_FILE).virtual), ...([DAY_SCHEDULE_FILE, REMINDERS_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE] as const).map((name) => pathKey(this.life(name).virtual))]);
     const memory = await this.files.canonical(this.home(MEMORY_FILE));
     const index = await this.files.readText(memory).catch(() => undefined);
     for (const target of markdownLinks(index ?? "")) {
@@ -961,8 +1027,9 @@ export class HomeStore {
     return out;
   }
 
-  /** One of her private files (by `privateFiles`, any spelling). */
+  /** One of her private files (by `privateFiles`, any spelling; anything in `~/life/`). */
   async isPrivateFile(p: HerPath, privateKeys?: ReadonlySet<string>): Promise<boolean> {
+    if (isLifeDirPath(p)) return true;
     return (privateKeys ?? (await this.privateFiles())).has(pathKey((await this.files.canonical(p)).virtual));
   }
 

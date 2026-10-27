@@ -1,0 +1,9 @@
+=== 2 user ===
+--- text ---
+<notifications>
+[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Your day is yours to plan: keep it believable for who you are. Your bed time (00:30–08:30) is fixed. Then deal with what came in overnight.
+- during your bed time (00:30–08:30):
+  · DMs: Kevin (1 message)
+</notifications>
+--- text ---
+[Sat 24 Oct 08:31 · awake]

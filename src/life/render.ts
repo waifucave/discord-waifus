@@ -1,12 +1,11 @@
 // Message line formatting for lives (Living cast spec §15 keep table: moved from the retired
-// context engine's transcript renderer, `entryHeader` / `entryLine`, and rewritten over the
-// conversation cache's messages). `ReadMessages`, previews and the detector state build on it
-// in L2.
+// context engine's transcript renderer, rewritten over the conversation cache's messages).
+// `ReadMessages` and her `/transcripts` render the same line (§22.1):
 //
 //   `[14:02 #k3] Kevin: text`            a message with its ref
-//   `[14:02 #k4 ↩#k3]`                   a reply to a message she can see by ref
-//   `[14:02 #k5 ↩you]`                   a reply to one of her own messages
-//   `[14:02 #k6 ↩Kevin]`                 a reply to an older message by Kevin (no ref)
+//   `[14:02 #k4] Kevin ↩#k3: text`       a reply to a message she can see by ref
+//   `[14:02 #k5] Kevin ↩you: text`       a reply to one of her own messages
+//   `[14:02 #k6] Kevin ↩Mina: text`      a reply to an older message by Mina (no ref)
 
 import { formatClock } from "../orchestration/context/timeFormat.js";
 
@@ -32,22 +31,29 @@ export type LineView = {
   timeZone: string;
 };
 
-/** `[14:02 #k3]`, `[14:03 #k4 ↩#a1]`, `[14:03 #k4 ↩you]`, `[14:03 #k4 ↩Kevin]`. */
-export function entryHeader(message: LineMessage, view: LineView): string {
-  const ref = view.refs.get(message.id);
-  const parts = [formatClock(message.at, view.timeZone)];
-  if (ref) parts.push(`#${ref}`);
-  if (message.replyToId) {
-    const target = view.lookup(message.replyToId);
-    if (target && view.selfAuthorIds.includes(target.authorId)) parts.push("↩you");
-    else if (view.refs.has(message.replyToId)) parts.push(`↩#${view.refs.get(message.replyToId)}`);
-    else if (target && target.authorName) parts.push(`↩${target.authorName}`);
-  }
-  return `[${parts.join(" ")}]`;
+/** What a reply points at: `you`, `#k3`, the author's name, or nothing known. */
+export function replyMark(message: Pick<LineMessage, "replyToId">, view: LineView): string | undefined {
+  if (!message.replyToId) return undefined;
+  const target = view.lookup(message.replyToId);
+  if (target && view.selfAuthorIds.includes(target.authorId)) return "you";
+  if (view.refs.has(message.replyToId)) return `#${view.refs.get(message.replyToId)}`;
+  if (target && target.authorName) return target.authorName;
+  return undefined;
 }
 
-/** `[14:02 #k3] Kevin: text` (just the header and name when the body is empty). */
+/** `[14:02 #k3]` (`[14:02]` without a ref). */
+export function entryHeader(message: Pick<LineMessage, "id" | "at">, view: Pick<LineView, "refs" | "timeZone">): string {
+  const ref = view.refs.get(message.id);
+  return `[${formatClock(message.at, view.timeZone)}${ref ? ` #${ref}` : ""}]`;
+}
+
+/** One chat line: `[14:02 #k4] Kevin ↩#k3: text` (the name and a colon when there is no body). */
+export function chatLine(o: { clock: string; ref?: string | undefined; name: string; reply?: string | undefined; body: string }): string {
+  const head = `[${o.clock}${o.ref ? ` #${o.ref}` : ""}] ${o.name}${o.reply ? ` ↩${o.reply}` : ""}:`;
+  return o.body ? `${head} ${o.body}` : head;
+}
+
+/** `[14:02 #k3] Kevin: text` for a message (`Unknown` when it has no author name). */
 export function entryLine(message: LineMessage, view: LineView): string {
-  const head = `${entryHeader(message, view)} ${message.authorName || "Unknown"}:`;
-  return message.body ? `${head} ${message.body}` : head;
+  return chatLine({ clock: formatClock(message.at, view.timeZone), ref: view.refs.get(message.id), name: message.authorName || "Unknown", reply: replyMark(message, view), body: message.body });
 }

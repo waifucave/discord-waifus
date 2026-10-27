@@ -18,6 +18,7 @@
 // in parallel up to `life.maxConcurrentTurns`.
 
 import { isDmPlaceKey } from "./lifeView.js";
+import { availabilityFor, noteSend } from "./busy.js";
 import { withPlaceRecord } from "./placeRecorder.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { createHash } from "node:crypto";
@@ -31,12 +32,12 @@ import { promptTokensOf } from "../orchestration/usageLedger.js";
 import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
-import { timeLine } from "./clock.js";
+import { dayStartAt, timeLine } from "./clock.js";
 import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
-import { REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME } from "./rest.js";
+import { REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
 import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
 import { selfAuthorIds } from "./people.js";
@@ -350,11 +351,54 @@ export class Life {
     };
   }
 
-  private timeLineText(waifu: WaifuConfig, estimate: number, model: CuratedModel): string {
+  private async timeLineText(waifu: WaifuConfig, estimate: number, model: CuratedModel): Promise<string> {
     const config = this.deps.config();
     const trigger = config.compaction.triggerRatio * lifeBudget(model, config.life.maxContextTokens);
     // The rest notice replaces the "memory nearly full" warning (§19.2); with it off, the warning stays.
-    return timeLine({ now: this.deps.now(), timeZone: this.deps.timeZone, availability: waifu.availability, memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
+    // Busy from her day file, read on every use (§21.2); her bed time phase from her last send (§21.6c).
+    const now = this.deps.now();
+    const line = timeLine({ now, timeZone: this.deps.timeZone, status: await availabilityFor(this.deps, waifu, now), memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
+    // A summary she wrote that was not used is explained once, on her next time line (§21.6b).
+    const refused = (await readLifeState(this.deps.storage, this.waifuId)).selfSummaryRefused;
+    if (refused === undefined) return line;
+    await updateLifeState(this.deps.storage, this.waifuId, (current) => ({ ...current, selfSummaryRefused: undefined }));
+    return `${line} ${selfSummaryRefusedNote(refused)}`;
+  }
+
+  /**
+   * Her final reply was only `<summary>…</summary>` (§21.6b): a fresh start like an accepted rest
+   * summary (§19.4), when the guards allow it; otherwise the text stays a private thought and her
+   * next time line says why it was not used. Queued wakes wait for the new epoch.
+   */
+  private async selfSummaryRefusal(run: TurnRun, summary: string): Promise<string | undefined> {
+    const deps = this.deps;
+    const config = deps.config();
+    const state = await readLifeState(deps.storage, this.waifuId);
+    const trigger = config.compaction.triggerRatio * lifeBudget(run.model, config.life.maxContextTokens);
+    const minutes = (deps.now().getTime() - Date.parse(state.epochStartedAt)) / 60_000;
+    const refused =
+      summary.length < Math.max(1, config.life.restSummaryMinChars)
+        ? `it is shorter than ${config.life.restSummaryMinChars} characters`
+        : (state.lastRequestTokens ?? 0) < config.life.selfSummaryMinRatio * trigger
+          ? "your memory is still far from full"
+          : minutes < config.life.selfSummaryCooldownMinutes
+            ? `your last fresh start was less than ${config.life.selfSummaryCooldownMinutes} minutes ago`
+            : undefined;
+    if (refused) {
+      await updateLifeState(deps.storage, this.waifuId, (current) => ({ ...current, selfSummaryRefused: refused }));
+      deps.logger.info("Life summary not used", { category: "life", waifuId: this.waifuId, reason: refused });
+    }
+    return refused;
+  }
+
+  /** Her summary passed the guards: the turn ends and a new epoch starts from it alone (reason `self`). */
+  private async selfSummary(run: TurnRun, rounds: number, summary: string): Promise<TurnOutcome> {
+    const deps = this.deps;
+    await this.finishIdle(run, rounds, "done");
+    const harness = await currentHarness(deps, run.waifu, run.model);
+    const next = await startEpoch(deps, this.waifuId, { harness, summary: `${REST_SUMMARY_FRAME}\n${summary}`, kept: [], readIds: [], reason: "self", summarized: true, strippedBlocks: 0 });
+    deps.logger.info("Life rested on her own", { category: "life", waifuId: this.waifuId, epoch: next.epoch, summaryChars: summary.length });
+    return (await pendingWakeCount(deps.storage, this.waifuId)) > 0 ? "again" : "idle";
   }
 
   /**
@@ -403,7 +447,11 @@ export class Life {
     const deps = this.deps;
     const harness = await currentHarness(deps, waifu, model);
     if (!state.systemSnapshot) {
-      return startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "first", summarized: false, strippedBlocks: 0, first: true });
+      const started = await startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "first", summarized: false, strippedBlocks: 0, first: true });
+      // Her life begins with whatever woke her: her first morning wake is the next day's (§21.3).
+      if (started.lastDayStart !== undefined) return started;
+      const dayStart = dayStartAt(waifu, deps.now(), deps.timeZone, deps.config().life.dayStartHourLocal).toISOString();
+      return updateLifeState(deps.storage, this.waifuId, (current) => (current.lastDayStart === undefined ? { ...current, lastDayStart: dayStart } : current));
     }
     if (state.pendingEpochStart && state.pendingEpochReason === "tools") {
       const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
@@ -429,6 +477,10 @@ export class Life {
     if (paused) return state;
     // She had her rest turn and its compaction was interrupted: compact now, leaving that turn out (§19.4).
     if (state.restTurn?.epoch === state.epoch) return this.compact(waifu, state, lines, harness, "tokens", signal, { openTurnId: state.restTurn.turnId });
+    // Her morning turn ended: her new day's plan goes into block A (§21.3), once. An epoch of at most
+    // the kept turns that fit the kept budget (it began this morning: an upgrade's or another
+    // compaction's) keeps them whole and its summary: no second summary right after the first.
+    if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal, { keepWholeIfFits: true });
     const budget = lifeBudget(model, config.life.maxContextTokens);
     const messageLines = lines.filter((line) => line.message !== null).length;
     if ((state.lastRequestTokens ?? 0) >= config.compaction.triggerRatio * budget) return this.compact(waifu, state, lines, harness, "tokens", signal);
@@ -443,7 +495,7 @@ export class Life {
     harness: HarnessNow,
     reason: string,
     signal: AbortSignal,
-    o: { openTurnId?: string; truncate?: boolean } = {}
+    o: { openTurnId?: string; truncate?: boolean; keepWholeIfFits?: boolean } = {}
   ): Promise<LifeState> {
     // A model change compacts with the old model (§5.2); without it, the new one.
     const old = state.modelRoute ? findCuratedModel(state.modelRoute, this.deps.catalog()) : undefined;
@@ -458,6 +510,7 @@ export class Life {
       reason,
       ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}),
       ...(o.truncate ? { truncate: true } : {}),
+      ...(o.keepWholeIfFits ? { keepWholeIfFits: true } : {}),
       // Over budget: the summary request leaves the last results out instead of resending them (M1).
       ...(reason === "budget" || reason === "overflow" ? { shrinkLastResults: true } : {}),
       omit: { deleted: await this.deletedOmissions(state), people: [] },
@@ -488,7 +541,8 @@ export class Life {
     const followUpDue = state.failedTurn !== undefined && !state.failedTurn.followUpDone && nowMs - Date.parse(state.failedTurn.at) >= FOLLOW_UP_DELAY_MS;
     const queued = await pendingWakeCount(deps.storage, this.waifuId);
     // A rest turn may be due with nothing queued: it follows the turn that filled her memory (§19.2).
-    if (queued === 0 && !followUpDue && !this.restDue(state, model)) return "idle";
+    // So may the compaction after her morning turn (§21.3).
+    if (queued === 0 && !followUpDue && !this.restDue(state, model) && !state.dayCompactionDue) return "idle";
     // Her provider is cooling down after a quota or billing error: the wakes wait in the queue and
     // she is poked again when the cooldown ends (review I6).
     const cooling = deps.models.cooldownRemainingMs?.(model.providerId);
@@ -546,7 +600,7 @@ export class Life {
     const content: ContentBlockLike[] = [];
     if (followUpDue) content.push({ type: "text", text: FOLLOW_UP_NOTE });
     if (block) content.push({ type: "text", text: block });
-    content.push({ type: "text", text: this.timeLineText(waifu, run.lastEstimate, model) });
+    content.push({ type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) });
     run.state = await updateLifeState(deps.storage, this.waifuId, (current) => ({
       ...current,
       status: "turn",
@@ -602,7 +656,7 @@ export class Life {
       status: "turn",
       currentTurn: { id: turnId, startedAt: deps.now().toISOString(), rounds: 0, wakeIds: [], wakes: [] }
     }));
-    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: REST_NOTICE }, { type: "text", text: this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
+    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: REST_NOTICE }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
     deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate });
     let outcome = await this.rounds(run);
     // Interrupted (pause, shutdown, a reload): nothing changes; the rest turn runs again next cycle.
@@ -744,7 +798,7 @@ export class Life {
               role: "user",
               content: [
                 ...result.toolCalls.map((call) => ({ type: "tool_result" as const, tool_use_id: call.id, content: REFUSED_RESULT, is_error: true })),
-                { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }
+                { type: "text", text: await this.timeLineText(run.waifu, estimate, run.model) }
               ]
             },
             { dmCalls: [] }
@@ -755,9 +809,13 @@ export class Life {
       const calls = result.toolCalls;
       run.finalText = result.text;
       if (calls.length === 0) {
+        // Only `<summary>…</summary>`: she wants a fresh start (§21.6b; the rest turn has its own).
+        const summary = run.rest || result.finishReason === "length" ? undefined : selfSummaryOf(result.text);
+        // Accepted, it ends the turn; refused, the turn ends as any other (a DM still gets the nudge).
+        if (summary !== undefined && !(await this.selfSummaryRefusal(run, summary))) return this.selfSummary(run, rounds, summary);
         if (!unsentChecked && direct() && result.text.trim() && run.scratch.sentPlaces.size === 0 && !overBudget()) {
           unsentChecked = true;
-          await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: UNSENT_REPLY_NOTE }, { type: "text", text: this.timeLineText(run.waifu, estimate, run.model) }] });
+          await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: UNSENT_REPLY_NOTE }, { type: "text", text: await this.timeLineText(run.waifu, estimate, run.model) }] });
           deps.logger.info("Life unsent-reply check", { category: "life", waifuId: this.waifuId, turnId: run.turnId });
           continue;
         }
@@ -786,7 +844,7 @@ export class Life {
       const tail: ContentBlockLike[] = [...folded];
       if (capped) tail.push({ type: "text", text: `[system] turn ended: ${capped}` });
       if (executed.interrupted) tail.push({ type: "text", text: "[system] interrupted" });
-      tail.push({ type: "text", text: this.timeLineText(run.waifu, estimate, run.model) });
+      tail.push({ type: "text", text: await this.timeLineText(run.waifu, estimate, run.model) });
       await this.append(run, "tool_results", { role: "user", content: [...executed.results, ...tail] }, { messageIds: executed.messageIds, dmCalls: executed.dmCalls, ...(folded.length > 0 ? { dmWakes: dmFolded } : {}) });
       if (executed.interrupted) return this.endInterrupted(run, rounds);
       if (capped) return this.endTurn(run, rounds, capped);
@@ -867,6 +925,15 @@ export class Life {
       if (run.typing && tool && !output.isError && call.name === "SendMessage") {
         for (const place of places) run.typing.keeper.sent(place);
       }
+      // Her last send starts her bed time clock again (§21.6c); while she is busy, a place she answers
+      // in after a wake that got through stays open (§21.4).
+      if (tool && !output.isError && call.name === "SendMessage") {
+        for (const place of places) {
+          await noteSend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
+            deps.logger.warn("Could not note a send", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+          });
+        }
+      }
       if (output.messageIds?.length) messageIds[call.id] = output.messageIds;
       results.push({
         type: "tool_result",
@@ -886,7 +953,9 @@ export class Life {
    */
   private async foldWakes(run: TurnRun): Promise<ContentBlockLike[]> {
     const deps = this.deps;
-    const { wakes, quiet } = await peekImmediate(deps.storage, this.waifuId);
+    // Her morning wake opens a turn of its own (§21.3: compacted after it): it waits for the next one.
+    const { wakes: ready, quiet } = await peekImmediate(deps.storage, this.waifuId);
+    const wakes = ready.filter((wake) => wake.day === undefined);
     const state = await readLifeState(deps.storage, this.waifuId);
     const notices = state.pendingNotices;
     if (wakes.length === 0 && quiet.length === 0 && notices.length === 0) return [];
@@ -913,17 +982,23 @@ export class Life {
 
   private async finishIdle(run: TurnRun, rounds: number, reason: string): Promise<TurnOutcome> {
     const deps = this.deps;
+    // Her morning turn ended (§21.3): the next cycle compacts with reason `day`, so block A shows
+    // today's plan, written or not. An interrupted turn (its wakes go back) or one cut short by a
+    // compaction (a new epoch already) asks again.
+    const morning = reason !== "interrupted" && !reason.startsWith("compaction:") && run.wakes.some((wake) => wake.day !== undefined);
     run.state = await updateLifeState(deps.storage, this.waifuId, (current) => ({
       ...current,
       status: "idle",
       currentTurn: undefined,
-      lastTurnEndedAt: deps.now().toISOString()
+      lastTurnEndedAt: deps.now().toISOString(),
+      ...(morning ? { dayCompactionDue: true } : {})
     }));
     await compactIntents(deps.storage, this.waifuId, new Set()).catch(() => undefined);
     this.host.hooks?.onTurnEnd?.(this.waifuId, { turnId: run.turnId, rounds, reason, sent: run.scratch.sentPlaces.size > 0 });
     deps.logger.info("Life turn ended", { category: "life", waifuId: this.waifuId, turnId: run.turnId, rounds, reason, sent: run.scratch.sentPlaces.size > 0 });
     run.endReason = reason;
     if (reason === "interrupted") return "idle";
+    if (morning) return "again";
     // Her memory is nearly full: the next cycle is her rest turn, before any queued wake (§19.2).
     if (!run.rest && this.restDue(run.state, run.model)) return "again";
     return (await pendingWakeCount(deps.storage, this.waifuId)) > 0 ? "again" : "idle";
@@ -945,7 +1020,7 @@ export class Life {
       role: "user",
       content: [
         { type: "text", text: `[system] error: ${kind === "other" ? "the call failed" : kind.replace("_", " ")}` },
-        { type: "text", text: this.timeLineText(run.waifu, run.lastEstimate, run.model) }
+        { type: "text", text: await this.timeLineText(run.waifu, run.lastEstimate, run.model) }
       ]
     });
     // Quota or billing: the provider cools down. Her wakes were never answered, so they go back to
@@ -990,7 +1065,7 @@ export class Life {
   /** Abort: unanswered tool calls get `[interrupted]` results, then `[system] interrupted` (§5.2). */
   private async closeInterrupted(run: TurnRun): Promise<TurnOutcome> {
     const last = run.lines[run.lines.length - 1];
-    const timeText = this.timeLineText(run.waifu, run.lastEstimate, run.model);
+    const timeText = await this.timeLineText(run.waifu, run.lastEstimate, run.model);
     const message = (last?.message ?? undefined) as unknown as ProviderMessageLike | undefined;
     if (last?.kind === "assistant" && message && Array.isArray(message.content)) {
       const open = message.content.filter((block): block is Extract<ContentBlockLike, { type: "tool_use" }> => block.type === "tool_use");
@@ -1020,7 +1095,7 @@ export class Life {
     run.typing?.keeper.stop();
     run.typing?.sends.clear();
     this.compactionsThisCycle += 1;
-    await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: MEMORY_SUMMARISED_NOTE }, { type: "text", text: this.timeLineText(run.waifu, run.lastEstimate, run.model) }] });
+    await this.append(run, "system_note", { role: "user", content: [{ type: "text", text: MEMORY_SUMMARISED_NOTE }, { type: "text", text: await this.timeLineText(run.waifu, run.lastEstimate, run.model) }] });
     await this.finishIdle(run, 0, `compaction:${reason}`);
     if (this.compactionsThisCycle > 1) {
       // A fresh epoch overflowed again: compaction cannot help this turn.

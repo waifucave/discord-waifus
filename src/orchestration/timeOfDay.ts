@@ -19,16 +19,13 @@ function timeOfDayMinutes(value: string): number {
   return Number(hours) * 60 + Number(minutes);
 }
 
-/** What she is doing now per her schedule: a busy block's reason, "sleepy" while asleep, else undefined. */
+/**
+ * "sleepy" in her bed time, else undefined (her busy times are her own
+ * `~/life/schedule.json` now, read by the life: spec §21).
+ */
 export function currentlyDoingForWaifu(waifu: { availability: WaifuAvailability }, now: Date): string | undefined {
   const currentMinutes = localTimeOfDayMinutes(now);
-  for (const interval of waifu.availability.busy) {
-    if (dailyIntervalContains(currentMinutes, interval)) {
-      const reason = interval.reason.trim();
-      if (reason) return reason;
-    }
-  }
-  if (waifu.availability.sleep.enabled && dailyIntervalContains(currentMinutes, waifu.availability.sleep)) {
+  if (waifu.availability.bedTime.enabled && dailyIntervalContains(currentMinutes, waifu.availability.bedTime)) {
     return "sleepy";
   }
   return undefined;

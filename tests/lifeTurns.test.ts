@@ -68,7 +68,7 @@ describe("turn endings", () => {
         () => {
           void mentionWake(w, "w-late");
           w.clock.advance(181_000);
-          return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+          return toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
         },
         // The next turn's first call: the capped turn ended with the late wake still queued.
         (request) =>
@@ -106,9 +106,9 @@ describe("turn endings", () => {
             await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: NOVA, userDisplayName: "Nova", channelId: "500000000000000001", messageId: "900000000000000123", createdAt: w.clock.now().toISOString() });
             w.cast.intake.flushDms();
             await w.cast.intake.settle();
-            yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+            yield* toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
           })(),
-        () => toolTurn([{ name: "ReadMessages", input: { place: "dm/nova" }, id: "call_read" }, { name: "SendMessage", input: { place: "dm/nova", text: "hi Nova!" }, id: "call_send" }, { name: "Read", input: { file_path: "~/places.md" }, id: "call_list" }]),
+        () => toolTurn([{ name: "ReadMessages", input: { place: "dm/nova" }, id: "call_read" }, { name: "SendMessage", input: { place: "dm/nova", text: "hi Nova!" }, id: "call_send" }, { name: "Read", input: { file_path: "~/life/places.md" }, id: "call_list" }]),
         () => textTurn("done")
       ]
     });
@@ -158,7 +158,7 @@ describe("turn endings", () => {
       scripts: [
         () => {
           void mentionWake(w, "w-direct");
-          return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+          return toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
         },
         () => textTurn("I'd say yes"),
         () => textTurn("never mind")
@@ -348,7 +348,7 @@ describe("turn endings", () => {
       scripts: [
         () => {
           w.clock.advance(31_000);
-          return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+          return toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
         },
         () => textTurn("should not run")
       ]
@@ -386,7 +386,7 @@ describe("turn endings", () => {
   it("a turn stops when her daily budget runs out during it", async () => {
     const w = await lifeWorld(roots, {
       waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", life: { dailyBudgetUsd: 0.0001 } }],
-      scripts: [() => toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]), () => textTurn("should not run")]
+      scripts: [() => toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]), () => textTurn("should not run")]
     });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await reminder(w, "first");

@@ -66,18 +66,17 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
     }
   });
 
-  it("waifu availability.sleep patches keep busy intervals and other sleep fields", async () => {
+  it("waifu availability.bedTime patches keep the other bed time fields (a stray busy key is dropped, §21 S3)", async () => {
     const app = await makeApp();
     try {
       await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
       let waifu = (await app.inject({ method: "GET", url: "/api/waifus/ella" })).json();
-      const busy = [{ start: "09:00", end: "12:00", reason: "class" }];
       const seeded = await app.inject({
         method: "PUT",
         url: "/api/waifus/ella",
         payload: {
           revision: waifu.revision,
-          availability: { sleep: { enabled: false, start: "22:30", end: "06:15" }, busy }
+          availability: { bedTime: { enabled: false, start: "22:30", end: "06:15" }, busy: [{ start: "09:00", end: "12:00", reason: "class" }] }
         }
       });
       expect(seeded.statusCode).toBe(200);
@@ -86,19 +85,18 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
       const patched = await app.inject({
         method: "PUT",
         url: "/api/waifus/ella",
-        payload: { revision: waifu.revision, availability: { sleep: { enabled: true } } }
+        payload: { revision: waifu.revision, availability: { bedTime: { enabled: true } } }
       });
       expect(patched.statusCode).toBe(200);
       expect(patched.json().availability).toEqual({
-        sleep: { enabled: true, start: "22:30", end: "06:15" },
-        busy
+        bedTime: { enabled: true, start: "22:30", end: "06:15" }
       });
 
       // Refinements still run on the merged result.
       const invalid = await app.inject({
         method: "PUT",
         url: "/api/waifus/ella",
-        payload: { revision: patched.json().revision, availability: { sleep: { end: "22:30" } } }
+        payload: { revision: patched.json().revision, availability: { bedTime: { end: "22:30" } } }
       });
       expect(invalid.statusCode).toBe(400);
     } finally {

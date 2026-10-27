@@ -76,6 +76,8 @@ export function stateLabel(status: Pick<LifeStatus, "availability" | "status" | 
   if (!status.model) return { word: "No model", detail: "she stays quiet until she has one", hue: "butter" };
   if (status.status === "turn") return { word: "Mid-turn", detail: "thinking and acting now", hue: "lavender" };
   const availability = status.availability;
+  if (availability.bed === "up_late") return { word: "Up late", detail: "bed time", hue: "lavender" };
+  if (availability.bed === "dozing") return { word: "Dozing", detail: availability.until ? `bed time until ${availability.until}` : "bed time", hue: "sky" };
   if (availability.state === "asleep") return { word: "Asleep", detail: availability.until ? `until ${clock(availability.until)}` : "", hue: "sky" };
   if (availability.state === "busy") return { word: "Busy", detail: [availability.reason, availability.until ? `until ${clock(availability.until)}` : ""].filter(Boolean).join(" · "), hue: "peach" };
   return { word: status.runtime.paused ? "Paused" : "Awake", detail: status.runtime.running ? "" : "Discord offline", hue: "mint" };
@@ -199,7 +201,7 @@ export function fileSize(bytes: number): string {
 /** The folders from the root to the listed one, each with the path to list it (`~` › `people`). */
 /** A new epoch's reason as the Life screen says it (§19.4: "rest" is her own summary). */
 export function boundaryReasonLabel(reason: string): string {
-  return reason === "rest" ? "rested (her own summary)" : reason;
+  return reason === "rest" ? "rested (her own summary)" : reason === "self" ? "rested (her choice)" : reason;
 }
 
 export function breadcrumbs(list: Pick<HerFilesList, "root" | "dir" | "display">): Array<{ label: string; dir: string }> {

@@ -2897,6 +2897,107 @@ Migration (moves, collisions, index paths, busy dropped and archived, idempotent
 
 A feature release (3.3.0).
 
+### 21.9 As built (2026-10-27)
+
+- **Files** (`src/life/home/pathRules.ts`): `LIFE_DIR` `life/` holds `schedule.json` (her day),
+  `reminders.json`, `watches.json`, `profile.json`, `places.md`; `MEMORY.md` stays at the root.
+  Everything under `~/life/` is private in the "never attached" sense (`isPrivateFile`); the
+  refusal texts say so. `UNKNOWN_PLACE` now points at `~/life/places.md`. The API's `special` enum
+  is `reminders | watches | profile | schedule` (`schedule` is her day; reminders kept their routes,
+  `GET /api/waifus/:id/schedule` still lists reminders). A file called `life` (not a folder) in her
+  home is archived by the migration before the move.
+- **Her day file** (`src/life/home/daySchedule.ts`): `why` is required (1–120) on a busy block; the
+  "inside her waking hours" rule is checked against her bed time on every write (her Write, Bash,
+  the API), not when reading a saved file. Unlike the other special files, a `Write` of
+  `~/life/schedule.json` needs no earlier `Read` (she writes it fresh every morning); the stale-read
+  check still applies when she did read it this turn. An empty file is no plan. The app's own
+  rewrites (forget) write `JSON.stringify(…, null, 2)`.
+- **Harness**: `<schedule>` always renders when `scheduleInPrompt` is on: the bed time line (when
+  set), today's plan lines or "No plan for today yet.", and the zone. The harness hash is computed
+  over block A with today's plan replaced by a placeholder, so her midday edits and a new day never
+  force a configuration compaction; the `day` compaction is a separate flag (`dayCompactionDue`,
+  set when the turn that ran the day wake ends normally, cleared by any new epoch).
+- **Morning** (`scheduler.ts` `morning`): the day wake has the id `w-day-<local date>` and a `day`
+  field, carries the greeting as the first line of its batch (inside `<notifications>`) and is never
+  folded into a running turn. A life that has not begun records the day start without a wake (her
+  first morning is the next one); a life's first epoch records it too; an upgraded life that has
+  begun gets a morning at the first tick after the upgrade. Without a bed time the greeting leaves
+  the bed time sentence out, and without anything overnight it leaves out "Then deal with…". The
+  overnight header reads `- during your bed time (00:30–08:30):`.
+- **Busy holds** (`src/life/busy.ts`, router guard 4b): the S4 set is `mention` (replies are
+  mentions), `name`, `dm`, `owner`, `reminder`, `watch`, `watch_timeout` and `morning`; a merged
+  wake gets through when any of its reasons does. Held wakes live in `wakes.json` `held` (with
+  `heldUntil`, `heldFor`) and never start a turn; the scheduler releases them when the phone check
+  their block had when held, or one she added later, passes (`- phone check (busy: why)`), or when
+  she is no longer busy (`- free again (why is over)`, also for a wake held in an earlier block).
+  Open places are `busyOpen` in her life state, keyed by place with the block's end, so a new block
+  closes them. A send opens a place only when a wake of that turn that got through was for that
+  place, or the place was open already.
+- **Prompt-copy note** (§21.2 addition): `promptCopyNote` in `tools/files.ts` for Write/Edit and in
+  `tools/bash.ts` for change sets, life sessions only (`ToolContext.session` marks maintenance,
+  scrub and dream sessions), only when the content actually changed, and for `schedule.json` only
+  when `scheduleInPrompt` is on. Once per file per turn (`TurnScratch.promptCopyNoted`).
+- **Dreaming** refuses Write/Edit under `~/life/` and Bash change sets that touch it
+  (`DREAM_LIFE_REFUSED`), and its instruction says to leave `~/life/` alone. Maintenance never counts
+  `life/places.md` as a change.
+- **Forget** scrubs her day file's `mood`, `why`, `what` and `note` texts that mention the person to
+  `(removed)` (uncertain names go to needs-review as `schedule`), and drops their DM key from her
+  open places (`busyOpen`, `recentSends`).
+- **Self summary** (§21.6b, `rest.ts` `selfSummaryOf`): the reply must be exactly one
+  `<summary>…</summary>` (no nested tag). The guard reasons said on the next time line are "it is
+  shorter than N characters", "your memory is still far from full" and "your last fresh start was
+  less than N minutes ago". The new epoch's summary is framed like a rest summary
+  (`REST_SUMMARY_FRAME`); boundary reason `self`. Any assistant text that is a lone `<summary>` is
+  hidden from the owner's views without a local reveal.
+- **Bed time** (§21.6c): `clock.ts` `bedPhaseAt` from `lastSentAt` (set on every successful
+  SendMessage, with the place in `recentSends`, kept for `life.busyEngagedMinutes`). Up late or
+  dozing, a place she sent to in the last `busyEngagedMinutes` is open whatever woke her there (a
+  send just before her bed time counts: before bed every wake reached her, so "exactly like the busy
+  rule" is read as "the places she is chatting in"). What waits while she is up late or dozing is
+  deferred to the morning (reason `sleep`), never held, and no sleep notice goes out (DMs get
+  through). Asleep, `reminder` and `owner` get through; watches and watch timeouts wait. Busy blocks
+  never apply inside a bed time (they cannot overlap it). `life.bedDozeMinutes` 0 means asleep at
+  once (the old hard sleep). The Life screen and `waifus life` show "Up late" / "Dozing"; the
+  status API adds `availability.bed` (the running cast's settings, else the config file at most every
+  5 s). Held wakes that come due inside her bed time (a block ending where it starts, downtime) are
+  deferred to the morning instead of released. `held` holds at most 200 wakes (a new one joins one of
+  its place, else the oldest goes), and a merged wake keeps its release line.
+- **Review fixes (2026-10-27)**: today's day wake deferred for her budget comes back as itself
+  (greeting first, `day` kept) once she is under budget. A refused `<summary>` does not end the turn
+  by itself: the turn ends as any other, so a DM turn still gets the unsent-reply nudge (which then
+  carries the refusal note). The day compaction keeps an epoch of at most three turns whole (no
+  summary call, `summarized: false`): an upgraded life's `tools` compaction before her first morning
+  and the day's are not two summaries. It does so only when those turns also fit the kept budget
+  (half the trigger); otherwise it summarises as usual, so no turn is dropped unsummarised.
+- **Maintenance timing**: `maintenanceDue` returns `dream` once she has been asleep
+  `life.dreamAfterAsleepMinutes` (default 15, 0–720) in a bed time that has had none, or `scrubs`
+  after a bed time that ended without one: then only the pending forget scrubs run (no dream), and
+  only when some wait, so a DM `/forget` queued for the night is not put off by an all-nighter.
+- **Migrations**: `living-cast-life-folder-v1` marks begun lives for a pending epoch start with
+  reason `tools` (summarised, no kept turns, since the old turns name the old paths). It keeps a
+  per-waifu marker outside her home (`life/life-folder-v1.json`, also written by the app for every
+  life it runs and on every write the app makes to her home (HomeStore's lock: her profile on a
+  create or edit, the Life files API, the assistant), and implied by a state with `lastDayStart`. A
+  `~/life/` folder holding only the app's file names (`reminders.json`, `watches.json`,
+  `profile.json`, `places.md`, `schedule.json`) is the app's, never renamed; a waifu with nothing to move gets none
+  from the step, so a root without old files stays byte-identical): a re-run after a lost ledger skips a
+  waifu whose marker is done, so files she later writes at the top of her home (her old summaries
+  name `~/schedule.json`) never move over her reminders. Its parts (her own folder renamed, the
+  moves, index paths, journal paths, the epoch) are each recorded when finished, so a crash or an
+  unreadable file resumes at the part that did not finish and none runs twice. A folder `~/life/`
+  she had made herself (her notes) becomes `~/life-notes/` (`-2` … when taken) before the app's
+  files move in, and index and journal paths into it follow (every path in it, also a note named
+  like an app file; an index or journal is rewritten once, flagged `lifeFolderV1`), so her notes
+  never become private or refused to her dreams; links in her notes to it are not rewritten;
+  `living-cast-drop-busy-v1` archives `{waifuId, archivedAt, busy}`; `living-cast-bed-time-v1`
+  archives `{waifuId, archivedAt, waifu}` (the whole document) under
+  `user/.archive/living-cast/bed-time/` and, when both keys exist, keeps `bedTime`. All three are
+  registered after `living-cast-typing-holds-v1`, before the schema stamp.
+- **Settings**: `life.dayStartHourLocal` (8), `life.busyEngagedMinutes` (10, 0–240),
+  `life.selfSummaryMinRatio` (0.3), `life.selfSummaryCooldownMinutes` (120), `life.bedDozeMinutes`
+  (60, 0–720), `life.dreamAfterAsleepMinutes` (15, 0–720); Settings → Life "Her day" group. The
+  waifu keys are `availability.bedTime.{enabled,start,end}` ("Bed time").
+
 ## 22. ReadMessages v2: refs everywhere and one freeform query (owner request, 2026-10-27)
 
 ### 22.1 Refs on every message
@@ -2956,3 +3057,65 @@ golden, D14 and floors on every path.
 ### 22.4 Release
 
 With §21 in 3.3.0.
+
+### 22.5 As built (2026-10-27)
+
+- **One line format.** ReadMessages lines changed to the spec's example so that both read the same
+  (`render.ts` `chatLine`): the reply mark moved from inside the brackets (`[14:02 #k4 ↩#k3] Kevin:`)
+  to after the name (`[14:02 #k4] Kevin ↩#k3:`); `↩you` still wins over a ref, then the ref, then the
+  author's name. Her outbound check strips a copied header in either form. A transcript line stored
+  before 3.3.0 has no ref and shows the one `refs.json` still has, else none (`[13:30] Kevin:`).
+- **Refs at ingest**: `TranscriptWriter.write` assigns refs (one `assignConversationRefs` per event,
+  in message-id order) only for the lines it is about to write (rooms with a cast, her DMs, newer
+  than the store's start); an edit keeps the stored ref. `findTranscriptRef` reads the conversation's
+  days newest first and stops at a day whose refs are all older than the one wanted; DM floors and
+  forgets already removed the lines they cover, so a forgotten message's ref resolves to nothing.
+- **Facade**: `fetchMessagesBefore` became `fetchMessagesPage({before | after | around, limit})`
+  (one anchor per request, Discord's rule). `readPage` takes `afterId` / `aroundId` and returns
+  `hasNewer`; a page whose anchor lies inside a trusted buffer is served from it.
+- **Anchors**: a `#ref` is included on the side it anchors (`before #c1 max:10` is 11 messages, as
+  specified); `after <time>` includes that minute, `before <time>` excludes it; a day is
+  `[00:00, next 00:00)` local; `today` and `yesterday` alone are accepted as days. `around` cannot be
+  combined with `before`/`after`; an empty range is refused. A `#ref` anchor with several places is
+  refused (a ref belongs to one conversation). Inside a `people:` or `search:` value a key word only
+  starts a new term in the `key:` form, or when an anchor (or a number for `max`) follows it, so
+  `search:meet before lunch` searches three words.
+- **Output**: places are separated by a blank line, each with its header; `— more before: before #x —`
+  goes first and `— more after: after #y —` last; a page that is not all today has `— Sat 24 Oct —`
+  lines where each day starts. Only a page with no anchor moves her read cursor. A filtered place says
+  `N messages match[, M shown] (searched <from> – <to>)`, where `<from>` is the anchor's day or,
+  when the search reaches further back than the store, the store's first day "(when your transcripts
+  begin)"; `everywhere` leaves out places with no match and answers `no messages match (searched …)`
+  when none has one. Search results show `[file: name]` and download nothing.
+- **Search scope**: her current places (`everywhere` = all of them); rooms through her access
+  intervals; the cache's messages newer than the newest transcript line of the place are added (a
+  forgotten person's and DM-floor ones left out). A shown line without a ref gets one.
+- **D14**: every place whose lines are in the result is noted for the call (`notePlace`), so a call
+  whose `everywhere` result includes a DM is private like any DM read.
+- **Old habits**: `limit` and `before` are no longer in the schema but are still read when sent
+  (as `max:` and `before #ref`) where the query has no `max:` or anchor of its own, since her old log
+  lines show them.
+- **Review fixes (2026-10-27)**:
+  - Refs: a page or search takes `refs.json` first, then the ref stored on the message's transcript
+    line, and only then assigns one; the writer assigns only to lines it has not written yet. A
+    message older than 30 days gets no new ref; a page edge without a ref gets a time in its hint
+    (`— more before: before 2026-09-01 10:05 —` for a first line at 10:04: `before` leaves its
+    minute out, so the hint names the next one). `refs.json` is pruned only once it holds 1,000
+    refs past the 10,000 span (so a 30-day-old ref can stay a little longer). `findTranscriptRef`
+    looks at every day (gap fills write new refs into older days), each first as text.
+  - Searches read days newest first (oldest first for `after` alone) without the schema, check the
+    call's signal between days, and stop at 400 days per place or 32 MiB per call; the reply then
+    names the days it searched and says it stopped (`add before or after to look further`). With
+    `everywhere` (places without a match have no section) a last line names the places the limit
+    left unread or read in part, also when nothing matched. The
+    cache's tail is what is newer than the store's newest line of that place (anyone's), and for a
+    room only inside her interval.
+  - A forgotten person's lines (theirs, or naming their id, from before the forget) and DM lines at
+    or below the floor are left out of searches, ref lookups and `/transcripts` themselves, whether
+    or not the forget job's transcript part has run.
+  - `people:Max 5` is a name (inside people/search only a `key:` form, or an anchor after
+    before/after/around, starts a term); `max:100` asks once more to know whether there is more; a
+    `#ref` with `max:100` reads 101 in two pages (also over the network); one call adds at most 200 ids to her read ids.
+- Tests: `tests/lifeReadMessages.test.ts`; goldens `life-transcript-day.txt` (new) and
+  `life-system-prompt.txt` / `life-rest-epoch.txt` / `life-dream.txt` (the tool description, the
+  `<life>` sentence, the transcript line format).

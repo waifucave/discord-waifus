@@ -1,5 +1,5 @@
-// Sleep, the morning batch, reminders, watch timeouts and maintenance timing (Living cast spec §4.5,
-// §4.7, §5.7, §6.6, §7.3, §16.4, §16.5). Reminders and watches live in her own files. The scheduler
+// Bed time, the morning batch, reminders, watch timeouts and maintenance timing (Living cast spec §4.5,
+// §4.7, §5.7, §6.6, §7.3, §16.4, §16.5, §21.6c). Reminders and watches live in her own files. The scheduler
 // is ticked by hand; lives never run here.
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile } from "../src/life/lifeStore.js";
 import { renderNotifications } from "../src/life/notifications.js";
 import { maintenanceDue, nextOccurrence } from "../src/life/scheduler.js";
+import { bedPhaseAt } from "../src/life/clock.js";
+import { takeImmediate } from "../src/life/wakeQueue.js";
 import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, ROOM, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
@@ -18,7 +20,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const ASLEEP_13_15 = { sleep: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+const ASLEEP_13_15 = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
 
 async function sleepyWorld(o: Parameters<typeof lifeWorld>[1] = {}): Promise<LifeWorld> {
   const w = await lifeWorld(roots, {
@@ -38,11 +40,11 @@ async function say(w: LifeWorld, text: string, o: Parameters<LifeWorld["discord"
   await w.cast.settle();
 }
 
-describe("sleep and the morning batch (§4.5, §4.7)", () => {
-  it("defers mentions, DMs, reminders and watch matches while she sleeps, then releases one morning batch", async () => {
+describe("sleep and the morning batch (§4.5, §4.7, §21.6c)", () => {
+  it("defers mentions, DMs and watch matches while she is asleep (her reminders get through), then releases one morning batch", async () => {
     const w = await sleepyWorld();
-    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 14:10", note: "check the bake sale flyer" }]));
-    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
+    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 14:10", note: "check the bake sale flyer" }]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
     await say(w, `<@${ELLA_BOT}> you up?`, { mentions: { [ELLA_BOT]: "Ella" } });
     await say(w, "best brownie recipe anyone?");
     const dm = w.discord.post(dmOf("ella"), "goodnight ella");
@@ -53,8 +55,10 @@ describe("sleep and the morning batch (§4.5, §4.7)", () => {
     await w.cast.scheduler.tick();
     await w.cast.scheduler.tick();
     let queue = await readLifeFile(w.storage, "ella", "wakes");
-    expect(queue.immediate).toEqual([]);
-    expect(queue.deferred.items.map((item) => item.reason)).toEqual(["watch", "reminder"]);
+    // Asleep (an hour into her bed time with no send): only her reminder wakes her.
+    expect(queue.immediate.map((wake) => wake.reason)).toEqual(["reminder"]);
+    expect(queue.deferred.items.map((item) => item.reason)).toEqual(["watch"]);
+    await takeImmediate(w.storage, "ella");
 
     // Still asleep at 14:59: nothing. Awake at 15:01: one morning wake, once.
     w.clock.ms = Date.parse("2026-10-24T14:59:00.000Z");
@@ -67,10 +71,9 @@ describe("sleep and the morning batch (§4.5, §4.7)", () => {
     expect(queue.immediate).toHaveLength(1);
     const morning = queue.immediate[0]!;
     expect(morning.reason).toBe("morning");
-    expect(morning.batch![0]).toBe("- while you were asleep (13:00–15:00):");
+    expect(morning.batch![0]).toBe("- during your bed time (13:00–15:00):");
     expect(morning.batch).toContainEqual(expect.stringMatching(/^ {2}· bake-club\/#general: 1 mention, \d+ messages?$/u));
     expect(morning.batch).toContain("  · DMs: Kevin (1 message)");
-    expect(morning.batch).toContain('  · reminder (Sat 14:10): "check the bake sale flyer"');
     expect(morning.batch).toContain('  · watch matched · bake-club/#general · "brownie" · from Kevin · your note: "Mina wanted brownie tips"');
     expect(queue.deferred.items).toEqual([]);
     expect(queue.deferred.reason).toBeUndefined();
@@ -123,7 +126,7 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     // Written on disk while the app was down (no checks): two of them are two days late.
     await homeOf(w).write(
-      "schedule.json",
+      "life/reminders.json",
       JSON.stringify([
         { id: "r1", at: "2026-10-22 15:00", note: "one-off" },
         { id: "r2", at: "2026-10-22 15:00", repeat: "daily", note: "water the plants" },
@@ -135,7 +138,7 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     const queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(queue.immediate.map((wake) => wake.note)).toEqual(["one-off", "water the plants"]);
     expect(queue.immediate[1]).toMatchObject({ reason: "reminder", at: "2026-10-22T15:00:00.000Z" });
-    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["at"]])).toEqual([
+    expect((await herEntries(w, "reminders.json")).map((reminder) => [reminder["id"], reminder["at"]])).toEqual([
       ["r2", "2026-10-24 15:00"],
       ["r3", "2026-10-24 15:00"]
     ]);
@@ -146,13 +149,13 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
   it("editing a reminder's time in her file moves it", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 18:00", note: "call the bakery" }]));
-    const text = (await homeOf(w).read("schedule.json"))!;
-    await writeHerFile(w, "schedule.json", text.replace("2026-10-24 18:00", "2026-10-24 14:10"));
+    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 18:00", note: "call the bakery" }]));
+    const text = (await homeOf(w).read("life/reminders.json"))!;
+    await writeHerFile(w, "life/reminders.json", text.replace("2026-10-24 18:00", "2026-10-24 14:10"));
     w.clock.ms = Date.parse("2026-10-24T14:11:00.000Z");
     await w.cast.scheduler.tick();
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toMatchObject([{ reason: "reminder", note: "call the bakery", at: "2026-10-24T14:10:00.000Z" }]);
-    expect(await herEntries(w, "schedule.json")).toEqual([]);
+    expect(await herEntries(w, "reminders.json")).toEqual([]);
     // Nothing is left for the old time.
     w.clock.ms = Date.parse("2026-10-24T18:01:00.000Z");
     await w.cast.scheduler.tick();
@@ -164,7 +167,7 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await writeHerFile(
       w,
-      "watches.json",
+      "life/watches.json",
       JSON.stringify([
         { timeout: "2026-10-24 14:05", once: true, note: "tea's ready", when: [] },
         { timeout: "2026-10-24 14:30", once: true, note: "Kevin's answer", when: [{ place: "bake-club/#general", words: ["exam"] }] },
@@ -194,22 +197,33 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
 
 describe("maintenance timing (§7.3)", () => {
   const waifu = (sleep: { enabled: boolean; start: string; end: string }) =>
-    WaifuConfigSchema.parse({ ...createRevisionedBase(), id: "ella", name: "Ella", displayName: "Ella", availability: { sleep, busy: [] } });
+    WaifuConfigSchema.parse({ ...createRevisionedBase(), id: "ella", name: "Ella", displayName: "Ella", availability: { bedTime: sleep, busy: [] } });
 
-  it("runs 30 minutes into her sleep window, once per window", () => {
+  it("dreams once she has been asleep 15 minutes in her bed time, once per bed time (§21.6c)", () => {
     const sleeper = waifu({ enabled: true, start: "23:00", end: "07:00" });
     const at = (iso: string) => new Date(iso);
-    expect(maintenanceDue(sleeper, at("2026-10-24T23:20:00.000Z"), "UTC", 5, undefined)).toBe(false);
-    expect(maintenanceDue(sleeper, at("2026-10-24T23:31:00.000Z"), "UTC", 5, undefined)).toBe(true);
-    expect(maintenanceDue(sleeper, at("2026-10-25T02:00:00.000Z"), "UTC", 5, "2026-10-24T23:31:00.000Z")).toBe(false);
-    expect(maintenanceDue(sleeper, at("2026-10-25T23:31:00.000Z"), "UTC", 5, "2026-10-24T23:31:00.000Z")).toBe(true);
-    expect(maintenanceDue(sleeper, at("2026-10-25T12:00:00.000Z"), "UTC", 5, undefined)).toBe(false);
+    const due = (iso: string, last?: string, lastSentAt?: string) =>
+      maintenanceDue(sleeper, at(iso), "UTC", 5, last, { bed: bedPhaseAt(sleeper.availability, at(iso), "UTC", { lastSentAt, engagedMinutes: 10, dozeMinutes: 60 }), dreamAfterMinutes: 15 });
+    // Dozing until 00:00, asleep after; the dream at 00:15.
+    expect(due("2026-10-24T23:31:00.000Z")).toBe(false);
+    expect(due("2026-10-25T00:14:00.000Z")).toBe(false);
+    expect(due("2026-10-25T00:15:00.000Z")).toBe("dream");
+    expect(due("2026-10-25T02:00:00.000Z", "2026-10-25T00:15:00.000Z")).toBe(false);
+    // A send at 01:00 moves it: asleep at 02:00, dream at 02:15.
+    expect(due("2026-10-25T02:10:00.000Z", undefined, "2026-10-25T01:00:00.000Z")).toBe(false);
+    expect(due("2026-10-25T02:15:00.000Z", undefined, "2026-10-25T01:00:00.000Z")).toBe("dream");
+    // The next night again; never outside her bed time.
+    expect(due("2026-10-26T00:15:00.000Z", "2026-10-25T00:15:00.000Z")).toBe("dream");
+    expect(maintenanceDue(sleeper, at("2026-10-25T12:00:00.000Z"), "UTC", 5, "2026-10-25T00:15:00.000Z")).toBe(false);
+    // A bed time that ended without one: the pending scrubs alone, once.
+    expect(maintenanceDue(sleeper, at("2026-10-25T07:01:00.000Z"), "UTC", 5, "2026-10-24T00:15:00.000Z")).toBe("scrubs");
+    expect(maintenanceDue(sleeper, at("2026-10-25T07:01:00.000Z"), "UTC", 5, "2026-10-25T07:00:30.000Z")).toBe(false);
   });
 
-  it("runs at life.maintenanceHourLocal without a sleep window", () => {
+  it("runs at life.maintenanceHourLocal without a bed time", () => {
     const awake = waifu({ enabled: false, start: "23:00", end: "07:00" });
     expect(maintenanceDue(awake, new Date("2026-10-24T04:59:00.000Z"), "UTC", 5, undefined)).toBe(false);
-    expect(maintenanceDue(awake, new Date("2026-10-24T05:01:00.000Z"), "UTC", 5, undefined)).toBe(true);
+    expect(maintenanceDue(awake, new Date("2026-10-24T05:01:00.000Z"), "UTC", 5, undefined)).toBe("dream");
     expect(maintenanceDue(awake, new Date("2026-10-24T18:00:00.000Z"), "UTC", 5, "2026-10-24T05:01:00.000Z")).toBe(false);
   });
 });

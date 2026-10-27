@@ -11,8 +11,8 @@
 // conversations' days first, each moving the cursor for what it covered.
 //
 // Model: `life.dreamModel` when it is set and offered, else her own model (and her effort). Tools:
-// her file tools (Read, Write, Edit, Bash) in session mode: `/transcripts` read-only, profile.json
-// refused. Round cap `life.dreamMaxRounds`. One report line per dream in `maintenance.jsonl`.
+// her file tools (Read, Write, Edit, Bash) in session mode: `/transcripts` read-only, `~/life/` refused (§21.6),
+// profile.json included. Round cap `life.dreamMaxRounds`. One report line per dream in `maintenance.jsonl`.
 
 import { readFile } from "node:fs/promises";
 import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
@@ -21,6 +21,7 @@ import { atomicWriteJson } from "../storage/atomic.js";
 import type { StorageService } from "../storage/storageService.js";
 import { clockText, dayTimeText, timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
+import { availabilityFor } from "./busy.js";
 import { appendMaintenanceReport } from "./lifeStore.js";
 import { lifeModelOf } from "./lifeLoop.js";
 import { homeListing, runSession, type MaintenanceOutcome } from "./maintenance.js";
@@ -35,7 +36,7 @@ export function dreamSystem(waifu: Pick<WaifuConfig, "name">): string {
 }
 
 export const DREAM_INSTRUCTION = [
-  "[system] She is asleep: time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day.",
+  "[system] She is asleep: time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day. Leave ~/life/ alone (her day, reminders, watches, profile and places are hers to keep).",
   "1. Read the dream window below: in each file, only the lines from the line number given (as Read numbers them).",
   "2. Add memories from the window only: new people, places, facts, plans, how things felt. Write them as her notes, in her voice and the layout her notes already use, and add a line to MEMORY.md for each new note.",
   "3. Check every note against the window. Change a fact only when the window clearly says otherwise (the newest wins) and keep everything else exactly as it is. Never delete or change a note because the window doesn't mention it. You may grep older transcript days to confirm a fact the window touches, but add nothing from before the window.",
@@ -226,7 +227,7 @@ export async function runDream(deps: LifeDeps, o: { waifu: WaifuConfig; signal?:
         DREAM_INSTRUCTION,
         await homeListing(deps, o.waifu, { possessive: "Her" }),
         windowText(chunks, { start: window.start, timeZone: deps.timeZone, more: index < sessions.length - 1 }),
-        timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability })
+        timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })
       ],
       maxRounds: life.dreamMaxRounds,
       ...(chosen.effort ? { effort: chosen.effort } : {}),

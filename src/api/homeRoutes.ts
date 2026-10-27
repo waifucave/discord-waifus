@@ -1,7 +1,7 @@
 // Her own computer over HTTP (Living cast spec §16.11): her files in `/home/<slug>` and `/tmp`, her
-// reminders (`~/schedule.json`) and her watches (`~/watches.json`). Every write goes through her
+// reminders (`~/life/reminders.json`) and her watches (`~/life/watches.json`). Every write goes through her
 // HomeStore, so the API's PUT and DELETE are held to the same path rules, limits and checks as her
-// Write tool (`places.md` refused, the JSON files checked with line and column).
+// Write tool (`~/life/places.md` refused, the JSON files in `~/life/` checked with line and column).
 //
 // Paths in URLs are her paths without the leading slash: `files/home/aria/people/kevin.md`,
 // `files/tmp/bake-club/general/k3-cake.png` (or `files/~/people/kevin.md`). A file answers as JSON
@@ -489,7 +489,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const waifuId = waifuIdOf(request.params);
     const { home } = await homeOf(waifuId);
     const zone = timeZone();
-    const [entries, text] = await Promise.all([home.readSchedule(zone), home.readScheduleText()]);
+    const [entries, text] = await Promise.all([home.readReminders(zone), home.readRemindersText()]);
     return { waifuId, timeZone: zone, entries, ...(readsWhole(text, entries.length) ? {} : { unreadable: true as const }) };
   });
 
@@ -498,16 +498,16 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const { reminderId } = z.object({ reminderId: z.string().regex(ID) }).parse(request.params);
     const { home } = await homeOf(waifuId);
     const zone = timeZone();
-    if (!readsWhole(await home.readScheduleText(), (await home.readSchedule(zone)).length)) {
-      throw conflict("Her schedule.json does not read cleanly; fix it in the file editor first.");
+    if (!readsWhole(await home.readRemindersText(), (await home.readReminders(zone)).length)) {
+      throw conflict("Her life/reminders.json does not read cleanly; fix it in the file editor first.");
     }
     let found = false;
-    const clean = await home.rewriteSchedule(zone, (entries) => {
+    const clean = await home.rewriteReminders(zone, (entries) => {
       found = entries.some((entry) => entry.id === reminderId);
       return found ? entries.filter((entry) => entry.id !== reminderId) : entries;
     });
-    if (!clean) throw conflict("Her schedule.json does not read cleanly; fix it in the file editor first.");
-    if (!found) throw notFound(`Reminder ${reminderId} is not in her schedule.json.`);
+    if (!clean) throw conflict("Her life/reminders.json does not read cleanly; fix it in the file editor first.");
+    if (!found) throw notFound(`Reminder ${reminderId} is not in her life/reminders.json.`);
     return { waifuId, removed: reminderId };
   });
 

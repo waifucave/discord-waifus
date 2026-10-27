@@ -11,18 +11,25 @@ import { z } from "zod";
 import { MAX_CHANGE_ENTRIES, runBash } from "../bash/runner.js";
 import { checkEnvFor } from "../home/index.js";
 import { HomeError, sha256, type HomeStore } from "../home/homeStore.js";
-import { isDmFolderPath, parseVirtual, pathKey, PROFILE_FILE, specialJsonFile } from "../home/pathRules.js";
+import { isDmFolderPath, isLifeDirPath, parseVirtual, pathKey, PROFILE_FILE, specialJsonFile } from "../home/pathRules.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 
-/** A write or delete that would change `~/profile.json` (a delete of her whole home included). */
+/** A write or delete that would change `~/life/profile.json` (a delete of `~/life` or her whole home included). */
 function touchesProfile(virtual: string, slug: string): boolean {
   const p = parseVirtual(virtual, slug);
   if (!p) return false;
-  return specialJsonFile(p) === "profile" || (p.root === "home" && p.segments.length === 0);
+  return specialJsonFile(p) === "profile" || (p.root === "home" && p.segments.length === 0) || (p.segments.length === 1 && isLifeDirPath(p));
+}
+
+/** A change anywhere in `~/life/` (or of her whole home). */
+function touchesLifeDir(virtual: string, slug: string): boolean {
+  const p = parseVirtual(virtual, slug);
+  if (!p) return false;
+  return isLifeDirPath(p) || (p.root === "home" && p.segments.length === 0);
 }
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
-import { noteDmFile, storeOf, transcriptViewOf } from "./files.js";
+import { DREAM_LIFE_REFUSED, noteDmFile, promptCopyNote, storeOf, transcriptViewOf } from "./files.js";
 import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
@@ -131,6 +138,11 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     lines.push(`error: changes not saved: ${PROFILE_TIDY_REFUSED.replace(/^error:\s*/u, "")}`);
     return { content: lines.join("\n"), isError: true };
   }
+  // A dream leaves `~/life/` alone (§21.6): her day, reminders, watches, profile and places.
+  if (ctx.session === "dream" && [...changes.writes.map((write) => write.path), ...changes.deletes, ...changes.dirs].some((virtual) => touchesLifeDir(virtual, store.slug))) {
+    lines.push(`error: changes not saved: ${DREAM_LIFE_REFUSED.replace(/^error:\s*/u, "")}`);
+    return { content: lines.join("\n"), isError: true };
+  }
   // A non-empty change set is a side effect (§16.9): intent first, done after.
   const argsDigest = createHash("sha256").update(JSON.stringify(input ?? {})).digest("hex").slice(0, 32);
   const intent = { turnId: ctx.turn.id, toolCallId: ctx.toolCallId, tool: "Bash", argsDigest };
@@ -156,6 +168,16 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     // Her special files changed under her own hand: what she read of them is current again.
     for (const write of changes.writes) ctx.turn.readHashes?.delete(pathKey(write.path));
     if (applied.profileChanged !== undefined) lines.push(`${PROFILE_FILE}: ${await profileSavedNote(deps, ctx.waifu.id, applied.profileChanged)}`);
+    // Her day or MEMORY.md changed: their copy in her system prompt is now old (§21.2).
+    const touched = new Set([...applied.changed, ...applied.deleted]);
+    for (const virtual of [...changes.writes.map((write) => write.path), ...changes.deletes]) {
+      const p = parseVirtual(virtual, store.slug);
+      if (!p) continue;
+      const canonical = await store.files.canonical(p);
+      if (!touched.has(canonical.display)) continue;
+      const note = promptCopyNote(ctx, canonical);
+      if (note) lines.push(note);
+    }
     return { content: lines.join("\n") };
   } catch (error) {
     if (!(error instanceof HomeError)) throw error;

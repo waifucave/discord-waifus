@@ -42,8 +42,8 @@ const makeApp = () => makeCliApp(roots, apps);
 const NON_DEFAULT: Record<string, string> = {
   "app.http.host": "127.0.0.2",
   "app.detector.target": "laya:english",
-  "waifu.availability.sleep.start": "22:15",
-  "waifu.availability.sleep.end": "06:45",
+  "waifu.availability.bedTime.start": "22:15",
+  "waifu.availability.bedTime.end": "06:45",
   "waifu.dm.rateLimit": '{"maxReplies":12,"windowMinutes":30}'
 };
 

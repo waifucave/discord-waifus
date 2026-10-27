@@ -310,7 +310,7 @@ function FileViewer({
   );
 }
 
-/** Her reminders (`~/schedule.json`) and watches (`~/watches.json`), each with a delete button. */
+/** Her reminders (`~/life/reminders.json`) and watches (`~/life/watches.json`), each with a delete button. */
 export function PlansPanel({ waifuId, includePrivate }: { waifuId: string; includePrivate: boolean }) {
   const schedule = useApi<ScheduleResponse>((s) => api.schedule(waifuId, s), [waifuId]);
   const watches = useApi<WatchesResponse>((s) => api.watches(waifuId, includePrivate, s), [waifuId, includePrivate]);
@@ -366,7 +366,7 @@ export function PlansPanel({ waifuId, includePrivate }: { waifuId: string; inclu
           onCancel={() => setPending(undefined)}
           onConfirm={confirm}
         >
-          <p className="t-small">{pending.kind === "reminder" ? "It is removed from her schedule.json and won't wake her." : "It is removed from her watches.json; she is not told."}</p>
+          <p className="t-small">{pending.kind === "reminder" ? "It is removed from her life/reminders.json and won't wake her." : "It is removed from her life/watches.json; she is not told."}</p>
         </ConfirmDialog>
       )}
     </div>
@@ -378,8 +378,8 @@ export function ReminderList({ data, error, onDelete }: { data: ScheduleResponse
     <div style={{ marginBottom: 12 }}>
       <div className="t-micro" style={{ marginBottom: 4 }}>Reminders{data ? ` (${data.timeZone})` : ""}</div>
       {error && <Notice tone="err">Reminders: {error}</Notice>}
-      {data?.unreadable && <Notice tone="warn">Her schedule.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
-      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with ScheduleWake, or by editing schedule.json.</span>}
+      {data?.unreadable && <Notice tone="warn">Her life/reminders.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
+      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with ScheduleWake, or by editing life/reminders.json.</span>}
       {data?.entries.map((entry) => (
         <div key={entry.id} className="soft-row">
           <span className="t-micro" style={{ flex: "none" }}>{entry.id}</span>
@@ -400,8 +400,8 @@ export function WatchList({ data, includePrivate, error, onDelete }: { data: Wat
     <div>
       <div className="t-micro" style={{ marginBottom: 4 }}>Watches{data ? ` (${data.timeZone})` : ""}</div>
       {error && <Notice tone="err">Watches: {error}</Notice>}
-      {data?.unreadable && <Notice tone="warn">Her watches.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
-      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with WatchFor, or by editing watches.json.</span>}
+      {data?.unreadable && <Notice tone="warn">Her life/watches.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
+      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with WatchFor, or by editing life/watches.json.</span>}
       {data?.entries.map((entry) => {
         const hidden = entry.private === true && !includePrivate;
         return (

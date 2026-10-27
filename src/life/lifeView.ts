@@ -22,7 +22,7 @@
 
 import type { LifeLogLine, LifeState } from "../shared/schemas/life.js";
 import { lifeSystem } from "./request.js";
-import { REST_NOTICE_PREFIX } from "./rest.js";
+import { REST_NOTICE_PREFIX, selfSummaryOf } from "./rest.js";
 
 export const DM_REDACTED = "[private chat redacted]";
 
@@ -236,7 +236,8 @@ export function viewLogLine(line: LifeLogLine, scan: DmScan, o: { includePrivate
     }
     if (type === "text") {
       const text = String(block["text"] ?? "");
-      if (hide && assistant && (dmTurn || restTurn)) {
+      // Her own fresh-start summary (§21.6b) is private the same way.
+      if (hide && assistant && (dmTurn || restTurn || selfSummaryOf(text) !== undefined)) {
         blocks.push({ type: "text", redacted: true });
         redacted += 1;
       } else blocks.push({ type: "text", text: hide ? redactDmNotifications(text) : text });

@@ -182,7 +182,7 @@ describe("profile schema", () => {
   });
 
   it("carries a prebuilt waifu's username and bio into her first record", () => {
-    const base = { id: "lumi", name: "Lumi", displayName: "Lumi", enabled: true, persona: "Warm.", availability: { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [] } };
+    const base = { id: "lumi", name: "Lumi", displayName: "Lumi", enabled: true, persona: "Warm.", availability: { bedTime: { enabled: false, start: "23:00", end: "07:00" }, busy: [] } };
     const record = prebuiltWaifuRecord({ ...base, username: "Lumi", bio: "Cozy and bright." });
     expect(record).toMatchObject({ username: "Lumi", bio: "Cozy and bright." });
     expect("username" in prebuiltWaifuRecord(base)).toBe(false);
@@ -584,8 +584,8 @@ describe("profile API", () => {
       expect(saved.statusCode).toBe(200);
       expect(saved.json()).toMatchObject({ username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
       expect(syncDiscordProfile).toHaveBeenCalledWith("ella");
-      // Her ~/profile.json follows the dashboard edit (§17.1).
-      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "ella", "home", "profile.json"), "utf8"));
+      // Her ~/life/profile.json follows the dashboard edit (§17.1).
+      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "ella", "home", "life", "profile.json"), "utf8"));
       expect(file).toEqual({ name: "Ella", username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
       const cleared = await server.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: saved.json().revision, bio: null } });
       expect(cleared.json().bio).toBeUndefined();

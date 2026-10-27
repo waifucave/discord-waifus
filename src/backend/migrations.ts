@@ -30,6 +30,7 @@ import { migrateLivingCastModels } from "./migrationSteps/livingCastModels.js";
 import { checkStoredModelEfforts } from "./migrationSteps/modelEffortCheck.js";
 import { migrateLivingCastTypingHolds } from "./migrationSteps/livingCastDebounce.js";
 import { migrateLivingCastHome } from "./migrationSteps/livingCastHome.js";
+import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "./migrationSteps/livingCastLifeFolder.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
 import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
@@ -181,6 +182,12 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "living-cast-home-v1", frequency: "once", run: (dataRoot) => migrateLivingCastHome(dataRoot) },
   // Typing-aware holds (spec §4.2): debounce values still at an earlier default move to the new ones.
   { id: "living-cast-typing-holds-v1", frequency: "once", run: migrateLivingCastTypingHolds },
+  // Her day (spec §21.6): her app-managed files move into ~/life/ (and lives start a new epoch), and
+  // the owner-set busy blocks are archived and dropped (her own ~/life/schedule.json replaces them).
+  { id: "living-cast-life-folder-v1", frequency: "once", run: (dataRoot) => migrateLivingCastLifeFolder(dataRoot) },
+  { id: "living-cast-drop-busy-v1", frequency: "once", run: (dataRoot) => migrateLivingCastDropBusy(dataRoot) },
+  // Bed time (spec §21.6c): the owner's availability.sleep is renamed availability.bedTime (archived first).
+  { id: "living-cast-bed-time-v1", frequency: "once", run: (dataRoot) => migrateLivingCastBedTime(dataRoot) },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

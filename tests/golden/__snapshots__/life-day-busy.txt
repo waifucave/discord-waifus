@@ -1,0 +1,20 @@
+(block A up to here: see life-system-prompt.txt)
+<schedule>
+Your bed time is 00:30–08:30.
+Today (2026-10-24), as you planned it in ~/life/schedule.json:
+Mood: slow morning, want a quiet day
+Busy 12:00–15:30: studio shift
+Phone checks while busy: 13:30, 14:45
+Plan 21:00: movie night in bake-club/#general
+Plan: finish the rain poem for Kevin
+Note: if Kevin asks about saturday: yes
+Times are local (UTC).
+</schedule>
+=== 6 user ===
+--- text ---
+<notifications>
+- phone check (busy: studio shift)
+- maybe for you · bake-club/#general · from Mina · #a0 "who wants to judge the cake contest?"
+</notifications>
+--- text ---
+[Sat 24 Oct 13:30 · busy: studio shift until 15:30]

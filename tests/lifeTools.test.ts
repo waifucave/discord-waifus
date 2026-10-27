@@ -62,7 +62,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(text(sent)).toMatch(/^sent #[0-9a-z]+$/u);
     expect(w.discord.typing).toEqual(["200000000000000002"]);
     expect(w.discord.sent).toMatchObject([{ placeKey: ROOM_KEY, content: "brownies are ready", senderBotId: "ella-bot" }]);
-    expect(await run("SendMessage", { place: "elsewhere/#random", text: "hi" }, ctx)).toEqual({ content: "error: unknown place; see ~/places.md", isError: true });
+    expect(await run("SendMessage", { place: "elsewhere/#random", text: "hi" }, ctx)).toEqual({ content: "error: unknown place; see ~/life/places.md", isError: true });
     expect(await run("SendMessage", { place: "bake-club/#general", text: "" }, ctx)).toEqual({ content: "error: there is nothing to send: put your message in text, or save a file with Write first and list its path in files", isError: true });
     expect((await run("SendMessage", { place: "bake-club/#general", text: "x".repeat(2001) }, ctx)).isError).toBe(true);
     // Missing access says why and that it can change, so she doesn't write the room off.
@@ -145,14 +145,14 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
     const sent = await run(
       "SendMessage",
-      { place: "bake-club/#general", text: "the flyer", files: ["~/flyer.txt", "/home/ella/MEMORY.md", "people/kevin.md", "~/places.md", "~/kevin-copy.md", "~/nope.txt"] },
+      { place: "bake-club/#general", text: "the flyer", files: ["~/flyer.txt", "/home/ella/MEMORY.md", "people/kevin.md", "~/life/places.md", "~/kevin-copy.md", "~/nope.txt"] },
       ctx
     );
     expect(sent.isError).toBeFalsy();
     expect(text(sent)).toMatch(/^sent #[0-9a-z]+; not attached: /u);
-    expect(text(sent)).toContain("~/MEMORY.md (your notes, reminders, watches and places are private and can't be attached)");
-    expect(text(sent)).toContain("~/people/kevin.md (your notes, reminders, watches and places are private and can't be attached)");
-    expect(text(sent)).toContain("~/places.md (your notes, reminders, watches and places are private and can't be attached)");
+    expect(text(sent)).toContain("~/MEMORY.md (your notes and the files in ~/life/ are private and can't be attached)");
+    expect(text(sent)).toContain("~/people/kevin.md (your notes and the files in ~/life/ are private and can't be attached)");
+    expect(text(sent)).toContain("~/life/places.md (your notes and the files in ~/life/ are private and can't be attached)");
     expect(text(sent)).toContain("~/nope.txt (it doesn't exist)");
     // A copy under another name is hers to share.
     expect(w.discord.sent[0]!.files).toEqual([
@@ -163,7 +163,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(text(await run("SendMessage", { place: "bake-club/#general", files: ["~/flyer.txt"] }, await ctxFor(w)))).toMatch(/^sent #/u);
     expect(w.discord.sent[1]).toMatchObject({ content: "", files: [{ name: "flyer.txt" }] });
     const nothing = await run("SendMessage", { place: "bake-club/#general", files: ["~/MEMORY.md"] }, await ctxFor(w));
-    expect(nothing).toEqual({ content: "error: nothing was sent: not attached: ~/MEMORY.md (your notes, reminders, watches and places are private and can't be attached)", isError: true });
+    expect(nothing).toEqual({ content: "error: nothing was sent: not attached: ~/MEMORY.md (your notes and the files in ~/life/ are private and can't be attached)", isError: true });
     expect(w.discord.sent).toHaveLength(2);
   });
 
@@ -186,21 +186,23 @@ describe("ReadMessages (§6.2) and React (§6.4)", () => {
     const w = await lifeWorld(roots);
     for (let index = 1; index <= 20; index += 1) w.discord.post(ROOM, `message ${index}`, index % 2 ? {} : { authorId: MINA_USER, authorName: "Mina" });
     const ctx = await ctxFor(w);
-    const first = text(await run("ReadMessages", { place: "bake-club/#general", limit: 5 }, ctx));
+    const first = text(await run("ReadMessages", { place: "bake-club/#general", query: "max:5" }, ctx));
     const lines = first.split("\n");
     expect(lines[0]).toBe("bake-club/#general (Bake Club › #general)");
-    expect(lines.slice(1, 6).map((line) => line.replace(/^\[\d\d:\d\d #[0-9a-z]+\] /u, ""))).toEqual(["Mina: message 16", "Kevin: message 17", "Mina: message 18", "Kevin: message 19", "Mina: message 20"]);
-    const footer = lines[lines.length - 1]!;
-    expect(footer).toMatch(/^— older messages available; pass before:"#[0-9a-z]+" —$/u);
-    const before = /before:"(#[0-9a-z]+)"/u.exec(footer)![1]!;
-    const older = text(await run("ReadMessages", { place: "bake-club/#general", limit: 2, before }, ctx));
+    expect(lines[1]).toMatch(/^— more before: before #[0-9a-z]+ —$/u);
+    expect(lines.slice(2, 7).map((line) => line.replace(/^\[\d\d:\d\d #[0-9a-z]+\] /u, ""))).toEqual(["Mina: message 16", "Kevin: message 17", "Mina: message 18", "Kevin: message 19", "Mina: message 20"]);
+    const before = /before (#[0-9a-z]+) —/u.exec(lines[1]!)![1]!;
+    // The ref is included: message 16 and the two before it.
+    const older = text(await run("ReadMessages", { place: "bake-club/#general", query: `before ${before} max:2` }, ctx));
     expect(older).toContain("message 14");
     expect(older).toContain("message 15");
-    expect(await run("ReadMessages", { place: "bake-club/#general", before: "#zzzz" }, ctx)).toEqual({ content: "error: message too old", isError: true });
-    for (const limit of [0, 51]) expect((await run("ReadMessages", { place: "bake-club/#general", limit }, ctx)).isError).toBe(true);
+    expect(older).toContain("message 16");
+    expect(older).not.toContain("message 13");
+    expect(await run("ReadMessages", { place: "bake-club/#general", query: "before #zzzz" }, ctx)).toEqual({ content: "error: message too old", isError: true });
+    for (const max of [0, 101]) expect((await run("ReadMessages", { place: "bake-club/#general", query: `max:${max}` }, ctx)).isError).toBe(true);
     // The owner forgot Mina: her messages so far read as (removed).
     await recordForgottenPerson(w.storage, MINA_USER, w.clock.now());
-    const after = text(await run("ReadMessages", { place: "bake-club/#general", limit: 2 }, ctx));
+    const after = text(await run("ReadMessages", { place: "bake-club/#general", query: "max:2" }, ctx));
     expect(after).toMatch(/someone: \(removed\)/u);
     expect(after).not.toContain("message 20");
     const state = await readLifeFile(w.storage, "ella", "reads");
@@ -211,7 +213,7 @@ describe("ReadMessages (§6.2) and React (§6.4)", () => {
     const w = await lifeWorld(roots);
     w.discord.post(ROOM, "we won the bake-off!");
     const ctx = await ctxFor(w);
-    const read = text(await run("ReadMessages", { place: "bake-club/#general", limit: 1 }, ctx));
+    const read = text(await run("ReadMessages", { place: "bake-club/#general", query: "max:1" }, ctx));
     const ref = /#([0-9a-z]+)\]/u.exec(read)![1]!;
     expect(text(await run("React", { place: "bake-club/#general", ref: `#${ref}`, emoji: "🎉" }, ctx))).toBe("reacted");
     expect(w.discord.reactions).toMatchObject([{ placeKey: ROOM_KEY, emoji: "🎉", botId: "ella-bot" }]);
@@ -288,7 +290,7 @@ describe("ReadMessages downloads (§16.3.1)", () => {
   });
 });
 
-describe("WatchFor and ~/watches.json (§16.5)", () => {
+describe("WatchFor and ~/life/watches.json (§16.5)", () => {
   it("validates bindings and timeout, resolves `from` (ambiguity is an error), caps watches at 10, and saves them in her file", async () => {
     const w = await lifeWorld(roots);
     // Two people she knows as Kevin (from her DMs).
@@ -306,17 +308,17 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     // A check of her file reports as the tool's own error, not as an entry of the file.
     expect(text(await watch({ when: [{ from: "Kevin" }] }))).toBe("error: WatchFor: more than one person called Kevin; use <@id>");
     expect(text(await watch({ when: [{ place: "nowhere/#x" }] }))).toBe("error: WatchFor: unknown place nowhere/#x; see places.md");
-    expect(text(await watch({ when: [{ from: `<@${KEVIN}>`, words: ["cake"] }], note: "Kevin's cake news" }))).toMatch(/^watching w1 until Sat 24 Oct 15:0\d \(in ~\/watches\.json\)$/u);
+    expect(text(await watch({ when: [{ from: `<@${KEVIN}>`, words: ["cake"] }], note: "Kevin's cake news" }))).toMatch(/^watching w1 until Sat 24 Oct 15:0\d \(in ~\/life\/watches\.json\)$/u);
     // A timer: no bindings, only a timeout.
     expect(text(await watch({ when: [], note: "tea's ready", timeout_minutes: 5 }))).toMatch(/^watching w2 until /u);
-    const file = JSON.parse((await herFile(w, "ella", "home/watches.json"))!) as Array<Record<string, unknown>>;
+    const file = JSON.parse((await herFile(w, "ella", "home/life/watches.json"))!) as Array<Record<string, unknown>>;
     expect(file[0]).toEqual({ id: "w1", timeout: expect.stringMatching(/^2026-10-24 15:0\d$/u), once: true, note: "Kevin's cake news", when: [{ from: `<@${KEVIN}>`, words: ["cake"] }] });
     expect(file[1]).toMatchObject({ id: "w2", note: "tea's ready", when: [] });
     // The resolution lives outside her folder.
     const ids = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/watch-ids.json"), "utf8")) as { watches: Record<string, { bindings: unknown[] }> };
     expect(ids.watches["w1"]!.bindings).toEqual([{ fromUserId: KEVIN, fromName: "Kevin", words: ["cake"] }]);
     for (let index = 3; index <= 10; index += 1) expect((await watch({ when: [{ any_message: true }] })).isError).toBeFalsy();
-    expect(await watch({ when: [{ any_message: true }] })).toEqual({ content: "error: you already have 10 watches; remove one from ~/watches.json first", isError: true });
+    expect(await watch({ when: [{ any_message: true }] })).toEqual({ content: "error: you already have 10 watches; remove one from ~/life/watches.json first", isError: true });
   });
 
   it("matches place, person, whole words or any message; once-watches go at the first match; spacing and daily cap", async () => {
@@ -329,7 +331,7 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     const written = await run(
       "Write",
       {
-        file_path: "~/watches.json",
+        file_path: "~/life/watches.json",
         content: JSON.stringify([
           { timeout: "2026-10-25 14:00", once: true, note: "once", when: [{ place: "bake-club/#general", any_message: true }] },
           { timeout: "2026-10-25 14:00", once: false, note: "repeat", when: [{ words: ["cake"] }] }
@@ -337,7 +339,7 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
       },
       ctx
     );
-    expect(text(written)).toMatch(/^wrote ~\/watches\.json \(.*; new entries got ids\)$/u);
+    expect(text(written)).toMatch(/^wrote ~\/life\/watches\.json \(.*; new entries got ids\)$/u);
     const store = homeStoreFor(w.cast.deps, ctx.waifu);
     const now = w.clock.now();
     const message = (body: string, own = false) => ({ placeKey: ROOM_KEY, authorId: KEVIN, text: body, own });
@@ -347,7 +349,7 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     expect(await fire("more cake", new Date(now.getTime() + 5 * 60_000))).toEqual([]);
     expect((await fire("more cake", new Date(now.getTime() + 11 * 60_000))).map((hit) => hit.watch.id)).toEqual(["w2"]);
     expect(await fire("cake again", new Date(now.getTime() + 30 * 60_000))).toEqual([]);
-    const left = JSON.parse((await herFile(w, "ella", "home/watches.json"))!) as Array<{ id: string }>;
+    const left = JSON.parse((await herFile(w, "ella", "home/life/watches.json"))!) as Array<{ id: string }>;
     expect(left.map((entry) => entry.id)).toEqual(["w2"]);
   });
 
@@ -356,24 +358,24 @@ describe("WatchFor and ~/watches.json (§16.5)", () => {
     const ctx = await ctxFor(w);
     await run("WatchFor", { when: [{ words: ["cake"] }], note: "cake", timeout_minutes: 60 }, ctx);
     await run("WatchFor", { when: [], note: "tea", timeout_minutes: 30 }, ctx);
-    const before = (await herFile(w, "ella", "home/watches.json"))!;
+    const before = (await herFile(w, "ella", "home/life/watches.json"))!;
     // Deleting the last entry and leaving its comma behind.
     const broken = before.replace(/,\n {2}\{"id": "w2".*\n/u, ",\n");
     // A whole-file Write needs a Read first (the file changes on its own: a watch matches or times out).
-    expect(text(await run("Write", { file_path: "~/watches.json", content: broken }, ctx))).toBe("error: watches.json already exists; Read it first (Write replaces the whole file)");
-    await run("Read", { file_path: "~/watches.json" }, ctx);
-    const refused = await run("Write", { file_path: "~/watches.json", content: broken }, ctx);
+    expect(text(await run("Write", { file_path: "~/life/watches.json", content: broken }, ctx))).toBe("error: watches.json already exists; Read it first (Write replaces the whole file)");
+    await run("Read", { file_path: "~/life/watches.json" }, ctx);
+    const refused = await run("Write", { file_path: "~/life/watches.json", content: broken }, ctx);
     expect(refused.isError).toBe(true);
     expect(text(refused)).toMatch(/^error: watches\.json line \d+, column \d+: /u);
-    expect(await herFile(w, "ella", "home/watches.json")).toBe(before);
-    const past = await run("Edit", { file_path: "~/watches.json", old_string: /"timeout": "[^"]+"/u.exec(before)![0], new_string: '"timeout": "2026-10-20 10:00"' }, ctx);
+    expect(await herFile(w, "ella", "home/life/watches.json")).toBe(before);
+    const past = await run("Edit", { file_path: "~/life/watches.json", old_string: /"timeout": "[^"]+"/u.exec(before)![0], new_string: '"timeout": "2026-10-20 10:00"' }, ctx);
     expect(text(past)).toBe("error: watches.json entry w1: timeout is in the past");
-    expect((await run("Edit", { file_path: "~/watches.json", old_string: /,\n {2}\{"id": "w2".*\n/u.exec(before)![0], new_string: "\n" }, ctx)).isError).toBeFalsy();
-    expect(JSON.parse((await herFile(w, "ella", "home/watches.json"))!)).toHaveLength(1);
+    expect((await run("Edit", { file_path: "~/life/watches.json", old_string: /,\n {2}\{"id": "w2".*\n/u.exec(before)![0], new_string: "\n" }, ctx)).isError).toBeFalsy();
+    expect(JSON.parse((await herFile(w, "ella", "home/life/watches.json"))!)).toHaveLength(1);
   });
 });
 
-describe("ScheduleWake and ~/schedule.json (§16.4)", () => {
+describe("ScheduleWake and ~/life/reminders.json (§16.4)", () => {
   it("takes exactly one of at / in_minutes, 5 minutes to 30 days ahead, at most 20, saved in her file", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
@@ -383,18 +385,18 @@ describe("ScheduleWake and ~/schedule.json (§16.4)", () => {
     expect(await schedule({ in_minutes: 4 })).toEqual({ content: "error: reminders must be at least 5 minutes ahead", isError: true });
     expect(await schedule({ at: "2026-12-01 10:00" })).toEqual({ content: "error: reminders can be at most 30 days ahead", isError: true });
     expect(await schedule({ at: "next tuesday" })).toEqual({ content: "error: use a local time like 2026-10-25 18:00", isError: true });
-    expect(text(await schedule({ at: "2026-10-25 18:00", note: "ask Kevin about the exam", repeat: "weekly" }))).toBe("set r1 for Sun 25 Oct 18:00, then weekly (in ~/schedule.json)");
+    expect(text(await schedule({ at: "2026-10-25 18:00", note: "ask Kevin about the exam", repeat: "weekly" }))).toBe("set r1 for Sun 25 Oct 18:00, then weekly (in ~/life/reminders.json)");
     for (let index = 2; index <= 20; index += 1) expect((await schedule({ in_minutes: 10 + index })).isError).toBeFalsy();
-    expect(await schedule({ in_minutes: 60 })).toEqual({ content: "error: you already have 20 reminders; remove one from ~/schedule.json first", isError: true });
-    const file = JSON.parse((await herFile(w, "ella", "home/schedule.json"))!) as Array<Record<string, unknown>>;
+    expect(await schedule({ in_minutes: 60 })).toEqual({ content: "error: you already have 20 reminders; remove one from ~/life/reminders.json first", isError: true });
+    const file = JSON.parse((await herFile(w, "ella", "home/life/reminders.json"))!) as Array<Record<string, unknown>>;
     expect(file[0]).toEqual({ id: "r1", at: "2026-10-25 18:00", repeat: "weekly", note: "ask Kevin about the exam" });
     expect(file).toHaveLength(20);
     // A hand-written entry without an id gets the next one; a bad field is refused.
     const entries = file.slice(1);
-    await run("Read", { file_path: "~/schedule.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/schedule.json", content: JSON.stringify([...entries, { at: "2026-10-26 09:00", note: "new" }]) }, ctx))).toMatch(/new entries got ids/u);
-    expect((JSON.parse((await herFile(w, "ella", "home/schedule.json"))!) as Array<{ id: string }>).pop()!.id).toBe("r21");
-    expect(text(await run("Write", { file_path: "~/schedule.json", content: JSON.stringify([{ at: "2026-10-26 09:00", note: "x", repeat: "hourly" }]) }, ctx))).toMatch(/^error: schedule\.json entry 1: /u);
+    await run("Read", { file_path: "~/life/reminders.json" }, ctx);
+    expect(text(await run("Write", { file_path: "~/life/reminders.json", content: JSON.stringify([...entries, { at: "2026-10-26 09:00", note: "new" }]) }, ctx))).toMatch(/new entries got ids/u);
+    expect((JSON.parse((await herFile(w, "ella", "home/life/reminders.json"))!) as Array<{ id: string }>).pop()!.id).toBe("r21");
+    expect(text(await run("Write", { file_path: "~/life/reminders.json", content: JSON.stringify([{ at: "2026-10-26 09:00", note: "x", repeat: "hourly" }]) }, ctx))).toMatch(/^error: reminders\.json entry 1: /u);
   });
 });
 
@@ -452,15 +454,15 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
     expect(text(await run("Read", { file_path: "~/empty.md" }, ctx))).toBe("(empty file)");
     expect(text(await run("Read", { file_path: "~/missing.md" }, ctx))).toBe("error: ~/missing.md doesn't exist");
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
-    expect(text(await run("Read", { file_path: "~/places.md" }, ctx))).toContain("bake-club/#general");
+    expect(text(await run("Read", { file_path: "~/life/places.md" }, ctx))).toContain("bake-club/#general");
     for (const [tool, input] of [
-      ["Write", { file_path: "~/places.md", content: "x" }],
-      ["Edit", { file_path: "~/places.md", old_string: "Rooms", new_string: "x" }]
+      ["Write", { file_path: "~/life/places.md", content: "x" }],
+      ["Edit", { file_path: "~/life/places.md", old_string: "Rooms", new_string: "x" }]
     ] as const) {
       expect(await run(tool, input, ctx)).toEqual({ content: "error: places.md is kept up to date for you and can't be changed", isError: true });
     }
-    expect(text(await run("Bash", { command: "rm ~/places.md" }, ctx))).toMatch(/places\.md/u);
-    expect(await herFile(w, "ella", "home/places.md")).toContain("# Your places");
+    expect(text(await run("Bash", { command: "rm ~/life/places.md" }, ctx))).toMatch(/places\.md/u);
+    expect(await herFile(w, "ella", "home/life/places.md")).toContain("# Your places");
   });
 
   it("limits a written file to 256 KiB and her home to its file count; binary files are not text", async () => {
@@ -500,14 +502,14 @@ describe("tool list (§16.3)", () => {
     for (const retired of ["list_places", "write_note", "list_watches", "cancel_wake", "send_message"]) expect(lifeTool(retired)).toBeUndefined();
   });
 
-  it("~/places.md lists her rooms and private chats by handle", async () => {
+  it("~/life/places.md lists her rooms and private chats by handle", async () => {
     const w = await lifeWorld(roots);
     await kevinDms(w);
     const ctx = await ctxFor(w);
     expect(await refreshPlacesFile(w.cast.deps, ctx.waifu)).toBe(true);
     // Unchanged: not rewritten.
     expect(await refreshPlacesFile(w.cast.deps, ctx.waifu)).toBe(false);
-    const listed = (await herFile(w, "ella", "home/places.md"))!;
+    const listed = (await herFile(w, "ella", "home/life/places.md"))!;
     expect(listed).toMatch(/^# Your places\n\(This file is kept up to date for you/u);
     expect(listed).toContain("- bake-club/#general (Bake Club › #general)");
     expect(listed).toContain("- bake-club/#recipes");

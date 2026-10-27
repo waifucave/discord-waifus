@@ -11,7 +11,8 @@ import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { homeStoreFor } from "./home/index.js";
-import { PLACES_FILE } from "./home/pathRules.js";
+import { availabilityFor } from "./busy.js";
+import { LIFE_DIR, PLACES_FILE } from "./home/pathRules.js";
 import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
 
@@ -108,6 +109,7 @@ export async function runSession(
               route: o.model,
               turn,
               mode: "session",
+              session: o.kind,
               signal: o.signal ?? new AbortController().signal,
               toolCallId: call.id,
               selfAuthorIds: [],
@@ -142,7 +144,7 @@ export async function runNotesSession(
     waifu: o.waifu,
     model: o.model,
     system: maintenanceSystem(o.waifu),
-    opening: [o.instruction, await homeListing(deps, o.waifu), timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability })],
+    opening: [o.instruction, await homeListing(deps, o.waifu), timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })],
     maxRounds: MAINTENANCE_MAX_ROUNDS,
     ...(o.waifu.model?.effort ? { effort: o.waifu.model.effort } : {}),
     ...(o.signal ? { signal: o.signal } : {}),
@@ -153,5 +155,5 @@ export async function runNotesSession(
 /** What she changed: places.md is the app's to rewrite (she can't), so a refresh during the session isn't hers. */
 function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
-  return [...paths].filter((path) => path !== PLACES_FILE && before.get(path) !== after.get(path)).sort();
+  return [...paths].filter((path) => path !== `${LIFE_DIR}/${PLACES_FILE}` && before.get(path) !== after.get(path)).sort();
 }

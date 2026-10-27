@@ -117,9 +117,9 @@ describe("Bash change sets (§16.3.5, §16.9)", () => {
     const w = await lifeWorld(roots);
     const store = await storeOf(w);
     const broken = Buffer.from('[{"timeout": "2026-10-25 10:00", "note": "x", "when": []},]');
-    const changes = { writes: [{ path: "/home/ella/watches.json", data: broken }], deletes: [], dirs: [] };
+    const changes = { writes: [{ path: "/home/ella/life/watches.json", data: broken }], deletes: [], dirs: [] };
     const viaBash = await store.applyChanges(changes, new Map(), checkEnvFor(w.cast.deps, "ella"), { journalId: "c" }).catch((error: unknown) => error);
-    const viaWrite = await writeHerFile(w, "watches.json", broken.toString()).catch((error: unknown) => error);
+    const viaWrite = await writeHerFile(w, "life/watches.json", broken.toString()).catch((error: unknown) => error);
     expect(viaBash).toBeInstanceOf(HomeError);
     expect((viaBash as Error).message).toBe((viaWrite as Error).message);
     expect((viaBash as Error).message).toMatch(/^error: watches\.json line 1, column \d+: /u);

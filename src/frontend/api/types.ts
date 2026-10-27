@@ -61,9 +61,8 @@ export type {
   ModelChoice,
   ProviderId,
   WaifuAvailability,
-  WaifuBusyInterval,
   WaifuConfig,
-  WaifuSleepSchedule
+  WaifuBedTime
 } from "../../shared/schemas/domain";
 export type { WaifuDmSettings } from "../../shared/schemas/dm";
 export type { ThreadRecord, ThreadsFile } from "../../shared/schemas/threads";

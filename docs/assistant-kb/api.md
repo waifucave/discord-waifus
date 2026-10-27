@@ -133,7 +133,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | GET | `/api/waifus/:waifuId/files` | List a folder of her home, /tmp or her read-only /transcripts (?root=home\|tmp\|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1). | `life` |
 | DELETE | `/api/waifus/:waifuId/files/*` | Delete one of her files (?expectedHash). | `life` |
 | GET | `/api/waifus/:waifuId/files/*` | One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1). | `life` |
-| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md and /transcripts refused). | `life` |
+| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; life/places.md and /transcripts refused). | `life` |
 | GET | `/api/waifus/:waifuId/life` | Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally). | `life` |
 | POST | `/api/waifus/:waifuId/life/compact` | Summarise her life now (between turns). | `life` |
 | GET | `/api/waifus/:waifuId/life/log` | Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1). | `life` |
@@ -141,11 +141,11 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | DELETE | `/api/waifus/:waifuId/life/needs-review/:itemId` | Dismiss a review line. | `forget` |
 | POST | `/api/waifus/:waifuId/life/reset` | Reset her short-term memory: a fresh epoch, no summary ({confirm: true}). | `life` |
 | POST | `/api/waifus/:waifuId/link-bot` | Create or link her Discord bot entry. | `bot` |
-| GET | `/api/waifus/:waifuId/schedule` | Her reminders (~/schedule.json), parsed. | `life` |
-| DELETE | `/api/waifus/:waifuId/schedule/:reminderId` | Remove one reminder from her schedule.json. | `life` |
-| POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips sleep and budget). | `life` |
-| GET | `/api/waifus/:waifuId/watches` | Her watches (~/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1. | `life` |
-| DELETE | `/api/waifus/:waifuId/watches/:watchId` | Remove one watch from her watches.json. | `life` |
+| GET | `/api/waifus/:waifuId/schedule` | Her reminders (~/life/reminders.json), parsed. | `life` |
+| DELETE | `/api/waifus/:waifuId/schedule/:reminderId` | Remove one reminder from her life/reminders.json. | `life` |
+| POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips her bed time and budget). | `life` |
+| GET | `/api/waifus/:waifuId/watches` | Her watches (~/life/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1. | `life` |
+| DELETE | `/api/waifus/:waifuId/watches/:watchId` | Remove one watch from her life/watches.json. | `life` |
 
 <!-- /generated:routes -->
 
@@ -176,23 +176,24 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   `orchestrator`); each entry needs `enabled`; a sent `waifus` array replaces the list, omitted
   tokens are kept per id. `POST /api/waifus/:id/link-bot {applicationId?}` ensures her bot entry and
   links it in one call.
-- **A waifu's life** (`life` topic): `GET /api/waifus/:id/life` is her status (awake, asleep or
-  busy; idle or mid-turn; epoch, queue, today's cost and budget, last compaction, counts of review
+- **A waifu's life** (`life` topic): `GET /api/waifus/:id/life` is her status (`availability.state` awake, busy or asleep,
+  with `bed`: `up_late`, `dozing` or `asleep` in her bed time; idle or mid-turn; epoch, queue, today's cost and budget, last compaction, counts of review
   lines and queued forget scrubs). `GET /api/waifus/:id/life/log?epoch&before&limit` pages her life
   log (newest last; default 50, at most 200; old epochs are kept 7 days). Content from private chats
   (DM notifications; every tool call, result and her own text in a turn that touched a DM; a call
   that touched a DM in any other turn; and her summary) is left out unless the request says `includePrivate=1`, which only a request
   on the host itself may do: over Remote Access, and for the assistant, it is refused with 403
-  `PrivateContentLocalOnly`. `POST /api/waifus/:id/wake {note?}` wakes her as the owner (skips sleep
-  and budget) → `{outcome: queued | deferred | quiet | dropped | queued_offline}` (Discord offline:
+  `PrivateContentLocalOnly`. `POST /api/waifus/:id/wake {note?}` wakes her as the owner (skips her bed
+  time and budget) → `{outcome: queued | deferred | quiet | dropped | queued_offline}` (Discord offline:
   the wake waits in her queue). `POST …/life/compact` summarises her life now (409 without a live
   cast or without a model; after 10 s it answers 202 `{state: "running"}` and finishes on its own).
   `POST …/life/reset {confirm: true}` starts a fresh epoch with no summary (her files and queued
   wakes stay). `GET …/life/needs-review` lists lines a forget could not remove for sure
   (lines from private chats, her summary or her queue read `[private chat redacted]` unless the
   owner reveals them on the host); `DELETE …/life/needs-review/:itemId` dismisses one.
-- **Her files** (`life` topic; spec §16.11): her home `/home/<name>` (`~`: notes, `MEMORY.md`,
-  `schedule.json`, `watches.json`, the read-only `places.md`) and `/tmp` (downloads, deleted 7 days
+- **Her files** (`life` topic; spec §16.11): her home `/home/<name>` (`~`: notes, `MEMORY.md`, and
+  `life/` with `schedule.json` (her day), `reminders.json`, `watches.json`, `profile.json` and the
+  read-only `places.md`) and `/tmp` (downloads, deleted 7 days
   after the last write). `GET /api/waifus/:id/files?root=home|tmp|transcripts&dir=` lists one folder →
   `{root, dir, display, parent, entries: [{name, path, kind: file|dir, size, modified, private?,
   redacted?}], redacted, usage?: {bytes, files, maxBytes, maxFiles?}, includePrivate}` (folders
@@ -202,7 +203,8 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   hash, text?, tooLarge?, readOnly?, special?, private?}` (`text` for a UTF-8 file up to 1 MiB);
   `?raw=1` answers the bytes (images by their magic bytes, inline; anything else as an attachment;
   `nosniff`, sandboxed). `PUT {text, expectedHash?}` writes a text file under her Write tool's checks:
-  `places.md` 400 `ReadOnlyFile`, a broken `schedule.json`/`watches.json` 400 `InvalidFile` with
+  `life/places.md` 400 `ReadOnlyFile`, a broken `life/schedule.json`, `life/reminders.json`,
+  `life/watches.json` or `life/profile.json` 400 `InvalidFile` with
   the line and column (nothing saved), over 256 KiB or a full home 413 `HomeLimit`, a binary file
   400 `NotTextFile`, a name differing only by case 409 `NameCollision`; `expectedHash` is the `hash`
   last read (mismatch 409 `Conflict`; `null` = must not exist yet) → `{path, display, hash, size,
@@ -282,8 +284,9 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/mio \
   its model keeps reasoning state the installed winter cannot replay through OpenRouter (none is,
   with the installed winter). Contributor (training) variants are only ever an
   explicit choice. Gateway-era `params`, `contextWindow` and `tools` fields are ignored on write.
-- **Nested settings merge**: waifu `availability`/`dm` deep-merge. Arrays (e.g.
-  `availability.busy`) and server `channels` replace wholesale.
+- **Nested settings merge**: waifu `availability`/`dm` deep-merge (`availability.bedTime` keeps the
+  fields a patch leaves out; a stray `availability.busy` or `availability.sleep` is dropped). Arrays
+  and server `channels` replace wholesale.
   Waifu `verbosity`, `customInstructions` and `scheduleInPrompt` are plain optional fields: omit
   them and the stored value is kept. A waifu body may still carry `promptLayout`; it is accepted,
   ignored and logged once (the layout editor was removed). A channel PUT that omits a field keeps its current value.

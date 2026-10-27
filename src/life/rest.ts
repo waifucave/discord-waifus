@@ -1,5 +1,6 @@
-// The rest turn (Living cast spec §19): the notice that opens it and what it refuses. Its own module
-// so the owner's views (lifeView.ts) can recognise a rest turn without importing the life loop.
+// The rest turn (Living cast spec §19): the notice that opens it and what it refuses, and her own
+// fresh start (§21.6b): a turn whose final reply is only `<summary>…</summary>`. Its own module so the
+// owner's views (lifeView.ts) can recognise both without importing the life loop.
 
 /** The rest notice (spec §19.3): a turn of her own in which she writes the summary her new epoch starts from. */
 export const REST_NOTICE =
@@ -13,3 +14,20 @@ export const REST_SUMMARY_FRAME = "[your summary before the reset]";
 
 /** A rest turn's notification line starts with this (the owner's views keep her summary private). */
 export const REST_NOTICE_PREFIX = REST_NOTICE.slice(0, 60);
+
+// ---- a fresh start when she wants one (§21.6b) --------------------------------------------------
+
+/** A final reply that is only `<summary>…</summary>` (whitespace around it allowed). */
+const SELF_SUMMARY = /^\s*<summary>([\s\S]*)<\/summary>\s*$/u;
+
+/** The summary inside a reply that is only `<summary>…</summary>`, else undefined. */
+export function selfSummaryOf(text: string | undefined): string | undefined {
+  const match = text === undefined ? null : SELF_SUMMARY.exec(text);
+  if (!match || match[1]!.includes("<summary>") || match[1]!.includes("</summary>")) return undefined;
+  return match[1]!.trim();
+}
+
+/** The next time line's one-time note when a summary she wrote was not used (§21.6b). */
+export function selfSummaryRefusedNote(reason: string): string {
+  return `(your summary was not used: ${reason})`;
+}

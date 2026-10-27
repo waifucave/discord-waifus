@@ -1009,7 +1009,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "list_files",
     description:
       "List a folder of a waifu's own computer (Living cast §16): her home (`/home/<name>`, `~`: her notes in any " +
-      "layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app) " +
+      "layout, MEMORY.md her index; life/ holds schedule.json her day (written each morning), reminders.json, watches.json, profile.json and places.md kept by the app) " +
       "or /tmp (files people sent, deleted after the number of days its usage.retentionDays says, 7 by default, since the last write), " +
       "or /transcripts (read-only: everything said where she is, one file per place per day, kept forever). Entries have name, path, kind, size and " +
       "modified time. Files and transcripts from private chats are never shown to you: they appear as `[private chat redacted]`.",
@@ -1058,7 +1058,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Propose creating or replacing a text file in a waifu's folders (the whole new text). It runs only if the user " +
       "accepts the separate secure dashboard confirmation card, which shows the file and the whole text; the " +
-      "same checks as her own Write tool apply when it runs (places.md is refused; schedule.json and watches.json " +
+      "same checks as her own Write tool apply when it runs (life/places.md is refused; the JSON files in life/ " +
       "must stay valid JSON in her format). At most 16 KB; larger edits are for the dashboard's editor.",
     parameters: {
       type: "object",
@@ -1082,7 +1082,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
       const current = await inject(ctx, { method: "GET", url: target });
       if (current.status !== 200 && current.status !== 404) return current.body;
       const existing = current.status === 200 ? (JSON.parse(current.body) as { hash?: string; display?: string; kind?: string; readOnly?: boolean }) : undefined;
-      if (existing?.readOnly) return JSON.stringify({ error: "places.md is kept up to date by the app and can't be changed." });
+      if (existing?.readOnly) return JSON.stringify({ error: "life/places.md is kept up to date by the app and can't be changed." });
       if (existing && existing.kind !== "text") return JSON.stringify({ error: "That file isn't a text file; it can't be replaced with text." });
       const shown = existing?.display ?? herPath;
       const preview = text.length > ASSISTANT_WRITE_PREVIEW_CHARS ? `${text.slice(0, ASSISTANT_WRITE_PREVIEW_CHARS)}\n…` : text;
@@ -1097,14 +1097,14 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "list_schedule",
-    description: "A waifu's reminders (her ~/schedule.json): id, local time, repeat and her note. She manages them herself; read-only here.",
+    description: "A waifu's reminders (her ~/life/reminders.json): id, local time, repeat and her note. She manages them herself; read-only here.",
     parameters: { type: "object", properties: { waifuId: { type: "string" } }, required: ["waifuId"], additionalProperties: false },
     execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/schedule` })).body
   },
   {
     name: "list_watches",
     description:
-      "A waifu's watches (her ~/watches.json): what each waits for (place, person, words; none = a timer) and when it " +
+      "A waifu's watches (her ~/life/watches.json): what each waits for (place, person, words; none = a timer) and when it " +
       "times out. A watch bound to a private chat is shown without its words.",
     parameters: { type: "object", properties: { waifuId: { type: "string" } }, required: ["waifuId"], additionalProperties: false },
     execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/watches` })).body

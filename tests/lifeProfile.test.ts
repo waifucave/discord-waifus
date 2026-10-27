@@ -1,4 +1,4 @@
-// Her Discord profile as a file in her home (Living cast §17.1): `~/profile.json` holds her
+// Her Discord profile as a file in her home (Living cast §17.1): `~/life/profile.json` holds her
 // username, bio and server nicknames, checked on every write and kept equal to her config both ways.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -40,7 +40,7 @@ async function ctxFor(w: LifeWorld, o: { mode?: "life" | "session" } = {}): Prom
 
 const run = (name: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> => lifeTool(name)!.run(input, ctx);
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
-const profilePath = (w: LifeWorld) => path.join(w.root, "user", "waifus", "ella", "home", "profile.json");
+const profilePath = (w: LifeWorld) => path.join(w.root, "user", "waifus", "ella", "home", "life", "profile.json");
 const readProfile = async (w: LifeWorld) => JSON.parse(await readFile(profilePath(w), "utf8")) as Record<string, unknown>;
 
 async function world(o: { sync?: { syncWaifu: (id: string) => Promise<void> } } = {}) {
@@ -69,20 +69,20 @@ describe("profile.json (§17.1)", () => {
     const sync = { syncWaifu: vi.fn(async () => undefined) };
     const w = await world({ sync });
     const ctx = await ctxFor(w);
-    expect(text(await run("Write", { file_path: "~/profile.json", content: "{}" }, ctx))).toMatch(/already exists; Read it first/u);
-    await run("Read", { file_path: "~/profile.json" }, ctx);
+    expect(text(await run("Write", { file_path: "~/life/profile.json", content: "{}" }, ctx))).toMatch(/already exists; Read it first/u);
+    await run("Read", { file_path: "~/life/profile.json" }, ctx);
     const content = JSON.stringify({ name: "Ella", username: "Ari ✨", bio: "Sunny baker. Ask me about lemon tarts.", nicknames: { "bake-club": "Ari" } }, null, 2);
-    const result = text(await run("Write", { file_path: "~/profile.json", content }, ctx));
+    const result = text(await run("Write", { file_path: "~/life/profile.json", content }, ctx));
     // The fake Discord has no bot of hers online: Discord shows it later.
-    expect(result).toMatch(/^wrote ~\/profile\.json \(.*\); saved; Discord shows it once you're back online$/u);
+    expect(result).toMatch(/^wrote ~\/life\/profile\.json \(.*\); saved; Discord shows it once you're back online$/u);
     expect(sync.syncWaifu).toHaveBeenCalledWith("ella");
     expect(await readWaifu(w.storage, "ella")).toMatchObject({ name: "Ella", username: "Ari ✨", bio: "Sunny baker. Ask me about lemon tarts.", nicknames: { [GUILD]: "Ari" } });
     // An Edit too; the same values again change nothing.
-    expect(text(await run("Edit", { file_path: "~/profile.json", old_string: "lemon tarts", new_string: "brownies" }, ctx))).toMatch(/saved/u);
+    expect(text(await run("Edit", { file_path: "~/life/profile.json", old_string: "lemon tarts", new_string: "brownies" }, ctx))).toMatch(/saved/u);
     expect((await readWaifu(w.storage, "ella")).bio).toBe("Sunny baker. Ask me about brownies.");
     const same = await readFile(profilePath(w), "utf8");
-    await run("Read", { file_path: "~/profile.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/profile.json", content: same }, ctx))).toMatch(/your profile is the same as before/u);
+    await run("Read", { file_path: "~/life/profile.json" }, ctx);
+    expect(text(await run("Write", { file_path: "~/life/profile.json", content: same }, ctx))).toMatch(/your profile is the same as before/u);
   });
 
   it("refuses invalid edits with a clear error and changes nothing", async () => {
@@ -90,8 +90,8 @@ describe("profile.json (§17.1)", () => {
     const ctx = await ctxFor(w);
     const before = await readFile(profilePath(w), "utf8");
     const attempt = async (content: string) => {
-      await run("Read", { file_path: "~/profile.json" }, ctx);
-      return run("Write", { file_path: "~/profile.json", content }, ctx);
+      await run("Read", { file_path: "~/life/profile.json" }, ctx);
+      return run("Write", { file_path: "~/life/profile.json", content }, ctx);
     };
     const cases: Array<[string, RegExp]> = [
       ['{"name": "Ella", "username": "discord queen"}', /username: A Discord username cannot contain "discord"/u],
@@ -114,18 +114,18 @@ describe("profile.json (§17.1)", () => {
     // A server id works as a key; it can't be deleted.
     await attempt(JSON.stringify({ name: "Ella", nicknames: { [GUILD]: "Ari" } }));
     expect((await readWaifu(w.storage, "ella")).nicknames).toEqual({ [GUILD]: "Ari" });
-    const rm = await run("Bash", { command: "rm ~/profile.json" }, ctx);
+    const rm = await run("Bash", { command: "rm ~/life/profile.json" }, ctx);
     expect(text(rm)).toMatch(/profile\.json can't be deleted/u);
   });
 
   it("a stale Write after a dashboard edit gets 'changed since you read it'", async () => {
     const w = await world();
     const ctx = await ctxFor(w);
-    await run("Read", { file_path: "~/profile.json" }, ctx);
+    await run("Read", { file_path: "~/life/profile.json" }, ctx);
     const waifu = await readWaifu(w.storage, "ella");
     await w.storage.writeJson("waifu:ella", "user/waifus/ella/waifu.json", WaifuConfigSchema, { ...waifu, bio: "Set from the dashboard." });
     await rewriteProfileFile(w.storage, "ella");
-    const result = await run("Write", { file_path: "~/profile.json", content: '{"name": "Ella", "bio": "mine"}' }, ctx);
+    const result = await run("Write", { file_path: "~/life/profile.json", content: '{"name": "Ella", "bio": "mine"}' }, ctx);
     expect(text(result)).toBe("error: profile.json changed since you read it (your profile was changed for you); Read it again");
     expect((await readWaifu(w.storage, "ella")).bio).toBe("Set from the dashboard.");
   });
@@ -133,21 +133,21 @@ describe("profile.json (§17.1)", () => {
   it("Bash may change it; tidying (maintenance) never does", async () => {
     const w = await world();
     const life = await ctxFor(w);
-    const bash = await run("Bash", { command: `printf '%s' '{"name":"Ella","bio":"from bash"}' > ~/profile.json` }, life);
+    const bash = await run("Bash", { command: `printf '%s' '{"name":"Ella","bio":"from bash"}' > ~/life/profile.json` }, life);
     expect(text(bash)).toMatch(/profile\.json: saved/u);
     expect((await readWaifu(w.storage, "ella")).bio).toBe("from bash");
     const tidy = await ctxFor(w, { mode: "session" });
-    await run("Read", { file_path: "~/profile.json" }, tidy);
-    expect(text(await run("Write", { file_path: "~/profile.json", content: '{"name":"Ella"}' }, tidy))).toMatch(/isn't changed while tidying/u);
-    expect(text(await run("Edit", { file_path: "~/profile.json", old_string: "from bash", new_string: "tidied" }, tidy))).toMatch(/isn't changed while tidying/u);
-    expect(text(await run("Bash", { command: "sed -i 's/from bash/tidied/' ~/profile.json" }, tidy))).toMatch(/isn't changed while tidying/u);
+    await run("Read", { file_path: "~/life/profile.json" }, tidy);
+    expect(text(await run("Write", { file_path: "~/life/profile.json", content: '{"name":"Ella"}' }, tidy))).toMatch(/isn't changed while tidying/u);
+    expect(text(await run("Edit", { file_path: "~/life/profile.json", old_string: "from bash", new_string: "tidied" }, tidy))).toMatch(/isn't changed while tidying/u);
+    expect(text(await run("Bash", { command: "sed -i 's/from bash/tidied/' ~/life/profile.json" }, tidy))).toMatch(/isn't changed while tidying/u);
     expect((await readWaifu(w.storage, "ella")).bio).toBe("from bash");
   });
 
   it("is never attached to a message", async () => {
     const w = await world();
     const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
-    expect(await store.isPrivateFile(store.home("profile.json"))).toBe(true);
+    expect(await store.isPrivateFile(store.life("profile.json"))).toBe(true);
   });
 
   it("says a username change is already waiting for Discord's rate limit, so she does not rename again", async () => {

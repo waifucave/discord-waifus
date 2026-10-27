@@ -191,7 +191,8 @@ export class LivingCast {
       ...(o.tickMs ? { tickMs: o.tickMs } : {}),
       hooks: {
         poke: (waifuId) => this.pokeLife(waifuId),
-        maintain: (waifu, signal) => this.maintain(waifu, signal),
+        maintain: (waifu, signal, options) => this.maintain(waifu, signal, options),
+        pendingScrubs: async (waifuId) => (await readPendingScrubs(this.deps.storage, waifuId, { logger: this.deps.logger })).length > 0,
         begin: () => this.activity.begin("maintenance")
       }
     });
@@ -532,7 +533,7 @@ export class LivingCast {
 
   // ---- owner actions ------------------------------------------------------------------------------------
 
-  /** `/wake`, the dashboard or the CLI: an `owner` wake (skips sleep and budget, §4.5). */
+  /** `/wake`, the dashboard or the CLI: an `owner` wake (skips her bed time and budget, §4.5). */
   async ownerWake(waifuId: string, note?: string): Promise<RouteOutcome> {
     this.assertRunning();
     const trimmed = note?.trim().slice(0, 500);
@@ -540,7 +541,7 @@ export class LivingCast {
   }
 
   /** Nightly maintenance plus pending scrubs (the scheduler holds her life lock). */
-  private async maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void> {
+  private async maintain(waifu: WaifuConfig, signal: AbortSignal, o: { dream?: boolean } = {}): Promise<void> {
     // Aborted while it waited for her life lock (a shutdown, a pause, a reload): nothing starts (N1).
     if (signal.aborted) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
@@ -551,7 +552,8 @@ export class LivingCast {
       if (!lifeModelOf(this.deps, waifu)) return;
       if (!signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
     }
-    if (signal.aborted) return;
+    // A bed time that ended without her falling asleep long enough has no dream (§21.6c).
+    if (signal.aborted || o.dream === false) return;
     await runDream(this.deps, { waifu, signal });
   }
 

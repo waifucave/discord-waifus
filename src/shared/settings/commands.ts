@@ -50,7 +50,7 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
   },
   {
     name: "wake",
-    summary: "Wake a waifu now, with an optional note she sees (an owner wake skips sleep and budget).",
+    summary: "Wake a waifu now, with an optional note she sees (an owner wake skips her bed time and budget).",
     usage: ["waifus wake WAIFU [NOTE…]"],
     topic: "life"
   },
@@ -80,14 +80,14 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
   },
   {
     name: "schedule",
-    summary: "Her reminders (~/schedule.json), in the host's time zone.",
+    summary: "Her reminders (~/life/reminders.json), in the host's time zone.",
     usage: ["waifus schedule WAIFU"],
-    description: "To change or remove one, edit her schedule.json (dashboard → Life) or use DELETE /api/waifus/:id/schedule/:rid.",
+    description: "To change or remove one, edit her life/reminders.json (dashboard → Life) or use DELETE /api/waifus/:id/schedule/:rid.",
     topic: "life"
   },
   {
     name: "watches",
-    summary: "Her watches (~/watches.json): what each waits for and when it times out.",
+    summary: "Her watches (~/life/watches.json): what each waits for and when it times out.",
     usage: ["waifus watches WAIFU [--private]"],
     description: "A watch bound to a private chat is shown without its words unless --private is given (on the host itself only).",
     flags: [{ name: "--private", help: "Include watches bound to private chats (local only)." }],

@@ -1,5 +1,5 @@
-// Her reminder and watch files (Living cast spec §16.4, §16.5, T9): `~/schedule.json` and
-// `~/watches.json` are JSON arrays she edits like any file. Every write — her Write/Edit, a Bash
+// Her reminder and watch files (Living cast spec §16.4, §16.5, T9, §21): `~/life/reminders.json` and
+// `~/life/watches.json` are JSON arrays she edits like any file. Every write — her Write/Edit, a Bash
 // change set, the owner's API PUT — goes through these checks first; a failed check returns the
 // exact problem and nothing is written:
 //
@@ -183,7 +183,7 @@ export function parseStrictJson(text: string): unknown {
 
 export type CheckFailure = { ok: false; error: string };
 
-function syntaxProblem(file: string, text: string): CheckFailure | { ok: true; value: unknown } {
+export function syntaxProblem(file: string, text: string): CheckFailure | { ok: true; value: unknown } {
   try {
     return { ok: true, value: parseStrictJson(text) };
   } catch (error) {
@@ -244,7 +244,7 @@ function spaced(value: unknown): string {
   return JSON.stringify(value);
 }
 
-// ---- schedule.json (§16.4) ---------------------------------------------------------------------------
+// ---- reminders.json (§16.4; schedule.json before §21) ---------------------------------------------------------------------------
 
 export type ReminderEntry = { id: string; at: string; repeat?: "daily" | "weekly"; note: string };
 
@@ -262,7 +262,7 @@ export type ScheduleCheck = { ok: true; entries: ReminderEntry[]; text: string; 
 const REMINDER_FIELDS = ["id", "at", "repeat", "note"] as const;
 
 export function checkScheduleText(text: string, ctx: ScheduleCheckContext): ScheduleCheck {
-  const file = "schedule.json";
+  const file = "reminders.json";
   if (text.trim() === "") return { ok: true, entries: [], text, rewritten: false, nextId: ctx.nextId };
   const parsed = syntaxProblem(file, text);
   if (!parsed.ok) return parsed;

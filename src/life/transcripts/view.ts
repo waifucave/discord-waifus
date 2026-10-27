@@ -7,19 +7,26 @@
 //
 // The folders follow her place handles (`bake-club/#general` → `bake-club/general`). She sees a
 // room's days only inside her access intervals, and only the lines written while she was cast
-// there; her own DMs whole; nobody else's DMs ever. A line is `HH:MM Name ↩#ref: text [file: a.png]`
-// (`(edited)` when edited, her own lines as `you`); she never sees an id. Nothing here writes.
+// there; her own DMs whole; nobody else's DMs ever. A line reads like ReadMessages (§22.1):
+// `[HH:MM #ref] Name ↩#ref: text [file: a.png]` (`(edited)` when edited, her own lines as `you`, a
+// line from before refs were stored without one unless `refs.json` still has it); she never sees an
+// id. Nothing here writes.
 
 import type { StorageService } from "../../storage/storageService.js";
 import { readConversationRefs } from "../../discord/refStore.js";
 import { parseConversationKey, type ConversationKey } from "../../orchestration/context/keys.js";
 import { clockText, localParts } from "../clock.js";
 import { readLifeFile } from "../lifeStore.js";
+import { chatLine } from "../render.js";
+import { readForgottenPeople } from "../../orchestration/dm/forgotten.js";
+import { readDmFloor } from "../../orchestration/dm/dmStore.js";
+import { forgottenLine } from "./forget.js";
 import { slugify } from "../places.js";
 import { ServerConfigSchema } from "../../shared/schemas/domain.js";
 import { withThreadChannels } from "../../orchestration/stores/threads.js";
 import path from "node:path";
 import {
+  atOrBelowFloor,
   dayInsideIntervals,
   insideIntervals,
   listTranscriptConversations,
@@ -119,6 +126,27 @@ function dayLabel(day: string): string {
   return `${parts.weekday} ${date} ${monthName} ${year}`;
 }
 
+/**
+ * One transcript line as she reads it (§22.1; ReadMessages' search results use it too). `byId`: other
+ * lines a reply may point at; `refs`: `refs.json` for lines stored without a ref.
+ */
+export function transcriptChatLine(
+  line: TranscriptLine,
+  o: { waifuId: string; timeZone: string; refs: ReadonlyMap<string, string>; byId?: ReadonlyMap<string, TranscriptLine> }
+): string {
+  const name = line.waifu === o.waifuId ? "you" : line.author || "someone";
+  let reply: string | undefined;
+  if (line.reply) {
+    const target = o.byId?.get(line.reply);
+    const ref = target?.ref ?? o.refs.get(line.reply);
+    reply = target?.waifu === o.waifuId ? "you" : ref ? `#${ref}` : target ? target.author || "someone" : undefined;
+  }
+  const files = (line.files ?? []).map((file) => `[file: ${file}]`).join(" ");
+  const body = [line.text.replace(/\r\n/gu, "\n").split("\n").join("\n  "), files].filter((part) => part.length > 0).join(" ");
+  const text = chatLine({ clock: clockText(new Date(line.at), o.timeZone), ref: line.ref ?? o.refs.get(line.id), name, reply, body });
+  return line.edited ? `${text} (edited)` : text;
+}
+
 /** One day file as she reads it. */
 export function renderTranscriptDay(o: {
   handle: string;
@@ -130,18 +158,7 @@ export function renderTranscriptDay(o: {
 }): string {
   const byId = new Map(o.lines.map((line) => [line.id, line] as const));
   const out = [`# ${o.handle} · ${dayLabel(o.day)}`];
-  for (const line of o.lines) {
-    const name = line.waifu === o.waifuId ? "you" : line.author || "someone";
-    let reply = "";
-    if (line.reply) {
-      const ref = o.refs.get(line.reply);
-      const target = byId.get(line.reply);
-      reply = ref ? ` ↩#${ref}` : target ? ` ↩${target.waifu === o.waifuId ? "you" : target.author}` : " ↩";
-    }
-    const files = (line.files ?? []).map((file) => `[file: ${file}]`).join(" ");
-    const body = [line.text.replace(/\r\n/gu, "\n").split("\n").join("\n  "), files].filter((part) => part.length > 0).join(" ");
-    out.push(`${clockText(new Date(line.at), o.timeZone)} ${name}${reply}:${body ? ` ${body}` : ""}${line.edited ? " (edited)" : ""}`);
-  }
+  for (const line of o.lines) out.push(transcriptChatLine(line, { waifuId: o.waifuId, timeZone: o.timeZone, refs: o.refs, byId }));
   if (o.lines.length === 0) out.push("(nothing was said here while you were in this room)");
   return `${out.join("\n")}\n`;
 }
@@ -154,6 +171,7 @@ export class TranscriptView {
   private folders: Promise<TranscriptFolder[]> | undefined;
   private readonly rendered = new Map<string, Promise<{ text: string; mtimeMs: number } | undefined>>();
   private readonly refs = new Map<string, Promise<Map<string, string>>>();
+  private forgotten: Promise<Awaited<ReturnType<typeof readForgottenPeople>> | "unreadable"> | undefined;
   private static readonly KEEP = 16;
 
   constructor(private readonly o: TranscriptViewOptions) {}
@@ -286,12 +304,29 @@ export class TranscriptView {
     return cached;
   }
 
+  /** What a forget covers (§7.5), read once per view; unreadable records show nothing. */
+  private hidden(folder: TranscriptFolder): Promise<(line: TranscriptLine) => boolean> {
+    this.forgotten ??= readForgottenPeople(this.o.storage).then(
+      (people) => people,
+      () => "unreadable" as const
+    );
+    return this.forgotten.then(async (people) => {
+      if (people === "unreadable") return () => true;
+      const ref = folder.dm ? parseConversationKey(folder.key) : undefined;
+      const floor = ref?.kind === "dm" ? await readDmFloor(this.o.storage, ref.userId, this.o.waifuId).catch(() => "unreadable" as const) : undefined;
+      if (floor === "unreadable") return () => true;
+      return (line: TranscriptLine) => forgottenLine(line, people) || atOrBelowFloor(line, floor);
+    });
+  }
+
   private async renderNow(folder: TranscriptFolder, day: string): Promise<{ text: string; mtimeMs: number } | undefined> {
     const dataRoot = this.o.storage.dataRoot;
     const info = await transcriptDayStat(dataRoot, folder.key, day);
     if (!info) return undefined;
     const all = await readTranscriptDay(dataRoot, folder.key, day);
-    const lines = folder.dm || !folder.intervals ? all : all.filter((line) => insideIntervals(folder.intervals!, line.at));
+    // A forget whose transcript part has not run (yet) still hides its lines (§7.5), and a DM floor holds.
+    const hidden = await this.hidden(folder);
+    const lines = (folder.dm || !folder.intervals ? all : all.filter((line) => insideIntervals(folder.intervals!, line.at))).filter((line) => !hidden(line));
     const refs = await this.refsOf(folder.key);
     return { text: renderTranscriptDay({ handle: folder.handle, day, lines, waifuId: this.o.waifuId, timeZone: this.o.timeZone, refs }), mtimeMs: info.mtimeMs };
   }

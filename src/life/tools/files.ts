@@ -7,8 +7,8 @@
 // never depends on the file) or its OCR text, or a PDF's text with page markers; its output is cut
 // at READ_MAX_OUTPUT_CHARS. A file from a DM is recorded as a DM call (D14), so the owner's views
 // hide it. Outside her life (maintenance, a forget's scrub: `ctx.mode` "session") an image is always
-// its OCR text and her life's image state is never touched. A whole-file Write of schedule.json or
-// watches.json needs a Read of it this turn that is still current (spec §16.4, §16.5).
+// its OCR text and her life's image state is never touched. A whole-file Write of reminders.json or
+// watches.json (in ~/life/) needs a Read of it this turn that is still current (spec §16.4, §16.5).
 
 import { z } from "zod";
 import { MAX_INLINE_IMAGE_BYTES } from "../../orchestration/context/images.js";
@@ -18,7 +18,7 @@ import { checkEnvFor, homeStoreFor } from "../home/index.js";
 import { HomeError, isTextBytes, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
-import { herSlug, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
+import { herSlug, isLifeDirPath, isMemoryFile, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
 import { imageSize } from "../bash/imageCommand.js";
@@ -253,6 +253,29 @@ async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   return toolError(`${p.display} isn't a text file, an image or a PDF`);
 }
 
+/** Dreaming tidies her notes and MEMORY.md only (§21.6): `~/life/` is left alone. */
+export const DREAM_LIFE_REFUSED = "error: ~/life/ isn't changed while dreaming (her day, reminders, watches, profile and places stay as they are); leave it alone";
+
+/**
+ * After she changed `~/life/schedule.json` or `MEMORY.md` in her life (§21.2): both have a copy in
+ * her system prompt, which updates only at her next summary. Said once per file per turn; never in
+ * a session outside her life (no life prompt there), nor for her day when it is kept out of her prompt.
+ */
+export function promptCopyNote(ctx: Pick<ToolContext, "mode" | "turn" | "waifu">, p: HerPath): string | undefined {
+  if (ctx.mode === "session") return undefined;
+  const copied = isMemoryFile(p) || (specialJsonFile(p) === "schedule" && ctx.waifu.scheduleInPrompt);
+  if (!copied) return undefined;
+  const key = pathKey(p.virtual);
+  ctx.turn.promptCopyNoted ??= new Set();
+  if (ctx.turn.promptCopyNoted.has(key)) return undefined;
+  ctx.turn.promptCopyNoted.add(key);
+  return promptCopyText(p.display);
+}
+
+export function promptCopyText(file: string): string {
+  return `The copy of ${file} in your system prompt still shows the old version; it updates at your next summary. The file itself is current.`;
+}
+
 /** What she last read of a special file this turn (`null`: it didn't exist). */
 function rememberRead(ctx: ToolContext, p: HerPath, hash: string | null): void {
   ctx.turn.readHashes ??= new Map();
@@ -272,29 +295,35 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   if (!target.ok) return target.output;
   // A whole-file Write of her reminders or watches replaces what the app changed since she read it
   // (a reminder fired, a watch matched or timed out, the owner deleted one): it needs a current Read.
+  // Her day (§21.2) only she and the owner change: a Write needs no Read, but one she read this turn
+  // must still be current.
   const special = specialJsonFile(target.path);
+  if (ctx.session === "dream" && isLifeDirPath(target.path)) return toolError(DREAM_LIFE_REFUSED);
   if (special === "profile" && ctx.mode === "session") return toolError(PROFILE_TIDY_REFUSED);
   const known = special ? ctx.turn.readHashes?.get(pathKey(target.path.virtual)) : undefined;
-  const name = target.path.segments[0];
+  const name = target.path.segments[target.path.segments.length - 1];
   // A file from a DM she replaces (or a new one in a DM's folder) makes the call a DM call (D14).
   await noteDmFile(store, target.path);
-  const why = special === "watches" ? "a watch matched or timed out" : special === "profile" ? "your profile was changed for you" : "a reminder fired";
-  const guard = special
-    ? {
-        expectedHash: known ? known : null,
-        staleMessage:
-          known === undefined
-            ? `error: ${name} already exists; Read it first (Write replaces the whole file)`
-            : `error: ${name} changed since you read it (${why}); Read it again`
-      }
-    : {};
+  const why = special === "watches" ? "a watch matched or timed out" : special === "profile" ? "your profile was changed for you" : special === "schedule" ? "it was changed for you" : "a reminder fired";
+  const guard =
+    special && !(special === "schedule" && known === undefined)
+      ? {
+          expectedHash: known ? known : null,
+          staleMessage:
+            known === undefined
+              ? `error: ${name} already exists; Read it first (Write replaces the whole file)`
+              : `error: ${name} changed since you read it (${why}); Read it again`
+        }
+      : {};
   try {
+    const before = await store.hashOf(await store.files.canonical(target.path)).catch(() => undefined);
     const result = await store.writeText(target.path, parsed.value.content, checkEnvFor(ctx.deps, ctx.waifu.id), guard);
     if (special) rememberRead(ctx, result.path, result.hash);
     await keepTranscriptOrigin(ctx, store, result.path, result.hash);
     await noteDmFile(store, result.path);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
-    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}` };
+    const stale = before !== result.hash ? promptCopyNote(ctx, result.path) : undefined;
+    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}${stale ? `\n${stale}` : ""}` };
   } catch (error) {
     return failure(error);
   }
@@ -316,6 +345,7 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
+  if (ctx.session === "dream" && isLifeDirPath(target.path)) return toolError(DREAM_LIFE_REFUSED);
   if (specialJsonFile(target.path) === "profile" && ctx.mode === "session") return toolError(PROFILE_TIDY_REFUSED);
   await noteDmFile(store, target.path);
   try {
@@ -326,7 +356,8 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     await keepTranscriptOrigin(ctx, store, target.path, result.hash);
     const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
-    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}` };
+    const stale = promptCopyNote(ctx, await store.files.canonical(target.path));
+    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}${stale ? `\n${stale}` : ""}` };
   } catch (error) {
     return failure(error);
   }
@@ -357,7 +388,7 @@ export const fileTools: LifeTool[] = [
   {
     name: "Write",
     description:
-      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. places.md can't be changed; schedule.json and watches.json are checked before they are saved, and need a fresh Read before Write replaces them.",
+      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. ~/life/places.md can't be changed; the other files in ~/life/ are checked before they are saved, and reminders.json, watches.json and profile.json need a fresh Read before Write replaces them.",
     inputSchema: {
       type: "object",
       properties: { file_path: textPathSchema, content: { type: "string", description: "The whole file (at most 256 KB)." } },

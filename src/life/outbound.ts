@@ -13,8 +13,9 @@ export function typingDelayMs(text: string): number {
   return Math.min(MAX_DELAY_MS, Math.max(MIN_DELAY_MS, text.length * MS_PER_CHAR));
 }
 
-// A copied transcript header at the very start (`[14:02 #k3]`, `[14:03 #k4 ↩#a1]`, `[14:05]`).
-const LEADING_TRANSCRIPT_HEADER_RE = /^\s*\[\d{1,2}:\d{2}(?: #[0-9a-z]{2,6})?(?: ↩[^\]\n]{1,40})?\][ \t]*/;
+// A copied transcript header at the very start (`[14:02 #k3]`, `[14:03 #k4 ↩#a1]` from before §22,
+// `[14:05]`), with the name and reply mark after it when there is one (`[14:03 #k4] Kevin ↩#a1:`).
+const LEADING_TRANSCRIPT_HEADER_RE = /^\s*\[\d{1,2}:\d{2}(?: #[0-9a-z]{2,8})?(?: ↩[^\]\n]{1,40})?\](?:[ \t]+[^\n:\[\]]{1,40} ↩[^\s:\]]{1,40}:)?[ \t]*/;
 
 /** Removes up to four leading copied transcript headers. */
 export function stripLeadingTranscriptHeader(raw: string): string {

@@ -1,11 +1,11 @@
 === 0 user ===
 --- text ---
 <notifications>
-- while you were asleep (13:00–15:00):
+- during your bed time (13:00–15:00):
   · bake-club/#general: 1 mention, 1 message
   · DMs: Kevin (3 messages)
   · watch matched · bake-club/#general · "brownie" · from Mina · your note: "Mina wanted brownie tips"
-  · reminder (Sat 14:20): "check if the bake sale flyer is up"
+  · watch timed out (Sat 14:20) · your note: "check if the bake sale flyer is up"
 </notifications>
 --- text ---
 [Sat 24 Oct 15:00 · awake]
