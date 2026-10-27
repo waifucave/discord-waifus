@@ -16,7 +16,7 @@ import { cacheRestDueAt, cacheRestDueFor, cacheRestDueNow, type CacheRestInput }
 import { CACHE_REST_NOTICE, REST_NOTICE, REST_REFUSED_RESULT, REST_SUMMARY_FRAME } from "../src/life/lifeLoop.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { lifeBudget } from "../src/life/request.js";
-import { REST_NOTICE_PREFIX } from "../src/life/rest.js";
+import { cacheRestIgnoredNote, REST_NOTICE_PREFIX } from "../src/life/rest.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { PROMPT_CACHE_TTL_MS, type CuratedModel } from "../src/models/catalog.js";
 import type { LifeState } from "../src/shared/schemas/life.js";
@@ -174,6 +174,22 @@ describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
     expect(w.anthropic.calls).toHaveLength(2);
     state = await readLifeState(w.storage, "ella");
     expect(state.epoch).toBe(1);
+  });
+
+  it("ignored, her next time line says once that her summary was not used and nothing was reset", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), play(textTurn("ok")), play(textTurn("hi")), play(textTurn("hi again"))] });
+    await quietAfterATurn(w, 0.6);
+    w.clock.advance(PROMPT_CACHE_TTL_MS - 5 * MINUTE);
+    await w.cast.life("ella").runNow();
+    expect(w.anthropic.calls).toHaveLength(2);
+    await owner(w, "second");
+    await w.cast.life("ella").runNow();
+    await owner(w, "third");
+    await w.cast.life("ella").runNow();
+    const calls = w.anthropic.calls.map((call) => call.request);
+    expect(lastText(calls[2]!)).toContain(cacheRestIgnoredNote("it is shorter than 200 characters"));
+    expect(cacheRestIgnoredNote("x")).toBe("(your summary was not used and nothing was reset: x)");
+    expect(lastText(calls[3]!)).not.toContain("nothing was reset");
   });
 
   it("is not started while her provider cools down or her daily budget is spent (no poke every tick)", async () => {

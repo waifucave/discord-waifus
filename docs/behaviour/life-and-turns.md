@@ -150,7 +150,8 @@ permanent text block (`src/life/clock.ts` `timeLine`):
 - With `life.restNotice` off, once her estimated request reaches 0.85 × the trigger (`MEMORY_WARNING_RATIO`) the
   line adds `· your memory of today will be summarised soon; save anything worth keeping to your
   notes`.
-- After a refused `<summary>` her next time line adds once `(your summary was not used: <reason>)`.
+- After a refused `<summary>` her next time line adds once `(your summary was not used: <reason>)`;
+  after an ignored quiet-time rest, once `(your summary was not used and nothing was reset: <reason>)`.
 
 Nothing already sent is ever rewritten, so each request is a prefix of the next (prompt cache).
 
@@ -328,6 +329,9 @@ with a large context, she rests while the cache is still warm (`src/life/cacheRe
   summary, before her cache went cold)").
 - **Ignored** (short, failed, capped): nothing else happens; the turn stays in the epoch's log
   (compaction never keeps it later) and the normal triggers stay, including the rest notice above.
+  Since the notice told her that her context would reset, her next time line adds once `(your
+  summary was not used and nothing was reset: <reason>)`, the reason being `it is shorter than 200
+  characters` or `the turn ended before you finished it` (`state.cacheRestIgnored`).
 - **Interrupted**: nothing recorded; the next tick starts it again while the cache is warm.
 - Once per epoch (`state.cacheRest`, separate from `state.restTurn`).
 

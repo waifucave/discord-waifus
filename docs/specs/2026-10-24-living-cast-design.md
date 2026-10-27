@@ -3339,7 +3339,9 @@ cache is still warm and start the next stretch small.
   and compaction never keeps the turn, as for a rest turn). Accepted: a new epoch with reason
   `cache_rest` (Life: "rested (her own summary, before her cache went cold)"; the status line counts
   `rest`, `cache_rest` and `self` as "rested"). Ignored (short, failed, capped): nothing else; the
-  turn stays in the epoch's log. Interrupted: nothing is recorded; the next tick may start it again
+  turn stays in the epoch's log, and since the notice said her context would reset, her next time
+  line says once "(your summary was not used and nothing was reset: <reason>)" (`cacheRestIgnored`
+  in her state; `it is shorter than N characters` or `the turn ended before you finished it`). Interrupted: nothing is recorded; the next tick may start it again
   while the cache is warm. `state.cacheRest = { epoch, turnId }` is separate from `state.restTurn`,
   so an ignored quiet-time rest neither compacts at the next cycle nor stops the §19 notice later.
 - **Settings**: `life.cacheRestMinRatio` (0–0.99, default 0.5) and `life.cacheRestLeadMinutes` (1–50,

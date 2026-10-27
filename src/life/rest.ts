@@ -39,6 +39,11 @@ export function selfSummaryOf(text: string | undefined): string | undefined {
   return match[1]!.trim();
 }
 
+/** The next time line's one-time note after an ignored quiet-time rest (§25): the notice said her context would reset; it did not. */
+export function cacheRestIgnoredNote(reason: string): string {
+  return `(your summary was not used and nothing was reset: ${reason})`;
+}
+
 /** The next time line's one-time note when a summary she wrote was not used (§21.6b). */
 export function selfSummaryRefusedNote(reason: string): string {
   return `(your summary was not used: ${reason})`;

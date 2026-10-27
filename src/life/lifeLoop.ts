@@ -37,7 +37,7 @@ import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
-import { CACHE_REST_NOTICE, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
+import { CACHE_REST_NOTICE, cacheRestIgnoredNote, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
 import { cacheRestDue } from "./cacheRest.js";
 import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
@@ -367,11 +367,14 @@ export class Life {
     // Busy from her day file, read on every use (§21.2); her bed time phase from her last send (§21.6c).
     const now = this.deps.now();
     const line = timeLine({ now, timeZone: this.deps.timeZone, status: await availabilityFor(this.deps, waifu, now), memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
-    // A summary she wrote that was not used is explained once, on her next time line (§21.6b).
-    const refused = (await readLifeState(this.deps.storage, this.waifuId)).selfSummaryRefused;
-    if (refused === undefined) return line;
-    await updateLifeState(this.deps.storage, this.waifuId, (current) => ({ ...current, selfSummaryRefused: undefined }));
-    return `${line} ${selfSummaryRefusedNote(refused)}`;
+    // A summary she wrote that was not used is explained once, on her next time line (§21.6b, §25).
+    const state = await readLifeState(this.deps.storage, this.waifuId);
+    const refused = state.selfSummaryRefused;
+    const ignored = state.cacheRestIgnored;
+    if (refused === undefined && ignored === undefined) return line;
+    await updateLifeState(this.deps.storage, this.waifuId, (current) => ({ ...current, selfSummaryRefused: undefined, cacheRestIgnored: undefined }));
+    const notes = [...(ignored !== undefined ? [cacheRestIgnoredNote(ignored)] : []), ...(refused !== undefined ? [selfSummaryRefusedNote(refused)] : [])];
+    return `${line} ${notes.join(" ")}`;
   }
 
   /**
@@ -694,7 +697,11 @@ export class Life {
       const next = await startEpoch(deps, this.waifuId, { harness, summary: `${REST_SUMMARY_FRAME}\n${summary}`, kept: [], readIds: [], reason: o.cache ? "cache_rest" : "rest", summarized: true, strippedBlocks: 0 });
       deps.logger.info("Life rested", { category: "life", waifuId: this.waifuId, epoch: next.epoch, summaryChars: summary.length, ...(o.cache ? { before: "cache_expiry" } : {}) });
     } else if (o.cache) {
-      // Ignored quiet-time rest (§25): nothing else happens now; the normal triggers stay.
+      // Ignored quiet-time rest (§25): nothing else happens now; the normal triggers stay. The notice
+      // told her that her context would reset, so her next time line says once that it did not.
+      const minChars = deps.config().life.restSummaryMinChars;
+      const why = run.endReason === "done" ? `it is shorter than ${minChars} characters` : "the turn ended before you finished it";
+      await updateLifeState(deps.storage, this.waifuId, (current) => ({ ...current, cacheRestIgnored: why }));
       deps.logger.info("Life quiet-time rest ignored", { category: "life", waifuId: this.waifuId, reason: run.endReason, summaryChars: summary.length });
     } else {
       // Ignored (too short, failed, capped): compaction as before, leaving the rest turn out (R4).

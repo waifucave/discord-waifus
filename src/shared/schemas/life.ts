@@ -155,6 +155,8 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   restTurn: z.object({ epoch: z.number().int().positive(), turnId: z.string() }).optional(),
   /** The quiet-time rest turn before her prompt cache went cold (§25: at most one per epoch). */
   cacheRest: z.object({ epoch: z.number().int().positive(), turnId: z.string() }).optional(),
+  /** Why her quiet-time rest summary was not used (§25): said once, on her next time line. */
+  cacheRestIgnored: z.string().optional(),
   /** A forget scrub wrote the summary; the new epoch starts after the scrub (§7.5 step 2). */
   pendingEpochStart: z.boolean().optional(),
   /**
