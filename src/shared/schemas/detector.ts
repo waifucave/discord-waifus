@@ -31,11 +31,13 @@ export const DetectorHistoryEntrySchema = z.object({
   at: IsoDateStringSchema,
   channelId: z.string().min(1),
   burstMessageIds: z.array(z.string()),
-  /** The model's choice, or `fallback:anyone` / `fallback:none` when no target answered. */
+  /** The model's choice, `fallback:anyone` / `fallback:none` when no target answered, or `nobody_around` (§24: no question asked). */
   choice: z.string().min(1),
   probabilities: z.record(z.string(), z.number()).default({}),
   /** The waifu ids woken by this result. */
   woke: z.array(z.string()).optional(),
+  /** Cast members left out because they were not around in the place (§24), and why; over her daily budget is `budget`. */
+  leftOut: z.array(z.object({ waifuId: z.string().min(1), why: z.enum(["busy", "bed time", "asleep", "budget"]) })).optional(),
   /** The cast member who wrote the burst (a waifu-authored message, §4.3); absent for a person's. */
   authorWaifuId: z.string().optional(),
   /** The `chime_in` answer when it was asked, and who was woken to chime in (at most one per room per 10 minutes). */

@@ -90,6 +90,12 @@ const APP: SettingGroup = {
       ...reload,
       example: "8"
     },
+    "life.morningLinesPerPlace": {
+      label: "Morning lines per place",
+      help: "Her morning summary lists the night's DMs and the room messages that talked to her, one line per message with its time; at most this many per DM or room (the newest), the first saying how many earlier ones were left out.",
+      ...reload,
+      example: "8"
+    },
     "life.maxWaifuTriggeredTurns": { label: "Room loop guard", help: "Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off).", ...reload, example: "0" },
     "life.maintenanceHourLocal": { label: "Maintenance hour", help: "Local hour of her nightly dream (and queued forget scrubs) for a waifu with no bed time (with one, she dreams once she has been asleep life.dreamAfterAsleepMinutes).", unit: "hour 0–23", ...reload, example: "5" },
     "life.dayStartHourLocal": { label: "Day start hour", help: "Local hour of the morning wake (she writes today's schedule in ~/life/schedule.json) for a waifu with no bed time; with one, it comes when her bed time ends.", unit: "hour 0–23", ...reload, example: "8" },

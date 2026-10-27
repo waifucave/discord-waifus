@@ -17,7 +17,7 @@
 // (`life:<id>` lock, shared with compaction, maintenance and forget); turns of different waifus run
 // in parallel up to `life.maxConcurrentTurns`.
 
-import { isDmPlaceKey } from "./lifeView.js";
+import { isDmPlaceKey, wakeShowsDm } from "./lifeView.js";
 import { availabilityFor, noteSend } from "./busy.js";
 import { withPlaceRecord } from "./placeRecorder.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
@@ -609,8 +609,8 @@ export class Life {
       ...(followUpDue && current.failedTurn ? { failedTurn: { ...current.failedTurn, followUpDone: true } } : {})
     }));
     await takeWakes(deps.storage, this.waifuId, wakes, quiet);
-    const dmWakes = wakes.some((wake) => isDmPlaceKey(wake.placeKey)) || quiet.some((line) => isDmPlaceKey(line.placeKey));
-    if (dmWakes) run.scratch.dm = true;
+    const dmWakes = wakes.some(wakeShowsDm) || quiet.some((line) => isDmPlaceKey(line.placeKey));
+    if (dmWakes) await this.markDmTurn(run);
     await this.append(run, "notifications", { role: "user", content }, { dmWakes });
     deps.logger.info("Life turn started", { category: "life", waifuId: this.waifuId, turnId, wakes: wakes.length, reasons: [...new Set(wakes.map((wake) => wake.reason))] });
     const keeper = new TypingKeeper(deps, waifu);
@@ -839,7 +839,7 @@ export class Life {
       const wakesBefore = run.wakes.length;
       // The rest turn takes no wake: they wait for her new epoch (§19.2, R3).
       const folded = run.rest || run.signal.aborted || capped || executed.interrupted ? [] : await this.foldWakes(run);
-      const dmFolded = run.wakes.slice(wakesBefore).some((wake) => isDmPlaceKey(wake.placeKey));
+      const dmFolded = run.wakes.slice(wakesBefore).some(wakeShowsDm);
       if (dmFolded || executed.dmCalls.length > 0) await this.markDmTurn(run);
       const tail: ContentBlockLike[] = [...folded];
       if (capped) tail.push({ type: "text", text: `[system] turn ended: ${capped}` });

@@ -253,6 +253,8 @@ const LIFE_FIELDS = {
   maxWatchFiresPerDay: z.number().int().min(1).max(100),
   /** One notification line per message (§20): at most this many per place, the newest. */
   notificationLinesPerPlace: z.number().int().min(1).max(50),
+  /** The morning summary (§23): at most this many message lines per DM or room, the newest. */
+  morningLinesPerPlace: z.number().int().min(1).max(50),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
   maintenanceHourLocal: z.number().int().min(0).max(23),
   /** The morning wake's local hour for a waifu with no bed time (§21.3). */
@@ -290,6 +292,7 @@ export const DEFAULT_LIFE_CONFIG = {
   maxWakesPerUserPerHour: 20,
   maxWatchFiresPerDay: 24,
   notificationLinesPerPlace: 8,
+  morningLinesPerPlace: 8,
   maxWaifuTriggeredTurns: 0,
   maintenanceHourLocal: 5,
   dayStartHourLocal: 8,
@@ -317,6 +320,7 @@ export const LifeConfigSchema = z
     maxWakesPerUserPerHour: LIFE_FIELDS.maxWakesPerUserPerHour.default(DEFAULT_LIFE_CONFIG.maxWakesPerUserPerHour),
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.default(DEFAULT_LIFE_CONFIG.maxWatchFiresPerDay),
     notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.default(DEFAULT_LIFE_CONFIG.notificationLinesPerPlace),
+    morningLinesPerPlace: LIFE_FIELDS.morningLinesPerPlace.default(DEFAULT_LIFE_CONFIG.morningLinesPerPlace),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
     dayStartHourLocal: LIFE_FIELDS.dayStartHourLocal.default(DEFAULT_LIFE_CONFIG.dayStartHourLocal),
@@ -467,6 +471,7 @@ export const UpdateAppConfigBodySchema = z.object({
     maxWakesPerUserPerHour: LIFE_FIELDS.maxWakesPerUserPerHour.optional(),
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.optional(),
     notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.optional(),
+    morningLinesPerPlace: LIFE_FIELDS.morningLinesPerPlace.optional(),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.optional(),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
     dayStartHourLocal: LIFE_FIELDS.dayStartHourLocal.optional(),

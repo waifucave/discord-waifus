@@ -20,11 +20,13 @@ a bot command, emoji only, a bare laugh after a joke), multilingual (Portuguese,
 ambiguous (several answers accepted), stale human (aimed at someone whose last message is 30+
 minutes old: `anyone`), active human (a live exchange between people: `human`), joins in (for
 another person, with the expected `chime_in` answer: the fitting cast member when she is awake,
-`nobody` when she is asleep or busy or nothing invites comment) and waifu author (the newest
-message is a cast member's; she is left out of the cast). Each request is built by the production
+`nobody` when she is asleep or busy, and so left out of the cast as in production since §24, or
+nothing invites comment) and waifu author (the newest
+message is a cast member's; she is left out of the cast) and absent waifu (aimed at a cast member
+who is not around, by a nickname or in her own exchange: `human` or `none`, never someone else). Each request is built by the production
 `detectorQuestion` and answered by the production `AddresseeDetector`, so the state, the
-`waifu_<i>`/`human`/`anyone`/`all`/`none` choices, the `chime_in` question (cast members' availability
-is in the state; only awake ones are offered), the transport, the answer validation and the Laya
+`waifu_<i>`/`human`/`anyone`/`all`/`none` choices, the `chime_in` question (only cast members who
+are around are in the cast at all, spec §24), the transport, the answer validation and the Laya
 worker are exactly what a life's intake uses. Expected answers, case ids and groups never enter a
 request (`tests/decisionAddressee.test.ts`).
 
@@ -38,14 +40,16 @@ npm run benchmark:decisions -- --live --suite=addressee --targets=openrouter:typ
 Reported per target: exact-choice accuracy (failed calls count as wrong), accuracy of answered
 calls, multi-class Brier score and ECE over the single-answer cases, p50/p95 latency, cost from
 the usage the API reports, accuracy per group, the error codes and the missed cases, and for
-`chime_in` the labelled cases answered right plus any pick of a cast member who is not awake (must
-be 0). `--cases=` runs only the named cases. `chat:`
+`chime_in` the labelled cases answered right (a cast member who is not around is not in the cast
+at all, §24). `--cases=` runs only the named cases. `chat:`
 targets are not detector targets and are skipped; `laya:` targets need host-local
 `DC_WAIFUS_LAYA_PYTHON` (as in production) and get one unscored warm-up. No private replay
 dataset exists for this suite yet. Recorded live runs (2026-10-25, `openrouter:typesafe/jev-1.14`):
 40/40 on the first 40 cases before the stale-address, chime-in and waifu-author changes, and 60/60
 after them with chime-in 13/13 and no pick of a sleeping or busy member (Brier on the first 40
-went from 0.009 to 0.030). Synthetic results are not a guarantee of real-room routing.
+went from 0.009 to 0.030). Those runs still showed the asleep or busy member in the cast; since
+§24 she is left out, so C04–C06 now ask whether another member would chime in instead (not
+re-run live). Synthetic results are not a guarantee of real-room routing.
 
 ### One shot integration verification (2026-10-13)
 

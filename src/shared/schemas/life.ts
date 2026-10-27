@@ -80,6 +80,8 @@ export const WakeSchema = z.object({
   count: z.number().int().positive().optional(),
   /** morning: the rendered batch (built when her bed time ends). */
   batch: z.array(z.string()).optional(),
+  /** morning: the batch shows something from a DM (a DM's lines, a DM watch, an earlier batch that did): her turn is a DM turn (D14). */
+  dm: z.boolean().optional(),
   /** detector: the detector said the burst is for the whole cast (`all`), not just maybe for her. */
   forAll: z.boolean().optional(),
   /** detector: the burst was for another person; she might chime in (§4.3 `chime_in`). */
@@ -280,7 +282,15 @@ export const DeferredPlaceSchema = z.object({
   detector: z.number().int().nonnegative().default(0),
   fromUserIds: z.array(z.string()).default([]),
   /** Display names, by user id (for the morning batch). */
-  names: z.record(z.string(), z.string()).default({})
+  names: z.record(z.string(), z.string()).default({}),
+  /**
+   * The morning summary's message lines (§23): every message of a deferred DM wake, and of a room
+   * wake the messages that addressed her (a mention or reply, her name, a role or `@everyone`), each
+   * with its reasons; oldest first, the newest `MAX_WAKE_MESSAGES`.
+   */
+  lines: z.array(WakeMessageSchema).optional(),
+  /** Lines older than `lines` that were left out of it. */
+  earlier: z.number().int().positive().optional()
 });
 export type DeferredPlace = z.infer<typeof DeferredPlaceSchema>;
 

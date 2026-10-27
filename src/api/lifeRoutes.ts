@@ -82,7 +82,7 @@ function isDmKey(placeKey: string | undefined): boolean {
 
 /** A queued wake for the owner: DM previews, matched words and notes only with `includePrivate`. */
 function wakeView(wake: Wake, includePrivate: boolean) {
-  const dm = isDmKey(wake.placeKey) || wake.reason === "dm";
+  const dm = isDmKey(wake.placeKey) || wake.reason === "dm" || wake.dm === true;
   const hide = dm && !includePrivate;
   return {
     id: wake.id,

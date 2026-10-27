@@ -1,0 +1,12 @@
+<notifications>
+- while you were asleep (01:42–08:30):
+  · DMs:
+    · dm/kevin · 02:14 #d3 "you up? need a hand with the essay tmrw"
+    · dm/kevin · 02:15 #d4 "nvm going to sleep"
+  · kingdom-16062/#general: 2 mentions, 31 messages (01:50–07:58)
+    · mention · 03:02 #c41 from Lianne "@Lumi the cat did the thing again"
+    · mention · 07:40 #c70 from Kevin "@Lumi morning!!"
+  · winter-s-secret-room/#general: 4 messages (06:10–06:30)
+  · watch matched · kingdom-16062/#general · "sushi" · from Lianne · 05:12 #c55 · your note: "Lianne wants to try the new sushi place"
+  · watch timed out (Tue 04:00) · your note: "ask Kevin how the essay went"
+</notifications>

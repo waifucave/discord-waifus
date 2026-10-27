@@ -64,7 +64,10 @@ everything else, a person's burst or a waifu's own burst (her lines per place, 1
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
 chime-in for 10 minutes (`CHIME_IN_INTERVAL_MS`), `chime_in`; with `human` a chime-in pick gets a soft
-`detector` wake with `chimeIn`; the state carries each member's availability and each line's
+`detector` wake with `chimeIn`; only waifus around in the place are candidates (spec §24, `busy.ts`
+`aroundIn`: awake, or busy / in bed time with the place open for her; the rest are in the history's
+`leftOut` with why; nobody around = no call, choice `nobody_around`; the `anyone` draw is ×3 × recency
+over them); the state carries each line's
 `minutesAgo` (a stale address to someone gone 30+ minutes reads as `anyone`); no loop cap on
 waifu-only rounds beyond the optional room loop guard and daily budgets) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
 per-user wake limit, bed time (§21.6c: asleep, only `reminder` and `owner` get through, the rest is
@@ -157,7 +160,12 @@ fires reminders from her file (routed under a deterministic wake id before remov
 timeouts (`watch_timeout`), releases held wakes at her phone checks, refreshes `places.md` (≤1/min;
 also at every turn start), expires `/tmp` (first tick, then hourly), sends the day wake when her
 bed time ends (else at `life.dayStartHourLocal`; id `w-day-<date>`: the greeting asking her to
-write `~/life/schedule.json`, then the overnight batch; never folded mid-turn; the turn after it
+write `~/life/schedule.json`, then the overnight batch (spec §23, `notifications.ts` `morningBatch`: DMs
+one line per message with time, ref and preview, rooms by most mentions with the night's span and one
+line per message that addressed her, watch matches with their message's time and ref; at most
+`life.morningLinesPerPlace` per DM or room, the first saying `+N earlier`; the lines come from
+`wakes.json` `deferred.places[*].lines`, the newest 50 per place, refs via `messageRefs.ts`; DM-floor and
+forgotten people's lines left out; a batch showing a DM sets the wake's `dm`, so the turn is a DM turn, D14); never folded mid-turn; the turn after it
 sets `dayCompactionDue`, so the next cycle compacts with reason `day` (an epoch of at most three
 turns is kept whole, no summary) and block A shows today's plan; the harness hash leaves the plan out, so midday edits never force a compaction) and starts
 maintenance once she has been asleep `life.dreamAfterAsleepMinutes` in her bed time (once per bed

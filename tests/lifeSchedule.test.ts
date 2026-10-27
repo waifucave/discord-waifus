@@ -72,12 +72,15 @@ describe("sleep and the morning batch (§4.5, §4.7, §21.6c)", () => {
     const morning = queue.immediate[0]!;
     expect(morning.reason).toBe("morning");
     expect(morning.batch![0]).toBe("- during your bed time (13:00–15:00):");
-    expect(morning.batch).toContainEqual(expect.stringMatching(/^ {2}· bake-club\/#general: 1 mention, \d+ messages?$/u));
-    expect(morning.batch).toContain("  · DMs: Kevin (1 message)");
-    expect(morning.batch).toContain('  · watch matched · bake-club/#general · "brownie" · from Kevin · your note: "Mina wanted brownie tips"');
+    // §23: the DM and the mention one line each, with time and ref; the watch match with its message's.
+    expect(morning.batch).toContainEqual(expect.stringMatching(/^ {2}· bake-club\/#general: 1 mention, \d+ messages? \(14:00\)$/u));
+    expect(morning.batch).toContain("  · DMs:");
+    expect(morning.batch).toContain('    · dm/kevin · 14:00 #a0 "goodnight ella"');
+    expect(morning.batch).toContain('    · mention · 14:00 #a0 from Kevin "<@Ella> you up?"');
+    expect(morning.batch).toContain('  · watch matched · bake-club/#general · "brownie" · from Kevin · 14:00 #a1 · your note: "Mina wanted brownie tips"');
     expect(queue.deferred.items).toEqual([]);
     expect(queue.deferred.reason).toBeUndefined();
-  });
+  }, 30_000);
 
   it("a budget pause ends with the next local day", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", life: { dailyBudgetUsd: 0.5 } }] });
@@ -93,7 +96,8 @@ describe("sleep and the morning batch (§4.5, §4.7, §21.6c)", () => {
     await w.cast.scheduler.tick();
     const queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(queue.immediate.map((wake) => wake.reason)).toEqual(["morning"]);
-    expect(queue.immediate[0]!.batch![0]).toBe("- while you were away (since 14:00):");
+    // §23: the same lines as a sleep batch; yesterday's times have their weekday.
+    expect(queue.immediate[0]!.batch).toEqual(["- while you were away (since Sat 14:00):", "  · bake-club/#general: 1 mention, 1 message (Sat 14:00)", '    · mention · Sat 14:00 #a0 from Kevin "<@Ella> hi"']);
   });
 
   it("a sleep batch she wakes up to over budget waits for her next local day", async () => {

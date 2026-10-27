@@ -36,6 +36,18 @@ or a watch match is on the line of the message it belongs to, and a message arou
 not for her has a line with no reason. At most `life.notificationLinesPerPlace` (default 8)
 lines per place, the newest; the first then says `+N earlier`.
 
+**The morning summary.** What waited for her morning (her bed time, or a budget pause) comes as one
+summary with times: each DM one line per message (time, ref, preview), each room its counts with
+the night's time span and then one line per message that talked to her (a mention or reply, her
+name, a role or `@everyone`; ordinary chatter stays a count), rooms with the most mentions first,
+then watch matches (with the matching message's time and ref), timed-out watches and reminders.
+Times are her local `HH:MM`, with the weekday when not on the morning's day. At most
+`life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
+`+N earlier`. Every line has its ref, so she can reply or react without reading first; DM lines are
+redacted in the owner's views like any DM notification, and a morning that shows anything from a DM
+is a DM turn (what she does in it is private too). Lines from a forgotten person or below a DM's
+forget floor are never shown.
+
 ## Her day
 
 Every morning she writes her own day in `~/life/schedule.json`: when her bed time ends (or at
@@ -59,7 +71,11 @@ reach her), then *dozing* until `life.bedDozeMinutes` (60) after the later of th
 and her last send (like busy, but what waits is kept for the morning), then *asleep*: only her own
 reminders and the owner's wakes reach her, a DM gets the sleep notice once per bed time, and
 everything else waits for the morning wake at the bed time's end. A send of hers starts the clock
-again. The detector counts her up late as awake, dozing as busy and asleep as asleep.
+again. The addressee detector only offers waifus who are around in that place: awake, or busy or
+up late or dozing in a place she sent to in the last `life.busyEngagedMinutes` (she joined in
+there). The others (busy, in bed time, asleep or over budget) are left out of its choices and of
+its "anyone" draw; when nobody is around, a message for "anyone" wakes nobody. The detector history
+lists who was left out and why (`leftOut`).
 
 ## Seeing it
 

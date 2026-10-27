@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { assignConversationRefs, normalizeRef, readConversationRefs, resolveConversationRef, shiftId, snowflakeAt, snowflakeTime } from "../../discord/refStore.js";
+import { assignConversationRefs, normalizeRef, resolveConversationRef, shiftId, snowflakeAt, snowflakeTime } from "../../discord/refStore.js";
 import { compareIds } from "../../discord/rawMessage.js";
 import { EMPTY_GUILD_DIRECTORY, formatBytes, imageRef, isImageAttachment, renderDiscordMessage, type RawAttachment } from "../../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../../orchestration/context/types.js";
@@ -25,6 +25,7 @@ import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbo
 import { forgottenPeople, isRemovedMessage } from "../people.js";
 import { placeLabel, placesWithHandles, resolvePlace, type ResolvedPlace } from "../places.js";
 import { notePlace } from "../placeRecorder.js";
+import { refsForMessages } from "../messageRefs.js";
 import { entryHeader, entryLine, type LineMessage, type LineView } from "../render.js";
 import {
   atOrBelowFloor,
@@ -36,7 +37,6 @@ import {
   newestTranscriptLine,
   readTranscriptDayLite,
   readTranscriptsStartedAt,
-  transcriptRefsOf,
   type TranscriptLine
 } from "../transcripts/store.js";
 import { forgottenLine } from "../transcripts/forget.js";
@@ -230,21 +230,6 @@ async function floorOf(deps: LifeDeps, waifuId: string, place: ResolvedPlace): P
   }
 }
 
-/**
- * Refs for messages of a page (§22.1): `refs.json` first, then the ref stored on a message's
- * transcript line (one `refs.json` pruned), and only then a new one (never for a message whose line
- * has one, and never for one past the age limit).
- */
-async function refsForMessages(deps: LifeDeps, place: ResolvedPlace, messages: ReadonlyArray<{ id: string; at: string }>, now: Date): Promise<Map<string, string>> {
-  const key = place.placeKey;
-  const current = await readConversationRefs(deps.storage, key as never);
-  const missing = messages.filter((message) => current.refs[message.id] === undefined);
-  const stored = await transcriptRefsOf({ dataRoot: deps.storage.dataRoot, timeZone: deps.timeZone }, key, missing).catch(() => new Map<string, string>());
-  const assign = missing.filter((message) => !stored.has(message.id)).map((message) => message.id);
-  const assigned = assign.length > 0 ? await assignConversationRefs(deps.storage, key as never, assign, now) : new Map(Object.entries(current.refs));
-  return new Map([...assigned, ...stored]);
-}
-
 /** One page of a place's conversation (§22.2 unfiltered): the latest, before / after / around, or a range. */
 async function pagePlace(ctx: ToolContext, place: ResolvedPlace, query: ReadQuery, forgotten: Awaited<ReturnType<typeof forgottenPeople>>): Promise<Section> {
   const { deps } = ctx;
@@ -293,7 +278,7 @@ async function pagePlace(ctx: ToolContext, place: ResolvedPlace, query: ReadQuer
   const deleted = oldest && newest
     ? deps.conversations.deletedIds(place.ref).filter((id) => compareIds(id, oldest.id) > 0 && compareIds(id, newest.id) < 0)
     : [];
-  const refs = await refsForMessages(deps, place, page.messages.map((message) => ({ id: message.id, at: message.createdAt })), now);
+  const refs = await refsForMessages(deps, place.placeKey, page.messages.map((message) => ({ id: message.id, at: message.createdAt })), now);
   const auto = place.kind === "dm" && place.userId ? new Set((await readDmLimitIfExists(deps.storage, place.userId, ctx.waifu.id))?.autoMessageIds ?? []) : new Set<string>();
   const lookup = new Map<string, RawDiscordMessage>();
   for (const message of [...deps.conversations.bufferedMessages(place.ref), ...page.messages]) if (aboveFloor(message.id, dmFloor)) lookup.set(message.id, message);
@@ -575,7 +560,7 @@ class SearchScope {
       start = Math.max(0, matched.length - max);
     }
     const shown = matched.slice(start, start + max);
-    const refs = await refsForMessages(deps, place, shown.filter((line) => !line.ref).map((line) => ({ id: line.id, at: line.at })), now);
+    const refs = await refsForMessages(deps, place.placeKey, shown.filter((line) => !line.ref).map((line) => ({ id: line.id, at: line.at })), now);
     const refOf = (line: TranscriptLine) => line.ref ?? refs.get(line.id);
     const text: string[] = [`${place.handle} (${placeLabel(place)})`];
     // The window searched: the anchors, or as far as the scan went when it stopped early.

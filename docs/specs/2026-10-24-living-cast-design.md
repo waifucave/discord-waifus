@@ -3154,6 +3154,60 @@ built in 3.3.0). This section makes what waited richer: the morning wake's singl
 - Tests: golden for the example above; caps and `+N earlier`; refs resolve in SendMessage/React;
   D14 redaction; a budget pause batch uses the same format.
 
+### 23.1 As built (2026-10-27)
+
+- **Kept lines** (`wakeQueue.ts` `morningLinesOf`, `withDeferred`): a deferred wake adds its
+  messages to `wakes.json` `deferred.places[<key>].lines` (`WakeMessageSchema`: id, sender, preview,
+  reasons; matches and notes stay on the watch item): in a DM every message, in a room only the
+  messages whose own reasons include `mention` (replies are mentions), `name`, `role` or `everyone`,
+  so detector picks, chime-ins and follow-ups stay counts. The newest `MAX_WAKE_MESSAGES` (50) per
+  place are kept, older ones counted in `earlier` (a DM burst's own `earlier` adds to it). Both
+  fields are optional, so an older queue parses unchanged; a DM with no kept lines (such
+  a queue) keeps one count line `· dm/kevin: 3 messages`. Forget scrubs the lines like a wake's
+  messages (the person's go, a quote naming them becomes `(removed)`).
+- **Times** come from the message id (Discord snowflake). A line's time, a room span's ends and the
+  budget header's `since` show the weekday when not on the morning's local day; the sleep header is
+  unchanged. A span whose ends read the same is one time (`(14:00)`). The night of a room starts at
+  the pause or at the first message it kept, whichever is earlier (the message that started the
+  pause counts).
+- **Counts**: a room's mentions are the larger of the counter and its kept lines (+ `earlier`); a
+  DM's messages the largest of the counter, the cache count and its kept lines.
+- **Line formats**: `    · dm/kevin · +N earlier · 02:14 #d3 "…"` and `    · mention · 03:02 #c41
+  from Lianne "…"` (labels as in §4.7, joined with `, `); `+N earlier` goes after the handle or
+  label of the first shown line. The `· DMs:` line is a header with nothing quoted, so D14 redacts
+  each DM line from its first quote and leaves room lines alone (no change in `lifeView.ts`).
+- **Order**: DMs, rooms by most mentions (ties in their earlier order), watch matches, watch
+  timeouts, reminders (only a budget pause defers them), follow-ups and an earlier unread batch.
+- **Refs** (`messageRefs.ts` `refsForMessages`, shared with ReadMessages): `refs.json`, then the
+  transcript line's ref, then a new one; the cached messages before the named ones are passed too so
+  a newly assigned ref keeps message order.
+- **Setting**: `life.morningLinesPerPlace` (1–50, default 8), Settings → Life "Wakes".
+- **Review fixes (2026-10-27)**:
+  - D14: a morning wake whose batch shows anything from a DM (a DM's lines or count, a DM watch or
+    timeout, an earlier unread batch that did) carries `dm: true`; the life loop's DM-turn checks
+    (`lifeView.ts` `wakeShowsDm`, at turn start and for folded wakes) honour it, so her text, tool
+    calls and web searches in that turn are private like any DM turn. The queue view marks it too.
+  - Lines at or below a DM's forget floor, and lines and watch matches from a forgotten person (at
+    or before the forget), are left out when the batch is built; with unreadable forget records no
+    line is shown and watch matches keep only her note. `prepareForget` drops the person's DM place
+    and items from `deferred` at once (`wakeQueue.ts` `dropDeferredOf`; `everything` also their
+    lines elsewhere), since a rate-limited DM forget's scrub can wait for her dream. An earlier
+    unread batch carried in `items` loses its pre-rendered lines for that DM (the DM's handle as the
+    line's place, `batchWithout`) and, with `everything`, the lines naming them as author
+    (`from <name>`, their certain names); a `· DMs:` header left empty goes too.
+  - The batch is built from `deferred` as read and taken only if it is still the same
+    (`takeDeferred(…, expected)` returns `conflict`); otherwise it is read and built again, at most
+    five times in one tick. If it still changed, nothing is released that tick (no day wake, no
+    `lastDayStart`); the next tick (15 s) tries again, so no line is lost.
+  - A room's night starts no earlier than 10 minutes before the pause (`NIGHT_LEAD_MS`), so a wake
+    held in an afternoon busy block and moved into the night keeps its line but does not stretch the
+    span or the count.
+  - A DM with kept lines counts deferred DM wakes beyond them as earlier (`+N earlier` on an upgrade
+    night). `MorningPlace.name` is gone (DM lines use the handle).
+- Tests: `tests/lifeMorningSummary.test.ts`; goldens `life-morning-summary.txt` (new, the example
+  above), `life-morning.txt` and `life-day-morning.txt` (the DMs as lines, the mention line, the
+  span, the watch match's time and ref).
+
 ## 24. Jev only sees who is around (owner request, 2026-10-27)
 
 The addressee detector's member list for a place (`addressee` and `chime_in` choices, the `anyone`
@@ -3170,3 +3224,36 @@ is available, a message for "anyone" wakes nobody. The previous busy weight (×1
 draw is removed; available waifus keep weight ×3 × recency. Detector history records who was left
 out and why (`busy`, `bed time`, `asleep`). Tests: each state in/out, open place keeps her in, the
 `anyone` draw with nobody available, history entries, the benchmark fixtures updated.
+
+### 24.1 As built (2026-10-27)
+
+- **Who is around** (`busy.ts` `aroundIn`, read by `Intake.runDetector` per place): the same rules the
+  wake router applies, so Jev never offers someone the router would hold or defer there. Awake (no
+  busy block, outside her bed time): around. In a busy block: around only where `busyOpen` has the
+  place for this block (§21.9: opened by a send after a wake that got through there), which is the
+  router's reading of "she joined in first". In her bed time (up late or dozing): around only where
+  `recentSends` has a send within `life.busyEngagedMinutes`; dozing therefore always leaves her out
+  (her last send is older than that by definition). Asleep: never. Over her daily budget she is also
+  left out, with reason `budget` (a fourth reason beside `busy`, `bed time`, `asleep`; before §24 the
+  state called it `asleep`).
+- **The question**: the cast is only the waifus around (the author of a waifu's burst still left
+  out); each is shown `availability: "awake"`, so the `chime_in` instructions and options are
+  unchanged. `all` wakes the waifus around (no longer every cast waifu here), `anyone` draws among
+  them (×3 × recency, `drawAnyone` takes no availability any more); a waifu her watch woke stays a
+  candidate and is still skipped when chosen (D-c).
+- **Nobody around**: no detector call (also no fallback), nothing wakes anyone or is deferred, and
+  the history entry has `choice: "nobody_around"`.
+- **History**: `leftOut: [{ waifuId, why }]` (`why` ∈ `busy | bed time | asleep | budget`), present
+  only when someone was left out. The dashboard needed no change (Rooms shows only the time of the
+  last decision).
+- **Review fixes (2026-10-27)**: `aroundIn` reads her day file once; the intake's comment on `all`
+  follows §24.
+- **Benchmark** (`scripts/decision-benchmark/addressee.ts`): `addresseeCast` leaves a case's
+  non-awake members out, as production does; C04–C06 now check that nobody else chimes in in their
+  place, and AB1–AB2 (group `absent_waifu`) a message aimed at a waifu who is not around (a
+  nickname, her own exchange) that must not go to one who is (`human` or `none`). The not-awake
+  pick count is gone (such a member is never an option). The recorded live runs are from before;
+  the new cases are fixtures only.
+- Tests: `tests/lifeWakes.test.ts` "Jev only sees who is around (§24)" (busy with and without an
+  open place, up late here and elsewhere, dozing, asleep, nobody around, budget and `all`),
+  `tests/lifeDetector.test.ts` (the draw), `tests/decisionAddressee.test.ts`.

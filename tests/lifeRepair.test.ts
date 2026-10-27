@@ -14,6 +14,8 @@ import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_BOT
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
+// Every test here boots, crashes and restarts a world (some run Bash): slow under full-suite load.
+vi.setConfig({ testTimeout: 30_000 });
 afterEach(async () => {
   await closeWorlds();
   for (const root of roots.splice(0)) await removeTempRoot(root);

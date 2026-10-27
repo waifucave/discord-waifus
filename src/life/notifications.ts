@@ -9,7 +9,8 @@ import type { GuildDirectoryView } from "../orchestration/context/types.js";
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import type { Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import { compareIds } from "../discord/rawMessage.js";
-import { clockText, dayText, weekdayTimeText } from "./clock.js";
+import { snowflakeTime } from "../discord/refStore.js";
+import { clockText, dayText, localDayKey, weekdayTimeText } from "./clock.js";
 import { messagesOf } from "./wakeMessages.js";
 
 /** The release line of held wakes (§21.4): first in the notification that brings them. */
@@ -252,9 +253,34 @@ export function morningGreeting(o: { now: Date; timeZone: string; bedTime?: { st
   ].join(" ");
 }
 
-export type MorningPlace ={ placeKey: string; kind: "room" | "thread" | "dm"; name?: string; mentions: number; messages: number };
+/** At most this many message lines per DM or room in the morning summary (§23; `life.morningLinesPerPlace`). */
+export const MORNING_LINES_PER_PLACE = 8;
 
-/** The `morning` batch lines (§4.7), built when her bed time (or budget pause) ends. */
+/** One message of the morning summary (§23): a DM's message, or a room message that addressed her. */
+export type MorningLine = { id: string; fromName?: string; preview: string; reasons: readonly WakeReason[]; at?: Date };
+
+export type MorningPlace = {
+  placeKey: string;
+  kind: "room" | "thread" | "dm";
+  mentions: number;
+  messages: number;
+  /** Oldest first: every kept DM message, a room's messages that addressed her (§23). */
+  lines?: readonly MorningLine[];
+  /** Lines older than `lines` that were not kept. */
+  earlier?: number;
+  /** When the night's messages there came (the counts line's span). */
+  span?: { from: Date; to: Date };
+};
+
+/** The morning summary's reasons, in label order: what addressed her in a room. */
+const ADDRESSED: readonly WakeReason[] = ["mention", "name", "role", "everyone"];
+
+/**
+ * The `morning` batch lines (§4.7, §23), built when her bed time (or budget pause) ends: DMs with one
+ * line per message, then rooms by most mentions (counts with the night's span, then one line per
+ * message that addressed her), then watch matches, watch timeouts, reminders and the rest. Times
+ * are her local `HH:MM`, with the weekday when not on the morning's day; every line has its ref.
+ */
 export function morningBatch(
   o: {
     reason: "sleep" | "budget";
@@ -262,48 +288,94 @@ export function morningBatch(
     until: Date;
     places: readonly MorningPlace[];
     items: readonly Wake[];
+    /** Lines per DM or room (§23); `MORNING_LINES_PER_PLACE` when absent. */
+    linesPerPlace?: number;
   },
   view: NotificationView
 ): string[] {
+  const morningDay = localDayKey(o.until, view.timeZone);
+  const timeOf = (date: Date) => (localDayKey(date, view.timeZone) === morningDay ? clockText(date, view.timeZone) : weekdayTimeText(date, view.timeZone));
   const header =
     o.reason === "sleep"
       ? `- while you were asleep (${clockText(o.since, view.timeZone)}–${clockText(o.until, view.timeZone)}):`
-      : `- while you were away (since ${clockText(o.since, view.timeZone)}):`;
+      : `- while you were away (since ${timeOf(o.since)}):`;
   const lines = [header];
-  for (const place of o.places.filter((entry) => entry.kind !== "dm")) {
+  const cap = Math.max(1, o.linesPerPlace ?? MORNING_LINES_PER_PLACE);
+  // The newest `cap` lines; the first says how many earlier ones were left out.
+  const messageLines = (place: MorningPlace, line: (entry: MorningLine, head: string[]) => string): string[] => {
+    const all = place.lines ?? [];
+    const shown = all.slice(-cap);
+    const hidden = (place.earlier ?? 0) + all.length - shown.length;
+    return shown.map((entry, index) => line(entry, index === 0 && hidden > 0 ? [`+${hidden} earlier`] : []));
+  };
+  const stamp = (placeKey: string, entry: { id: string; at?: Date }): string => {
+    const ref = view.ref?.(placeKey, entry.id);
+    return [entry.at ? timeOf(entry.at) : undefined, ref ? `#${ref}` : undefined].filter(Boolean).join(" ");
+  };
+  const tail = (placeKey: string, entry: MorningLine, from: boolean): string =>
+    [stamp(placeKey, entry), from && entry.fromName ? `from ${plainName(entry.fromName)}` : undefined, entry.preview ? quote(entry.preview) : undefined].filter(Boolean).join(" ");
+
+  const dms = o.places.filter((entry) => entry.kind === "dm" && (entry.messages > 0 || (entry.lines?.length ?? 0) > 0));
+  if (dms.length > 0) {
+    lines.push("  · DMs:");
+    for (const dm of dms) {
+      const handle = view.handle(dm.placeKey);
+      if (!dm.lines || dm.lines.length === 0) {
+        lines.push(`    · ${handle}: ${dm.messages} message${dm.messages === 1 ? "" : "s"}`);
+        continue;
+      }
+      lines.push(...messageLines(dm, (entry, head) => `    · ${[handle, ...head, tail(dm.placeKey, entry, false)].filter(Boolean).join(" · ")}`));
+    }
+  }
+  const rooms = o.places
+    .map((place, index) => ({ place, index }))
+    .filter(({ place }) => place.kind !== "dm")
+    .sort((a, b) => b.place.mentions - a.place.mentions || a.index - b.index)
+    .map(({ place }) => place);
+  for (const place of rooms) {
     const counts = [
       place.mentions > 0 ? `${place.mentions} mention${place.mentions === 1 ? "" : "s"}` : undefined,
       place.messages > 0 ? `${place.messages} message${place.messages === 1 ? "" : "s"}` : undefined
     ].filter(Boolean);
-    if (counts.length > 0) lines.push(`  · ${view.handle(place.placeKey)}: ${counts.join(", ")}`);
-  }
-  const dms = o.places.filter((entry) => entry.kind === "dm" && entry.messages > 0);
-  if (dms.length > 0) {
+    if (counts.length === 0) continue;
+    const span = !place.span ? "" : timeOf(place.span.from) === timeOf(place.span.to) ? ` (${timeOf(place.span.from)})` : ` (${timeOf(place.span.from)}–${timeOf(place.span.to)})`;
+    lines.push(`  · ${view.handle(place.placeKey)}: ${counts.join(", ")}${span}`);
     lines.push(
-      `  · DMs: ${dms
-        .map((dm, index) => `${dm.name ? plainName(dm.name) : view.handle(dm.placeKey)} (${dm.messages}${index === 0 ? ` message${dm.messages === 1 ? "" : "s"}` : ""})`)
-        .join(", ")}`
+      ...messageLines(place, (entry, head) => {
+        const reasons = ADDRESSED.filter((reason) => entry.reasons.includes(reason)).map((reason) => REASON_LABELS[reason]);
+        return `    · ${[reasons.join(", ") || REASON_LABELS.mention, ...head, tail(place.placeKey, entry, true)].filter(Boolean).join(" · ")}`;
+      })
     );
   }
-  for (const item of o.items) {
-    if (item.reason === "reminder") {
-      lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
-    } else if (item.reason === "watch" || item.reasons?.includes("watch")) {
-      // A DM wake that carried a watch match (§16.5) shows the match here; its DM counts above. One
-      // line per matching message (§20).
-      const matches = messagesOf(item).filter((message) => message.matched !== undefined || (message.reasons.includes("watch") && message.note !== undefined));
-      const entries = matches.length > 0 ? matches : [{ matched: item.matched, fromName: item.fromName, note: item.note }];
-      for (const entry of entries) {
-        const parts = ["watch matched"];
-        if (item.placeKey) parts.push(view.handle(item.placeKey));
-        if (entry.matched) parts.push(quote(entry.matched));
-        if (entry.fromName) parts.push(`from ${plainName(entry.fromName)}`);
-        if (entry.note) parts.push(`your note: ${quote(entry.note)}`);
-        lines.push(`  · ${parts.join(" · ")}`);
+  const isWatch = (item: Wake) => item.reason === "watch" || item.reasons?.includes("watch") === true;
+  for (const item of o.items.filter(isWatch)) {
+    // A DM wake that carried a watch match (§16.5) shows the match here; its DM lines are above. One
+    // line per matching message (§20), with the message's time and ref (§23).
+    const matches = messagesOf(item).filter((message) => message.matched !== undefined || (message.reasons.includes("watch") && message.note !== undefined));
+    const entries = matches.length > 0 ? matches : [{ id: item.messageId, matched: item.matched, fromName: item.fromName, note: item.note }];
+    for (const entry of entries) {
+      const parts = ["watch matched"];
+      if (item.placeKey) parts.push(view.handle(item.placeKey));
+      if (entry.matched) parts.push(quote(entry.matched));
+      if (entry.fromName) parts.push(`from ${plainName(entry.fromName)}`);
+      if (item.placeKey && entry.id) {
+        const at = snowflakeTime(entry.id);
+        const when = stamp(item.placeKey, { id: entry.id, ...(at !== undefined ? { at: new Date(at) } : {}) });
+        if (when) parts.push(when);
       }
-    } else if (item.reason === "watch_timeout") {
-      lines.push(`  · watch timed out (${weekdayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
-    } else if (item.reason === "followup") {
+      if (entry.note) parts.push(`your note: ${quote(entry.note)}`);
+      lines.push(`  · ${parts.join(" · ")}`);
+    }
+  }
+  for (const item of o.items) {
+    if (item.reason === "watch_timeout") lines.push(`  · watch timed out (${weekdayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
+  }
+  for (const item of o.items) {
+    if (item.reason === "reminder") lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
+  }
+  for (const item of o.items) {
+    if (isWatch(item) || item.reason === "watch_timeout" || item.reason === "reminder") continue;
+    if (item.reason === "followup") {
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
     } else if (item.reason === "morning" && item.batch) {
       // An earlier batch she never read (her budget ran out first): its lines without its header

@@ -2,15 +2,17 @@
 //
 // - `immediate`: wakes waiting for her next turn (≤ 200 entries; beyond that, a wake for a place
 //   that already has an entry merges into it as a counter).
-// - `deferred`: what arrived while she slept or was over her daily budget: per-place counters plus
-//   every reminder and watch match with its note. Never dropped; released as one `morning` wake.
+// - `deferred`: what arrived while she slept or was over her daily budget: per-place counters (with
+//   the morning summary's message lines, §23: a DM's messages and a room's messages that addressed
+//   her, the newest 50 per place) plus every reminder and watch match with its note. Never dropped;
+//   released as one `morning` wake.
 // - `held`: wakes held while she is busy (§21.4), released together at her next phone check or the
 //   busy block's end (scheduler); they never start a turn while held.
 // - `userWakes`: the per-user wake limit's last-hour timestamps (§4.4 guard 3); `quiet`: the
 //   "+N more from Kevin" lines that ride along with the next turn without starting one.
 
 import { randomBytes } from "node:crypto";
-import type { DeferredPlace, Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
+import type { DeferredPlace, Wake, WakeMessage, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
 import { readLifeFile, updateLifeFile } from "./lifeStore.js";
 import { joinMessages, messagesOf } from "./wakeMessages.js";
@@ -119,9 +121,33 @@ export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "bu
     else if (wake.reason === "detector") place.detector += count;
     if (wake.fromUserId && !place.fromUserIds.includes(wake.fromUserId)) place.fromUserIds = [...place.fromUserIds, wake.fromUserId];
     if (wake.fromUserId && wake.fromName) place.names = { ...place.names, [wake.fromUserId]: wake.fromName };
+    // The morning summary's lines (§23): a DM's messages, a room's messages that addressed her.
+    const lines = morningLinesOf(wake);
+    if (lines.length > 0) {
+      const joined = joinMessages([place.lines ?? [], lines], (place.earlier ?? 0) + (isDmKey(wake.placeKey) ? (wake.earlier ?? 0) : 0));
+      place.lines = joined.messages;
+      if (joined.earlier > 0) place.earlier = joined.earlier;
+    }
     deferred.places[wake.placeKey] = place;
   }
   return { ...queue, deferred };
+}
+
+const isDmKey = (placeKey: string) => placeKey.startsWith("dm_");
+
+/**
+ * The messages of a deferred wake the morning summary lists (§23): in a DM every one, in a room
+ * those that addressed her (their own reasons include a mention, reply, her name, a role or
+ * `@everyone`). A line keeps id, sender, preview and reasons (a watch match has its own line).
+ */
+export function morningLinesOf(wake: Wake): WakeMessage[] {
+  if (!wake.placeKey) return [];
+  const dm = isDmKey(wake.placeKey);
+  return messagesOf(wake).flatMap((message) => {
+    if (!dm && !message.reasons.some((reason) => MENTION_REASONS.has(reason))) return [];
+    const { matched: _matched, note: _note, ...line } = message;
+    return [line];
+  });
 }
 
 export async function deferWake(storage: StorageService, waifuId: string, wake: Wake, reason: "sleep" | "budget", now: Date): Promise<void> {
@@ -223,14 +249,24 @@ export function hasDeferred(queue: WakeQueue): boolean {
   return queue.deferred.items.length > 0 || Object.keys(queue.deferred.places).length > 0;
 }
 
-/** Moves the deferred batch out (the caller turns it into a `morning` wake). */
+/**
+ * Moves the deferred batch out (the caller turns it into a `morning` wake). With `expected` (the
+ * batch the caller built the wake from, read before), nothing changes when the batch is no longer
+ * that one (a wake was deferred meanwhile): `conflict` says so and the caller builds it again.
+ */
 export async function takeDeferred(
   storage: StorageService,
   waifuId: string,
-  toWake: (deferred: WakeQueue["deferred"]) => Wake | undefined
-): Promise<Wake | undefined> {
+  toWake: (deferred: WakeQueue["deferred"]) => Wake | undefined,
+  expected?: WakeQueue["deferred"]
+): Promise<{ wake: Wake | undefined; conflict: boolean }> {
   let released: Wake | undefined;
+  let conflict = false;
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    if (expected !== undefined && JSON.stringify(queue.deferred) !== JSON.stringify(expected)) {
+      conflict = true;
+      return queue;
+    }
     if (!hasDeferred(queue)) {
       if (queue.deferred.reason === undefined && queue.deferred.since === undefined) return queue;
       return { ...queue, deferred: { places: {}, items: [] } };
@@ -239,7 +275,56 @@ export async function takeDeferred(
     const cleared = { ...queue, deferred: { places: {}, items: [] } };
     return released ? withImmediate(cleared, released) : cleared;
   });
-  return released;
+  return { wake: released, conflict };
+}
+
+/**
+ * The lines of an earlier unread morning batch (pre-rendered) that belong to a forgotten DM or person:
+ * every line naming the DM's handle as its place, and with `names` every line naming one of them as
+ * its author (`from <name>`). A `· DMs:` header left with no DM line under it goes too.
+ */
+export function batchWithout(batch: readonly string[], o: { dmHandle?: string | undefined; names?: readonly string[] }): string[] {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const handle = o.dmHandle ? new RegExp(`(?:^\\s*· |· )${escape(o.dmHandle)}(?: ·|:|$)`, "iu") : undefined;
+  const from = (o.names ?? []).filter(Boolean).map((name) => new RegExp(`(?:^|\\s)from ${escape(name.replace(/"/g, "'"))}(?= ·| "|$)`, "iu"));
+  const kept = batch.filter((line) => !(handle?.test(line) || from.some((pattern) => pattern.test(line))));
+  return kept.filter((line, index) => line.trim() !== "· DMs:" || /^ {4}· /u.test(kept[index + 1] ?? ""));
+}
+
+/**
+ * Forget, at once (before the life scrub runs, which a DM user's rate limit can put off until her
+ * dream): what waits for her morning from the person goes. Their DM's deferred place and items go
+ * whole, and so do their lines in an earlier unread batch carried in `items`; elsewhere (with
+ * `everything`) their kept lines and batch lines naming them as author go (the full scrub later
+ * also takes quotes that name them).
+ */
+export async function dropDeferredOf(
+  storage: StorageService,
+  waifuId: string,
+  o: { userId: string; dmKey: string; everything: boolean; dmHandle?: string; names?: readonly string[] }
+): Promise<void> {
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    const places: Record<string, DeferredPlace> = {};
+    for (const [key, place] of Object.entries(queue.deferred.places)) {
+      if (key === o.dmKey) continue;
+      if (!o.everything || !place.lines) {
+        places[key] = place;
+        continue;
+      }
+      const { lines: all, ...rest } = place;
+      const lines = all!.filter((line) => line.fromUserId !== o.userId);
+      places[key] = { ...rest, ...(lines.length > 0 ? { lines } : {}) };
+    }
+    const items = queue.deferred.items
+      .filter((item) => item.placeKey !== o.dmKey && !(o.everything && item.fromUserId === o.userId && item.reason !== "reminder"))
+      .map((item) => {
+        if (item.reason !== "morning" || !item.batch) return item;
+        const batch = batchWithout(item.batch, { dmHandle: o.dmHandle, ...(o.everything ? { names: o.names ?? [] } : {}) });
+        return batch.length === item.batch.length ? item : { ...item, batch };
+      });
+    const next = { ...queue.deferred, places, items };
+    return JSON.stringify(next) === JSON.stringify(queue.deferred) ? queue : { ...queue, deferred: next };
+  });
 }
 
 /**
@@ -335,6 +420,17 @@ export async function scrubWakeQueue(
   }
 ): Promise<number> {
   let removed = 0;
+  // Their messages in someone else's wake go; a quote of another message that names them goes (§20).
+  const scrubMessages = (list: readonly WakeMessage[]): WakeMessage[] =>
+    list.flatMap((message) => {
+      if (message.fromUserId === o.userId) return [];
+      const kept = { ...message };
+      if (o.mentions(kept.preview)) kept.preview = REMOVED_TEXT;
+      else o.review?.(kept.preview);
+      if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
+      if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
+      return [kept];
+    });
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
     // The person's own wakes (and their DM's) go; someone else's wake that mentions them keeps its
     // place in her queue, and only what it quoted goes (its preview, note, match or batch lines).
@@ -347,16 +443,7 @@ export async function scrubWakeQueue(
         const next: Wake = { ...wake };
         let changed = false;
         if (next.messages) {
-          // Their messages in someone else's wake go; a quote of another message that names them goes (§20).
-          const messages = next.messages.flatMap((message) => {
-            if (message.fromUserId === o.userId) return [];
-            const kept = { ...message };
-            if (o.mentions(kept.preview)) kept.preview = REMOVED_TEXT;
-            else o.review?.(kept.preview);
-            if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
-            if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
-            return [kept];
-          });
+          const messages = scrubMessages(next.messages);
           if (JSON.stringify(messages) !== JSON.stringify(next.messages)) {
             changed = true;
             if (messages.length > 0) next.messages = messages;
@@ -392,7 +479,11 @@ export async function scrubWakeQueue(
       }
       const names = { ...place.names };
       delete names[o.userId];
-      places[key] = { ...place, fromUserIds: place.fromUserIds.filter((id) => id !== o.userId), names };
+      const { lines: oldLines, ...rest } = place;
+      // The morning summary's lines (§23) are scrubbed like a wake's messages.
+      const lines = oldLines ? scrubMessages(oldLines) : undefined;
+      if (oldLines && JSON.stringify(lines) !== JSON.stringify(oldLines)) removed += 1;
+      places[key] = { ...rest, fromUserIds: place.fromUserIds.filter((id) => id !== o.userId), names, ...(lines && lines.length > 0 ? { lines } : {}) };
     }
     const quiet = queue.quiet.filter((line) => {
       const drop = line.userId === o.userId || (line.placeKey !== undefined && o.placeKeys.has(line.placeKey));

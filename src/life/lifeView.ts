@@ -39,6 +39,11 @@ export function isDmPlaceKey(placeKey: string | undefined): boolean {
   return typeof placeKey === "string" && placeKey.startsWith("dm_");
 }
 
+/** A wake that brings DM content into her turn (D14): one for a DM place, or a morning batch that shows a DM (§23). */
+export function wakeShowsDm(wake: { placeKey?: string | undefined; dm?: boolean | undefined }): boolean {
+  return isDmPlaceKey(wake.placeKey) || wake.dm === true;
+}
+
 /**
  * A notification line about a DM (one per message, §20): `- dm · dm/kevin · …`, `- dm/kevin · …`,
  * `- +3 more from Kevin (dm/kevin)`, `  · watch matched · dm/kevin · …`.

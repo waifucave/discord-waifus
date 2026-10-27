@@ -32,7 +32,7 @@ export type AddresseeCase = {
   chime?: ChimeLabel[];
   /** The cast member who wrote the newest message: she is left out of the cast (never woken by it). */
   author?: "aria" | "mina" | "yuki";
-  /** Availability other than awake. */
+  /** Availability other than awake: such a cast member is not around and is left out (§24). */
   availability?: Partial<Record<"aria" | "mina" | "yuki", DetectorAvailability>>;
 };
 
@@ -103,7 +103,8 @@ export const ADDRESSEE_CASES: AddresseeCase[] = [
   sample("T01", "active_human", "human", [["Lena", "sam did you see the match?", 5], ["Sam", "yeah that ending was insane", 4], ["Lena", "Sam that last goal though", 1]], { chime: ["nobody", "yuki"] }),
   sample("T02", "active_human", "human", [["Sam", "brb", 40], ["Sam", "back", 2], ["Kevin", "Sam did you grab the keys?", 1]], { chime: ["nobody"] }),
   sample("T03", "active_human", "human", [["Kevin", "Lena you coming saturday?", 3], ["Lena", "probably, what time?", 2], ["Kevin", "around 2", 1]], { chime: ["nobody"] }),
-  // For another person, and one cast member would naturally chime in (only when she is awake).
+  // For another person, and one cast member would naturally chime in (only when she is around: one
+  // who is asleep or busy is left out of the cast, §24, so the others must not take her place).
   sample("C01", "joins_in", "human", [["Lena", "finally home", 3], ["Kevin", "Lena what should I bake for my mom's birthday? she loves lemon", 1]], { chime: ["aria"] }),
   sample("C02", "joins_in", "human", [["Lena", "ugh this game is so hard", 3], ["Sam", "Lena are you still stuck on the fire boss? I finally beat it last night", 1]], { chime: ["yuki"] }),
   sample("C03", "joins_in", "human", [["Kevin", "hey sam", 3], ["Sam", "Kevin have you read anything good lately? I need a new novel", 1]], { chime: ["mina"] }),
@@ -111,6 +112,10 @@ export const ADDRESSEE_CASES: AddresseeCase[] = [
   sample("C05", "joins_in", "human", [["Lena", "ugh this game is so hard", 3], ["Sam", "Lena are you still stuck on the fire boss? I finally beat it last night", 1]], { chime: ["nobody"], availability: { yuki: "asleep" } }),
   sample("C06", "joins_in", "human", [["Kevin", "hey sam", 3], ["Sam", "Kevin have you read anything good lately? I need a new novel", 1]], { chime: ["nobody"], availability: { mina: "busy" } }),
   sample("C07", "joins_in", "human", [["Lena", "on my way out", 3], ["Kevin", "Lena can you pick up the kids at 5? I'm stuck at work", 1]], { chime: ["nobody"] }),
+  // Aimed at a cast member who is not around (§24: left out of the cast): by a nickname the intake's
+  // name rule does not catch, or continuing her own exchange. It must not go to one who is around.
+  sample("AB1", "absent_waifu", ["human", "none"], [["Kevin", "morning all", 4], ["Kevin", "ari did you ever finish that tart recipe?", 1]], { availability: { aria: "asleep" } }),
+  sample("AB2", "absent_waifu", ["human", "none"], [["Kevin", "Aria which flour do you use for scones?", 6], ["Aria", "cake flour, always! and cold butter", 5], ["Kevin", "and how long do they bake?", 1]], { availability: { aria: "busy" } }),
   // The newest message is a cast member's: she is never an option.
   sample("WA1", "waifu_author", "human", [["Kevin", "Aria what are you baking today?", 3], ["Aria", "lemon tarts!! want one, Kevin?", 1]], { author: "aria" }),
   sample("WA2", "waifu_author", "mina", [["Aria", "Mina, settle this: tarts or cake?", 1]], { author: "aria" }),
@@ -121,11 +126,14 @@ export const ADDRESSEE_CASES: AddresseeCase[] = [
   sample("WA7", "waifu_author", "aria", [["Aria", "tarts are done!", 3], ["Yuki", "save me one aria!!", 1]], { author: "yuki" })
 ];
 
-/** The production cast of a case: the author left out, availability set (awake unless the case says otherwise). */
+/**
+ * The production cast of a case: the author left out, and, as in production (§24), every cast member
+ * who is not around (a case's `availability` other than awake) left out too; the rest are `awake`.
+ */
 export function addresseeCast(sample: AddresseeCase): DetectorCastMember[] {
-  return ADDRESSEE_CAST.filter((member) => member.waifuId !== sample.author).map((member) => ({
+  return ADDRESSEE_CAST.filter((member) => member.waifuId !== sample.author && (sample.availability?.[member.waifuId as "aria"] ?? "awake") === "awake").map((member) => ({
     ...member,
-    availability: sample.availability?.[member.waifuId as "aria"] ?? "awake"
+    availability: "awake" as const
   }));
 }
 
@@ -149,11 +157,6 @@ export function expectedChimeChoices(question: DetectorQuestion, sample: Address
   return sample.chime?.map((label) => asChoice(question, label));
 }
 
-/** The `waifu_<i>` choices of cast members who are not awake in this question. */
-export function notAwakeChoices(question: DetectorQuestion): string[] {
-  return question.candidates.flatMap((member, index) => (member.availability !== undefined && member.availability !== "awake" ? [`waifu_${index}`] : []));
-}
-
 export type AddresseeResult = {
   caseId: string;
   group: string;
@@ -170,8 +173,6 @@ export type AddresseeResult = {
   chimeExpected?: string[];
   chimeChoice?: string;
   chimeProbabilities?: Record<string, number>;
-  /** The choices of cast members who were not awake (a chime-in pick of one is a hard error). */
-  notAwake?: string[];
 };
 
 function percentile(values: number[], fraction: number): number | null {
@@ -221,8 +222,6 @@ export function summarizeAddressee(results: AddresseeResult[]) {
       return {
         labelled: labelled.length,
         correct: labelled.filter(right).length,
-        // A chime-in pick of an asleep or busy cast member, in any case (must stay 0).
-        notAwakePicks: results.filter((r) => r.chimeChoice !== undefined && (r.notAwake ?? []).includes(r.chimeChoice)).length,
         misses: labelled.filter((r) => !right(r)).map((r) => ({ id: r.caseId, run: r.run, expected: r.chimeExpected, choice: r.chimeChoice ?? r.error ?? "not_asked" }))
       };
     })()
