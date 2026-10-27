@@ -3033,3 +3033,43 @@ golden, D14 and floors on every path.
 ### 22.4 Release
 
 With §21 in 3.3.0.
+
+### 22.5 As built (2026-10-27)
+
+- **One line format.** ReadMessages lines changed to the spec's example so that both read the same
+  (`render.ts` `chatLine`): the reply mark moved from inside the brackets (`[14:02 #k4 ↩#k3] Kevin:`)
+  to after the name (`[14:02 #k4] Kevin ↩#k3:`); `↩you` still wins over a ref, then the ref, then the
+  author's name. Her outbound check strips a copied header in either form. A transcript line stored
+  before 3.3.0 has no ref and shows the one `refs.json` still has, else none (`[13:30] Kevin:`).
+- **Refs at ingest**: `TranscriptWriter.write` assigns refs (one `assignConversationRefs` per event,
+  in message-id order) only for the lines it is about to write (rooms with a cast, her DMs, newer
+  than the store's start); an edit keeps the stored ref. `findTranscriptRef` reads the conversation's
+  days newest first and stops at a day whose refs are all older than the one wanted; DM floors and
+  forgets already removed the lines they cover, so a forgotten message's ref resolves to nothing.
+- **Facade**: `fetchMessagesBefore` became `fetchMessagesPage({before | after | around, limit})`
+  (one anchor per request, Discord's rule). `readPage` takes `afterId` / `aroundId` and returns
+  `hasNewer`; a page whose anchor lies inside a trusted buffer is served from it.
+- **Anchors**: a `#ref` is included on the side it anchors (`before #c1 max:10` is 11 messages, as
+  specified); `after <time>` includes that minute, `before <time>` excludes it; a day is
+  `[00:00, next 00:00)` local; `today` and `yesterday` alone are accepted as days. `around` cannot be
+  combined with `before`/`after`; an empty range is refused. A `#ref` anchor with several places is
+  refused (a ref belongs to one conversation). Inside a `people:` or `search:` value a key word only
+  starts a new term in the `key:` form, or when an anchor (or a number for `max`) follows it, so
+  `search:meet before lunch` searches three words.
+- **Output**: places are separated by a blank line, each with its header; `— more before: before #x —`
+  goes first and `— more after: after #y —` last; a page that is not all today has `— Sat 24 Oct —`
+  lines where each day starts. Only a page with no anchor moves her read cursor. A filtered place says
+  `N messages match[, M shown] (searched <from> – <to>)`, where `<from>` is the anchor's day or,
+  when the search reaches further back than the store, the store's first day "(when your transcripts
+  begin)"; `everywhere` leaves out places with no match and answers `no messages match (searched …)`
+  when none has one. Search results show `[file: name]` and download nothing.
+- **Search scope**: her current places (`everywhere` = all of them); rooms through her access
+  intervals; the cache's messages newer than the newest transcript line of the place are added (a
+  forgotten person's and DM-floor ones left out). A shown line without a ref gets one.
+- **D14**: every place whose lines are in the result is noted for the call (`notePlace`), so a call
+  whose `everywhere` result includes a DM is private like any DM read.
+- **Old habits**: `limit` and `before` are no longer in the schema but are still read when sent
+  (as `max:` and `before #ref`), since her old log lines show them.
+- Tests: `tests/lifeReadMessages.test.ts`; goldens `life-transcript-day.txt` (new) and
+  `life-system-prompt.txt` / `life-rest-epoch.txt` / `life-dream.txt` (the tool description, the
+  `<life>` sentence, the transcript line format).

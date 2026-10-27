@@ -106,8 +106,12 @@ simulated Bash (nothing she runs can reach the host or the network):
   deleted `life.tmp.retentionDays` days (7 by default) after it was last written.
 - **`/transcripts`** (read-only): everything said where she is, kept forever, one file per place per
   day: `/transcripts/<server>/<room>/<YYYY-MM-DD>.md` (threads in a folder below their room) and her
-  private chats under `/transcripts/dm/<name>/`. A line reads `14:02 Kevin ↩#k3: text [file: a.png]`
-  (her own lines as `you`). She searches it with Read and Bash (`grep -r`, `cat`, Python); nothing
+  private chats under `/transcripts/dm/<name>/`. A line reads like her ReadMessages lines,
+  `[14:02 #k5] Kevin ↩#k3: text [file: a.png]` (her own lines as `you`; every message gets its ref
+  when it is written, and a ref stays usable for as long as its line exists). She searches it with
+  Read and Bash (`grep -r`, `cat`, Python), or with ReadMessages: `people:` and `search:` (one place,
+  several, or `everywhere`) read it, and `before|after|around` a ref, a time or a day jump into a
+  conversation; nothing
   can change it and SendMessage can't attach it. A waifu added to a room later sees only what was
   said after she arrived; one removed from it keeps what she saw. The app writes it (one shared
   store, `user/transcripts/`) from the same Discord feed as everything else, from the first message

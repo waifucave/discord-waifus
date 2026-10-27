@@ -106,6 +106,15 @@ drops the person's DM marks at once. `stop()` aborts lives and maintenance befor
 Her tool surface is "her own computer" (spec §16): eleven PascalCase tools in `tools/` —
 `ReadMessages`, `SendMessage` (+ `files`), `React` (messages.ts), `WatchFor`, `ScheduleWake`
 (planning.ts), `Read`, `Write`, `Edit` (files.ts), `Bash` (bash.ts), `WebSearch`, `WebFetch` (web.ts).
+`ReadMessages(place, query?)` (spec §22): up to 5 places or `everywhere`; the freeform query
+(`tools/readQuery.ts`: `before|after|around <#ref | date time | date | HH:MM | yesterday HH:MM>`, a
+#ref anchor included, before + after a range, `max:N`, `people:`, `search:`) pages a conversation
+through the cache (`readPage` before/after/around, Discord's channel-messages API when the buffer does
+not cover it; time anchors become snowflakes) or, with `people:`/`search:`, her transcripts (access
+intervals) plus the cache's unwritten tail. A line is `[14:02 #k3] Kevin ↩#k1: text` there and in
+`/transcripts` (`render.ts` `chatLine`). Refs are assigned at ingest by the transcript writer and
+stored on each line; a ref `refs.json` pruned resolves through the transcript
+(`store.ts` `findTranscriptRef`, `messageIdForRef` for ReadMessages, `reply_to` and React).
 Her folders are `/home/<slug>` and `/tmp`, backed by `user/waifus/<id>/home/` and `.../tmp/`;
 `src/life/home/` holds the one path-rules module (`pathRules.ts`), link-refusing file access
 (`herFiles.ts`), the store every write path goes through (`homeStore.ts`: limits, case collisions,
@@ -118,7 +127,7 @@ nothing, `/tmp` expiry and size cap, the provenance index `life/files-index.json
 her folders (`src/life/bash/`: `bashWorker.ts`, `runner.ts`, the pure-JS `image` command); the
 wall clock terminates it and nothing is saved; `tests/bashIsolation.test.ts` is the escape suite.
 **Transcripts (spec §18)**: `src/life/transcripts/`: one shared store `user/transcripts/<conversationKey>/<day>.jsonl`
-(host-time-zone days, kept forever; `store.json` `startedAt` = no backfill; `meta.json` keeps a DM
+(host-time-zone days, kept forever; each line carries its message's ref; `store.json` `startedAt` = no backfill; `meta.json` keeps a DM
 forget floor, the ids a forget removed (for good) and those a Discord delete removed (a day), so a REST
 page never writes them again; an in-memory cache per conversation keeps an append to one stat;
 `access/<waifuId>.json` her room intervals, opened/closed by comparing the cast before each write, closed
