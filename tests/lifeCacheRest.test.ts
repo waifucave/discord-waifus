@@ -210,6 +210,16 @@ describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
     expect(await cacheRestDueFor(w.cast.deps, budgeted, state, { spentToday: async () => 0.5 })).toBe(false);
   });
 
+  it("reads her route's TTL from the catalog the life is given (deps.catalog())", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted"))] });
+    const poke = await quietAfterATurn(w, 0.6);
+    w.clock.advance(PROMPT_CACHE_TTL_MS - 5 * MINUTE);
+    const curated = w.cast.deps.catalog();
+    vi.spyOn(w.cast.deps, "catalog").mockReturnValue({ ...curated, models: curated.models.map(({ cacheTtlMs: _ttl, ...model }) => model) });
+    await w.cast.scheduler.tick();
+    expect(poke).not.toHaveBeenCalled();
+  });
+
   it("is not given to a waifu without her own bot", async () => {
     const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), play(textTurn("again"))] });
     const poke = await quietAfterATurn(w, 0.6);

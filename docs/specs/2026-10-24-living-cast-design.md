@@ -3321,7 +3321,15 @@ cache is still warm and start the next stretch small.
   route gets `PROMPT_CACHE_TTL_MS` (one hour, the `PROMPT_CACHE_TTL` that `client.ts` now sends) when
   its row is a Claude model (`modelFamily` `claude`) with prompt caching, on a provider of winter's
   `anthropic` adapter family or on OpenRouter with an `anthropic/` upstream; otherwise undefined. Of
-  the curated routes that is Haiku and Sonnet, direct and through OpenRouter.
+  the curated routes that is Haiku and Sonnet, direct and through OpenRouter. The curated catalog
+  stores it per route (`CuratedModel.cacheTtlMs`, from `cacheTtlMsOf`), and the cache rest reads it
+  from the catalog the life is given (`deps.catalog()`).
+- **Residual risk**: through OpenRouter, an `anthropic/…` model may be served by an upstream other
+  than Anthropic's own API (OpenRouter's provider routing: Amazon Bedrock, Google Vertex). Nothing in
+  winter's catalog says whether such an upstream keeps the explicit 1-hour TTL; if one keeps only 5
+  minutes, the quiet-time rest comes after the cache is already cold and its turn pays a full cache
+  write (as any later turn would), with no other harm. Pinning OpenRouter to Anthropic's upstream, or
+  a TTL fact from winter, would remove it.
 - **The clock**: her life state gains `lastRequestAt` (the time her newest life request was sent,
   next to `lastRequestTokens`; both cleared at an epoch start).
 - **When** (`src/life/cacheRest.ts`): `cacheRestDueAt` is the last request + TTL − lead when the

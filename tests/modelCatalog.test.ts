@@ -234,6 +234,16 @@ describe("explicitCacheTtlMs (spec §25)", () => {
     expect(ttl("nowhere/claude-haiku-5-5")).toBeUndefined();
   });
 
+  it("the curated catalog carries it (cacheTtlMs), so callers use the catalog they were given", () => {
+    const catalog = cloneCatalog();
+    const models = curatedCatalog({ catalog }).models;
+    expect(models.find((model) => model.id === "anthropic/claude-haiku-5-5")?.cacheTtlMs).toBe(3_600_000);
+    expect(models.find((model) => model.id === "openrouter/anthropic/claude-sonnet-5.5")?.cacheTtlMs).toBe(3_600_000);
+    expect(models.find((model) => model.id === "openai/gpt-6-luna")?.cacheTtlMs).toBeUndefined();
+    delete (row(catalog, "anthropic/claude-haiku-5-5") as { promptCaching?: unknown }).promptCaching;
+    expect(curatedCatalog({ catalog }).models.find((model) => model.id === "anthropic/claude-haiku-5-5")?.cacheTtlMs).toBeUndefined();
+  });
+
   it("needs prompt caching on the row and, through OpenRouter, an anthropic/ upstream", () => {
     const catalog = cloneCatalog();
     delete (row(catalog, "anthropic/claude-haiku-5-5") as { promptCaching?: unknown }).promptCaching;

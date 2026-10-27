@@ -310,8 +310,11 @@ with a large context, she rests while the cache is still warm (`src/life/cacheRe
 
 - **Routes**: only where the cache lifetime is known (`explicitCacheTtlMs` in
   `src/models/catalog.ts`): a Claude model with prompt caching on Anthropic (or another provider of
-  winter's `anthropic` adapter family) or through OpenRouter (`anthropic/…`): one hour. Every other
-  route (DeepSeek, GPT, Muse Spark) never gets it.
+  winter's `anthropic` adapter family) or through OpenRouter (`anthropic/…`): one hour, stored per
+  route in the curated catalog (`cacheTtlMs`). Every other route (DeepSeek, GPT, Muse Spark) never
+  gets it. Residual risk: OpenRouter may serve an `anthropic/…` model from another upstream (Bedrock,
+  Vertex) that might not keep the 1-hour TTL; then the rest turn comes on an already cold cache and
+  pays a full cache write, nothing worse.
 - **When**: the scheduler's 15 s tick pokes her life, and the life loop runs the rest turn, when all
   hold: `life.restNotice` on; she has her own bot (`botId`); her provider is not cooling down and
   her daily budget is not spent (otherwise the tick does not poke her); no turn running and no wake

@@ -49,6 +49,8 @@ export type CuratedModel = {
   /** Muse Spark contributor variants enable training on prompts (§9.2): the picker labels them. */
   contributor: boolean;
   promptCaching: boolean;
+  /** How long her prompt stays cached after a request (§25, `explicitCacheTtlMs`); absent: not known. */
+  cacheTtlMs?: number;
 };
 
 export type HiddenRouteReason =
@@ -192,9 +194,14 @@ export const PROMPT_CACHE_TTL_MS = 60 * 60_000;
  */
 export function explicitCacheTtlMs(route: ModelRoute, catalog: WinterCatalog = installedCatalog()): number | undefined {
   const descriptor = catalogModel(route, catalog);
-  if (!descriptor || descriptor.modelFamily !== "claude" || descriptor.promptCaching?.value !== true) return undefined;
+  return descriptor ? cacheTtlMsOf(descriptor, catalogProvider(descriptor.providerId, catalog)) : undefined;
+}
+
+/** `explicitCacheTtlMs` for a catalog row and its provider (the curated list stores it as `cacheTtlMs`). */
+export function cacheTtlMsOf(descriptor: WinterModelDescriptor, provider: Pick<WinterProviderDescriptor, "family"> | undefined): number | undefined {
+  if (descriptor.modelFamily !== "claude" || descriptor.promptCaching?.value !== true) return undefined;
   if (descriptor.providerId === "openrouter") return descriptor.upstreamId.startsWith("anthropic/") ? PROMPT_CACHE_TTL_MS : undefined;
-  return catalogProvider(descriptor.providerId, catalog)?.family === "anthropic" ? PROMPT_CACHE_TTL_MS : undefined;
+  return provider?.family === "anthropic" ? PROMPT_CACHE_TTL_MS : undefined;
 }
 
 export function isContributorRoute(descriptor: Pick<WinterModelDescriptor, "key" | "upstreamId">): boolean {
@@ -229,7 +236,8 @@ export function curatedModelOf(descriptor: WinterModelDescriptor, provider: Wint
         }
       : {}),
     contributor: isContributorRoute(descriptor),
-    promptCaching: descriptor.promptCaching?.value === true
+    promptCaching: descriptor.promptCaching?.value === true,
+    ...(cacheTtlMsOf(descriptor, provider) !== undefined ? { cacheTtlMs: cacheTtlMsOf(descriptor, provider)! } : {})
   };
 }
 

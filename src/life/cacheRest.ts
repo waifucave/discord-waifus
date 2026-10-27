@@ -6,7 +6,7 @@
 // Pure decision here (shared by the scheduler's tick, which pokes her life, and the life loop, which
 // runs the turn); the turn itself is `Life.restTurn` with `cache: true`.
 
-import { explicitCacheTtlMs, findCuratedModel, type CuratedModel } from "../models/catalog.js";
+import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeState } from "../shared/schemas/life.js";
 import { bedContextOf } from "./busy.js";
@@ -20,7 +20,7 @@ export type CacheRestInput = {
   triggerRatio: number;
   state: LifeState;
   model: CuratedModel;
-  /** Her route's cache lifetime (`explicitCacheTtlMs`); undefined: nothing happens. */
+  /** Her route's cache lifetime (`CuratedModel.cacheTtlMs`, from `explicitCacheTtlMs`); undefined: nothing happens. */
   ttlMs: number | undefined;
   now: Date;
   /** Wakes waiting in her queue (a turn is coming anyway). */
@@ -69,7 +69,8 @@ export function cacheRestDueNow(o: CacheRestInput): boolean {
 export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "timeZone" | "now">, waifu: WaifuConfig, model: CuratedModel, state: LifeState): Promise<boolean> {
   if (!waifu.botId) return false;
   const config = deps.config();
-  const ttlMs = explicitCacheTtlMs(model);
+  // From the curated catalog the life was given (deps.catalog()), never a fresh read of winter's.
+  const ttlMs = model.cacheTtlMs;
   const base = { life: config.life, triggerRatio: config.compaction.triggerRatio, state, model, ttlMs };
   // Cheap checks first: the scheduler asks at every tick.
   if (!cacheRestDueAt(base)) return false;

@@ -86,6 +86,8 @@ export type CuratedModel = {
   /** Contributor (training) variant: only ever an explicit user choice. */
   contributor: boolean;
   promptCaching: boolean;
+  /** How long her prompt stays cached after a request (spec §25); absent: not known. */
+  cacheTtlMs?: number;
   credentialsConfigured: boolean;
 };
 

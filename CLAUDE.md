@@ -108,9 +108,10 @@ once leaving the rest turn out; `state.restTurn` allows one per epoch (an interr
 it compacts at the next cycle). With `life.restNotice` off the time line's memory warning returns.
 She also rests before her prompt cache goes cold (§25, `cacheRest.ts`): her requests are cached for
 an hour (`PROMPT_CACHE_TTL` in `catalog.ts`, sent by `client.ts`), and on a route whose TTL is known
-(`explicitCacheTtlMs`: a Claude row with prompt caching on an `anthropic`-family provider or on
-OpenRouter with an `anthropic/` upstream, the routes winter sends the 1-hour TTL for; anything else
-never gets it) the scheduler's tick pokes her life when she is idle with nothing queued, her last
+(`explicitCacheTtlMs`/`cacheTtlMsOf`, stored as `CuratedModel.cacheTtlMs`: a Claude row with prompt
+caching on an `anthropic`-family provider or on OpenRouter with an `anthropic/` upstream, the routes
+winter sends the 1-hour TTL for; anything else never gets it; OpenRouter may still serve such a
+model from an upstream that keeps only 5 minutes) the scheduler's tick pokes her life when she is idle with nothing queued, her last
 request (`lastRequestTokens`, `lastRequestAt`) was at least `life.cacheRestMinRatio` × the trigger,
 and it is `life.cacheRestLeadMinutes` before that request + TTL (not after it expired; not asleep in
 a bed time ending within the TTL). The life loop then runs the rest turn with `CACHE_REST_NOTICE`
