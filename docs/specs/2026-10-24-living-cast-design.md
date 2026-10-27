@@ -2855,6 +2855,40 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 - Queued wakes wait for the new epoch, as after a rest turn. Tests: accepted, each guard, text
   outside the tag, privacy, cooldown across restarts, golden for the `<life>` sentence.
 
+### 21.6c Bed time instead of a hard sleep (owner addition, 2026-10-27)
+
+- **Rename**: the owner's `availability.sleep` becomes **`availability.bedTime`** (`enabled`,
+  `start`, `end`), labelled "Bed time" everywhere (Cast editor, settings registry, CLI, help,
+  `<schedule>`: "Your bed time is 00:30–08:30."). A once-step migration renames the key (archiving
+  the old document); `dm.sleepNotice` keeps its name and meaning (sent while she is asleep).
+- **Bed time is soft.** Inside her bed time she is in one of three states, from her last send in any
+  place (`lastSentAt` in her life state) and the bed time's start:
+  - **Up late**: she sent something within `life.busyEngagedMinutes` (10). She keeps chatting: the
+    places where she is engaged stay open exactly like the busy rule (§21.4), and direct wakes reach
+    her.
+  - **Dozing**: not up late, and less than `life.bedDozeMinutes` (60) since the later of the bed
+    time's start and her last send. Like a busy block: DMs, @mentions, replies to her, her name, the
+    owner's wakes, her reminders and her watches reach her; detector picks, chime-ins,
+    `@everyone`/role mentions and follow-ups wait for the morning. A send of hers resets the clock
+    (she is up late again, then dozing for another hour).
+  - **Asleep**: `bedDozeMinutes` or more since the later of the start and her last send. Everything
+    waits for the morning (DMs get the sleep notice once per night as today) except **her own
+    reminders and the owner's wakes**, which still wake her; she can set reminders for night times.
+    A turn she has while asleep (a reminder) does not count as a send unless she sends something.
+- **Dreaming** runs once she has been **asleep for 15 minutes** (`life.dreamAfterAsleepMinutes`),
+  at most once per bed time, under her lock (a reminder that comes due waits for it). If she is never
+  asleep that long before her bed time ends (up all night), there is no dream that night and the next
+  dream's window simply covers both days (the cursor already does this). A waifu with no bed time
+  dreams at `life.maintenanceHourLocal` as today.
+- **The morning wake (§21.3)** comes at the end of her bed time whatever happened during the night
+  (up all night or not); it asks for today's schedule as specified.
+- The detector's availability: up late = awake, dozing = busy, asleep = asleep. The time line shows
+  `up late`, `dozing (bed time)` or `asleep`.
+- Tests: each state's through/held/deferred set; the clock reset by a send; reminders and owner wakes
+  while asleep; dreaming after 15 min asleep, at most once, skipped when never asleep and the next
+  window covering both days; morning wake after an all-nighter; the rename migration (idempotent,
+  archived); goldens for `<schedule>` and the time line states.
+
 ### 21.7 Tests
 
 Migration (moves, collisions, index paths, busy dropped and archived, idempotent re-run); the schedule file's checks (each rule, line and column); the morning wake (notification text, overnight batch after it, compaction `day` after the turn, no-plan path, no-sleep-window hour, boot catch-up); busy holds (each S4 class through or held, release at phone check and block end as one notification, holds survive restart); detector availability and time line from the file; prompt goldens (`<schedule>` with a plan and without, `<life>` sentence, morning notification); forget scrubs `schedule.json` text; dreaming refuses writes under `~/life/`.
