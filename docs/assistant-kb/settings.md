@@ -60,9 +60,13 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.notificationLinesPerPlace` | integer 1–50 | `8` | Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out. |
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |
 | `life.maintenanceHourLocal` | integer 0–23 [hour 0–23] | `5` | Local hour of her nightly dream (and queued forget scrubs) for a waifu with no sleep window (with one, it runs 30 minutes into her sleep). |
+| `life.dayStartHourLocal` | integer 0–23 [hour 0–23] | `8` | Local hour of the morning wake (she writes today's schedule in ~/life/schedule.json) for a waifu with no sleep window; with one, it comes when her sleep ends. |
+| `life.busyEngagedMinutes` | integer 0–240 [minutes] | `10` | While she is busy (a block in her ~/life/schedule.json), a place where something that gets through woke her and she then sent a message stays open this long after her latest send there: detector picks and follow-ups there reach her too. 0 = off. |
 | `life.restNotice` | boolean | `true` | Near the compaction trigger she gets a rest notice after her turn and writes her own summary; her new epoch starts from it alone (her files stay). Off: compaction summarises for her, as before. |
 | `life.restNoticeRatio` | number 0.5–0.99 | `0.85` | The rest notice comes when her last request reaches this share of the compaction trigger (compaction.triggerRatio × her budget). |
-| `life.restSummaryMinChars` | integer 0–5000 [characters] | `200` | A rest summary shorter than this counts as ignored: compaction summarises for her right away. |
+| `life.restSummaryMinChars` | integer 0–5000 [characters] | `200` | A rest summary shorter than this counts as ignored: compaction summarises for her right away. Her own <summary> fresh start needs at least this many characters too. |
+| `life.selfSummaryMinRatio` | number 0–0.99 | `0.3` | She may end any turn with only <summary>…</summary> to reset her context to it; it is used only when her last request reached this share of the compaction trigger (compaction.triggerRatio × her budget). |
+| `life.selfSummaryCooldownMinutes` | integer 0–10080 [minutes] | `120` | Her own <summary> fresh start is used only when at least this long has passed since her last epoch started. |
 | `life.dreamModel` | JSON |  | The model of her nightly dream (the memory keeper that adds the day's memories to her notes and checks them against her transcripts): {providerId, modelId, effort?} from GET /api/models (or `provider/model[@effort]` on the command line). Unset (null): her own model. See `waifus help dreaming`. |
 | `life.dreamMaxRounds` | integer 5–200 | `60` | At most this many tool rounds in one dream session. |
 | `life.dreamWindowMaxChars` | integer 20000–2000000 [characters] | `200000` | When what was said since her last dream is longer than this, the dream runs in several sessions (oldest days first), each moving her dream cursor for what it covered. |
@@ -119,12 +123,11 @@ Target `waifu:<waifuId>` (e.g. `waifu:aria`) · stored in `user/waifus/<waifuId>
 | `username` | string or null |  | Her bot's Discord username, set on her own bot by the app (2–32 characters, no @ # : ``` and not containing "discord" or "clyde"; Discord allows about 2 changes an hour). Unset leaves her bot's current Discord username alone. Her name stays what she is called in prompts and wake words. null unsets it. |
 | `bio` | string or null |  | Her bot's About Me: synced to the Discord application's description (at most 400 characters; some Discord views show only about the first 190). Unset: the app leaves the description alone. null unsets it. |
 | `nicknames` | JSON or null |  | Per-server nickname overrides for her bot: a JSON object of server (guild) id → nickname (1–32 characters), replaced whole on write. Needs the Change Nickname permission in that server (else a warning). Removing an entry clears the nickname the app set. null removes all. |
-| `availability.sleep.enabled` | boolean | `false` | She sleeps every day in this window: every wake but the owner's waits for the morning. |
+| `availability.sleep.enabled` | boolean | `false` | She sleeps every day in this window: every wake but the owner's waits for the morning, when she writes her day in ~/life/schedule.json (her busy times come from there). |
 | `availability.sleep.start` | string [HH:mm] | `23:00` | When her sleep starts (local time). |
 | `availability.sleep.end` | string [HH:mm] | `07:00` | When her sleep ends (local time). |
-| `availability.busy` | JSON | `[]` | Daily busy blocks [{start, end, reason}] (HH:mm, local). Wakes still reach her; she knows she is busy. |
 | `customInstructions` | string | `""` | Extra instructions added to her prompt (at most 4000 characters). |
-| `scheduleInPrompt` | boolean | `true` | Tell her about her schedule (sleep and busy blocks) in her prompt. |
+| `scheduleInPrompt` | boolean | `true` | Show her schedule in her prompt: her sleep and today's plan from her ~/life/schedule.json (the file works either way). |
 | `wakeOnName` | boolean | `true` | Her name, display name or server nickname in a message wakes her (turn off for names that are common words). |
 | `life.dailyBudgetUsd` | number >0–10000 or null [USD] | `null` | Her spending limit per local day in USD; when reached, wakes wait for the next day (the owner's wakes still go through). null = no budget. |
 | `dm.allowDms` | boolean | `false` | Accept DMs on her own bot (she must be the only enabled waifu on it and have a model). |
@@ -246,7 +249,7 @@ CLI: `waifus get remote-access [KEY]`, `waifus set remote-access KEY VALUE`, `wa
 
 ### A waifu's life (`life`)
 
-Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout, MEMORY.md her index, schedule.json her reminders, watches.json her watches, places.md kept by the app), /tmp (files people sent, deleted 7 days after the last write) and the read-only /transcripts (everything said where she is, one file per room per day, kept forever; see `waifus help dreaming`). The files routes list, read, write and delete them under the same checks as her Write tool (places.md refused, the JSON files checked with line and column; revision by content hash, expectedHash). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a watch bound to a DM is redacted the same way.
+Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout and MEMORY.md her index; life/ with schedule.json her day, which she writes every morning: busy blocks with why, phone checks, mood, plans; reminders.json, watches.json, profile.json and places.md kept by the app), /tmp (files people sent, deleted 7 days after the last write) and the read-only /transcripts (everything said where she is, one file per room per day, kept forever; see `waifus help dreaming`). The files routes list, read, write and delete them under the same checks as her Write tool (life/places.md refused, the JSON files in life/ checked with line and column; revision by content hash, expectedHash). While she is busy (a block of her day), DMs, mentions, replies, her name, the owner, her reminders and watches reach her at once; detector picks, @everyone and role mentions wait for her next phone check (or the block's end), except in a place where she is chatting (life.busyEngagedMinutes after her last send there). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a watch bound to a DM is redacted the same way.
 
 - `GET /api/waifus/:waifuId/life` — Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally).
 - `GET /api/waifus/:waifuId/life/log` — Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1).
@@ -257,12 +260,12 @@ Each waifu is an autonomous agent with one continuous life: wakes arrive as noti
 - `DELETE /api/waifus/:waifuId/life/needs-review/:itemId` — Dismiss a review line.
 - `GET /api/waifus/:waifuId/files` — List a folder of her home, /tmp or her read-only /transcripts (?root=home|tmp|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1).
 - `GET /api/waifus/:waifuId/files/*` — One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1).
-- `PUT /api/waifus/:waifuId/files/*` — Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md and /transcripts refused).
+- `PUT /api/waifus/:waifuId/files/*` — Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; life/places.md and /transcripts refused).
 - `DELETE /api/waifus/:waifuId/files/*` — Delete one of her files (?expectedHash).
-- `GET /api/waifus/:waifuId/schedule` — Her reminders (~/schedule.json), parsed.
-- `DELETE /api/waifus/:waifuId/schedule/:reminderId` — Remove one reminder from her schedule.json.
-- `GET /api/waifus/:waifuId/watches` — Her watches (~/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1.
-- `DELETE /api/waifus/:waifuId/watches/:watchId` — Remove one watch from her watches.json.
+- `GET /api/waifus/:waifuId/schedule` — Her reminders (~/life/reminders.json), parsed.
+- `DELETE /api/waifus/:waifuId/schedule/:reminderId` — Remove one reminder from her life/reminders.json.
+- `GET /api/waifus/:waifuId/watches` — Her watches (~/life/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1.
+- `DELETE /api/waifus/:waifuId/watches/:watchId` — Remove one watch from her life/watches.json.
 
 - `waifus life <waifu> [--log] [--private]`
 - `waifus wake <waifu> [note]`
@@ -346,8 +349,8 @@ DC_WAIFUS_HOME overrides the data root (default ~/.dc-waifus). DC_WAIFUS_LAYA_PY
 - `waifus wake WAIFU [NOTE…]` — Wake a waifu now, with an optional note she sees (an owner wake skips sleep and budget).
 - `waifus life WAIFU [--log] [--limit N] [--private]` — A waifu's life: status, queue and today's cost; --log adds the recent life log.
 - `waifus files WAIFU [PATH] [--root tmp] [--private]` · `waifus files aria people/kevin.md` · `waifus files aria --root tmp` — Her files: list a folder of her home or /tmp, or print a text file.
-- `waifus schedule WAIFU` — Her reminders (~/schedule.json), in the host's time zone.
-- `waifus watches WAIFU [--private]` — Her watches (~/watches.json): what each waits for and when it times out.
+- `waifus schedule WAIFU` — Her reminders (~/life/reminders.json), in the host's time zone.
+- `waifus watches WAIFU [--private]` — Her watches (~/life/watches.json): what each waits for and when it times out.
 - `waifus forget USER_ID [--yes] [--dry-run]` — Forget a Discord user everywhere (best-effort scrub); asks for confirmation unless --yes.
 - `waifus usage [--from DAY] [--to DAY] [--by KEY[,KEY]] [--waifu ID] [--tz ZONE]` — Model calls and cost from the usage ledger, by local day (or another grouping).
 - `waifus start [--host 127.0.0.1] [--port 3888] [--data-root PATH]` — Start the host in the background (dashboard, API and Discord).

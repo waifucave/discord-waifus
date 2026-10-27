@@ -584,8 +584,8 @@ describe("profile API", () => {
       expect(saved.statusCode).toBe(200);
       expect(saved.json()).toMatchObject({ username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
       expect(syncDiscordProfile).toHaveBeenCalledWith("ella");
-      // Her ~/profile.json follows the dashboard edit (§17.1).
-      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "ella", "home", "profile.json"), "utf8"));
+      // Her ~/life/profile.json follows the dashboard edit (§17.1).
+      const file = JSON.parse(await readFile(path.join(storage.dataRoot, "user", "waifus", "ella", "home", "life", "profile.json"), "utf8"));
       expect(file).toEqual({ name: "Ella", username: "Ari", bio: "Hi.", nicknames: { [GUILD_A]: "Ari" } });
       const cleared = await server.inject({ method: "PUT", url: "/api/waifus/ella", payload: { revision: saved.json().revision, bio: null } });
       expect(cleared.json().bio).toBeUndefined();

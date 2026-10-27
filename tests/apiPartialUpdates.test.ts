@@ -66,18 +66,17 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
     }
   });
 
-  it("waifu availability.sleep patches keep busy intervals and other sleep fields", async () => {
+  it("waifu availability.sleep patches keep the other sleep fields (a stray busy key is dropped, §21 S3)", async () => {
     const app = await makeApp();
     try {
       await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
       let waifu = (await app.inject({ method: "GET", url: "/api/waifus/ella" })).json();
-      const busy = [{ start: "09:00", end: "12:00", reason: "class" }];
       const seeded = await app.inject({
         method: "PUT",
         url: "/api/waifus/ella",
         payload: {
           revision: waifu.revision,
-          availability: { sleep: { enabled: false, start: "22:30", end: "06:15" }, busy }
+          availability: { sleep: { enabled: false, start: "22:30", end: "06:15" }, busy: [{ start: "09:00", end: "12:00", reason: "class" }] }
         }
       });
       expect(seeded.statusCode).toBe(200);
@@ -90,8 +89,7 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
       });
       expect(patched.statusCode).toBe(200);
       expect(patched.json().availability).toEqual({
-        sleep: { enabled: true, start: "22:30", end: "06:15" },
-        busy
+        sleep: { enabled: true, start: "22:30", end: "06:15" }
       });
 
       // Refinements still run on the merged result.

@@ -9,7 +9,7 @@
 // - over an in-memory copy of her two folders: every file is a lazy entry whose bytes are asked
 //   for over the message port the first time something reads them (never by host path);
 // - through a guarded filesystem: only `/home/<slug>` and `/tmp` exist and are writable, links
-//   are refused, `~/places.md` is read-only;
+//   are refused, `~/life/places.md` is read-only;
 // - and `/transcripts` (spec §18.3), mounted lazily and read-only: listings, sizes and the rendered
 //   day files are asked for over the same port when a command opens them, never copied in (the
 //   store grows forever); every write, move or removal there fails with "transcripts are read-only";
@@ -78,7 +78,7 @@ export type BashHostMessage =
 const input = workerData as BashWorkerInput;
 const port = parentPort!;
 const home = `/home/${input.slug}`;
-const placesFile = `${home}/places.md`;
+const placesFile = `${home}/life/places.md`;
 
 // ---- reads from the host ------------------------------------------------------------------------------
 

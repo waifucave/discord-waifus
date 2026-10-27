@@ -160,8 +160,8 @@ describe("waifus files / schedule / watches", () => {
     const home = new HomeStore(storage, "ella", "ella", () => homeLimitsOf(AppConfigSchema.parse({}).life));
     const soon = localMinuteText(new Date(Date.now() + 2 * 3_600_000), hostTimeZone());
     expect((await cli(root, host, ["schedule", "ella"])).out).toContain("no reminders");
-    await home.files.writeBytes(home.home("schedule.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, repeat: "daily", note: "water the plants" }])));
-    await home.files.writeBytes(home.home("watches.json"), Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: soon, once: true, note: "his exam", when: [{ place: "dm/kevin", words: ["exam"] }] }])));
+    await home.files.writeBytes(home.life("reminders.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, repeat: "daily", note: "water the plants" }])));
+    await home.files.writeBytes(home.life("watches.json"), Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: soon, once: true, note: "his exam", when: [{ place: "dm/kevin", words: ["exam"] }] }])));
     const schedule = await cli(root, host, ["schedule", "ella"]);
     expect(schedule.out).toMatch(/r1\s+.*\(daily\)\s+water the plants/u);
     const watches = await cli(root, host, ["watches", "ella"]);

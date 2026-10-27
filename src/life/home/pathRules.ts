@@ -1,4 +1,4 @@
-// Her machine's path rules (Living cast spec §16.2): one module, used by every tool, the Bash
+// Her machine's path rules (Living cast spec §16.2, §21): one module, used by every tool, the Bash
 // change set, the API and the dashboard. She sees two folders and nothing else:
 //
 //   /home/<slug>/   her home and working directory (`~`), backed by user/waifus/<id>/home/
@@ -31,13 +31,23 @@ export type HerPath = {
 export const MAX_PATH_SEGMENTS = 8;
 export const MAX_SEGMENT_CHARS = 100;
 
-/** Her special files at the top of her home (§16.2). */
-export const PLACES_FILE = "places.md";
-export const SCHEDULE_FILE = "schedule.json";
-export const WATCHES_FILE = "watches.json";
+/** Her notes index, at the top of her home with her notes (§16.2, §21 S1). */
 export const MEMORY_FILE = "MEMORY.md";
-/** Her Discord profile (§17.1): checked on every write, then becomes her config. */
+/** `~/life/`: her daily machinery, the app-managed files (§21 S1). */
+export const LIFE_DIR = "life";
+/** `~/life/places.md`: read-only, kept up to date by the app (§16.6). */
+export const PLACES_FILE = "places.md";
+/** `~/life/schedule.json`: her day, which she writes each morning (§21.2). */
+export const DAY_SCHEDULE_FILE = "schedule.json";
+/** `~/life/reminders.json`: her reminders (ScheduleWake, §16.4; `~/schedule.json` before §21). */
+export const REMINDERS_FILE = "reminders.json";
+/** `~/life/watches.json`: her watches (WatchFor, §16.5). */
+export const WATCHES_FILE = "watches.json";
+/** `~/life/profile.json`: her Discord profile (§17.1): checked on every write, then becomes her config. */
 export const PROFILE_FILE = "profile.json";
+/** Every file the app keeps in `~/life/`. */
+export const LIFE_FILES = [DAY_SCHEDULE_FILE, REMINDERS_FILE, WATCHES_FILE, PROFILE_FILE, PLACES_FILE] as const;
+export type LifeFileName = (typeof LIFE_FILES)[number];
 
 /** Names Windows reserves for devices (`con.md` would open the console, not a file). */
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/iu;
@@ -126,9 +136,36 @@ export function resolveHerPath(input: unknown, slug: string, o: { allowRoot?: bo
   return { ok: true, path: herPath(root, segments, slug) };
 }
 
-/** True for `~/places.md` (read-only, kept up to date by the app). */
+/** True for anything in `~/life/` (the folder itself included): her daily machinery (§21). */
+export function isLifeDirPath(p: Pick<HerPath, "root" | "segments">): boolean {
+  return p.root === "home" && p.segments.length > 0 && collisionKey(p.segments[0]!) === LIFE_DIR;
+}
+
+/** Which of her `~/life/` files a path is, in any spelling (`~/Life/Places.MD` is places.md). */
+export function lifeFileOf(p: Pick<HerPath, "root" | "segments">): LifeFileName | undefined {
+  if (p.segments.length !== 2 || !isLifeDirPath(p)) return undefined;
+  const key = collisionKey(p.segments[1]!);
+  return LIFE_FILES.find((name) => collisionKey(name) === key);
+}
+
+/** The segments of one of her `~/life/` files (`["life", "watches.json"]`). */
+export function lifeSegments(name: LifeFileName): string[] {
+  return [LIFE_DIR, name];
+}
+
+/** `~/life/<name>` as her results name it. */
+export function lifeDisplay(name: LifeFileName): string {
+  return `~/${LIFE_DIR}/${name}`;
+}
+
+/** True for `~/life/places.md` (read-only, kept up to date by the app). */
 export function isPlacesFile(p: Pick<HerPath, "root" | "segments">): boolean {
-  return p.root === "home" && p.segments.length === 1 && collisionKey(p.segments[0]!) === collisionKey(PLACES_FILE);
+  return lifeFileOf(p) === PLACES_FILE;
+}
+
+/** A delete of this path would remove places.md (the file itself, or `~/life`). */
+export function deleteReachesPlaces(p: Pick<HerPath, "root" | "segments">): boolean {
+  return p.root === "home" && ((p.segments.length === 1 && isLifeDirPath(p)) || isPlacesFile(p));
 }
 
 /** True for `/tmp/dm/…` in any spelling (a private chat's downloads, D14). */
@@ -146,21 +183,41 @@ export function pathKey(virtual: string): string {
   return collisionKey(virtual);
 }
 
-/** `~/schedule.json`, `~/watches.json` or `~/profile.json`: checked on every write (§16.4, §16.5, §17.1). */
-export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): "schedule" | "watches" | "profile" | undefined {
-  if (p.root !== "home" || p.segments.length !== 1) return undefined;
-  const key = collisionKey(p.segments[0]!);
-  if (key === collisionKey(SCHEDULE_FILE)) return "schedule";
-  if (key === collisionKey(WATCHES_FILE)) return "watches";
-  if (key === collisionKey(PROFILE_FILE)) return "profile";
+/** The special file kinds, checked on every write (§16.4, §16.5, §17.1, §21.2). */
+export type SpecialKind = "reminders" | "watches" | "profile" | "schedule";
+
+/**
+ * `~/life/reminders.json`, `watches.json`, `profile.json` or `schedule.json`: checked on every
+ * write. `schedule` is her day (§21.2), not her reminders.
+ */
+export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): SpecialKind | undefined {
+  const name = lifeFileOf(p);
+  if (name === REMINDERS_FILE) return "reminders";
+  if (name === WATCHES_FILE) return "watches";
+  if (name === PROFILE_FILE) return "profile";
+  if (name === DAY_SCHEDULE_FILE) return "schedule";
   return undefined;
 }
 
-/** Her special files' canonical names (a write to `~/Schedule.json` lands in `~/schedule.json`). */
-export function canonicalSpecialName(p: Pick<HerPath, "root" | "segments">): string | undefined {
-  if (p.root !== "home" || p.segments.length !== 1) return undefined;
-  const key = collisionKey(p.segments[0]!);
-  return [SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, MEMORY_FILE, PROFILE_FILE].find((name) => collisionKey(name) === key);
+/** A special kind's file name in `~/life/`. */
+export function specialFileName(kind: SpecialKind): LifeFileName {
+  return kind === "reminders" ? REMINDERS_FILE : kind === "watches" ? WATCHES_FILE : kind === "profile" ? PROFILE_FILE : DAY_SCHEDULE_FILE;
+}
+
+/**
+ * Her special files' canonical spelling (a write to `~/Life/Watches.json` lands in
+ * `~/life/watches.json`, one to `~/memory.md` in `~/MEMORY.md`): the segments to use, or undefined.
+ */
+export function canonicalSpecialSegments(p: Pick<HerPath, "root" | "segments">): string[] | undefined {
+  if (p.root !== "home") return undefined;
+  if (p.segments.length === 1 && collisionKey(p.segments[0]!) === collisionKey(MEMORY_FILE)) return [MEMORY_FILE];
+  const name = lifeFileOf(p);
+  return name ? lifeSegments(name) : undefined;
+}
+
+/** True for `~/MEMORY.md` (any spelling). */
+export function isMemoryFile(p: Pick<HerPath, "root" | "segments">): boolean {
+  return p.root === "home" && p.segments.length === 1 && collisionKey(p.segments[0]!) === collisionKey(MEMORY_FILE);
 }
 
 /** A virtual path string (`/home/aria/x`, `/tmp/x`) back to a checked path; undefined outside her folders. */

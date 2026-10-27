@@ -55,7 +55,7 @@ describe("bursts are one wake with a line per message (§20)", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [] }));
-    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "ask about the poem", when: [{ from: "Kevin", words: ["poem"] }] }]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "ask about the poem", when: [{ from: "Kevin", words: ["poem"] }] }]));
     await dm(w, "can you write me a poem about rain");
     await dm(w, "and bring the cat pic");
     w.cast.intake.flushDms();
@@ -129,7 +129,7 @@ describe("queued wakes for one place (§20)", () => {
   });
 
   it("merged in the queue past its cap, a place's wake keeps both wakes' messages", () => {
-    let queue: WakeQueue = { immediate: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} };
+    let queue = { immediate: [], held: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as unknown as WakeQueue;
     for (let index = 0; index < MAX_IMMEDIATE_WAKES - 1; index += 1) queue = withImmediate(queue, { id: `o${index}`, reason: "reminder", note: "x", at: AT });
     queue = withImmediate(queue, { id: "a", reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id(1), preview: "one", at: AT });
     queue = withImmediate(queue, { id: "b", reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id(2), preview: "two", at: AT });

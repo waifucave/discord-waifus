@@ -86,6 +86,14 @@ export const WakeSchema = z.object({
   chimeIn: z.boolean().optional(),
   /** The wake came from a message written by another waifu (room loop guard, §4.4). */
   waifuAuthored: z.boolean().optional(),
+  /** morning: the local date (`2026-10-27`) whose day this wake opens (§21.3); her turn is compacted after it. */
+  day: z.string().optional(),
+  /** Held while she is busy (§21.4): released at this time (her next phone check, else the block's end). */
+  heldUntil: IsoDateStringSchema.optional(),
+  /** Held: the busy block's `why`. */
+  heldFor: z.string().optional(),
+  /** Released from a busy hold: at a phone check while still busy, or when the block ended. */
+  released: z.object({ kind: z.enum(["phone", "free"]), why: z.string() }).optional(),
   at: IsoDateStringSchema
 });
 export type Wake = z.infer<typeof WakeSchema>;
@@ -155,6 +163,18 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   lastTurnEndedAt: IsoDateStringSchema.optional(),
   /** Last nightly maintenance (§7.3). */
   lastMaintenanceAt: IsoDateStringSchema.optional(),
+  /** The start of the last day whose morning wake was queued (§21.3: one per day). */
+  lastDayStart: IsoDateStringSchema.optional(),
+  /** Why her last `<summary>` was not used (§21.6b): said once, on her next time line. */
+  selfSummaryRefused: z.string().optional(),
+  /** The morning turn ended: the next cycle compacts with reason `day` (§21.3), once. */
+  dayCompactionDue: z.boolean().optional(),
+  /**
+   * Places open while she is busy (§21.4): a wake that gets through woke her there and she sent a
+   * message there; open until `until` (her latest send there + `life.busyEngagedMinutes`) and never
+   * past the busy block's end (`blockEnd`). Keyed by place.
+   */
+  busyOpen: z.record(z.string(), z.object({ until: IsoDateStringSchema, blockEnd: IsoDateStringSchema })).optional(),
   /**
    * Her bot's server nicknames as last seen (guild id → name), so block A does not change just
    * because the guild directory has not loaded a guild yet (review M11).
@@ -262,6 +282,11 @@ export type DeferredPlace = z.infer<typeof DeferredPlaceSchema>;
 
 export const WakeQueueSchema = RevisionedRecordSchema.extend({
   immediate: z.array(WakeSchema).default([]),
+  /**
+   * Wakes held while she is busy (§21.4), each with `heldUntil`; released together into `immediate`
+   * at her next phone check or the block's end. They never start a turn while held.
+   */
+  held: z.array(WakeSchema).default([]),
   deferred: z
     .object({
       /** Why she is not taking wakes: asleep, or over her daily budget. */

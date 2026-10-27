@@ -4,6 +4,8 @@
 //   that already has an entry merges into it as a counter).
 // - `deferred`: what arrived while she slept or was over her daily budget: per-place counters plus
 //   every reminder and watch match with its note. Never dropped; released as one `morning` wake.
+// - `held`: wakes held while she is busy (§21.4), released together at her next phone check or the
+//   busy block's end (scheduler); they never start a turn while held.
 // - `userWakes`: the per-user wake limit's last-hour timestamps (§4.4 guard 3); `quiet`: the
 //   "+N more from Kevin" lines that ride along with the next turn without starting one.
 
@@ -50,9 +52,9 @@ function mergeInto(existing: Wake, wake: Wake): Wake {
   };
 }
 
-/** Adds a wake to `immediate` (pure); a wake whose id is already queued is not added twice. */
+/** Adds a wake to `immediate` (pure); a wake whose id is already queued (or held) is not added twice. */
 export function withImmediate(queue: WakeQueue, wake: Wake): WakeQueue {
-  if (queue.immediate.some((entry) => entry.id === wake.id)) return queue;
+  if (queue.immediate.some((entry) => entry.id === wake.id) || queue.held.some((entry) => entry.id === wake.id)) return queue;
   if (queue.immediate.length >= MAX_IMMEDIATE_WAKES) {
     const index = queue.immediate.findIndex((entry) => entry.placeKey !== undefined && entry.placeKey === wake.placeKey);
     if (index >= 0) {
@@ -143,6 +145,43 @@ export async function deferImmediate(storage: StorageService, waifuId: string, r
 /** Marks the deferred batch as waiting for her budget (it is released on her next local day under budget). */
 export async function deferForBudget(storage: StorageService, waifuId: string): Promise<void> {
   await updateLifeFile(storage, waifuId, "wakes", (queue) => (queue.deferred.reason === "budget" ? queue : { ...queue, deferred: { ...queue.deferred, reason: "budget" } }));
+}
+
+/**
+ * Holds a wake while she is busy (§21.4): kept in `held` with `heldUntil` (and the block's `why`)
+ * until the scheduler releases it. A wake whose id is already queued anywhere is not added again.
+ */
+export async function holdWake(storage: StorageService, waifuId: string, wake: Wake): Promise<void> {
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    if ([...queue.immediate, ...queue.held, ...queue.deferred.items].some((entry) => entry.id === wake.id)) return queue;
+    return { ...queue, held: [...queue.held, wake] };
+  });
+}
+
+/**
+ * Releases held wakes (§21.4): `release` says, for each, how it is released (`undefined` keeps it
+ * held). Released wakes go to `immediate` together, each marked with how it was released (the
+ * notification's first line). Returns how many were released.
+ */
+export async function releaseHeld(storage: StorageService, waifuId: string, release: (wake: Wake) => NonNullable<Wake["released"]> | undefined): Promise<number> {
+  let count = 0;
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => {
+    if (queue.held.length === 0) return queue;
+    const kept: Wake[] = [];
+    let next: WakeQueue = { ...queue, held: [] };
+    for (const wake of queue.held) {
+      const how = release(wake);
+      if (!how) {
+        kept.push(wake);
+        continue;
+      }
+      const { heldUntil: _until, heldFor: _for, ...rest } = wake;
+      next = withImmediate(next, { ...rest, released: how });
+      count += 1;
+    }
+    return count === 0 ? queue : { ...next, held: kept };
+  });
+  return count;
 }
 
 export function hasDeferred(queue: WakeQueue): boolean {
@@ -330,6 +369,7 @@ export async function scrubWakeQueue(
     return {
       ...queue,
       immediate: scrub(queue.immediate),
+      held: scrub(queue.held),
       deferred: { ...queue.deferred, places, items: scrub(queue.deferred.items) },
       quiet,
       userWakes

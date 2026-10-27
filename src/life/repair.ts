@@ -24,7 +24,7 @@ import type { LifeDeps } from "./deps.js";
 import { appendLifeLog, compactIntents, lifeLogTorn, readIntents, readLifeFile, readLifeLog, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { homeStoreFor } from "./home/index.js";
 import { parseStrictJson, readScheduleEntries, readWatchEntries } from "./home/specialFiles.js";
-import { SCHEDULE_FILE, specialJsonFile, WATCHES_FILE } from "./home/pathRules.js";
+import { REMINDERS_FILE, specialJsonFile, WATCHES_FILE } from "./home/pathRules.js";
 import { parseLocalDateTime } from "./clock.js";
 import { safeJournalName } from "./home/homeStore.js";
 import { stripCopiedHeader } from "./outbound.js";
@@ -145,7 +145,7 @@ async function recoverCall(
       return done ? { text: `edited ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not edited", isError: true };
     }
     case "ScheduleWake": {
-      const entries = store ? readScheduleEntries(await fileText(`~/${SCHEDULE_FILE}`), deps.timeZone) : [];
+      const entries = store ? readScheduleEntries(await fileText(`~/life/${REMINDERS_FILE}`), deps.timeZone) : [];
       const wanted =
         typeof input["at"] === "string"
           ? parseLocalDateTime(input["at"], deps.timeZone)?.getTime()
@@ -156,7 +156,7 @@ async function recoverCall(
       return found ? { text: `set ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
     }
     case "WatchFor": {
-      const entries = store ? readWatchEntries(await fileText(`~/${WATCHES_FILE}`), deps.timeZone) : [];
+      const entries = store ? readWatchEntries(await fileText(`~/life/${WATCHES_FILE}`), deps.timeZone) : [];
       const wanted = typeof input["timeout_minutes"] === "number" && Number.isFinite(intentAt) ? intentAt + input["timeout_minutes"] * 60_000 : undefined;
       const found = entries.find((watch) => watch.note === input["note"] && near(watch.timeout, wanted));
       return found ? { text: `watching ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
@@ -205,7 +205,7 @@ export async function repairLife(deps: LifeDeps, waifuId: string): Promise<Repai
     await rewriteLifeLog(deps.storage, waifuId, state.epoch, lines);
   }
   const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
-  const timeText = waifu ? timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: waifu.availability }) : undefined;
+  const timeText = waifu ? timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: waifu.availability, day: await homeStoreFor(deps, waifu).readDay().catch(() => undefined) }) : undefined;
   const last = lines[lines.length - 1];
   const message = (last?.message ?? undefined) as unknown as ProviderMessageLike | undefined;
   const append = async (kind: LifeLogLine["kind"], content: ContentBlockLike[]) => {

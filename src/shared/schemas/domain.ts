@@ -38,29 +38,6 @@ const TimeOfDaySchema = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
 export type TimeOfDay = z.infer<typeof TimeOfDaySchema>;
 
-type DailyInterval = {
-  start: string;
-  end: string;
-};
-
-function timeOfDayMinutes(value: string): number {
-  const [hours = "0", minutes = "0"] = value.split(":");
-  return Number(hours) * 60 + Number(minutes);
-}
-
-function dailyIntervalRanges(interval: DailyInterval): Array<[number, number]> {
-  const start = timeOfDayMinutes(interval.start);
-  const end = timeOfDayMinutes(interval.end);
-  if (start < end) return [[start, end]];
-  return [[start, 24 * 60], [0, end]];
-}
-
-function dailyIntervalsOverlap(a: DailyInterval, b: DailyInterval): boolean {
-  return dailyIntervalRanges(a).some(([aStart, aEnd]) =>
-    dailyIntervalRanges(b).some(([bStart, bEnd]) => Math.max(aStart, bStart) < Math.min(aEnd, bEnd))
-  );
-}
-
 const WaifuSleepScheduleSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -83,48 +60,19 @@ const WaifuSleepScheduleSchema = z
   });
 export type WaifuSleepSchedule = z.infer<typeof WaifuSleepScheduleSchema>;
 
-const WaifuBusyIntervalSchema = z
-  .object({
-    start: TimeOfDaySchema,
-    end: TimeOfDaySchema,
-    reason: z.string().min(1)
-  })
-  .superRefine((value, ctx) => {
-    if (value.start === value.end) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["end"],
-        message: "Busy end time must differ from start time."
-      });
-    }
-  });
-export type WaifuBusyInterval = z.infer<typeof WaifuBusyIntervalSchema>;
-
+// Only her sleep is the owner's (spec §21 S3): her busy times come from her own
+// `~/life/schedule.json`. The owner-set busy blocks were archived and dropped by the
+// `living-cast-drop-busy-v1` migration; a stray `busy` key is stripped.
 export const WaifuAvailabilitySchema = z
   .object({
-    sleep: WaifuSleepScheduleSchema,
-    busy: z.array(WaifuBusyIntervalSchema).default([])
-  })
-  .superRefine((value, ctx) => {
-    for (let i = 0; i < value.busy.length; i += 1) {
-      for (let j = i + 1; j < value.busy.length; j += 1) {
-        if (dailyIntervalsOverlap(value.busy[i], value.busy[j])) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["busy", j],
-            message: "Busy intervals cannot overlap."
-          });
-        }
-      }
-    }
+    sleep: WaifuSleepScheduleSchema
   })
   .default({
     sleep: {
       enabled: false,
       start: "23:00",
       end: "07:00"
-    },
-    busy: []
+    }
   });
 export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 

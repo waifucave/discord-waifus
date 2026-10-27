@@ -41,8 +41,8 @@ async function say(w: LifeWorld, text: string, o: Parameters<LifeWorld["discord"
 describe("sleep and the morning batch (§4.5, §4.7)", () => {
   it("defers mentions, DMs, reminders and watch matches while she sleeps, then releases one morning batch", async () => {
     const w = await sleepyWorld();
-    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 14:10", note: "check the bake sale flyer" }]));
-    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
+    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 14:10", note: "check the bake sale flyer" }]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
     await say(w, `<@${ELLA_BOT}> you up?`, { mentions: { [ELLA_BOT]: "Ella" } });
     await say(w, "best brownie recipe anyone?");
     const dm = w.discord.post(dmOf("ella"), "goodnight ella");
@@ -123,7 +123,7 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     // Written on disk while the app was down (no checks): two of them are two days late.
     await homeOf(w).write(
-      "schedule.json",
+      "life/reminders.json",
       JSON.stringify([
         { id: "r1", at: "2026-10-22 15:00", note: "one-off" },
         { id: "r2", at: "2026-10-22 15:00", repeat: "daily", note: "water the plants" },
@@ -135,7 +135,7 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     const queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(queue.immediate.map((wake) => wake.note)).toEqual(["one-off", "water the plants"]);
     expect(queue.immediate[1]).toMatchObject({ reason: "reminder", at: "2026-10-22T15:00:00.000Z" });
-    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["at"]])).toEqual([
+    expect((await herEntries(w, "reminders.json")).map((reminder) => [reminder["id"], reminder["at"]])).toEqual([
       ["r2", "2026-10-24 15:00"],
       ["r3", "2026-10-24 15:00"]
     ]);
@@ -146,13 +146,13 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
   it("editing a reminder's time in her file moves it", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 18:00", note: "call the bakery" }]));
-    const text = (await homeOf(w).read("schedule.json"))!;
-    await writeHerFile(w, "schedule.json", text.replace("2026-10-24 18:00", "2026-10-24 14:10"));
+    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 18:00", note: "call the bakery" }]));
+    const text = (await homeOf(w).read("life/reminders.json"))!;
+    await writeHerFile(w, "life/reminders.json", text.replace("2026-10-24 18:00", "2026-10-24 14:10"));
     w.clock.ms = Date.parse("2026-10-24T14:11:00.000Z");
     await w.cast.scheduler.tick();
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toMatchObject([{ reason: "reminder", note: "call the bakery", at: "2026-10-24T14:10:00.000Z" }]);
-    expect(await herEntries(w, "schedule.json")).toEqual([]);
+    expect(await herEntries(w, "reminders.json")).toEqual([]);
     // Nothing is left for the old time.
     w.clock.ms = Date.parse("2026-10-24T18:01:00.000Z");
     await w.cast.scheduler.tick();
@@ -164,7 +164,7 @@ describe("reminders and watch timeouts (§6.6, §5.7, §16.4, §16.5)", () => {
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await writeHerFile(
       w,
-      "watches.json",
+      "life/watches.json",
       JSON.stringify([
         { timeout: "2026-10-24 14:05", once: true, note: "tea's ready", when: [] },
         { timeout: "2026-10-24 14:30", once: true, note: "Kevin's answer", when: [{ place: "bake-club/#general", words: ["exam"] }] },

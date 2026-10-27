@@ -113,10 +113,10 @@ describe("forget (§7.5)", () => {
     await notes.write("MEMORY.md", "# Memory\n- [Kevin](people/kevin.md) — studies chemistry\n- [Me](me.md) — about me\n");
     await notes.write("me.md", `# Me\n- I love lemon tarts. Kevin taught me piping.\n- Sam is funny.\n- <@${KEVIN}> owes me a cake\n`);
     const now = w.clock.now().toISOString();
-    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "his results", when: [{ from: "Kevin" }] }]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "his results", when: [{ from: "Kevin" }] }]));
     await writeHerFile(
       w,
-      "schedule.json",
+      "life/reminders.json",
       JSON.stringify([
         { at: "2026-10-24 16:00", note: "ask Kevin how the party went" },
         { at: "2026-10-24 16:00", note: "buy lemons" }
@@ -153,7 +153,7 @@ describe("forget (§7.5)", () => {
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toEqual([]);
     expect(state.pendingNotices).toEqual([]);
     expect(await herEntries(w, "watches.json")).toEqual([]);
-    expect((await herEntries(w, "schedule.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([
+    expect((await herEntries(w, "reminders.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([
       ["r1", "(removed)"],
       ["r2", "buy lemons"]
     ]);
@@ -329,7 +329,7 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     const now = w.clock.now().toISOString();
     await writeHerFile(
       w,
-      "watches.json",
+      "life/watches.json",
       JSON.stringify([
         { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["kevin's exam"] }] },
         { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["brownies"] }] }

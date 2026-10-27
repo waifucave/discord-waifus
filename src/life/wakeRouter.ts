@@ -6,6 +6,9 @@
 //   3. per-user wake limit (guilds): past `life.maxWakesPerUserPerHour`, the wake becomes one
 //      "+N more from Kevin" line that rides along with her next turn
 //   4. sleep: defer (DMs get the sleep notice once per sleep window per user)
+//   4b. busy (§21.4): in a busy block of her `~/life/schedule.json`, a wake that doesn't talk to
+//      her (detector picks, chime-ins, @everyone and role mentions, follow-ups) is held until her
+//      next phone check or the block's end, unless she is chatting in that place (`busy.ts`)
 //   5. daily budget: defer to the next local day
 //   6. room loop guard (`life.maxWaifuTriggeredTurns`, off by default): waifu-authored messages stop
 //      producing wakes in a place after that many since the last human message there
@@ -23,7 +26,11 @@ import { assignConversationRefs } from "../discord/refStore.js";
 import type { DailyCost } from "./budget.js";
 import { availabilityAt } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
-import { admitUserWake, deferWake, enqueueWake } from "./wakeQueue.js";
+import { admitUserWake, deferWake, enqueueWake, holdWake } from "./wakeQueue.js";
+import { getsThroughBusy, placeOpen } from "./busy.js";
+import { busyAt } from "./home/daySchedule.js";
+import { dayPlanFor } from "./home/index.js";
+import { readLifeState } from "./lifeStore.js";
 
 export const STAGGER_MAX_MS = 20_000;
 const MAX_AUTO_IDS = 50;
@@ -39,7 +46,7 @@ export type RouteContext = {
   stagger?: boolean;
 };
 
-export type RouteOutcome = "queued" | "deferred" | "quiet" | "dropped";
+export type RouteOutcome = "queued" | "deferred" | "held" | "quiet" | "dropped";
 
 /**
  * §4.4 guard 6: waifu-authored messages per place since the last human message there. Each message
@@ -162,6 +169,15 @@ export class WakeRouter {
       await deferWake(deps.storage, waifuId, wake, "sleep", now);
       if (wake.reason === "dm" && context.dmUserId && waifu.dm.sleepNotice.trim()) await this.maybeSleepNotice(waifu, context.dmUserId, availability.windowStart);
       return "deferred";
+    }
+    // 4b. busy (§21.4, S4): in a busy block of her day, what doesn't talk to her waits for her next
+    // phone check (else the block's end), unless she is chatting in that place right now.
+    if (!getsThroughBusy(wake)) {
+      const busy = busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone);
+      if (busy && !placeOpen((await readLifeState(deps.storage, waifuId)).busyOpen, wake.placeKey, now, busy.end)) {
+        await holdWake(deps.storage, waifuId, { ...wake, heldUntil: busy.release.toISOString(), heldFor: busy.why });
+        return "held";
+      }
     }
     // 5. daily budget
     const budget = waifu.life.dailyBudgetUsd;

@@ -133,7 +133,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | GET | `/api/waifus/:waifuId/files` | List a folder of her home, /tmp or her read-only /transcripts (?root=home\|tmp\|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1). | `life` |
 | DELETE | `/api/waifus/:waifuId/files/*` | Delete one of her files (?expectedHash). | `life` |
 | GET | `/api/waifus/:waifuId/files/*` | One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1). | `life` |
-| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; places.md and /transcripts refused). | `life` |
+| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; life/places.md and /transcripts refused). | `life` |
 | GET | `/api/waifus/:waifuId/life` | Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally). | `life` |
 | POST | `/api/waifus/:waifuId/life/compact` | Summarise her life now (between turns). | `life` |
 | GET | `/api/waifus/:waifuId/life/log` | Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1). | `life` |
@@ -141,11 +141,11 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | DELETE | `/api/waifus/:waifuId/life/needs-review/:itemId` | Dismiss a review line. | `forget` |
 | POST | `/api/waifus/:waifuId/life/reset` | Reset her short-term memory: a fresh epoch, no summary ({confirm: true}). | `life` |
 | POST | `/api/waifus/:waifuId/link-bot` | Create or link her Discord bot entry. | `bot` |
-| GET | `/api/waifus/:waifuId/schedule` | Her reminders (~/schedule.json), parsed. | `life` |
-| DELETE | `/api/waifus/:waifuId/schedule/:reminderId` | Remove one reminder from her schedule.json. | `life` |
+| GET | `/api/waifus/:waifuId/schedule` | Her reminders (~/life/reminders.json), parsed. | `life` |
+| DELETE | `/api/waifus/:waifuId/schedule/:reminderId` | Remove one reminder from her life/reminders.json. | `life` |
 | POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips sleep and budget). | `life` |
-| GET | `/api/waifus/:waifuId/watches` | Her watches (~/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1. | `life` |
-| DELETE | `/api/waifus/:waifuId/watches/:watchId` | Remove one watch from her watches.json. | `life` |
+| GET | `/api/waifus/:waifuId/watches` | Her watches (~/life/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1. | `life` |
+| DELETE | `/api/waifus/:waifuId/watches/:watchId` | Remove one watch from her life/watches.json. | `life` |
 
 <!-- /generated:routes -->
 

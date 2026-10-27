@@ -9,6 +9,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { availabilityAt } from "../life/clock.js";
+import { dayPlanOf } from "../life/home/index.js";
 import { dismissNeedsReview, readNeedsReview, withoutPrivateReview } from "../life/forget.js";
 import { listLogEpochs, readLifeFile, readLifeLog, readLifeState } from "../life/lifeStore.js";
 import { scanDmContent, viewLogLine } from "../life/lifeView.js";
@@ -114,7 +115,7 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
       readPendingScrubs(o.storage, waifuId, { logger: { warn: () => undefined } }).catch(() => [])
     ]);
     const lines = await readLifeLog(o.storage, waifuId, state.epoch);
-    const availability = availabilityAt(waifu.availability, at, zone);
+    const availability = availabilityAt(waifu.availability, at, zone, await dayPlanOf(o.storage, waifu));
     const cast = o.cast();
     const sameDay = usage.day === localDayKey(at, zone);
     return {

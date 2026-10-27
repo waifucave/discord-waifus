@@ -10,7 +10,7 @@
 {"when":[],"note":"the tarts come out of the oven","timeout_minutes":12}
 === 2 user ===
 --- tool result call_1_WatchFor ---
-watching w1 until Sat 24 Oct 14:12 (in ~/watches.json)
+watching w1 until Sat 24 Oct 14:12 (in ~/life/watches.json)
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===

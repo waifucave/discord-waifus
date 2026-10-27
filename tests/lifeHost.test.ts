@@ -57,7 +57,7 @@ describe("busy work is visible (I7)", () => {
 describe("maintenance in the background (M3)", () => {
   it("never blocks the scheduler tick; stop() aborts it and waits; it is not recorded as done", async () => {
     const w = await lifeWorld(roots, { scripts: [hangingTurn()] });
-    await homeOf(w).write("schedule.json", JSON.stringify([{ id: "r1", at: "2026-10-24 13:59", note: "call mom" }]));
+    await homeOf(w).write("life/reminders.json", JSON.stringify([{ id: "r1", at: "2026-10-24 13:59", note: "call mom" }]));
     // Something to dream about (an empty window calls no model).
     await seedTranscript(w, [{ text: "see you tomorrow" }]);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
@@ -103,22 +103,22 @@ describe("reminders (M4) and quiet writes (M5)", () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const due = { id: "r1", at: "2026-10-24 13:59", note: "call mom" };
-    await homeOf(w).write("schedule.json", JSON.stringify([due]));
+    await homeOf(w).write("life/reminders.json", JSON.stringify([due]));
     await w.cast.scheduler.tick({ waitForMaintenance: false });
     // A crash before the removal: the reminder is back; the next tick never routes it twice.
-    await homeOf(w).write("schedule.json", JSON.stringify([due]));
+    await homeOf(w).write("life/reminders.json", JSON.stringify([due]));
     await w.cast.scheduler.tick({ waitForMaintenance: false });
     const wakes = (await readLifeFile(w.storage, "ella", "wakes")).immediate;
     expect(wakes.map((wake) => wake.id)).toEqual([reminderWakeId(due, "UTC")]);
-    expect(await herEntries(w, "schedule.json")).toEqual([]);
+    expect(await herEntries(w, "reminders.json")).toEqual([]);
   });
 
   it("a tick or a message that changes nothing rewrites nothing (no new revision)", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await writeHerFile(w, "schedule.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "later" }]));
-    await writeHerFile(w, "watches.json", JSON.stringify([{ timeout: "2026-10-24 16:00", once: true, note: "n", when: [{ words: ["cake"] }] }]));
-    const files = ["home/schedule.json", "home/watches.json", "life/schedule-ids.json", "life/watch-ids.json"];
+    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "later" }]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-24 16:00", once: true, note: "n", when: [{ words: ["cake"] }] }]));
+    const files = ["home/life/reminders.json", "home/life/watches.json", "life/schedule-ids.json", "life/watch-ids.json"];
     const mtimes = async () => Promise.all(files.map(async (file) => (await stat(path.join(w.root, "user/waifus/ella", file))).mtimeMs));
     const before = await mtimes();
     await w.cast.scheduler.tick({ waitForMaintenance: false });

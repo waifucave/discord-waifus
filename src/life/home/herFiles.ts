@@ -10,7 +10,7 @@ import path from "node:path";
 import { ATOMIC_TEMP_NAME, atomicWriteFile } from "../../storage/atomic.js";
 import type { StorageService } from "../../storage/storageService.js";
 import { waifuDir } from "../paths.js";
-import { canonicalSpecialName, collisionKey, herPath, MAX_PATH_SEGMENTS, segmentProblem, type HerPath, type HerRoot } from "./pathRules.js";
+import { canonicalSpecialSegments, collisionKey, herPath, MAX_PATH_SEGMENTS, segmentProblem, type HerPath, type HerRoot } from "./pathRules.js";
 
 export class HerFilesError extends Error {
   override name = "HerFilesError";
@@ -76,8 +76,8 @@ export class HerFiles {
       out.push(name);
       folder = path.join(folder, name);
     }
-    const special = canonicalSpecialName({ root: p.root, segments: out });
-    if (special) out[0] = special;
+    const special = canonicalSpecialSegments({ root: p.root, segments: out });
+    if (special) special.forEach((segment, index) => (out[index] = segment));
     return out.every((segment, index) => segment === p.segments[index]) ? p : this.path(p.root, out);
   }
 

@@ -243,7 +243,8 @@ describe("data root and config", () => {
     const seeded = JSON.parse(await readFile(firstPath, "utf8"));
     expect(seeded.displayName).toBe(first.displayName);
     expect(seeded.availability.sleep.enabled).toBe(true);
-    expect(seeded.availability.busy.length).toBeGreaterThan(0);
+    // Only her sleep is the owner's: her busy times are her own day file (spec §21 S3).
+    expect(seeded.availability).not.toHaveProperty("busy");
     expect(seeded).not.toHaveProperty("tools");
     expect(seeded).not.toHaveProperty("params");
     expect(seeded).not.toHaveProperty("contextWindow");
@@ -344,24 +345,20 @@ describe("data root and config", () => {
     expect(waifu).not.toHaveProperty("promptLayout");
   });
 
-  it("rejects overlapping busy intervals in waifu availability", () => {
-    expect(() =>
-      WaifuConfigSchema.parse({
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        revision: 0,
-        updatedAt: "2026-05-16T12:00:00.000Z",
-        id: "overlap",
-        name: "Overlap",
-        displayName: "Overlap",
-        persona: "",
-        availability: {
-          sleep: { enabled: true, start: "23:00", end: "07:00" },
-          busy: [
-            { start: "09:00", end: "10:00", reason: "class" },
-            { start: "09:30", end: "11:00", reason: "work" }
-          ]
-        }
-      })
-    ).toThrow(/Busy intervals cannot overlap/);
+  it("keeps only her sleep in waifu availability: a stray busy key is dropped (spec §21 S3)", () => {
+    const waifu = WaifuConfigSchema.parse({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      revision: 0,
+      updatedAt: "2026-05-16T12:00:00.000Z",
+      id: "old",
+      name: "Old",
+      displayName: "Old",
+      persona: "",
+      availability: {
+        sleep: { enabled: true, start: "23:00", end: "07:00" },
+        busy: [{ start: "09:00", end: "10:00", reason: "class" }]
+      }
+    });
+    expect(waifu.availability).toEqual({ sleep: { enabled: true, start: "23:00", end: "07:00" } });
   });
 });

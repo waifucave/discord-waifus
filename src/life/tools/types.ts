@@ -40,9 +40,9 @@ export type TurnScratch = {
   /** Searches and fetches recorded on the dashboard's list this turn (marked private if the turn becomes a DM turn). */
   webEntries?: number;
   /**
-   * Her special files (schedule.json, watches.json) as she last read them this turn: path key →
-   * content hash. A whole-file Write needs a current Read (a reminder fires or a watch times out on
-   * its own in between).
+   * Her special files (the ones in ~/life/) as she last read them this turn: path key → content
+   * hash. A whole-file Write needs a current Read (a reminder fires or a watch times out on its own
+   * in between).
    */
   readHashes?: Map<string, string>;
   /**
@@ -50,6 +50,8 @@ export type TurnScratch = {
    * then writes with exactly that text keeps its DM origin (§18.3, D14).
    */
   transcriptTexts?: Map<string, { sha256: string; size: number; placeKey: string }>;
+  /** Files whose system-prompt copy she was told is stale this turn (§21.2: once per file per turn). */
+  promptCopyNoted?: Set<string>;
 };
 
 export type ToolContext = {
@@ -70,6 +72,8 @@ export type ToolContext = {
    * outside her life: Read never shows an image inline and never touches her life's image state.
    */
   mode?: "life" | "session";
+  /** Which session (mode `session`): a dream leaves `~/life/` alone (§21.6). */
+  session?: "maintenance" | "scrub" | "dream";
 };
 
 export type LifeTool = {
@@ -98,6 +102,6 @@ export function parseInput<T>(schema: z.ZodType<T>, input: unknown): { ok: true;
   return { ok: false, output: toolError(`${where}${issue?.message ?? "invalid input"}`) };
 }
 
-export const UNKNOWN_PLACE = "error: unknown place; see ~/places.md";
+export const UNKNOWN_PLACE = "error: unknown place; see ~/life/places.md";
 export const MESSAGE_TOO_OLD = "error: message too old";
 export const CANNOT_POST = "error: you can't post there";

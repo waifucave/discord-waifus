@@ -218,7 +218,7 @@ export async function writeWaifuConfig(storage: StorageService, seed: WaifuSeed)
       enabled: true,
       model: { providerId: "anthropic", modelId: "claude-haiku-5-5" },
       persona: `${seed.name} is a sunny baker.`,
-      availability: { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [] },
+      availability: { sleep: { enabled: false, start: "23:00", end: "07:00" } },
       dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" },
       ...seed
     })
@@ -466,9 +466,9 @@ export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relat
   await store.writeText(target.path, content, checkEnvFor(w.cast.deps, waifuId));
 }
 
-/** Her reminder or watch file, parsed. */
-export async function herEntries(w: Pick<LifeWorld, "root">, name: "schedule.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
-  const text = await homeOf(w, waifuId).read(name);
+/** Her reminder or watch file (in `~/life/`), parsed. */
+export async function herEntries(w: Pick<LifeWorld, "root">, name: "reminders.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
+  const text = await homeOf(w, waifuId).read(`life/${name}`);
   return text?.trim() ? (JSON.parse(text) as Array<Record<string, unknown>>) : [];
 }
 

@@ -62,7 +62,7 @@ async function tail(w: LifeWorld): Promise<LifeLogLine> {
 describe("crash repair (§5.7)", () => {
   it("a crash between a tool call and its result: the call is closed as interrupted, the turn ends", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
-    await crashAfter(w, { id: "call_x", name: "Read", input: { file_path: "~/places.md" } });
+    await crashAfter(w, { id: "call_x", name: "Read", input: { file_path: "~/life/places.md" } });
     const restarted = w.restart();
     vi.spyOn(restarted.life("ella"), "poke").mockImplementation(() => undefined);
     await restarted.start();
@@ -126,7 +126,7 @@ describe("crash repair (§5.7)", () => {
 
   it("the interrupted turn's wakes go back to the queue (review I4)", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
-    await crashAfter(w, { id: "call_x", name: "Read", input: { file_path: "~/places.md" } });
+    await crashAfter(w, { id: "call_x", name: "Read", input: { file_path: "~/life/places.md" } });
     const wake = { id: "w-lost", reason: "mention" as const, placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: "900000000000000001", at: w.clock.now().toISOString() };
     await updateLifeState(w.storage, "ella", (current) => ({ ...current, currentTurn: { ...current.currentTurn!, wakeIds: [wake.id], wakes: [wake] } }));
     const restarted = w.restart();
@@ -159,9 +159,9 @@ describe("crash repair of her file tools (review minors)", () => {
   it("a Write of watches.json counts as done when the file holds the same entries with ids; another file only when equal", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     const content = '[{"timeout": "2026-10-25 14:00", "once": true, "note": "tea", "when": []}]';
-    await crashAfter(w, { id: "call_w", name: "Write", input: { file_path: "~/watches.json", content } }, { intent: true });
-    await writeHerFile(w, "watches.json", content);
-    expect(await repaired(w)).toMatchObject({ content: "wrote ~/watches.json (recovered)" });
+    await crashAfter(w, { id: "call_w", name: "Write", input: { file_path: "~/life/watches.json", content } }, { intent: true });
+    await writeHerFile(w, "life/watches.json", content);
+    expect(await repaired(w)).toMatchObject({ content: "wrote ~/life/watches.json (recovered)" });
 
     const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     await crashAfter(v, { id: "call_n", name: "Write", input: { file_path: "~/notes.md", content: "short" } }, { intent: true });
@@ -174,12 +174,12 @@ describe("crash repair of her file tools (review minors)", () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     await crashAfter(w, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
     // An older reminder with the same note at another time is not this one.
-    await writeHerFile(w, "schedule.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}]');
+    await writeHerFile(w, "life/reminders.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}]');
     expect(await repaired(w)).toMatchObject({ content: "[interrupted] not set", is_error: true });
 
     const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     await crashAfter(v, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
-    await writeHerFile(v, "schedule.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}, {"at": "2026-10-25 18:00", "note": "call mum"}]');
+    await writeHerFile(v, "life/reminders.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}, {"at": "2026-10-25 18:00", "note": "call mum"}]');
     expect(await repaired(v)).toMatchObject({ content: "set r2 (recovered)" });
   }, 30_000);
 

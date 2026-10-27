@@ -19,7 +19,7 @@ import type { OutgoingFile } from "../../discord/client.js";
 import { clockText } from "../clock.js";
 import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
-import { pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
+import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
@@ -311,7 +311,7 @@ const SendInput = z.object({
   files: z.array(z.string().min(1).max(2000)).max(10).default([])
 });
 
-export const PRIVATE_FILE_REASON = "your notes, reminders, watches and places are private and can't be attached";
+export const PRIVATE_FILE_REASON = "your notes and the files in ~/life/ are private and can't be attached";
 export const TRANSCRIPT_COPY_REASON = "a copy of a private chat's transcript can't be attached";
 
 /** The files she asked to attach: what can go, and why the rest can't (§16.3.2). */
@@ -339,7 +339,7 @@ async function attachments(ctx: ToolContext, requested: readonly string[]): Prom
     const key = pathKey(p.virtual);
     if (seen.has(key)) continue;
     seen.add(key);
-    if (privateFiles.has(key)) {
+    if (privateFiles.has(key) || isLifeDirPath(p)) {
       skipped.push(`${p.display} (${PRIVATE_FILE_REASON})`);
       continue;
     }
@@ -533,7 +533,7 @@ function readMessagesDescription(retentionDays: number): string {
 
 const SEND_DESCRIPTION =
   "Send a message to a place. This is the only way anyone sees what you write. Keep it like a chat message; send several if you have several things to say. Use <@Name> to mention someone who is there.";
-const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to, schedule.json, watches.json, places.md and profile.json can't be attached.";
+const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to and the files in ~/life/ can't be attached.";
 
 /** SendMessage's input schema; `files` (at most `maxFiles`) only when attaching is on. */
 function sendSchema(maxFiles: number): Record<string, unknown> {

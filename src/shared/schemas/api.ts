@@ -337,13 +337,13 @@ export const HerFileResponseSchema = z.object({
   text: z.string().optional(),
   /** A text file too large to show here (fetch it with `?raw=1`). */
   tooLarge: z.literal(true).optional(),
-  /** `~/places.md` (kept up to date by the app) or a redacted watches.json: writes are refused. */
+  /** `~/life/places.md` (kept up to date by the app) or a redacted watches.json: writes are refused. */
   readOnly: z.literal(true).optional(),
-  /** `~/schedule.json` / `~/watches.json`: every write is checked (§16.4, §16.5). */
-  special: z.enum(["schedule", "watches", "profile"]).optional(),
+  /** A file in `~/life/`: every write is checked (§16.4, §16.5, §17.1; `schedule` is her day, §21.2). */
+  special: z.enum(["reminders", "watches", "profile", "schedule"]).optional(),
   private: z.literal(true).optional(),
   /**
-   * `~/watches.json` with a watch bound to a private chat, read without `includePrivate`: the text
+   * `~/life/watches.json` with a watch bound to a private chat, read without `includePrivate`: the text
    * is a redacted copy (read-only here; changing the file needs `includePrivate`).
    */
   redacted: z.literal(true).optional(),
@@ -383,7 +383,7 @@ export const ScheduleResponseSchema = z.object({
   waifuId: z.string(),
   timeZone: z.string(),
   entries: z.array(ReminderViewSchema),
-  /** `~/schedule.json` does not read cleanly (fix it in the file editor); `entries` holds what did. */
+  /** `~/life/reminders.json` does not read cleanly (fix it in the file editor); `entries` holds what did. */
   unreadable: z.literal(true).optional()
 });
 

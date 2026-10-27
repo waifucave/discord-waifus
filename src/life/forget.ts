@@ -18,8 +18,8 @@
 //      kept turns and every name listed for omission (empty on failure); the new epoch waits
 //      (`pendingEpochStart`) while the per-waifu lock is held;
 //   3. other state: their wakes and pending notices, watches from the person or bound to their DM
-//      or to words naming them (in her `~/watches.json`), reminder notes naming them (in her
-//      `~/schedule.json`), her DM read cursor and handle, maintenance.jsonl and review lines,
+//      or to words naming them (in her `~/life/watches.json`), reminder notes naming them (in her
+//      `~/life/reminders.json`) and her day's text naming them (`~/life/schedule.json`), her DM read cursor and handle, maintenance.jsonl and review lines,
 //      the host's recent web queries naming them, and her slice of the Living cast archive.
 //      Someone else's wake that names them keeps its place and loses the quote; her reminder or
 //      watch note naming them becomes `(removed)`;
@@ -80,7 +80,7 @@ import { runNotesSession, scrubInstruction } from "./maintenance.js";
 import { markedUserIds, MEMORY_INDEX } from "./home/memoryIndex.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import type { HomeStore } from "./home/homeStore.js";
-import { PLACES_FILE, PROFILE_FILE, SCHEDULE_FILE, WATCHES_FILE } from "./home/pathRules.js";
+import { DAY_SCHEDULE_FILE, LIFE_DIR, PLACES_FILE, PROFILE_FILE, REMINDERS_FILE, WATCHES_FILE } from "./home/pathRules.js";
 import { homeDir, lifeDir, legacyNotesDir } from "./paths.js";
 import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
@@ -388,7 +388,7 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     return { entries: kept, ids: { ...side, watches } };
   });
   // A reminder is hers: it stays and loses the text that names the person.
-  await home.rewriteSchedule(deps.timeZone, (entries) =>
+  await home.rewriteReminders(deps.timeZone, (entries) =>
     entries.map((reminder) => {
       if (mentions(reminder.note)) {
         removed += 1;
@@ -398,6 +398,24 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
       return reminder;
     })
   );
+  // Her day (§21.6): its text fields are hers too; one that names the person becomes `(removed)`.
+  await home.rewriteDay((plan) => {
+    const scrub = (text: string): string => {
+      if (mentions(text)) {
+        removed += 1;
+        return REMOVED_TEXT;
+      }
+      review("schedule")(text);
+      return text;
+    };
+    return {
+      ...plan,
+      ...(plan.mood !== undefined ? { mood: scrub(plan.mood) } : {}),
+      busy: plan.busy.map((block) => ({ ...block, why: scrub(block.why) })),
+      plans: plan.plans.map((item) => ({ ...item, what: scrub(item.what) })),
+      ...(plan.note !== undefined ? { note: scrub(plan.note) } : {})
+    };
+  });
   removed += await scrubNeedsReview(deps.storage, waifu.id, mentions);
   // Her DM cursor goes whole: the conversation is gone, and the floor holds on the read path.
   await setReadCursor(deps.storage, waifu.id, dmKey, undefined, deps.now());
@@ -603,8 +621,8 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   const out: Verify = { removedLines: 0, removedSentences: 0, removedNotes: 0, needsReview: [] };
   const home = homeStoreFor(deps, waifu);
   // Every text file of her home (§16.9), except the ones step 3 handled by their own rules (her
-  // reminders and watches) and places.md (the app's).
-  const all = new Map([...(await home.readAllText())].filter(([notePath]) => ![SCHEDULE_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE].includes(notePath)));
+  // reminders, watches and day) and places.md (the app's), all in ~/life/.
+  const all = new Map([...(await home.readAllText())].filter(([notePath]) => !([REMINDERS_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as string[]).map((name) => `${LIFE_DIR}/${name}`).includes(notePath)));
   let notesChanged = (await deletePersonNotes(home, all, identity, out)).length > 0;
   // Notes marked as someone else's: a name match there (or in the index line linking one) is
   // listed for review, never removed (two people may share the name).

@@ -321,7 +321,7 @@ export async function scheduleCommand(ctx: CliContext, args: readonly string[]):
   }
   ctx.out(body.entries.length === 0 ? `${waifuId} has no reminders.` : `${waifuId}'s reminders (${body.timeZone}):`);
   for (const entry of body.entries) ctx.out(`  ${entry.id.padEnd(5)} ${entry.at}${entry.repeat ? ` (${entry.repeat})` : ""}  ${oneLine(entry.note, 200)}`);
-  if (body.unreadable) ctx.out("  ~/schedule.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
+  if (body.unreadable) ctx.out("  ~/life/reminders.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
   return EXIT.ok;
 }
 
@@ -346,6 +346,6 @@ export async function watchesCommand(ctx: CliContext, args: readonly string[], o
   }
   const hidden = body.entries.filter((entry) => entry.private && !body.includePrivate).length;
   if (hidden > 0) ctx.out(`(${hidden} watch(es) bound to private chats shown without their words; --private shows them on this computer)`);
-  if (body.unreadable) ctx.out("  ~/watches.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
+  if (body.unreadable) ctx.out("  ~/life/watches.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
   return EXIT.ok;
 }

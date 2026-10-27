@@ -19,16 +19,17 @@ import { listWaifus } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { Wake, WakeQueue } from "../shared/schemas/life.js";
 import type { DailyCost } from "./budget.js";
-import { availabilityAt, instantOfLocal, localParts, parseLocalDateTime, sleepWindowContaining } from "./clock.js";
+import { availabilityAt, dayStartAt, instantOfLocal, localDayKey, localParts, parseLocalDateTime, sleepWindowContaining } from "./clock.js";
+import { busyAt } from "./home/daySchedule.js";
 import type { LifeDeps } from "./deps.js";
 import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
-import { checkEnvFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
+import { checkEnvFor, dayPlanFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { onceKey, type ReminderEntry, type WatchEntry } from "./home/specialFiles.js";
-import { morningBatch, type MorningPlace } from "./notifications.js";
+import { morningBatch, morningGreeting, type MorningPlace } from "./notifications.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
-import { deferForBudget, hasDeferred, newWakeId, takeDeferred } from "./wakeQueue.js";
+import { deferForBudget, enqueueWake, hasDeferred, newWakeId, releaseHeld as releaseHeldWakes, takeDeferred } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import { selfAuthorIds } from "./people.js";
@@ -98,6 +99,8 @@ export function maintenanceDue(waifu: WaifuConfig, now: Date, timeZone: string, 
   return now.getTime() >= at && last < at;
 }
 
+export { dayStartAt } from "./clock.js";
+
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking: Promise<void> | undefined;
@@ -166,6 +169,7 @@ export class Scheduler {
       try {
         await this.reminders(waifu);
         await this.watchTimeouts(waifu);
+        await this.releaseHeld(waifu);
         await this.morning(waifu);
         await this.maintenance(waifu);
         await this.housekeeping(waifu);
@@ -185,7 +189,7 @@ export class Scheduler {
     const deps = this.o.deps;
     const now = deps.now();
     const store = homeStoreFor(deps, waifu);
-    const entries = await store.readSchedule(deps.timeZone);
+    const entries = await store.readReminders(deps.timeZone);
     const ids = await store.readScheduleIds();
     const fired = new Set(ids.fired);
     const due = entries.filter((entry) => (parseLocalDateTime(entry.at, deps.timeZone)?.getTime() ?? Infinity) <= now.getTime());
@@ -206,7 +210,7 @@ export class Scheduler {
     }
     if (fresh.length > 0) await store.markFired("schedule", fresh.map((reminder) => reminderWakeId(reminder, deps.timeZone)));
     const done = new Set(due.map((reminder) => `${reminder.id}\0${reminder.at}`));
-    await store.rewriteSchedule(deps.timeZone, (current) =>
+    await store.rewriteReminders(deps.timeZone, (current) =>
       current.flatMap((reminder): ReminderEntry[] => {
         if (!done.has(`${reminder.id}\0${reminder.at}`)) return [reminder];
         const next = nextOccurrence(reminder, now, deps.timeZone);
@@ -270,19 +274,60 @@ export class Scheduler {
     }
   }
 
-  /** Deferred wakes → one `morning` wake when she is awake (and, for a budget pause, under budget again). */
+  /**
+   * Wakes held while she was busy (§21.4) arrive together at her next phone check inside the block
+   * (`phone check`) or when she is no longer busy (`free again`). Her day file is read now, so a
+   * phone check she added after a wake was held counts too.
+   */
+  private async releaseHeld(waifu: WaifuConfig): Promise<void> {
+    const deps = this.o.deps;
+    const queue = await readLifeFile(deps.storage, waifu.id, "wakes");
+    if (queue.held.length === 0) return;
+    const now = deps.now();
+    const day = await dayPlanFor(deps, waifu);
+    const busy = busyAt(day, now, deps.timeZone);
+    const count = await releaseHeldWakes(deps.storage, waifu.id, (wake) => {
+      if (!busy) return { kind: "free", why: wake.heldFor ?? "being busy" };
+      // Its phone check (as the file says now) or its hold time passed: still busy, so a phone check.
+      const since = busyAt(day, new Date(wake.at), deps.timeZone);
+      const due = (wake.heldUntil !== undefined && Date.parse(wake.heldUntil) <= now.getTime()) || (since !== undefined && since.release.getTime() <= now.getTime());
+      if (!due) return undefined;
+      // A wake held in an earlier block that ended is free again; one in this block, a phone check.
+      return since && since.end.getTime() !== busy.end.getTime() ? { kind: "free", why: wake.heldFor ?? since.why } : { kind: "phone", why: busy.why };
+    });
+    if (count > 0) {
+      deps.logger.info("Life held wakes released", { category: "life", waifuId: waifu.id, count, busy: busy !== undefined });
+      this.o.hooks.poke(waifu.id);
+    }
+  }
+
+  /**
+   * Her day starts (§21.3): when her sleep ends (or at `life.dayStartHourLocal` without a sleep
+   * window) one `morning` wake asks her to write today's schedule, followed by what came in
+   * overnight; deferred wakes go with it. At other times deferred wakes become one `morning` wake
+   * when she is awake (and, for a budget pause, under budget again). A day whose start passed while
+   * the host was down or she was paused gets its morning at the first tick after.
+   */
   private async morning(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
     const now = deps.now();
     const queue = await readLifeFile(deps.storage, waifu.id, "wakes");
-    if (!hasDeferred(queue) && !queue.deferred.reason) return;
     const availability = availabilityAt(waifu.availability, now, deps.timeZone);
     if (availability.state === "asleep") return;
+    const dayStart = dayStartAt(waifu, now, deps.timeZone, deps.config().life.dayStartHourLocal);
+    const state = await readLifeState(deps.storage, waifu.id);
+    let dayDue = state.lastDayStart === undefined || Date.parse(state.lastDayStart) < dayStart.getTime();
+    // A life that has not begun yet starts with whatever wakes her first; her first morning is the next one.
+    if (dayDue && !state.systemSnapshot) {
+      await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastDayStart: dayStart.toISOString() }));
+      dayDue = false;
+    }
+    if (!dayDue && !hasDeferred(queue) && !queue.deferred.reason) return;
     // Never released over her daily budget, whatever deferred it: a batch held for sleep that she
-    // wakes up to over budget waits for her next local day instead.
+    // wakes up to over budget waits for her next local day instead (and so does her morning).
     const budget = waifu.life.dailyBudgetUsd;
     if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) {
-      if (queue.deferred.reason !== "budget") await deferForBudget(deps.storage, waifu.id);
+      if (queue.deferred.reason !== "budget" && (hasDeferred(queue) || queue.deferred.reason)) await deferForBudget(deps.storage, waifu.id);
       return;
     }
     const places = await this.morningPlaces(waifu, queue.deferred);
@@ -291,18 +336,36 @@ export class Scheduler {
       handles.set(key, await handleOf(deps.storage, waifu.id, key));
     }
     const view = { timeZone: deps.timeZone, handle: (key: string) => handles.get(key) ?? key, unread: () => undefined };
-    const released = await takeDeferred(deps.storage, waifu.id, (deferred) => {
+    const sleep = waifu.availability.sleep;
+    const dayKey = localDayKey(now, deps.timeZone);
+    // The morning wake of her day: the greeting, then the overnight batch (one id per day).
+    const dayWake = (overnight: string[]): Wake => ({
+      id: `w-day-${dayKey}`,
+      reason: "morning",
+      day: dayKey,
+      batch: [morningGreeting({ now, timeZone: deps.timeZone, ...(sleep.enabled ? { sleep } : {}), overnight: overnight.length > 0 }), ...overnight],
+      at: now.toISOString()
+    });
+    let released = await takeDeferred(deps.storage, waifu.id, (deferred) => {
       const since = deferred.since ? new Date(deferred.since) : now;
-      const sleep = waifu.availability.sleep;
       const header =
         deferred.reason === "budget"
           ? morningBatch({ reason: "budget", since, until: now, places, items: deferred.items }, view)
           : morningBatch({ reason: "sleep", since, until: now, places, items: deferred.items }, view).map((line, index) =>
               index === 0 && sleep.enabled ? `- while you were asleep (${sleep.start}–${sleep.end}):` : line
             );
+      if (dayDue) return dayWake(header.length > 1 ? header : []);
       if (header.length <= 1) return undefined;
       return { id: newWakeId(), reason: "morning", batch: header, at: now.toISOString() };
     });
+    if (dayDue) {
+      if (!released) {
+        released = dayWake([]);
+        await enqueueWake(deps.storage, waifu.id, released);
+      }
+      await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastDayStart: dayStart.toISOString() }));
+      deps.logger.info("Life day started", { category: "life", waifuId: waifu.id, day: dayKey });
+    }
     if (released) {
       deps.logger.info("Life morning batch queued", { category: "life", waifuId: waifu.id, lines: released.batch?.length ?? 0 });
       this.o.hooks.poke(waifu.id);

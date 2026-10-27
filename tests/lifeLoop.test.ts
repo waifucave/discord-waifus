@@ -87,7 +87,7 @@ describe("life loop", () => {
     await world.cast.life("ella").runNow();
     const second = world.anthropic.calls[1]!.request.messages;
     const results = JSON.stringify(second[second.length - 1]);
-    expect(results).toContain("error: unknown place; see ~/places.md");
+    expect(results).toContain("error: unknown place; see ~/life/places.md");
     expect(results).toContain("\"is_error\":true");
   });
 
@@ -95,7 +95,7 @@ describe("life loop", () => {
     let world!: LifeWorld;
     world = await lifeWorld(roots, {
       scripts: [
-        () => toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]),
+        () => toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]),
         (request) => {
           void request;
           return textTurn("done");
@@ -106,7 +106,7 @@ describe("life loop", () => {
     // A wake that arrives during the first call.
     world.anthropic.scripts[0] = () => {
       void enqueueWake(world.storage, "ella", { id: newWakeId(), reason: "reminder", note: "second", at: world.clock.now().toISOString() });
-      return toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+      return toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
     };
     await world.cast.life("ella").runNow();
     const lastRequest = world.anthropic.calls[world.anthropic.calls.length - 1]!.request.messages;
@@ -117,7 +117,7 @@ describe("life loop", () => {
   it("has no round cap, but ends a turn whose same calls fail three rounds in a row", async () => {
     const world = await lifeWorld(roots, {
       scripts: [
-        ...Array.from({ length: 14 }, () => () => toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }])),
+        ...Array.from({ length: 14 }, () => () => toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }])),
         ...Array.from({ length: 4 }, () => () => toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general" } }]))
       ]
     });
@@ -291,7 +291,7 @@ describe("mid-turn notifications (§4.6, §5.2)", () => {
       scripts: [
         async function* () {
           await minaPing(world, "ella are the tarts ready?");
-          yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+          yield* toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
         },
         async function* () {
           // The process dies during the call after the fold: what is on disk now is what boot sees.
@@ -325,7 +325,7 @@ describe("mid-turn notifications (§4.6, §5.2)", () => {
         async function* () {
           await minaPing(world, "ella quick one");
           world.clock.advance(181_000);
-          yield* toolTurn([{ name: "Read", input: { file_path: "~/places.md" } }]);
+          yield* toolTurn([{ name: "Read", input: { file_path: "~/life/places.md" } }]);
         },
         () => textTurn("(next turn)"),
         () => textTurn("(nothing to send)")

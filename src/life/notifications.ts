@@ -9,8 +9,13 @@ import type { GuildDirectoryView } from "../orchestration/context/types.js";
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import type { Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import { compareIds } from "../discord/rawMessage.js";
-import { clockText, weekdayTimeText } from "./clock.js";
+import { clockText, dayText, weekdayTimeText } from "./clock.js";
 import { messagesOf } from "./wakeMessages.js";
+
+/** The release line of held wakes (§21.4): first in the notification that brings them. */
+export function releaseLine(released: NonNullable<Wake["released"]>): string {
+  return released.kind === "phone" ? `- phone check (busy: ${released.why})` : `- free again (${released.why} is over)`;
+}
 
 export const PREVIEW_CHARS = 60;
 /** At most this many lines per place in one notification block (§20; `life.notificationLinesPerPlace`). */
@@ -185,8 +190,18 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
   }
 }
 
-/** The lines of one notification block: places in arrival order, one line per message within a place. */
+/**
+ * The lines of one notification block: places in arrival order, one line per message within a place.
+ * Wakes released from a busy hold (§21.4) come with one first line saying why they arrive now
+ * (`- phone check (busy: …)`, or `- free again (… is over)` when any came at a block's end).
+ */
 export function notificationLines(wakes: readonly Wake[], view: NotificationView): string[] {
+  const released = wakes.flatMap((wake) => (wake.released ? [wake.released] : []));
+  const head = released.length === 0 ? [] : [releaseLine([...released].reverse().find((entry) => entry.kind === "free") ?? released[released.length - 1]!)];
+  return [...head, ...wakeLines(wakes, view)];
+}
+
+function wakeLines(wakes: readonly Wake[], view: NotificationView): string[] {
   const groups = new Map<string, Wake[]>();
   const order: Array<{ kind: "place"; key: string } | { kind: "solo"; wake: Wake }> = [];
   for (const wake of wakes) {
@@ -223,7 +238,21 @@ export function renderNotifications(
   return `<notifications>\n${lines.join("\n")}\n</notifications>`;
 }
 
-export type MorningPlace = { placeKey: string; kind: "room" | "thread" | "dm"; name?: string; mentions: number; messages: number };
+/**
+ * The morning wake's first line (§21.3, S2): she writes today's schedule before anything else. The
+ * overnight batch follows it when there is one.
+ */
+export function morningGreeting(o: { now: Date; timeZone: string; sleep?: { start: string; end: string }; overnight: boolean }): string {
+  return [
+    `[system] Good morning, it's ${dayText(o.now, o.timeZone)}.`,
+    "Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans.",
+    "Your day is yours to plan: keep it believable for who you are.",
+    ...(o.sleep ? [`Your sleep (${o.sleep.start}–${o.sleep.end}) is fixed.`] : []),
+    ...(o.overnight ? ["Then deal with what came in overnight."] : [])
+  ].join(" ");
+}
+
+export type MorningPlace ={ placeKey: string; kind: "room" | "thread" | "dm"; name?: string; mentions: number; messages: number };
 
 /** The `morning` batch lines (§4.7), built when her sleep (or budget pause) ends. */
 export function morningBatch(
@@ -277,8 +306,9 @@ export function morningBatch(
     } else if (item.reason === "followup") {
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
     } else if (item.reason === "morning" && item.batch) {
-      // An earlier batch she never read (her budget ran out first): its lines without its header.
-      lines.push(...item.batch.slice(1));
+      // An earlier batch she never read (her budget ran out first): its lines without its header
+      // (and without the morning greeting, §21.3).
+      lines.push(...item.batch.filter((line) => !line.startsWith("[system]")).slice(1));
     }
   }
   return lines;

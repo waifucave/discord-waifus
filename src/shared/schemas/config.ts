@@ -255,11 +255,19 @@ const LIFE_FIELDS = {
   notificationLinesPerPlace: z.number().int().min(1).max(50),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
   maintenanceHourLocal: z.number().int().min(0).max(23),
+  /** The morning wake's local hour for a waifu with no sleep window (§21.3). */
+  dayStartHourLocal: z.number().int().min(0).max(23),
+  /** While busy, a place she sent to after a wake that got through stays open this long (§21.4). */
+  busyEngagedMinutes: z.number().int().min(0).max(240),
   dreamMaxRounds: z.number().int().min(5).max(200),
   dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000),
   restNotice: z.boolean(),
   restNoticeRatio: z.number().min(0.5).max(0.99),
-  restSummaryMinChars: z.number().int().min(0).max(5_000)
+  restSummaryMinChars: z.number().int().min(0).max(5_000),
+  /** Her own `<summary>` reset (§21.6b): her last request reached this share of the compaction trigger. */
+  selfSummaryMinRatio: z.number().min(0).max(0.99),
+  /** Her own `<summary>` reset (§21.6b): at least this long since her last epoch start. */
+  selfSummaryCooldownMinutes: z.number().int().min(0).max(10_080)
 };
 // The dream's model (spec §18.4): a route GET /api/models offers, with an optional effort; unset = her model.
 export const DreamModelSchema = z.object({
@@ -282,11 +290,15 @@ export const DEFAULT_LIFE_CONFIG = {
   notificationLinesPerPlace: 8,
   maxWaifuTriggeredTurns: 0,
   maintenanceHourLocal: 5,
+  dayStartHourLocal: 8,
+  busyEngagedMinutes: 10,
   dreamMaxRounds: 60,
   dreamWindowMaxChars: 200_000,
   restNotice: true,
   restNoticeRatio: 0.85,
-  restSummaryMinChars: 200
+  restSummaryMinChars: 200,
+  selfSummaryMinRatio: 0.3,
+  selfSummaryCooldownMinutes: 120
 };
 export const LifeConfigSchema = z
   .object({
@@ -303,12 +315,16 @@ export const LifeConfigSchema = z
     notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.default(DEFAULT_LIFE_CONFIG.notificationLinesPerPlace),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
+    dayStartHourLocal: LIFE_FIELDS.dayStartHourLocal.default(DEFAULT_LIFE_CONFIG.dayStartHourLocal),
+    busyEngagedMinutes: LIFE_FIELDS.busyEngagedMinutes.default(DEFAULT_LIFE_CONFIG.busyEngagedMinutes),
     dreamModel: DreamModelSchema.optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
     dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.default(DEFAULT_LIFE_CONFIG.dreamWindowMaxChars),
     restNotice: LIFE_FIELDS.restNotice.default(DEFAULT_LIFE_CONFIG.restNotice),
     restNoticeRatio: LIFE_FIELDS.restNoticeRatio.default(DEFAULT_LIFE_CONFIG.restNoticeRatio),
     restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.default(DEFAULT_LIFE_CONFIG.restSummaryMinChars),
+    selfSummaryMinRatio: LIFE_FIELDS.selfSummaryMinRatio.default(DEFAULT_LIFE_CONFIG.selfSummaryMinRatio),
+    selfSummaryCooldownMinutes: LIFE_FIELDS.selfSummaryCooldownMinutes.default(DEFAULT_LIFE_CONFIG.selfSummaryCooldownMinutes),
     webFetch: WebFetchConfigSchema,
     home: HomeConfigSchema,
     tmp: TmpConfigSchema,
@@ -447,6 +463,8 @@ export const UpdateAppConfigBodySchema = z.object({
     notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.optional(),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.optional(),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
+    dayStartHourLocal: LIFE_FIELDS.dayStartHourLocal.optional(),
+    busyEngagedMinutes: LIFE_FIELDS.busyEngagedMinutes.optional(),
     // null unsets it (the dream uses her own model again).
     dreamModel: DreamModelSchema.strict().nullable().optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.optional(),
@@ -454,6 +472,8 @@ export const UpdateAppConfigBodySchema = z.object({
     restNotice: LIFE_FIELDS.restNotice.optional(),
     restNoticeRatio: LIFE_FIELDS.restNoticeRatio.optional(),
     restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.optional(),
+    selfSummaryMinRatio: LIFE_FIELDS.selfSummaryMinRatio.optional(),
+    selfSummaryCooldownMinutes: LIFE_FIELDS.selfSummaryCooldownMinutes.optional(),
     webFetch: z.object({
       model: WEB_FETCH_FIELDS.model.optional(),
       maxPerWaifuPerDay: WEB_FETCH_FIELDS.maxPerWaifuPerDay.optional(),

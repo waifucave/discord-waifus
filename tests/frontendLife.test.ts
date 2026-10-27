@@ -106,7 +106,7 @@ describe("Cast editor", () => {
 
   it("explains schedule, budget and DM problems before saving", () => {
     expect(waifuProblems(stored)).toEqual([]);
-    expect(waifuProblems({ ...stored, availability: { sleep: { enabled: true, start: "23:00", end: "23:00" }, busy: [{ start: "09:00", end: "10:00", reason: " " }] } })).toHaveLength(2);
+    expect(waifuProblems({ ...stored, availability: { sleep: { enabled: true, start: "23:00", end: "23:00" } } })).toHaveLength(1);
     expect(waifuProblems({ ...stored, life: { dailyBudgetUsd: 0 } })).toHaveLength(1);
     expect(waifuProblems({ ...stored, dm: { ...stored.dm, rateLimit: { maxReplies: 0, windowMinutes: 60 } } })).toHaveLength(1);
   });

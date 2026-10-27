@@ -4,6 +4,7 @@
 // never depend on the process's TZ.
 
 import type { WaifuAvailability } from "../shared/schemas/domain.js";
+import { busyAt, type DayPlan } from "./home/daySchedule.js";
 
 type Parts = { year: number; month: number; day: number; hour: number; minute: number; second: number; weekday: string };
 
@@ -55,6 +56,12 @@ export function clockText(date: Date, timeZone: string): string {
 export function dayTimeText(date: Date, timeZone: string): string {
   const p = localParts(date, timeZone);
   return `${p.weekday} ${p.day} ${MONTHS[p.month - 1]} ${pad(p.hour)}:${pad(p.minute)}`;
+}
+
+/** "Tue 27 Oct" (the morning greeting, §21.3). */
+export function dayText(date: Date, timeZone: string): string {
+  const p = localParts(date, timeZone);
+  return `${p.weekday} ${p.day} ${MONTHS[p.month - 1]}`;
 }
 
 /** "Tue 18:00" (the reminder line's "you set this …"). */
@@ -134,8 +141,11 @@ export type AvailabilityNow =
   | { state: "busy"; reason: string; until: string }
   | { state: "asleep"; windowStart: Date; windowEnd: Date };
 
-/** Where she is in her schedule right now (sleep first, then busy blocks). */
-export function availabilityAt(availability: WaifuAvailability, now: Date, timeZone: string): AvailabilityNow {
+/**
+ * Where she is in her day right now: asleep (the owner's sleep window) first, then busy in a block
+ * of today's plan (`day`: her `~/life/schedule.json`, §21.2), else awake.
+ */
+export function availabilityAt(availability: Pick<WaifuAvailability, "sleep">, now: Date, timeZone: string, day?: DayPlan): AvailabilityNow {
   const minutes = minutesOfDay(now, timeZone);
   const sleep = availability.sleep;
   if (sleep.enabled) {
@@ -146,16 +156,29 @@ export function availabilityAt(availability: WaifuAvailability, now: Date, timeZ
       return { state: "asleep", windowStart: window.start, windowEnd: window.end };
     }
   }
-  for (const interval of availability.busy) {
-    if (intervalContains(minutes, hhmmMinutes(interval.start), hhmmMinutes(interval.end))) {
-      return { state: "busy", reason: interval.reason.trim() || "busy", until: interval.end };
-    }
-  }
+  const busy = busyAt(day, now, timeZone);
+  if (busy) return { state: "busy", reason: busy.why || "busy", until: busy.until };
   return { state: "awake" };
 }
 
+/**
+ * The start of her current day (§21.3): the latest end of her sleep window at or before `now`, or,
+ * without a sleep window, the latest `hourLocal`:00 at or before `now`.
+ */
+export function dayStartAt(waifu: { availability: Pick<WaifuAvailability, "sleep"> }, now: Date, timeZone: string, hourLocal: number): Date {
+  const sleep = waifu.availability.sleep;
+  const [hour, minute] = sleep.enabled ? (sleep.end.split(":").map(Number) as [number, number]) : [hourLocal, 0];
+  const p = localParts(now, timeZone);
+  for (const shift of [0, -1, -2]) {
+    const day = new Date(Date.UTC(p.year, p.month - 1, p.day + shift));
+    const at = instantOfLocal(timeZone, day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), hour, minute);
+    if (at.getTime() <= now.getTime()) return at;
+  }
+  return now;
+}
+
 /** The sleep window (start, end instants) containing `now`, or undefined when she is awake. */
-export function sleepWindowContaining(availability: WaifuAvailability, now: Date, timeZone: string): { start: Date; end: Date } | undefined {
+export function sleepWindowContaining(availability: Pick<WaifuAvailability, "sleep">, now: Date, timeZone: string): { start: Date; end: Date } | undefined {
   const sleep = availability.sleep;
   if (!sleep.enabled) return undefined;
   const start = hhmmMinutes(sleep.start);
@@ -174,9 +197,9 @@ export function sleepWindowContaining(availability: WaifuAvailability, now: Date
 
 export const MEMORY_WARNING = "your memory of today will be summarised soon; save anything worth keeping to your notes";
 
-/** The permanent time line every appended user message ends with (§5.4). */
-export function timeLine(o: { now: Date; timeZone: string; availability: WaifuAvailability; memoryWarning?: boolean }): string {
-  const status = availabilityAt(o.availability, o.now, o.timeZone);
+/** The permanent time line every appended user message ends with (§5.4); busy from her day (§21.4). */
+export function timeLine(o: { now: Date; timeZone: string; availability: Pick<WaifuAvailability, "sleep">; day?: DayPlan; memoryWarning?: boolean }): string {
+  const status = availabilityAt(o.availability, o.now, o.timeZone, o.day);
   const label = status.state === "busy" ? `busy: ${status.reason} until ${status.until}` : status.state;
   return `[${dayTimeText(o.now, o.timeZone)} · ${label}${o.memoryWarning ? ` · ${MEMORY_WARNING}` : ""}]`;
 }
