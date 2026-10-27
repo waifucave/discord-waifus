@@ -279,11 +279,30 @@ export async function takeDeferred(
 }
 
 /**
+ * The lines of an earlier unread morning batch (pre-rendered) that belong to a forgotten DM or person:
+ * every line naming the DM's handle as its place, and with `names` every line naming one of them as
+ * its author (`from <name>`). A `· DMs:` header left with no DM line under it goes too.
+ */
+export function batchWithout(batch: readonly string[], o: { dmHandle?: string | undefined; names?: readonly string[] }): string[] {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const handle = o.dmHandle ? new RegExp(`(?:^\\s*· |· )${escape(o.dmHandle)}(?: ·|:|$)`, "iu") : undefined;
+  const from = (o.names ?? []).filter(Boolean).map((name) => new RegExp(`(?:^|\\s)from ${escape(name.replace(/"/g, "'"))}(?= ·| "|$)`, "iu"));
+  const kept = batch.filter((line) => !(handle?.test(line) || from.some((pattern) => pattern.test(line))));
+  return kept.filter((line, index) => line.trim() !== "· DMs:" || /^ {4}· /u.test(kept[index + 1] ?? ""));
+}
+
+/**
  * Forget, at once (before the life scrub runs, which a DM user's rate limit can put off until her
  * dream): what waits for her morning from the person goes. Their DM's deferred place and items go
- * whole; elsewhere their kept lines go (the full scrub later also takes quotes that name them).
+ * whole, and so do their lines in an earlier unread batch carried in `items`; elsewhere (with
+ * `everything`) their kept lines and batch lines naming them as author go (the full scrub later
+ * also takes quotes that name them).
  */
-export async function dropDeferredOf(storage: StorageService, waifuId: string, o: { userId: string; dmKey: string; everything: boolean }): Promise<void> {
+export async function dropDeferredOf(
+  storage: StorageService,
+  waifuId: string,
+  o: { userId: string; dmKey: string; everything: boolean; dmHandle?: string; names?: readonly string[] }
+): Promise<void> {
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
     const places: Record<string, DeferredPlace> = {};
     for (const [key, place] of Object.entries(queue.deferred.places)) {
@@ -296,7 +315,13 @@ export async function dropDeferredOf(storage: StorageService, waifuId: string, o
       const lines = all!.filter((line) => line.fromUserId !== o.userId);
       places[key] = { ...rest, ...(lines.length > 0 ? { lines } : {}) };
     }
-    const items = queue.deferred.items.filter((item) => item.placeKey !== o.dmKey && !(o.everything && item.fromUserId === o.userId && item.reason !== "reminder"));
+    const items = queue.deferred.items
+      .filter((item) => item.placeKey !== o.dmKey && !(o.everything && item.fromUserId === o.userId && item.reason !== "reminder"))
+      .map((item) => {
+        if (item.reason !== "morning" || !item.batch) return item;
+        const batch = batchWithout(item.batch, { dmHandle: o.dmHandle, ...(o.everything ? { names: o.names ?? [] } : {}) });
+        return batch.length === item.batch.length ? item : { ...item, batch };
+      });
     const next = { ...queue.deferred, places, items };
     return JSON.stringify(next) === JSON.stringify(queue.deferred) ? queue : { ...queue, deferred: next };
   });

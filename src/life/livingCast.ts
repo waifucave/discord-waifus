@@ -49,7 +49,7 @@ import { IntakeMarks } from "./intakeMarks.js";
 import { homeStoreFor } from "./home/index.js";
 import { MEMORY_INDEX } from "./home/memoryIndex.js";
 import { lifeLocks } from "./paths.js";
-import { collectPlaces } from "./places.js";
+import { collectPlaces, handleOf } from "./places.js";
 import { printLifeLines, printSystemPromptText } from "./lifeView.js";
 import { compactLife, compactRetiredTools, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
@@ -596,7 +596,15 @@ export class LivingCast {
     await this.dropDmMark(o.waifuId, o.userId);
     // What waits for her morning from them goes now too (§23): a rate-limited DM forget's scrub can
     // wait for her dream, and her morning would show their DM lines first.
-    await dropDeferredOf(deps.storage, o.waifuId, { userId: o.userId, dmKey: conversationKey({ kind: "dm", waifuId: o.waifuId, userId: o.userId }), everything: o.scope === "everything" }).catch((error: unknown) => {
+    const dmKey = conversationKey({ kind: "dm", waifuId: o.waifuId, userId: o.userId });
+    const dmHandle = await handleOf(deps.storage, o.waifuId, dmKey).catch(() => undefined);
+    await dropDeferredOf(deps.storage, o.waifuId, {
+      userId: o.userId,
+      dmKey,
+      everything: o.scope === "everything",
+      ...(dmHandle ? { dmHandle } : {}),
+      names: identity.names
+    }).catch((error: unknown) => {
       deps.logger.warn("Forget could not drop the person's deferred wakes", { waifuId: o.waifuId, message: error instanceof Error ? error.message : String(error) });
     });
     const tombstones = new Set<string>(fileHashes);

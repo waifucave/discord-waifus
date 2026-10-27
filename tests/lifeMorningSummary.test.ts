@@ -10,6 +10,7 @@ import { DM_REDACTED, printLifeLines, redactDmNotifications, scanDmContent, view
 import { updateDmLimit } from "../src/orchestration/dm/dmStore.js";
 import { recordForgottenPerson } from "../src/orchestration/dm/forgotten.js";
 import { morningBatch, type MorningPlace, type NotificationView } from "../src/life/notifications.js";
+import { handleOf } from "../src/life/places.js";
 import { MAX_WAKE_MESSAGES } from "../src/life/wakeMessages.js";
 import { scrubWakeQueue, takeDeferred, withDeferred } from "../src/life/wakeQueue.js";
 import type { Wake, WakeQueue } from "../src/shared/schemas/life.js";
@@ -271,9 +272,70 @@ describe("the morning summary's privacy (§23, D14, review)", () => {
     expect(prepared?.rateLimited).toBe(true);
     expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places[DM_KEY]).toBeUndefined();
   }, 30_000);
+
+  it("forget also takes the person's lines out of an earlier unread batch waiting in the deferred items", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    // She has a DM with Kevin (her handle dm/kevin) and a batch her budget kept her from reading.
+    await nightDm(w, "2026-10-24T14:00:00Z", "hi ella");
+    const handle = await handleOf(w.storage, "ella", DM_KEY);
+    expect(handle).toMatch(/^dm\//u);
+    const earlier: Wake = {
+      id: "w-old",
+      reason: "morning",
+      dm: true,
+      batch: [
+        "- during your bed time (00:30–08:30):",
+        "  · DMs:",
+        `    · ${handle} · 02:00 #a0 "a secret"`,
+        "  · bake-club/#general: 2 mentions, 5 messages (01:00–03:00)",
+        '    · mention · 03:00 #a4 from Kevin "<@Ella> my plan"',
+        '    · mention · 03:10 #a5 from Mina "<@Ella> hi"',
+        `  · watch matched · ${handle} · "exam" · from Kevin · 02:00 #a0 · your note: "his exam"`
+      ],
+      at: w.clock.now().toISOString()
+    };
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [], deferred: { reason: "budget", since: w.clock.now().toISOString(), places: {}, items: [earlier] } }));
+    // Inside the 6-hour window (a rate-limited DM forget): only what waits for her goes now.
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, scrubbedAt: { [KEVIN]: new Date(w.clock.ms - 60_000).toISOString() } }));
+    await w.cast.prepareForget({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "everything" });
+    const [left] = (await readLifeFile(w.storage, "ella", "wakes")).deferred.items;
+    expect(left!.batch).toEqual(["- during your bed time (00:30–08:30):", "  · bake-club/#general: 2 mentions, 5 messages (01:00–03:00)", '    · mention · 03:10 #a5 from Mina "<@Ella> hi"']);
+  }, 30_000);
 });
 
 describe("the morning batch's bookkeeping (review)", () => {
+  it("when the deferred wakes keep changing, nothing is released that tick (no day started); the next tick takes them all", async () => {
+    const w = await sleeperWorld(textTurn("(morning)"));
+    await nightDm(w, "2026-10-24T02:00:00Z", "first");
+    const scheduler = w.cast.scheduler as unknown as { morningView: (...args: unknown[]) => Promise<unknown> };
+    const original = scheduler.morningView.bind(scheduler);
+    let built = 0;
+    const spy = vi.spyOn(scheduler, "morningView").mockImplementation(async (...args: unknown[]) => {
+      const view = await original(...args);
+      // A DM arrives while each attempt is built.
+      built += 1;
+      await updateLifeFile(w.storage, "ella", "wakes", (queue) =>
+        withDeferred(queue, { id: `late${built}`, reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: idAt("2026-10-24T08:00:00Z", built), preview: `late ${built}`, at: w.clock.now().toISOString() }, "sleep", w.clock.now())
+      );
+      return view;
+    });
+    const before = (await readLifeState(w.storage, "ella")).lastDayStart;
+    w.clock.ms = at("2026-10-24T08:31:00Z");
+    await w.cast.scheduler.tick();
+    expect(built).toBe(5);
+    const queue = await readLifeFile(w.storage, "ella", "wakes");
+    expect(queue.immediate.filter((wake) => wake.reason === "morning")).toEqual([]);
+    expect(queue.deferred.places[DM_KEY]!.lines).toHaveLength(6);
+    expect((await readLifeState(w.storage, "ella")).lastDayStart).toBe(before);
+    spy.mockRestore();
+    await w.cast.scheduler.tick();
+    const day = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!;
+    expect(day).toMatchObject({ id: "w-day-2026-10-24", dm: true });
+    expect(day.batch!.filter((line) => line.startsWith("    · dm/"))).toHaveLength(6);
+  }, 30_000);
+
+
   it("taking the deferred batch refuses when it changed since it was read", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
     const now = w.clock.now();

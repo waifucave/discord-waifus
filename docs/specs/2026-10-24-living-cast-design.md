@@ -3191,10 +3191,14 @@ built in 3.3.0). This section makes what waited richer: the morning wake's singl
     or before the forget), are left out when the batch is built; with unreadable forget records no
     line is shown and watch matches keep only her note. `prepareForget` drops the person's DM place
     and items from `deferred` at once (`wakeQueue.ts` `dropDeferredOf`; `everything` also their
-    lines elsewhere), since a rate-limited DM forget's scrub can wait for her dream.
+    lines elsewhere), since a rate-limited DM forget's scrub can wait for her dream. An earlier
+    unread batch carried in `items` loses its pre-rendered lines for that DM (the DM's handle as the
+    line's place, `batchWithout`) and, with `everything`, the lines naming them as author
+    (`from <name>`, their certain names); a `· DMs:` header left empty goes too.
   - The batch is built from `deferred` as read and taken only if it is still the same
-    (`takeDeferred(…, expected)` returns `conflict`); otherwise it is read and built again (at most
-    five times, the last one taken as is).
+    (`takeDeferred(…, expected)` returns `conflict`); otherwise it is read and built again, at most
+    five times in one tick. If it still changed, nothing is released that tick (no day wake, no
+    `lastDayStart`); the next tick (15 s) tries again, so no line is lost.
   - A room's night starts no earlier than 10 minutes before the pause (`NIGHT_LEAD_MS`), so a wake
     held in an afternoon busy block and moved into the night keeps its line but does not stretch the
     span or the count.

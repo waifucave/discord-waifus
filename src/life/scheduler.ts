@@ -132,7 +132,7 @@ export function maintenanceDue(
 
 export { dayStartAt } from "./clock.js";
 
-/** How many times the morning batch is built again when a wake was deferred while it was built. */
+/** How many times the morning batch is built in one tick when a wake was deferred while it was built (then the next tick tries). */
 const MORNING_BUILD_ATTEMPTS = 5;
 /** The night of a room may start this much before the pause: the hold of the burst that began it (§4.2: 60 s at most, typing aside). */
 const NIGHT_LEAD_MS = 10 * 60_000;
@@ -412,10 +412,16 @@ export class Scheduler {
         if (overnight.length === 0) return undefined;
         return { id: newWakeId(), reason: "morning", batch: overnight, ...(dm ? { dm: true } : {}), at: now.toISOString() };
       };
-      const taken = await takeDeferred(deps.storage, waifu.id, toWake, attempt < MORNING_BUILD_ATTEMPTS - 1 ? deferred : undefined);
+      const taken = await takeDeferred(deps.storage, waifu.id, toWake, deferred);
       if (!taken.conflict) {
         released = taken.wake;
         break;
+      }
+      // Wakes keep arriving while it is built: nothing is released this tick (no lines lost, no day
+      // started); the next tick tries again.
+      if (attempt >= MORNING_BUILD_ATTEMPTS - 1) {
+        deps.logger.info("Life morning batch put off: the deferred wakes kept changing", { category: "life", waifuId: waifu.id });
+        return;
       }
       deferred = (await readLifeFile(deps.storage, waifu.id, "wakes")).deferred;
     }
