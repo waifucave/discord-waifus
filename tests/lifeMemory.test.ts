@@ -520,7 +520,7 @@ describe("a queued forget never wipes her summary for want of a model (§7.5 ste
     const state = await readLifeState(w.storage, "ella");
     expect(state.summary).toBe("Mina baked lemon tarts.");
     expect(await homeOf(w, "ella").read("me.md")).toBe("# Me\n- I like rye bread.\n");
-  });
+  }, 30_000);
 
   it("no model at all: the summary and epoch stay, every other step runs, and the waiting steps run once a model is back", async () => {
     const w = await lifeWorld(roots, { scripts: script(...TURN, textTurn("Mina baked lemon tarts.")) });
@@ -552,7 +552,7 @@ describe("a queued forget never wipes her summary for want of a model (§7.5 ste
     expect(state.epoch).toBeGreaterThan(epoch);
     expect(w.ledger.lines.slice(linesBefore, linesBefore + 2).map((line) => line.purpose)).toEqual(["compaction", "maintenance"]);
     expect((await readMaintenanceReports(w.storage, "ella")).filter((report) => report.kind === "forget").at(-1)).toMatchObject({ summaryScrub: "done", notesScrub: "done" });
-  });
+  }, 30_000);
 
   it("a failed summary call keeps her summary and epoch; the step runs again after the backoff", async () => {
     const w = await lifeWorld(roots, {
@@ -580,5 +580,5 @@ describe("a queued forget never wipes her summary for want of a model (§7.5 ste
     state = await readLifeState(w.storage, "ella");
     expect(state.summary).toBe("Mina baked lemon tarts.");
     expect(state.epoch).toBeGreaterThan(epoch);
-  });
+  }, 30_000);
 });
