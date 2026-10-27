@@ -3257,3 +3257,31 @@ out and why (`busy`, `bed time`, `asleep`). Tests: each state in/out, open place
 - Tests: `tests/lifeWakes.test.ts` "Jev only sees who is around (§24)" (busy with and without an
   open place, up late here and elsewhere, dozing, asleep, nobody around, budget and `all`),
   `tests/lifeDetector.test.ts` (the draw), `tests/decisionAddressee.test.ts`.
+
+## 25. Rest before her prompt cache goes cold (owner request, 2026-10-27)
+
+Her requests ask the provider to cache the prompt for 1 hour (`cacheTtl: "1h"`, rolling message
+TTL, `src/models/client.ts`); each request refreshes it. After an hour without a request the cache is
+gone and her next turn pays to write her whole context again, and a later compaction pays again.
+When her context is already large, it is cheaper to let her write her own summary (§19) while the
+cache is still warm and start the next stretch small.
+
+- **When**: between turns, no turn running or queued, she is not mid rest/compaction, and
+  - her last request was at least `life.cacheRestMinRatio` (default 0.5) × the compaction trigger, and
+  - `life.cacheRestLeadMinutes` (default 10) before her route's cache expires: last request time +
+    the route's cache TTL − lead. The TTL comes from the route when winter's catalog says it honours
+    an explicit 1-hour cache (Anthropic models, also through OpenRouter); for routes without a known
+    TTL nothing happens (no guessing).
+  - Not while she is **asleep** (§21.6c) if her bed time ends within the TTL (she will be compacted
+    by the morning `day` reset anyway); otherwise yes (it is a quiet harness turn; nobody sees it).
+  - At most once per epoch; never when `life.restNotice` is off.
+- **What**: the §19 rest turn with its notice (same wording plus one sentence: "You've been quiet a
+  while; this is a good moment to rest."), the same tool refusals, acceptance and fallback (ignored →
+  nothing else happens now; the normal triggers stay).
+- **Settings**: `life.cacheRestMinRatio` (0.5), `life.cacheRestLeadMinutes` (10), registry entries
+  with help, CLI and HTTP paths.
+- **Budget**: the context budget stays `life.maxContextTokens` (default 96,000, max 100,000), which
+  already keeps Haiku below 100k.
+- **Tests**: fires at TTL − lead with a big context and not with a small one; not for routes without
+  a TTL; not when a wake is queued or a turn runs; not while asleep near morning; once per epoch;
+  accepted → new epoch; usage ledger shows the rest turn as cache reads.
