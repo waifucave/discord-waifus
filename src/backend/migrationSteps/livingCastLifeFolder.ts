@@ -154,7 +154,10 @@ export async function migrateLivingCastLifeFolder(dataRoot: string, o: { now?: (
         continue;
       }
       // Before anything moves: a `life` of her own steps aside, and the marker says what is to come.
+      // Nothing to do (no old file, no `life` of hers): no marker either (the app writes it when it
+      // runs her life), so the data root stays as it was.
       const lifeName = homeNames.find((name) => key(name) === "life");
+      if (!lifeName && !homeNames.some((name) => LIFE_FOLDER_MOVES.some((move) => key(move.from) === key(name)))) continue;
       let notes: string | undefined;
       if (lifeName) {
         const lifeKind = await kind(path.join(home, lifeName));
