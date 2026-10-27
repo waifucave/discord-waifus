@@ -33,7 +33,7 @@ import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
 import { dayStartAt, timeLine } from "./clock.js";
-import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
+import { compactLife, compactRetiredTools, currentHarness, KEPT_TURNS, newTurnId, startEpoch, startPendingEpoch, turnCount, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
@@ -477,8 +477,10 @@ export class Life {
     if (paused) return state;
     // She had her rest turn and its compaction was interrupted: compact now, leaving that turn out (§19.4).
     if (state.restTurn?.epoch === state.epoch) return this.compact(waifu, state, lines, harness, "tokens", signal, { openTurnId: state.restTurn.turnId });
-    // Her morning turn ended: her new day's plan goes into block A (§21.3), once.
-    if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal);
+    // Her morning turn ended: her new day's plan goes into block A (§21.3), once. An epoch of at most
+    // the kept turns (it began this morning: an upgrade's or another compaction's) keeps them whole
+    // and its summary: no second summary right after the first.
+    if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal, turnCount(lines) <= KEPT_TURNS ? { truncate: true } : {});
     const budget = lifeBudget(model, config.life.maxContextTokens);
     const messageLines = lines.filter((line) => line.message !== null).length;
     if ((state.lastRequestTokens ?? 0) >= config.compaction.triggerRatio * budget) return this.compact(waifu, state, lines, harness, "tokens", signal);

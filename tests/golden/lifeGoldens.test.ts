@@ -191,7 +191,6 @@ describe("Living cast goldens", () => {
         textTurn("(evening)"),
         toolTurn([{ name: "Write", input: { file_path: "~/life/schedule.json", content: day } }]),
         textTurn("(planned)"),
-        textTurn("Saturday morning: I planned my day."),
         textTurn("(on my break)")
       )
     });
@@ -220,7 +219,9 @@ describe("Living cast goldens", () => {
     w.clock.ms = Date.parse("2026-10-24T13:30:00.000Z");
     await w.cast.scheduler.tick();
     await w.cast.life("ella").runNow();
-    const phone = w.anthropic.calls[4]!.request;
+    // Her epoch had two turns: the day compaction keeps them and rebuilds block A (no summary call).
+    expect(w.anthropic.calls).toHaveLength(4);
+    const phone = w.anthropic.calls[3]!.request;
     await expect(
       `${serializeSystem(phone).replace(/^[\s\S]*?(<schedule>[\s\S]*?<\/schedule>)[\s\S]*$/u, "(block A up to here: see life-system-prompt.txt)\n$1")}\n${serializeMessages(phone.messages, phone.messages.length - 1)}\n`
     ).toMatchFileSnapshot("./__snapshots__/life-day-busy.txt");

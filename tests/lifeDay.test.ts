@@ -64,8 +64,7 @@ describe("the morning wake (§21.3)", () => {
       scripts: script(
         textTurn("hi"),
         toolTurn([{ name: "Write", input: { file_path: "~/life/schedule.json", content: plan("2026-10-24") } }]),
-        textTurn("planned"),
-        textTurn("Summary: Saturday, studio shift at noon, movie night later.")
+        textTurn("planned")
       )
     });
     w.clock.ms = at("2026-10-23T20:00:00Z");
@@ -94,14 +93,16 @@ describe("the morning wake (§21.3)", () => {
 
     await w.cast.life("ella").runNow();
     const calls = w.anthropic.calls.map((call) => call.request);
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(3);
     expect(lastText(calls[1]!)).toContain("Good morning, it's Sat 24 Oct");
     // Her Write is told that the prompt's copy is old; it updates at the day compaction.
     expect(lastText(calls[2]!)).toContain(promptCopyText("~/life/schedule.json"));
     expect(calls[1]!.system).toContain("No plan for today yet.");
-    // Call 4 is the summary of the day compaction; then block A shows today's plan.
+    // Her epoch holds two turns: the day compaction keeps them whole (no summary call) and block A
+    // shows today's plan.
     const state = await readLifeState(w.storage, "ella");
-    expect(state.lastCompaction).toMatchObject({ reason: "day", summarized: true });
+    expect(state.lastCompaction).toMatchObject({ reason: "day", summarized: false });
+    expect(state.epoch).toBe(2);
     expect(state.dayCompactionDue).toBeUndefined();
     expect(state.systemSnapshot!.harness).toContain("<schedule>\nYour bed time is 00:30–08:30.\nToday (2026-10-24)");
     expect(state.systemSnapshot!.harness).toContain("Busy 12:00–15:30: studio shift");
@@ -112,7 +113,7 @@ describe("the morning wake (§21.3)", () => {
   });
 
   it("with no plan written she has none today, and the compaction still runs once", async () => {
-    const w = await lifeWorld(roots, { scripts: script(textTurn("hi"), textTurn("lazy day"), textTurn("Summary: a lazy Saturday."), textTurn("hey")) });
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi"), textTurn("lazy day"), textTurn("hey")) });
     // No sleep window: her day starts at life.dayStartHourLocal (8).
     w.clock.ms = at("2026-10-24T07:00:00Z");
     await w.cast.scheduler.tick();
@@ -134,8 +135,21 @@ describe("the morning wake (§21.3)", () => {
     // A later wake is an ordinary turn: no second compaction.
     await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "reminder", note: "again", at: w.clock.now().toISOString() });
     await w.cast.life("ella").runNow();
-    expect(w.anthropic.calls).toHaveLength(4);
+    expect(w.anthropic.calls).toHaveLength(3);
     expect((await readLifeState(w.storage, "ella")).epoch).toBe(state.epoch);
+  });
+
+  it("a longer epoch is summarised by the day compaction; one that began this morning (an upgrade's) is kept, so one compaction serves both", async () => {
+    const turns = Array.from({ length: 4 }, (_, index) => textTurn(`turn ${index + 1}`));
+    const w = await lifeWorld(roots, { scripts: script(...turns, textTurn("my day"), textTurn("Summary: a long Saturday.")) });
+    w.clock.ms = at("2026-10-24T07:00:00Z");
+    await w.cast.scheduler.tick();
+    for (let index = 0; index < 4; index += 1) await beginLife(w);
+    w.clock.ms = at("2026-10-24T08:00:00Z");
+    await w.cast.scheduler.tick();
+    await w.cast.life("ella").runNow();
+    expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "day", summarized: true });
+    expect(w.anthropic.calls).toHaveLength(6);
   });
 
   it("a host that was down all morning sends it at the first tick after boot, once", async () => {

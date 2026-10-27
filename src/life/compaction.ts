@@ -112,6 +112,11 @@ function newTurnId(): string {
 export { newTurnId };
 
 /** Turn ids of the log in order of first appearance (lines without one are grouped as ""). */
+/** How many turns the epoch's log holds (complete or not). */
+export function turnCount(lines: readonly LifeLogLine[]): number {
+  return turnOrder(lines).filter((id) => id !== "").length;
+}
+
 function turnOrder(lines: readonly LifeLogLine[]): string[] {
   const order: string[] = [];
   for (const line of lines) {
