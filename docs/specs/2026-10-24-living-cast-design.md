@@ -3185,3 +3185,20 @@ built in 3.3.0). This section makes what waited richer: the morning wake's singl
 - Tests: `tests/lifeMorningSummary.test.ts`; goldens `life-morning-summary.txt` (new, the example
   above), `life-morning.txt` and `life-day-morning.txt` (the DMs as lines, the mention line, the
   span, the watch match's time and ref).
+
+## 24. Jev only sees who is around (owner request, 2026-10-27)
+
+The addressee detector's member list for a place (`addressee` and `chime_in` choices, the `anyone`
+draw, the state's availability lines) contains only waifus who are **available there**:
+
+- awake (not in a busy block and outside her bed time), or
+- busy or in her bed time (up late or dozing) **but with that place open for her** (§21.4, §21.6c: she
+  sent a message there within `life.busyEngagedMinutes`), i.e. she joined in first.
+
+A busy, dozing or asleep waifu whose place is not open is left out entirely: Jev can neither pick her
+as the addressee nor for a chime-in, and an `anyone` draw never lands on her. Direct address still
+reaches her through intake as before (mention, reply, her name, DMs), never through Jev. When nobody
+is available, a message for "anyone" wakes nobody. The previous busy weight (×1) in the `anyone`
+draw is removed; available waifus keep weight ×3 × recency. Detector history records who was left
+out and why (`busy`, `bed time`, `asleep`). Tests: each state in/out, open place keeps her in, the
+`anyone` draw with nobody available, history entries, the benchmark fixtures updated.
