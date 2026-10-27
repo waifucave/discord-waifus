@@ -37,6 +37,7 @@ import {
   readTranscriptDay,
   readTranscriptAccess,
   reconcileRoomAccess,
+  transcriptHasLine,
   transcriptsStartedAt,
   type TranscriptEnv,
   type TranscriptLine
@@ -297,12 +298,16 @@ export class TranscriptWriter {
       lines.push(line);
     }
     if (lines.length === 0) return;
-    // Refs at ingest (§22.1): a failure leaves the lines without one (ReadMessages assigns it later).
-    const refs = await assignConversationRefs(this.deps.storage, key as ConversationKey, lines.map((line) => line.id), now).catch((error: unknown) => {
+    // Refs at ingest (§22.1), only for lines not written yet: a line already there keeps its own (a
+    // REST page sends old messages again). A failure leaves the lines without one.
+    const fresh: TranscriptLine[] = [];
+    for (const line of lines) if (!(await transcriptHasLine(this.env, key, line))) fresh.push(line);
+    if (fresh.length === 0) return;
+    const refs = await assignConversationRefs(this.deps.storage, key as ConversationKey, fresh.map((line) => line.id), now).catch((error: unknown) => {
       this.deps.logger.warn("Transcript refs could not be assigned", { category: "life", message: error instanceof Error ? error.message : String(error) });
       return new Map<string, string>();
     });
-    for (const line of lines) {
+    for (const line of fresh) {
       const ref = refs.get(line.id);
       await addTranscriptLine(this.env, key, ref ? { ...line, ref } : line, { startedAt });
     }

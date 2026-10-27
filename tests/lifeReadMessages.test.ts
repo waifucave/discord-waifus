@@ -2,7 +2,7 @@
 // pruned ref still resolving through the transcript (ReadMessages, SendMessage reply_to, React), the
 // freeform query (grammar, anchors, ranges, max), several places at once, and people: / search: over
 // her transcripts (access intervals, everywhere, D14). Temp data roots, fake Discord; no live calls.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { snowflakeAt, snowflakeTime } from "../src/discord/refStore.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { withPlaceRecord } from "../src/life/placeRecorder.js";
@@ -279,4 +279,170 @@ describe("people: and search: over her transcripts (§22.2)", () => {
     expect([...rooms.places].some((key) => key.startsWith("dm_"))).toBe(false);
     expect(text(await read(w, "everywhere", "search:pineapple"))).toMatch(/^no messages match \(searched /u);
   });
+});
+
+describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
+  async function fedAt(w: LifeWorld, iso: string, place: ConversationRef, content: string, o: Parameters<LifeWorld["discord"]["post"]>[2] = {}) {
+    w.clock.ms = Date.parse(iso);
+    const message = w.discord.post(place, content, o);
+    w.cast.transcripts.onCacheEvent({ type: "create", conversation: place, message, own: o.authorId === ELLA_BOT });
+    await w.cast.transcripts.settle();
+    return message;
+  }
+
+  async function clearRefs(w: LifeWorld, key = ROOM_KEY) {
+    const refsFile = conversationRefsPath(key as never);
+    const refs = await w.storage.readJson(refsFile, ConversationRefsSchema);
+    await w.storage.writeJson(`refs:${key}`, refsFile, ConversationRefsSchema, { ...refs, refs: {} });
+  }
+
+  async function refsJson(w: LifeWorld, key = ROOM_KEY) {
+    return (await w.storage.readJson(conversationRefsPath(key as never), ConversationRefsSchema).catch(() => ({ refs: {} as Record<string, string> }))).refs;
+  }
+
+  it("a page takes the ref stored on the transcript line (refs.json pruned it) and never gives a message a second ref", async () => {
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-10-20T00:00:00.000Z");
+    await w.cast.transcripts.start();
+    await fedAt(w, "2026-10-24T09:00:00.000Z", ROOM, "an old one");
+    await fedAt(w, "2026-10-24T09:01:00.000Z", ROOM, "a newer one");
+    await clearRefs(w);
+    w.clock.ms = Date.parse("2026-10-24T14:00:00.000Z");
+    const page = text(await read(w, "bake-club/#general"));
+    expect(page).toContain("[09:00 #a0] Kevin: an old one");
+    expect(page).toContain("[09:01 #a1] Kevin: a newer one");
+    expect(await refsJson(w)).toEqual({});
+    expect((await read(w, "bake-club/#general", "around #a0")).isError).not.toBe(true);
+  });
+
+  it("a message past the age limit gets no new ref; the page's edge hint is its time instead", async () => {
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-09-01T10:00:00.000Z");
+    postMinutes(w, ROOM, Array.from({ length: 6 }, (_, index) => `september ${index + 1}`));
+    w.clock.ms = Date.parse("2026-10-24T14:00:00.000Z");
+    const page = text(await read(w, "bake-club/#general", "before 2026-09-02 max:3"));
+    expect(bodies(page)).toEqual(["Mina: september 4", "Kevin: september 5", "Mina: september 6"]);
+    expect(page).toContain("[10:04] Mina: september 4");
+    expect(page.split("\n")[1]).toBe("— more before: before 2026-09-01 10:04 —");
+    expect(await refsJson(w)).toEqual({});
+  });
+
+  it("refs.json is pruned only once it has grown well past the span", async () => {
+    const { assignConversationRefs, MAX_REF_SPAN, REF_PRUNE_SLACK } = await import("../src/discord/refStore.js");
+    const w = await lifeWorld(roots);
+    const oldId = snowflakeAt(Date.parse("2026-08-01T00:00:00.000Z"));
+    const refsFile = conversationRefsPath(ROOM_KEY as never);
+    const seed = (count: number) =>
+      ConversationRefsSchema.parse({
+        schemaVersion: 2,
+        revision: 0,
+        updatedAt: NOW.toISOString(),
+        conversationKey: ROOM_KEY,
+        counter: 360 + count,
+        refs: { [oldId]: "a0", ...Object.fromEntries(Array.from({ length: count - 1 }, (_, index) => [snowflakeAt(NOW.getTime() - 60_000 + index), (361 + index).toString(36)])) }
+      });
+    await w.storage.writeJson(`refs:${ROOM_KEY}`, refsFile, ConversationRefsSchema, seed(10));
+    await assignConversationRefs(w.storage, ROOM_KEY as never, [snowflakeAt(NOW.getTime())], NOW);
+    expect((await refsJson(w))[oldId]).toBe("a0");
+    await w.storage.writeJson(`refs:${ROOM_KEY}`, refsFile, ConversationRefsSchema, seed(MAX_REF_SPAN + REF_PRUNE_SLACK + 1));
+    await assignConversationRefs(w.storage, ROOM_KEY as never, [snowflakeAt(NOW.getTime() + 1)], NOW);
+    expect((await refsJson(w))[oldId]).toBeUndefined();
+  }, 30_000);
+
+  it("finds a ref a gap fill wrote into an older day (refs are not in day order)", async () => {
+    const { addTranscriptLine, findTranscriptRef } = await import("../src/life/transcripts/store.js");
+    const w = await lifeWorld(roots);
+    const env = { dataRoot: w.root, timeZone: TZ };
+    const line = (at: string, ref: string) => ({ id: snowflakeAt(Date.parse(at)), at, authorId: MINA_USER, author: "Mina", text: `ref ${ref}`, ref });
+    await addTranscriptLine(env, ROOM_KEY, line("2026-10-20T10:00:00.000Z", "b5"));
+    await addTranscriptLine(env, ROOM_KEY, line("2026-10-23T10:00:00.000Z", "a3"));
+    expect((await findTranscriptRef(w.root, ROOM_KEY, "b5"))?.text).toBe("ref b5");
+    expect((await findTranscriptRef(w.root, ROOM_KEY, "a3"))?.text).toBe("ref a3");
+    expect(await findTranscriptRef(w.root, ROOM_KEY, "zz")).toBeUndefined();
+  });
+
+  it("a forgotten person's lines stay out of searches, ref lookups and /transcripts even before the forget job's transcript part ran", async () => {
+    const { recordForgottenPerson } = await import("../src/orchestration/dm/forgotten.js");
+    const { TranscriptView } = await import("../src/life/transcripts/view.js");
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-10-20T00:00:00.000Z");
+    await w.cast.transcripts.start();
+    await fedAt(w, "2026-10-24T09:00:00.000Z", ROOM, "my secret recipe uses cardamom", { authorId: MINA_USER, authorName: "Mina" });
+    await fedAt(w, "2026-10-24T09:01:00.000Z", ROOM, "cardamom is great");
+    await clearRefs(w);
+    await recordForgottenPerson(w.storage, MINA_USER, new Date("2026-10-24T10:00:00.000Z"));
+    w.clock.ms = Date.parse("2026-10-24T14:00:00.000Z");
+    expect(bodies(text(await read(w, "bake-club/#general", "search:cardamom")))).toEqual(["Kevin: cardamom is great"]);
+    expect((await read(w, "bake-club/#general", "around #a0")).content).toBe("error: message too old");
+    const day = await new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: TZ, now: w.clock.now }).read(["bake-club", "general", "2026-10-24.md"]);
+    expect(day).not.toContain("secret recipe");
+    expect(day).toContain("cardamom is great");
+  });
+
+  it("a DM's lines at or below its forget floor stay out of searches", async () => {
+    const { updateDmLimit } = await import("../src/orchestration/dm/dmStore.js");
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-10-20T00:00:00.000Z");
+    await w.cast.transcripts.start();
+    const hello = w.discord.post(dmOf("ella"), "hi ella");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: hello.id, createdAt: hello.createdAt });
+    w.cast.intake.close();
+    const before = await fedAt(w, "2026-10-24T15:00:00.000Z", dmOf("ella"), "the old brownie secret");
+    await fedAt(w, "2026-10-24T16:00:00.000Z", dmOf("ella"), "new brownie plans");
+    await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, floorMessageId: before.id }));
+    const found = text(await read(w, "everywhere", "search:brownie"));
+    expect(found).toContain("new brownie plans");
+    expect(found).not.toContain("old brownie secret");
+  });
+
+  it("the cache's unwritten tail starts after the store's newest line and stays inside her interval", async () => {
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-10-20T00:00:00.000Z");
+    await w.cast.transcripts.start();
+    await fedAt(w, "2026-10-24T12:00:00.000Z", ROOM, "written: muffins");
+    await updateTranscriptAccess(w.root, "ella", (access) => ({ conversations: { ...access.conversations, [ROOM_KEY]: [{ from: "2026-10-24T11:00:00.000Z" }] } }));
+    w.clock.ms = Date.parse("2026-10-24T13:00:00.000Z");
+    const outside = { ...w.discord.post(ROOM, "muffins before she came"), id: snowflakeAt(Date.parse("2026-10-24T10:30:00.000Z")), createdAt: "2026-10-24T10:30:00.000Z" };
+    const fresh = w.discord.post(ROOM, "muffins again, not written yet");
+    vi.spyOn(w.cast.deps.conversations, "bufferedMessages").mockReturnValue([outside, fresh]);
+    expect(bodies(text(await read(w, "bake-club/#general", "search:muffins")))).toEqual(["Kevin: written: muffins", "Kevin: muffins again, not written yet"]);
+  });
+
+  it("stops at its limits and says how far it searched; an aborted call stops between days", async () => {
+    const { SEARCH_LIMITS } = await import("../src/life/tools/messages.js");
+    const w = await lifeWorld(roots);
+    w.clock.ms = Date.parse("2026-10-20T00:00:00.000Z");
+    await w.cast.transcripts.start();
+    for (const day of ["21", "22", "23", "24"]) await fedAt(w, `2026-10-${day}T09:00:00.000Z`, ROOM, `tea on day ${day}`);
+    w.clock.ms = Date.parse("2026-10-24T14:00:00.000Z");
+    const days = SEARCH_LIMITS.days;
+    SEARCH_LIMITS.days = 2;
+    try {
+      const found = text(await read(w, "bake-club/#general", "search:tea"));
+      expect(found.split("\n")[1]).toBe("2 messages match (searched 2026-10-23 – 2026-10-24; the search stopped at its size limit: add before or after to look further)");
+      expect(found).toContain("— more before: before #");
+      expect(bodies(found)).toEqual(["Kevin: tea on day 23", "Kevin: tea on day 24"]);
+    } finally {
+      SEARCH_LIMITS.days = days;
+    }
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    const ctx = { ...(await ctxFor(w)), signal: controller.signal };
+    await expect(lifeTool("ReadMessages")!.run({ place: "bake-club/#general", query: "search:tea" }, ctx)).rejects.toThrow("stop");
+  });
+
+  it("people:Max 5 is a name; the old limit field counts only without a max term; max:100 still says when there is more", async () => {
+    const parse = (query: string) => parseReadQuery(query, { now: NOW, timeZone: TZ });
+    expect(parse("people:Max 5")).toEqual({ ok: true, query: { people: ["max 5"] } });
+    expect(parse("people:Max max:5")).toEqual({ ok: true, query: { people: ["max"], max: 5 } });
+    const w = await lifeWorld(roots);
+    postMinutes(w, ROOM, Array.from({ length: 101 }, (_, index) => `n${index + 1}`));
+    const ctx = await ctxFor(w);
+    expect(bodies(text(await lifeTool("ReadMessages")!.run({ place: "bake-club/#general", limit: 2, query: "people:Max" }, ctx)))).toEqual([]);
+    expect(bodies(text(await lifeTool("ReadMessages")!.run({ place: "bake-club/#general", limit: 2 }, ctx)))).toEqual(["Mina: n100", "Kevin: n101"]);
+    expect(bodies(text(await lifeTool("ReadMessages")!.run({ place: "bake-club/#general", limit: 2, query: "max:3" }, ctx)))).toHaveLength(3);
+    const hundred = text(await read(w, "bake-club/#general", "max:100"));
+    expect(bodies(hundred)).toHaveLength(100);
+    expect(hundred.split("\n")[1]).toMatch(/^— more before: before #[0-9a-z]+ —$/u);
+  }, 30_000);
 });

@@ -146,23 +146,93 @@ export async function readTranscriptDay(dataRoot: string, key: string, day: stri
   return parseLines(raw).sort(compareLines);
 }
 
-/**
- * The line a ref names in a conversation (§22.1: a ref pruned from `refs.json` still resolves while
- * its line exists), searched newest day first; refs grow with time, so a day whose refs are all
- * older than the one wanted ends the search.
- */
-export async function findTranscriptRef(dataRoot: string, key: string, ref: string): Promise<TranscriptLine | undefined> {
-  const wanted = /^[0-9a-z]{2,8}$/u.test(ref) ? parseInt(ref, 36) : Number.NaN;
-  if (!Number.isFinite(wanted)) return undefined;
+/** A stored line read without the schema (searches read many): the fields every line has, checked by type. */
+function liteLine(value: unknown): TranscriptLine | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const line = value as Record<string, unknown>;
+  if (typeof line.id !== "string" || typeof line.at !== "string" || typeof line.authorId !== "string" || typeof line.author !== "string" || typeof line.text !== "string") return undefined;
+  return line as unknown as TranscriptLine;
+}
+
+/** One day for a search (§22.2): parsed without the schema, oldest first, with the bytes read. */
+export async function readTranscriptDayLite(dataRoot: string, key: string, day: string): Promise<{ lines: TranscriptLine[]; bytes: number }> {
+  let raw: string;
+  try {
+    raw = await readFile(dayPath(dataRoot, key, day), "utf8");
+  } catch {
+    return { lines: [], bytes: 0 };
+  }
+  const lines: TranscriptLine[] = [];
+  for (const text of raw.split("\n")) {
+    if (!text.trim()) continue;
+    try {
+      const line = liteLine(JSON.parse(text));
+      if (line) lines.push(line);
+    } catch {
+      // a torn last line
+    }
+  }
+  return { lines: lines.sort(compareLines), bytes: raw.length };
+}
+
+/** The newest line a conversation has (whoever could see it), or undefined. */
+export async function newestTranscriptLine(dataRoot: string, key: string): Promise<TranscriptLine | undefined> {
   const days = await listTranscriptDays(dataRoot, key);
   for (let index = days.length - 1; index >= 0; index -= 1) {
-    const lines = await readTranscriptDay(dataRoot, key, days[index]!);
-    const found = lines.find((line) => line.ref === ref);
-    if (found) return found;
-    const counters = lines.flatMap((line) => (line.ref ? [parseInt(line.ref, 36)] : [])).filter(Number.isFinite);
-    if (counters.length > 0 && Math.max(...counters) < wanted) return undefined;
+    const { lines } = await readTranscriptDayLite(dataRoot, key, days[index]!);
+    if (lines.length > 0) return lines[lines.length - 1];
   }
   return undefined;
+}
+
+/** Whether the conversation already has this message's line (the cached day index: one stat). */
+export async function transcriptHasLine(env: TranscriptEnv, key: string, line: Pick<TranscriptLine, "id" | "at">): Promise<boolean> {
+  return (await dayIndex(env.dataRoot, key, transcriptDay(line.at, env.timeZone))).ids.has(line.id);
+}
+
+/**
+ * The line a ref names in a conversation (§22.1: a ref pruned from `refs.json` still resolves while
+ * its line exists), newest day first. Refs are not in day order (a gap fill writes new refs into
+ * older days), so every day is looked at, each first as text (a day without the ref is not parsed).
+ * `accept`: a line the reader may see (forgotten people, a DM floor).
+ */
+export async function findTranscriptRef(dataRoot: string, key: string, ref: string, accept: (line: TranscriptLine) => boolean = () => true): Promise<TranscriptLine | undefined> {
+  if (!/^[0-9a-z]{2,8}$/u.test(ref)) return undefined;
+  const needle = `"ref":"${ref}"`;
+  const days = await listTranscriptDays(dataRoot, key);
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    let raw: string;
+    try {
+      raw = await readFile(dayPath(dataRoot, key, days[index]!), "utf8");
+    } catch {
+      continue;
+    }
+    if (!raw.includes(needle)) continue;
+    for (const text of raw.split("\n")) {
+      if (!text.includes(needle)) continue;
+      try {
+        const line = liteLine(JSON.parse(text));
+        if (line?.ref === ref) return accept(line) ? line : undefined;
+      } catch {
+        // a torn line
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The refs stored on the lines of these messages (`refs.json` may have pruned them): the day files
+ * their times fall on are read once each.
+ */
+export async function transcriptRefsOf(env: TranscriptEnv, key: string, messages: ReadonlyArray<{ id: string; at: string }>): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (messages.length === 0) return out;
+  const wanted = new Set(messages.map((message) => message.id));
+  for (const day of new Set(messages.map((message) => transcriptDay(message.at, env.timeZone)))) {
+    for (const line of (await readTranscriptDayLite(env.dataRoot, key, day)).lines) if (line.ref && wanted.has(line.id)) out.set(line.id, line.ref);
+  }
+  return out;
 }
 
 /** The day file's size and time (undefined when there is none). */

@@ -121,12 +121,12 @@ function terms(text: string): { lead: string; found: Array<{ key: Key; value: st
   for (const candidate of candidates) {
     const current = accepted[accepted.length - 1];
     if (current && candidate.index < current.valueStart) continue;
-    // Inside a people or search value, a word like "before" is part of it unless it starts a term:
-    // a `key:` form, an anchor after before/after/around, or a number after max.
+    // Inside a people or search value, a word like "before" or "max" is part of it (`people:Max 5`,
+    // `search:meet before lunch`) unless it starts a term: a `key:` form, or before/after/around
+    // followed by an anchor.
     if (current && (current.key === "people" || current.key === "search") && !candidate.colon) {
-      const rest = text.slice(candidate.valueStart);
-      const starts = candidate.key === "max" ? /^\d/u.test(rest) : candidate.key === "before" || candidate.key === "after" || candidate.key === "around" ? ANCHOR_START.test(rest) : false;
-      if (!starts) continue;
+      const anchorKey = candidate.key === "before" || candidate.key === "after" || candidate.key === "around";
+      if (!anchorKey || !ANCHOR_START.test(text.slice(candidate.valueStart))) continue;
     }
     accepted.push(candidate);
   }

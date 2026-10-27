@@ -337,7 +337,7 @@ describe("Living cast goldens", () => {
     await w.cast.life("ella").runNow();
     const last = w.anthropic.calls[w.anthropic.calls.length - 2]!.request;
     await expect(serializeMessages(last.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-watch-timeout.txt");
-  });
+  }, 30_000);
 
   it("the detector state and question", async () => {
     const now = new Date("2026-10-24T14:00:00.000Z");

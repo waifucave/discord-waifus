@@ -23,6 +23,15 @@ export function transcriptRemovableNames(names: readonly string[] = []): string[
   return names.filter((name) => name.trim().length > 0 && !hasNoWordBoundaries(name) && !isWeakName(name));
 }
 
+/**
+ * A line a forget record covers (§7.5): theirs, or one naming them by id, from before their forget.
+ * Readers of the store leave it out even when the forget job's transcript part has not run (yet).
+ */
+export function forgottenLine(line: Pick<TranscriptLine, "at" | "authorId" | "mentions" | "text">, forgotten: ReadonlyArray<{ userId: string; at: string }>): boolean {
+  const at = Date.parse(line.at);
+  return forgotten.some((person) => at <= Date.parse(person.at) && (line.authorId === person.userId || line.mentions?.includes(person.userId) === true || line.text.includes(person.userId)));
+}
+
 /** A line that is theirs (written at or before `at`) or that mentions them. */
 export function lineCarriesPerson(line: TranscriptLine, o: { userId: string; names: readonly string[]; at: Date }): boolean {
   if (line.authorId === o.userId && Date.parse(line.at) <= o.at.getTime()) return true;

@@ -6,8 +6,9 @@
 // lock, which the DM forget also takes): the transcript writer at ingest (§22.1), `ReadMessages`,
 // sends and notices assign refs in message-id order. Writing the first ref creates the conversation
 // directory, which the durable image index needs before it records anything
-// (src/discord/imageIndex.ts). Refs older than 10,000 messages or 30 days in that place are pruned on
-// write; a pruned ref still resolves through its transcript line (`findTranscriptRef`, read by the
+// (src/discord/imageIndex.ts). Refs older than 10,000 messages or 30 days in that place are pruned
+// once the table holds `REF_PRUNE_SLACK` more than 10,000 refs, and a message older than 30 days gets
+// no new ref; a pruned ref still resolves through its transcript line (`findTranscriptRef`, read by the
 // life's `messageIdForRef`), and an unknown one to nothing (`error: message too old` for the tools).
 
 import { createRevisionedBase } from "../shared/schemas/common.js";
@@ -20,8 +21,10 @@ export { REF_COUNTER_START };
 
 /** Refs further than this many messages behind the counter are pruned. */
 export const MAX_REF_SPAN = 10_000;
-/** Refs of messages older than this are pruned. */
+/** Refs of messages older than this are pruned (and such messages get no new ref). */
 export const MAX_REF_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Pruning runs only once the table holds this many refs past the span (not at every write). */
+export const REF_PRUNE_SLACK = 1_000;
 
 const DISCORD_EPOCH_MS = 1_420_070_400_000n;
 
@@ -64,11 +67,14 @@ export function shiftId(id: string, delta: number): string {
  * Assign refs to the ids that lack one, in the given order (callers pass message-id order so refs
  * grow with the conversation). Returns undefined when nothing changed.
  */
-export function assignRefsTo(refs: ConversationRefs, messageIds: readonly string[]): ConversationRefs | undefined {
+export function assignRefsTo(refs: ConversationRefs, messageIds: readonly string[], nowMs?: number): ConversationRefs | undefined {
   let counter = Math.max(refs.counter, REF_COUNTER_START);
   let next: Record<string, string> | undefined;
   for (const id of messageIds) {
     if (refs.refs[id] !== undefined || next?.[id] !== undefined) continue;
+    // A message past the age limit gets no ref (it would be pruned at once); its transcript line may have one.
+    const time = nowMs === undefined ? undefined : snowflakeTime(id);
+    if (time !== undefined && nowMs! - time > MAX_REF_AGE_MS) continue;
     next ??= { ...refs.refs };
     next[id] = encodeRef(counter);
     counter += 1;
@@ -124,15 +130,21 @@ export async function assignConversationRefs(
 ): Promise<Map<string, string>> {
   const ordered = [...new Set(messageIds)].sort(compareIds);
   const current = await readConversationRefs(storage, key);
-  if (ordered.every((id) => current.refs[id] !== undefined)) return new Map(Object.entries(current.refs));
+  const nowMs = now.getTime();
+  const assignable = (id: string) => {
+    const time = snowflakeTime(id);
+    return time === undefined || nowMs - time <= MAX_REF_AGE_MS;
+  };
+  if (ordered.every((id) => current.refs[id] !== undefined || !assignable(id))) return new Map(Object.entries(current.refs));
   const saved = await storage.updateRevisionedJson({
     resourceKey: refsResource(key),
     relativePath: conversationRefsPath(key),
     schema: ConversationRefsSchema,
     fallback: emptyRefs(key),
     transform: (refs) => {
-      const assigned = assignRefsTo(refs, ordered) ?? refs;
-      return pruneStaleRefs(assigned, now.getTime());
+      const assigned = assignRefsTo(refs, ordered, nowMs) ?? refs;
+      // Pruning decodes every ref: only once the table has grown well past the span.
+      return Object.keys(assigned.refs).length > MAX_REF_SPAN + REF_PRUNE_SLACK ? pruneStaleRefs(assigned, nowMs) : assigned;
     }
   });
   return new Map(Object.entries(saved.refs));

@@ -18,11 +18,15 @@ import { parseConversationKey, type ConversationKey } from "../../orchestration/
 import { clockText, localParts } from "../clock.js";
 import { readLifeFile } from "../lifeStore.js";
 import { chatLine } from "../render.js";
+import { readForgottenPeople } from "../../orchestration/dm/forgotten.js";
+import { readDmFloor } from "../../orchestration/dm/dmStore.js";
+import { forgottenLine } from "./forget.js";
 import { slugify } from "../places.js";
 import { ServerConfigSchema } from "../../shared/schemas/domain.js";
 import { withThreadChannels } from "../../orchestration/stores/threads.js";
 import path from "node:path";
 import {
+  atOrBelowFloor,
   dayInsideIntervals,
   insideIntervals,
   listTranscriptConversations,
@@ -167,6 +171,7 @@ export class TranscriptView {
   private folders: Promise<TranscriptFolder[]> | undefined;
   private readonly rendered = new Map<string, Promise<{ text: string; mtimeMs: number } | undefined>>();
   private readonly refs = new Map<string, Promise<Map<string, string>>>();
+  private forgotten: Promise<Awaited<ReturnType<typeof readForgottenPeople>> | "unreadable"> | undefined;
   private static readonly KEEP = 16;
 
   constructor(private readonly o: TranscriptViewOptions) {}
@@ -299,12 +304,29 @@ export class TranscriptView {
     return cached;
   }
 
+  /** What a forget covers (§7.5), read once per view; unreadable records show nothing. */
+  private hidden(folder: TranscriptFolder): Promise<(line: TranscriptLine) => boolean> {
+    this.forgotten ??= readForgottenPeople(this.o.storage).then(
+      (people) => people,
+      () => "unreadable" as const
+    );
+    return this.forgotten.then(async (people) => {
+      if (people === "unreadable") return () => true;
+      const ref = folder.dm ? parseConversationKey(folder.key) : undefined;
+      const floor = ref?.kind === "dm" ? await readDmFloor(this.o.storage, ref.userId, this.o.waifuId).catch(() => "unreadable" as const) : undefined;
+      if (floor === "unreadable") return () => true;
+      return (line: TranscriptLine) => forgottenLine(line, people) || atOrBelowFloor(line, floor);
+    });
+  }
+
   private async renderNow(folder: TranscriptFolder, day: string): Promise<{ text: string; mtimeMs: number } | undefined> {
     const dataRoot = this.o.storage.dataRoot;
     const info = await transcriptDayStat(dataRoot, folder.key, day);
     if (!info) return undefined;
     const all = await readTranscriptDay(dataRoot, folder.key, day);
-    const lines = folder.dm || !folder.intervals ? all : all.filter((line) => insideIntervals(folder.intervals!, line.at));
+    // A forget whose transcript part has not run (yet) still hides its lines (§7.5), and a DM floor holds.
+    const hidden = await this.hidden(folder);
+    const lines = (folder.dm || !folder.intervals ? all : all.filter((line) => insideIntervals(folder.intervals!, line.at))).filter((line) => !hidden(line));
     const refs = await this.refsOf(folder.key);
     return { text: renderTranscriptDay({ handle: folder.handle, day, lines, waifuId: this.o.waifuId, timeZone: this.o.timeZone, refs }), mtimeMs: info.mtimeMs };
   }
