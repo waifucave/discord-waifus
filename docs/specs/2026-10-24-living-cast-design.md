@@ -3285,3 +3285,23 @@ cache is still warm and start the next stretch small.
 - **Tests**: fires at TTL − lead with a big context and not with a small one; not for routes without
   a TTL; not when a wake is queued or a turn runs; not while asleep near morning; once per epoch;
   accepted → new epoch; usage ledger shows the rest turn as cache reads.
+
+## 26. Auto-compaction is the emergency, the rest notice is the norm (owner request, 2026-10-27)
+
+The thresholds are swapped so that she normally summarises herself and the summary call happens
+only when that failed or there is no room left:
+
+- **Rest notice (§19)** fires at `compaction.triggerRatio` × her budget (default 0.7: about 67k of
+  96k), after the running turn ends, as specified in §19.2.
+- **Auto-compaction** (the summary call with tool calls discarded, three kept turns) fires between
+  turns only at the new `compaction.emergencyRatio` × her budget (default 0.9: about 86k of 96k;
+  must be > `triggerRatio`), plus the existing forced cases: an ignored or failed rest turn (R4),
+  a provider overflow mid-turn, log length, a model/config change, a forget scrub, a manual compact.
+- `life.restNoticeRatio` is removed (it was relative to the old trigger); a once-step migration
+  drops it from `config.toml` (archived with the rest of the config like other config steps).
+  `life.cacheRestMinRatio` and `life.selfSummaryMinRatio` stay relative to the rest point
+  (`triggerRatio` × budget).
+- The Life screen and docs say "rested" for the normal path and "emergency summary" for
+  auto-compaction (reason kept in the log).
+- Tests: rest notice at 0.7, auto at 0.9 only, ignored rest → auto as before, migration drops the
+  old key, settings/help/CLI updated, goldens for any changed text.
