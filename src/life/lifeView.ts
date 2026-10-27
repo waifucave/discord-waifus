@@ -22,7 +22,7 @@
 
 import type { LifeLogLine, LifeState } from "../shared/schemas/life.js";
 import { lifeSystem } from "./request.js";
-import { REST_NOTICE_PREFIX, selfSummaryOf } from "./rest.js";
+import { isRestNotice, selfSummaryOf } from "./rest.js";
 
 export const DM_REDACTED = "[private chat redacted]";
 
@@ -162,7 +162,7 @@ export function scanDmContent(lines: readonly LifeLogLine[]): DmScan {
     if (line.dmWakes === true && turn) dmTurns.add(turn);
     for (const block of blocksOf(line.message)) {
       const type = block["type"];
-      if (type === "text" && turn && line.message?.["role"] !== "assistant" && String(block["text"] ?? "").startsWith(REST_NOTICE_PREFIX)) restTurns.add(turn);
+      if (type === "text" && turn && line.message?.["role"] !== "assistant" && isRestNotice(String(block["text"] ?? ""))) restTurns.add(turn);
       if (type === "tool_use") {
         const id = String(block["id"]);
         const dm = recorded.has(id) ? recorded.get(id)! : inputNamesDm(block["input"]);

@@ -507,7 +507,7 @@ calibration). It does not reuse the conversation planner, which works on ledger 
   line. winter has no `toolChoice: none`; the instruction says "reply with text only". Tool calls in
   the response are discarded; if there is no text, retry once with the same tools and a stronger
   text-only instruction; if that fails, fall back to truncation.
-- **Instruction** (first person): "Write notes for your future self about your life since the last
+- **Instruction** (first person; the shipped wording is in §19.7): "Write notes for your future self about your life since the last
   summary: what happened in each place, who you talked to and how it went, plans and promises, open
   threads, things you meant to do. Anything that should last longer belongs in your notes; this
   summary is replaced next time." It lists deleted messages and forgotten people for omission.
@@ -2622,7 +2622,7 @@ herself. Auto-compaction stays as the fallback.
 ### 19.3 The rest turn
 
 - A turn of her life in the current epoch (same system blocks, same tools offered, so the prompt
-  cache holds), opened by a notification:
+  cache holds), opened by a notification (as first specified; the shipped wording is in §19.7):
 
   > [system] Your memory is almost full. When this turn ends, your context will be reset: everything
   > you can see now goes away except the summary you write in this turn. Your computer stays exactly
@@ -2699,6 +2699,31 @@ unchanged in the rest turn (cache simulation); goldens for the notice and the ne
   dropped), the cache simulation `tests/eval/cacheHit.test.ts` ("the rest turn": same tools and
   system, at least 90% of the rest request read from cache), goldens `life-rest-notice.txt` and
   `life-rest-epoch.txt`.
+
+### 19.7 As built: the owner's rewording (2026-10-27)
+
+The owner approved less prescriptive texts; they replace the §19.3 quote and the §5.6 instruction.
+
+- **Rest notice** (`REST_NOTICE`, `src/life/rest.ts`): "[system] Your memory is almost full. When
+  this turn ends your context resets: everything you can see now goes away except what you write as
+  your final reply. Your computer stays exactly as you left it (your home, /tmp and /transcripts), so
+  anything that should last can go into your notes now. Then write, in your own way, whatever you
+  want to carry forward. Write it clearly, so you won't misunderstand it later without what you can
+  see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this
+  turn." The §25 quiet-time notice is this text plus its sentence, as before.
+- **Compaction instruction** (`COMPACTION_INSTRUCTION`, `src/life/compaction.ts`): "[system] Your
+  memory is full and has to be summarised now. Everything you can see goes away except what you write
+  here; your computer and your notes stay as they are. Write, in your own way, whatever you want to
+  carry forward, including what still matters from your last summary. Write it clearly, so you won't
+  misunderstand it later without what you can see now. Write what happened and how you feel, not
+  rules for yourself. Reply with text only; your tools aren't available here." The omission lines
+  `compactionInstruction` appends (deleted messages, forgotten people) are unchanged.
+- **Old logs**: a rest turn is recognised by its notice's first 60 characters; `isRestNotice` accepts
+  today's `REST_NOTICE_PREFIX` and the earlier wording's (`LEGACY_REST_NOTICE_PREFIX`, "…When this
+  turn ends, yo"), so rest turns logged before the change stay private in the owner's views and are
+  never kept by compaction (`restTurnIds`).
+- Goldens `life-rest-notice.txt` and `life-compaction-request.txt` updated (owner rewording: less
+  prescriptive).
 
 ## 20. One notification line per message (owner request, 2026-10-26)
 

@@ -21,6 +21,9 @@ import { lifeBudget } from "../src/life/request.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { MEMORY_WARNING } from "../src/life/clock.js";
 import { printLifeLines, scanDmContent, viewLogLine } from "../src/life/lifeView.js";
+import { restTurnIds } from "../src/life/compaction.js";
+import { isRestNotice, LEGACY_REST_NOTICE_PREFIX, REST_NOTICE_PREFIX } from "../src/life/rest.js";
+import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { errorTurn, hangingTurn, textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { closeWorlds, homeOf, lifeWorld, ROOM_KEY, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
@@ -323,5 +326,29 @@ describe("the rest notice is the norm, auto-compaction the emergency (§26)", ()
     expect(lastEpochWord("self")).toBe("rested");
     expect(lastEpochWord("log_length")).toBe("emergency summary");
     expect(lastEpochWord("day")).toBe("compacted");
+  });
+});
+
+describe("the rest notice's wording (owner rewording 2026-10-27)", () => {
+  /** A rest turn as logged before the rewording: its notice in the old words, then her summary. */
+  const OLD_NOTICE = "[system] Your memory is almost full. When this turn ends, your context will be reset: everything you can see now goes away except the summary you write in this turn.";
+  const legacyTurn: LifeLogLine[] = [
+    { seq: 0, at: "2026-10-26T10:00:00.000Z", kind: "notifications", turnId: "t-old", message: { role: "user", content: [{ type: "text", text: OLD_NOTICE }, { type: "text", text: "[Mon 26 Oct 10:00 · awake]" }] } },
+    { seq: 1, at: "2026-10-26T10:00:05.000Z", kind: "assistant", turnId: "t-old", message: { role: "assistant", content: [{ type: "text", text: "Kevin and the lemon tarts." }] } }
+  ] as LifeLogLine[];
+
+  it("today's notice is less prescriptive; logs with the old notice are still read as rest turns", () => {
+    expect(REST_NOTICE).toContain("whatever you want to carry forward");
+    expect(REST_NOTICE.startsWith(REST_NOTICE_PREFIX)).toBe(true);
+    expect(REST_NOTICE_PREFIX).not.toBe(LEGACY_REST_NOTICE_PREFIX);
+    expect(OLD_NOTICE.startsWith(LEGACY_REST_NOTICE_PREFIX)).toBe(true);
+    expect(isRestNotice(OLD_NOTICE)).toBe(true);
+    expect(isRestNotice(REST_NOTICE)).toBe(true);
+    expect(isRestNotice("[system] your last turn failed")).toBe(false);
+    // Compaction never keeps it; the owner's views hide her summary in it.
+    expect([...restTurnIds(legacyTurn)]).toEqual(["t-old"]);
+    const scan = scanDmContent(legacyTurn);
+    expect(scan.restTurns?.has("t-old")).toBe(true);
+    expect(JSON.stringify(legacyTurn.map((line) => viewLogLine(line, scan, { includePrivate: false }).view))).not.toContain("lemon tarts");
   });
 });

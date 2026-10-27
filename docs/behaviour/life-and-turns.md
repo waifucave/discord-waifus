@@ -239,13 +239,6 @@ summarising for her, three turns kept) is the emergency path: the Life screen la
 `bad_request` (other reasons, such as `config`, `day`, `forget`, `reset`, show as is), and the
 status line says "rested", "emergency summary" or "compacted" for her last new epoch.
 
-> **Pending (owner rewording):** the compaction instruction gets new owner-approved wording ("[system] Your memory is full and has to be summarised
-> now. Everything you can see goes away except what you write here; your computer and your notes stay
-> as they are. Write, in your own way, whatever you want to carry forward, including what still
-> matters from your last summary. Write it clearly, so you won't misunderstand it later without what
-> you can see now. Write what happened and how you feel, not rules for yourself. Reply with text
-> only; your tools aren't available here.").
-
 Mid-turn: before **every** model call, if the estimated request is over the budget the open turn is
 closed (`[system] memory summarised`), compaction runs (`budget`), and the work continues in a new
 turn whose notifications repeat the open turn's wakes. A provider `context_overflow` does the same
@@ -255,8 +248,13 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
 **What compaction does** (`compactLife`):
 
 - The summary request is her normal request (same system, tools and reasoning effort) plus one
-  instruction (`COMPACTION_INSTRUCTION`): "Write notes for your future self… Reply with text only;
-  do not call any tool." Deleted messages are listed for omission.
+  instruction (`COMPACTION_INSTRUCTION`, owner wording of 2026-10-27): "[system] Your memory is full
+  and has to be summarised now. Everything you can see goes away except what you write here; your
+  computer and your notes stay as they are. Write, in your own way, whatever you want to carry
+  forward, including what still matters from your last summary. Write it clearly, so you won't
+  misunderstand it later without what you can see now. Write what happened and how you feel, not
+  rules for yourself. Reply with text only; your tools aren't available here." Deleted messages and
+  forgotten people are listed for omission on lines after it.
 - Over budget (`budget`, `overflow`), the last tool results are replaced in the request by
   `[result left out: too large to summarise]`.
 - The new epoch keeps the **last 3 complete turns** (fewer while they alone would exceed half the
@@ -276,23 +274,22 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
 
 ## The rest notice (she summarises herself)
 
-> **Pending (owner rewording):** the rest notice gets new wording ("[system]
-> Your memory is almost full. When this turn ends your context resets: everything you can see now goes
-> away except what you write as your final reply. Your computer stays exactly as you left it (your
-> home, /tmp and /transcripts), so anything that should last can go into your notes now. Then write,
-> in your own way, whatever you want to carry forward. Write it clearly, so you won't misunderstand it
-> later without what you can see now. Write what happened and how you feel, not rules for yourself.
-> Don't message anyone in this turn."). The text below is what `main` does today.
-
 When `life.restNotice` is on (default) and her last request reached the trigger but not the
 emergency (67,200–86,399 tokens with the defaults; spec §26), the next cycle is
 a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/life/rest.ts`):
 
 - At most once per epoch (`state.restTurn`); not while compaction is backing off or an epoch start
   is pending.
-- Opened by `REST_NOTICE` ("[system] Your memory is almost full. When this turn ends, your context
-  will be reset… Don't message anyone in this turn.") and her time line. Same system blocks and tools
-  (the cache holds).
+- Opened by `REST_NOTICE` (owner wording of 2026-10-27): "[system] Your memory is almost full. When
+  this turn ends your context resets: everything you can see now goes away except what you write as
+  your final reply. Your computer stays exactly as you left it (your home, /tmp and /transcripts), so
+  anything that should last can go into your notes now. Then write, in your own way, whatever you
+  want to carry forward. Write it clearly, so you won't misunderstand it later without what you can
+  see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this
+  turn." Then her time line. Same system blocks and tools (the cache holds). A rest turn is
+  recognised by the notice's first 60 characters (`isRestNotice`), in this wording or the earlier
+  one ("…When this turn ends, your context will be reset…"), so rest turns in older logs stay private
+  and are never kept by compaction.
 - `SendMessage`, `React`, `WebSearch`, `WebFetch` answer `error: finish your summary first; you can
   do this after the reset`. File tools, Bash, `ScheduleWake`, `WatchFor` work. No wake is taken or
   folded in.

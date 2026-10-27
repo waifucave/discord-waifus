@@ -13,7 +13,7 @@
 // provider overflow (mid-turn too), a manual compact, a configuration change (A, tools or model), a
 // forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
 
-import { REST_NOTICE_PREFIX } from "./rest.js";
+import { isRestNotice } from "./rest.js";
 import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { CuratedModel } from "../models/catalog.js";
@@ -174,7 +174,7 @@ export function restTurnIds(lines: readonly LifeLogLine[]): Set<string> {
     if (!line.turnId || line.kind !== "notifications" || !line.message) continue;
     const content = (line.message as { content?: unknown }).content;
     const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : "")) : [];
-    if (texts.some((text) => text.startsWith(REST_NOTICE_PREFIX))) ids.add(line.turnId);
+    if (texts.some((text) => isRestNotice(text))) ids.add(line.turnId);
   }
   return ids;
 }
@@ -366,7 +366,7 @@ export async function compactRetiredTools(
 }
 
 export const COMPACTION_INSTRUCTION =
-  "[system] Time to summarise. Write notes for your future self about your life since the last summary: what happened in each place, who you talked to and how it went, plans and promises, open threads, things you meant to do. Carry over anything from your previous summary that still matters. Write what happened and how you feel about it now, not rules for yourself: one bad moment is not a verdict on someone, and a send that failed once is not a reason to avoid a place. Anything that should last longer belongs in your notes; this summary is replaced next time. Reply with text only; do not call any tool.";
+  "[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.";
 
 export type CompactionOmissions = { deleted: string[]; people: string[] };
 

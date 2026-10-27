@@ -10,12 +10,12 @@ and the difference is noted ("Spec differs: …").
 change only the spec). Behaviour merged after the 3.3.0 release commit (`2b10731`) is marked
 **unreleased (on main)**: the richer morning summary (§23), "Jev only sees who is around" (§24) and
 the rest before the prompt cache goes cold (§25) and the rest notice at the trigger with
-auto-compaction only as the emergency (§26).
+auto-compaction only as the emergency (§26), with the owner's less prescriptive rest notice and
+compaction wording.
 
 **Pending** (specified on `main`, being built on other branches; marked "pending" where they will
 change a rule, and to be finalised here when they merge):
 
-- the owner's new rest notice and compaction wording;
 - Remote Access helper 0.1.17 (NAT public address pool).
 
 **Rule:** any change to waifu behaviour (triggers, routing, prompts, tools, files and folders,

@@ -1,5 +1,6 @@
 // Shared helpers for the tests that run a life over the REAL winter anthropic-messages adapter
 // against the loopback Anthropic server (tests/eval/fakeAnthropic.ts). Not a test file.
+import { COMPACTION_INSTRUCTION } from "../../src/life/compaction.js";
 import { ModelClient } from "../../src/models/client.js";
 import { createWinterRuntime } from "../../src/models/winter.js";
 import { ProviderAlerts } from "../../src/orchestration/providerAlerts.js";
@@ -16,7 +17,7 @@ export function unmarked(message: WireBody["messages"][number]): string {
   return JSON.stringify({ role: message.role, content: blocksOf(message).map(({ cache_control: _drop, ...block }) => block) });
 }
 
-export const isCompaction = (body: WireBody) => JSON.stringify(body.messages[body.messages.length - 1]).includes("Time to summarise");
+export const isCompaction = (body: WireBody) => JSON.stringify(body.messages[body.messages.length - 1]).includes(COMPACTION_INSTRUCTION.slice(0, 60));
 export const isMaintenance = (body: WireBody) => JSON.stringify(body.system).includes("<maintenance>");
 
 /** Her side of a wake: read the place, answer, end (thinking on every reply). */

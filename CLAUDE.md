@@ -100,7 +100,7 @@ Normally she rests instead (spec §19, §26, `Life.restTurn`): when her last req
 point `compaction.triggerRatio` × her budget (and is below `compaction.emergencyRatio` × her budget,
 where auto-compaction runs between turns: the "emergency summary", `autoCompactionRatio`; with
 `life.restNotice` off compaction runs at the trigger as before), the next cycle, before any queued wake, is a
-rest turn opened by `REST_NOTICE` (same system blocks and tools, so the cache holds; `SendMessage`,
+rest turn opened by `REST_NOTICE` (recognised in logs by `isRestNotice`, which also accepts the pre-2026-10-27 wording's prefix; same system blocks and tools, so the cache holds; `SendMessage`,
 `React`, `WebSearch`, `WebFetch` are refused at run time; no wakes fold in); a final reply of at least
 `life.restSummaryMinChars` starts a new epoch whose `<life_so_far>` is that summary alone (framed
 `[your summary before the reset]`, no kept turns, boundary reason `rest`), anything else compacts at

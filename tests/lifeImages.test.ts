@@ -8,6 +8,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DiscordImageFetcher } from "../src/discord/attachments.js";
+import { COMPACTION_INSTRUCTION } from "../src/life/compaction.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
@@ -198,7 +199,7 @@ describe("pinned images (§5.3)", () => {
     expect(after.epoch).toBe(2);
     expect(after.summary).toBe("Earlier: Kevin showed me a cake picture.");
     const summaryCall = w.anthropic.calls[4]!.request;
-    expect(JSON.stringify(summaryCall.messages[summaryCall.messages.length - 1])).toContain("Time to summarise");
+    expect(JSON.stringify(summaryCall.messages[summaryCall.messages.length - 1])).toContain(COMPACTION_INSTRUCTION.slice(0, 60));
     // The kept turn's image is text in the new epoch: no image block is sent any more.
     const lastCall = w.anthropic.calls[5]!.request;
     expect(JSON.stringify(lastCall.messages)).not.toContain("\"type\":\"image\"");
