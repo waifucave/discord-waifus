@@ -2896,3 +2896,63 @@ Migration (moves, collisions, index paths, busy dropped and archived, idempotent
 ### 21.8 Release
 
 A feature release (3.3.0).
+
+## 22. ReadMessages v2: refs everywhere and one freeform query (owner request, 2026-10-27)
+
+### 22.1 Refs on every message
+
+- Every message gets its ref **when it is ingested** (the transcript writer assigns it through
+  `refStore` in message order, same per-conversation counter as today), and the transcript stores it
+  on the line. Transcript lines render exactly like ReadMessages lines:
+  `[17:02 #k3] Lianne ↩#k1: text [file: a.png]` (the day is in the file name and heading).
+- `refs.json` pruning (10,000 messages / 30 days) stays, but a ref pruned there still resolves
+  through the transcript store (ref → message id), so any ref she ever saw in a transcript works in
+  ReadMessages, SendMessage `reply_to` and React for as long as the line exists. Messages from before
+  transcripts existed keep lazily assigned refs as today.
+
+### 22.2 The tool
+
+`ReadMessages(place, query?)`. `limit` and `before` are removed (old log lines keep them).
+
+- **`place`**: one handle, a comma-separated list of up to 5 handles, or `everywhere` (all places she
+  can see; only together with `people:` or `search:`). Results are grouped per place.
+- **`query`** (freeform, optional; empty = the latest messages as today). Terms in any order, `key:value`
+  or `key value`, case-insensitive:
+  - `before <anchor>` / `after <anchor>` / `around <anchor>`; `before` and `after` combine into a
+    range (a snapshot between two points). A **ref anchor is included** (`before #c1 max:10` = #c1 and
+    the 10 messages before it). Anchors: `#ref`; `2026-10-25 17:02`; `2026-10-25` (that day; `before`
+    = before the day starts, `after` = from its start, `around` = the whole day up to max);
+    `17:02` (today); `yesterday 17:02`. Times are her local time.
+  - `max:N` — how many messages per place (1–100; default 15; a range without max returns up to 50).
+  - `people:Evgueny, Lianne` — only messages by these people (names as shown in chat, case- and
+    accent-insensitive; `you` = herself).
+  - `search:London restaurant, sushi` — comma-separated alternatives; every word of one alternative
+    must appear (whole words, case- and accent-insensitive); matches message text and file names.
+  - Unknown or malformed terms: an error with a three-line syntax summary and an example.
+- **Output**: chronological per place, ReadMessages line format, with `— more before: before #xx —` /
+  `— more after: after #yy —` hints when the page was cut. A filtered search reports how many matched
+  and the date range searched.
+- **Sources**:
+  - Unfiltered pages (latest, ref or time anchors) come from the conversation cache and Discord's
+    channel-messages API, which supports only `before` / `after` / `around` a message id and
+    `limit ≤ 100`. A time anchor becomes a snowflake id (Discord ids encode their time), so any point
+    in history works.
+  - `people:` and `search:` read the local transcript store (her access intervals apply), plus
+    the cache for messages not yet written. Discord's channel API has no author or text filter for
+    bots, and the app does not depend on Discord's message search. Searches cover what transcripts
+    cover (since 3.2.0); the reply says so when the range reaches before that.
+- D14, forget floors, deleted-message handling and attachment downloads behave as today.
+- The tool description gives the grammar in four lines with two examples; `<life>` mentions
+  `/transcripts` + `ReadMessages(query: "around 2026-10-25 17:02")` for jumping from a transcript line
+  into the chat.
+
+### 22.3 Tests
+
+Grammar (each term, combinations, errors), ref anchors inclusive, time → snowflake, ranges, max
+defaults, people/search over transcripts with access intervals, `everywhere`, multi-place grouping,
+pruned refs resolving via transcripts in ReadMessages / reply_to / React, transcript line format
+golden, D14 and floors on every path.
+
+### 22.4 Release
+
+With §21 in 3.3.0.
