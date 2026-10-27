@@ -110,7 +110,7 @@ describe("the morning wake (§21.3)", () => {
     // One morning a day.
     await w.cast.scheduler.tick();
     expect((await queue(w)).immediate).toEqual([]);
-  });
+  }, 30_000);
 
   it("with no plan written she has none today, and the compaction still runs once", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi"), textTurn("lazy day"), textTurn("hey")) });

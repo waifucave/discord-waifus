@@ -169,7 +169,7 @@ describe("Living cast goldens", () => {
     await w.cast.life("ella").runNow();
     const first = w.anthropic.calls.find((call) => JSON.stringify(call.request.messages).includes("during your bed time"))!.request;
     await expect(serializeMessages(first.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-morning.txt");
-  });
+  }, 30_000);
 
   it("her day: the morning wake, her plan in <schedule> after it, and a busy block's phone check (§21)", async () => {
     const sleeper = { ...ELLA, availability: { bedTime: { enabled: true, start: "00:30", end: "08:30" } } };

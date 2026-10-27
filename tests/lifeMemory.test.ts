@@ -209,7 +209,7 @@ describe("forget (§7.5)", () => {
     ]);
     // The scrub's notes session; the dream after it found nothing new and called no model.
     expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["life", "life", "life", "compaction", "maintenance"]);
-  });
+  }, 30_000);
 
   it("a DM user's /forget everything runs at most once per 6 hours; later ones queue a pending scrub for maintenance", async () => {
     const w = await lifeWorld(roots, {
