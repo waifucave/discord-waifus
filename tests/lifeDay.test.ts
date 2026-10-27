@@ -315,6 +315,21 @@ describe("staying in a conversation while busy (§21.4, owner addition)", () => 
   });
 });
 
+describe("the life-folder marker (§21.6)", () => {
+  it("a life the app runs gets the marker, so a re-run of the migration leaves her home alone", async () => {
+    const w = await lifeWorld(roots);
+    await w.cast.scheduler.tick();
+    const { readFile } = await import("node:fs/promises");
+    const path = await import("node:path");
+    const marker = path.join(w.root, "user", "waifus", "ella", "life", "life-folder-v1.json");
+    expect(JSON.parse(await readFile(marker, "utf8"))).toEqual({ version: 1, state: "done" });
+    await writeHerFile(w, "schedule.json", JSON.stringify({ date: "2026-10-24", busy: [] }));
+    const { migrateLivingCastLifeFolder } = await import("../src/backend/migrationSteps/livingCastLifeFolder.js");
+    expect(await migrateLivingCastLifeFolder(w.root)).toBeUndefined();
+    expect(await homeOf(w).read("schedule.json")).toContain("2026-10-24");
+  });
+});
+
 // ---- the prompt's copy and dreaming (§21.2, §21.6) ------------------------------------------------
 
 async function ctxFor(w: LifeWorld, o: Partial<ToolContext> = {}): Promise<ToolContext> {

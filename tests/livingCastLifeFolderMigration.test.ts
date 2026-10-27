@@ -5,7 +5,7 @@
 import { mkdir, readdir, readFile, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "../src/backend/migrationSteps/livingCastLifeFolder.js";
+import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder, type LifeFolderCrash } from "../src/backend/migrationSteps/livingCastLifeFolder.js";
 import { MIGRATION_STEPS } from "../src/backend/migrations.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -95,9 +95,11 @@ describe("living-cast-life-folder-v1 (§21.6)", () => {
     expect(await read(root, "user/waifus/mina/life/state.json")).toBeUndefined();
   });
 
-  it("keeps the newer file on a name collision and archives the other", async () => {
+  it("keeps the newer file on a name collision (a re-run after a crash mid-move) and archives the other", async () => {
     const root = await oldRoot();
     const home = path.join(root, "user/waifus/ella/home");
+    // The step had begun: its marker is there, so life/ is the app's, not her own folder.
+    await write(root, "user/waifus/ella/life/life-folder-v1.json", json({ version: 1, state: "moving", parts: ["notes"], epoch: true }));
     await write(root, "user/waifus/ella/home/life/watches.json", "[]\n");
     // Her old file is newer than the one already in life/: it wins, the other is archived.
     await utimes(path.join(home, "life/watches.json"), new Date("2026-10-01T00:00:00Z"), new Date("2026-10-01T00:00:00Z"));
@@ -121,6 +123,60 @@ describe("living-cast-life-folder-v1 (§21.6)", () => {
     expect(await read(root, "user/waifus/ella/home/life/reminders.json")).toBe(REMINDERS);
   });
 
+  it("renames a life/ folder of her own notes to life-notes/ (paths in her index follow) before the app's files move in", async () => {
+    const root = await oldRoot();
+    await write(root, "user/waifus/ella/home/life/childhood.md", "# Growing up by the sea\n");
+    await write(root, "user/waifus/ella/home/life-notes/old.md", "taken\n");
+    const indexFile = "user/waifus/ella/life/files-index.json";
+    const index = JSON.parse((await read(root, indexFile))!) as { entries: Array<Record<string, unknown>> };
+    await write(root, indexFile, json({ entries: [...index.entries, { ...index.entries[1], sha256: "c", path: "/home/ella/life/photo.png" }] }));
+    await migrateLivingCastLifeFolder(root, { now: () => NOW });
+    expect(await read(root, "user/waifus/ella/home/life-notes-2/childhood.md")).toBe("# Growing up by the sea\n");
+    expect(await read(root, "user/waifus/ella/home/life-notes/old.md")).toBe("taken\n");
+    expect(await read(root, "user/waifus/ella/home/life/childhood.md")).toBeUndefined();
+    expect(await read(root, "user/waifus/ella/home/life/reminders.json")).toBe(REMINDERS);
+    const paths = (JSON.parse((await read(root, indexFile))!) as { entries: Array<{ path: string }> }).entries.map((entry) => entry.path);
+    expect(paths).toEqual(["/home/ella/life/reminders.json", "/tmp/x.png", "/home/ella/life-notes-2/photo.png"]);
+  });
+
+  it("a re-run after a lost ledger never touches files she wrote at the top of her home later: no byte changes", async () => {
+    const root = await oldRoot();
+    await migrateLivingCastLifeFolder(root, { now: () => NOW });
+    expect(JSON.parse((await read(root, "user/waifus/ella/life/life-folder-v1.json"))!)).toEqual({ version: 1, state: "done" });
+    // Her old summary mentions ~/schedule.json: she makes one, and other files with old names.
+    await write(root, "user/waifus/ella/home/schedule.json", json({ date: "2026-10-28", busy: [] }));
+    await write(root, "user/waifus/ella/home/places.md", "my favourite places\n");
+    // Her life ran (its epoch started).
+    const state = JSON.parse((await read(root, "user/waifus/ella/life/state.json"))!) as Record<string, unknown>;
+    await write(root, "user/waifus/ella/life/state.json", json({ ...state, pendingEpochStart: false }));
+    const before = await snapshot(root);
+    expect(await migrateLivingCastLifeFolder(root, { now: () => new Date("2026-10-29T00:00:00Z") })).toBeUndefined();
+    expect(await snapshot(root)).toEqual(before);
+  });
+
+  it("a life the app already ran on the new layout (no marker yet) is marked done and left alone", async () => {
+    const root = await oldRoot();
+    const state = JSON.parse((await read(root, "user/waifus/ella/life/state.json"))!) as Record<string, unknown>;
+    await write(root, "user/waifus/ella/life/state.json", json({ ...state, lastDayStart: NOW.toISOString() }));
+    await migrateLivingCastLifeFolder(root, { now: () => NOW });
+    expect(await read(root, "user/waifus/ella/home/schedule.json")).toBe(REMINDERS);
+    expect(JSON.parse((await read(root, "user/waifus/ella/life/life-folder-v1.json"))!)).toEqual({ version: 1, state: "done" });
+  });
+
+  it("a crash after any part resumes there: the result is a clean run's, and the epoch is marked once", async () => {
+    const clean = await oldRoot();
+    await migrateLivingCastLifeFolder(clean, { now: () => NOW });
+    const expected = await snapshot(clean);
+    for (const crash of ["start", "notes", "moves", "index", "journals", "epoch"] satisfies LifeFolderCrash[]) {
+      const root = await oldRoot();
+      await expect(migrateLivingCastLifeFolder(root, { now: () => NOW, crashAfter: crash })).rejects.toThrow(`crash after ${crash}`);
+      await migrateLivingCastLifeFolder(root, { now: () => NOW });
+      const got = await snapshot(root);
+      expect([...got.keys()].sort(), crash).toEqual([...expected.keys()].sort());
+      for (const [file, content] of expected) expect(got.get(file), `${crash}: ${file}`).toBe(content);
+    }
+  }, 30_000);
+
   it("is idempotent: a re-run changes no byte", async () => {
     const root = await oldRoot();
     await migrateLivingCastLifeFolder(root, { now: () => NOW });
@@ -129,12 +185,20 @@ describe("living-cast-life-folder-v1 (§21.6)", () => {
     expect(await snapshot(root)).toEqual(before);
   });
 
-  it("reports an unreadable state file as incomplete and leaves it alone", async () => {
+  it("reports an unreadable state file as incomplete, leaves it alone, and later only finishes that part", async () => {
     const root = await oldRoot();
     await write(root, "user/waifus/ella/life/state.json", "{ torn");
     const outcome = await migrateLivingCastLifeFolder(root, { now: () => NOW });
     expect(outcome).toMatchObject({ incomplete: "1 life file(s) could not be parsed" });
     expect(await read(root, "user/waifus/ella/life/state.json")).toBe("{ torn");
+    expect(JSON.parse((await read(root, "user/waifus/ella/life/life-folder-v1.json"))!)).toMatchObject({ state: "moving", parts: ["notes", "moves", "index", "journals"] });
+    // Meanwhile she writes ~/schedule.json; the next boot fixes the state file's part only.
+    await write(root, "user/waifus/ella/home/schedule.json", "mine\n");
+    await write(root, "user/waifus/ella/life/state.json", json({ schemaVersion: 2, revision: 1, epoch: 1, systemSnapshot: { harnessHash: "h" } }));
+    await migrateLivingCastLifeFolder(root, { now: () => NOW });
+    expect(await read(root, "user/waifus/ella/home/schedule.json")).toBe("mine\n");
+    expect(JSON.parse((await read(root, "user/waifus/ella/life/state.json"))!)).toMatchObject({ pendingEpochStart: true, pendingEpochReason: "tools" });
+    expect(JSON.parse((await read(root, "user/waifus/ella/life/life-folder-v1.json"))!)).toEqual({ version: 1, state: "done" });
   });
 });
 

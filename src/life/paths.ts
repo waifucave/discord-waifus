@@ -60,7 +60,9 @@ export const lifePaths = {
   /** Per conversation, the last transcript line her dreams covered (§18.4). */
   dreamCursor: (waifuId: string) => path.join(lifeDir(waifuId), "dream-cursor.json"),
   pendingScrubs: (waifuId: string) => path.join(lifeDir(waifuId), "pending-scrubs.json"),
-  usage: (waifuId: string) => path.join(lifeDir(waifuId), "usage.json")
+  usage: (waifuId: string) => path.join(lifeDir(waifuId), "usage.json"),
+  /** `living-cast-life-folder-v1` is done for her (§21.6): a re-run never moves her files again. */
+  lifeFolderMarker: (waifuId: string) => path.join(lifeDir(waifuId), "life-folder-v1.json")
 };
 
 /** Storage lock names. `life:<id>` serialises turns, compaction, maintenance and forget scrubs (§5.1). */

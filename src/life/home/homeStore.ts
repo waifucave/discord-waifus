@@ -182,6 +182,23 @@ type Journal = z.infer<typeof JournalSchema>;
 
 /** Hashes by host path, size and mtime (the dashboard's private flags, DM-origin checks). */
 const HASH_CACHE = new Map<string, { size: number; mtimeMs: number; sha: string }>();
+
+/** Lives whose life-folder marker is known to exist (per data root), so it is checked once per process. */
+const MARKED = new Set<string>();
+
+/**
+ * The app runs her life on the `~/life/` layout: the marker `living-cast-life-folder-v1` reads tells
+ * a re-run (after a lost ledger) to leave her home alone, also for a waifu created after the upgrade.
+ * Written only when missing (a migration in progress keeps its own).
+ */
+export async function ensureLifeFolderMarker(storage: StorageService, waifuId: string): Promise<void> {
+  const id = `${storage.dataRoot}\0${waifuId}`;
+  if (MARKED.has(id)) return;
+  const file = storage.dataPath(lifePaths.lifeFolderMarker(waifuId));
+  const exists = await stat(file).then(() => true, () => false);
+  if (!exists) await atomicWriteJson(file, { version: 1, state: "done" });
+  MARKED.add(id);
+}
 const HASH_CACHE_MAX = 5_000;
 
 type Planned = { path: HerPath; data?: Buffer; kind: "write" | "delete" | "dir" };
@@ -494,6 +511,7 @@ export class HomeStore {
    * it got.
    */
   async appendEntry(name: typeof REMINDERS_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>, env: CheckEnv): Promise<string> {
+    await ensureLifeFolderMarker(this.storage, this.waifuId);
     return this.locked(async () => {
       const p = this.life(name);
       const text = await this.files.readText(p).catch(() => undefined);
@@ -826,6 +844,7 @@ export class HomeStore {
 
   /** `~/life/places.md` (§16.6), written only when it would change. Returns whether it did. */
   async writePlaces(text: string): Promise<boolean> {
+    await ensureLifeFolderMarker(this.storage, this.waifuId);
     return this.locked(async () => {
       const p = this.life(PLACES_FILE);
       const current = await this.files.readText(p).catch(() => undefined);
