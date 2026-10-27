@@ -1,0 +1,152 @@
+# What wakes her
+
+Every wake has a reason (`WakeReasonSchema` in `src/shared/schemas/life.ts`): `mention`, `name`,
+`role`, `everyone`, `watch`, `watch_timeout`, `dm`, `detector`, `reminder`, `morning`, `owner`,
+`followup`. Wakes are produced by intake (Discord messages), the scheduler (her files, her day) and
+the owner, then pass the wake router's guards and land in her queue
+([life-and-turns.md](life-and-turns.md)).
+
+## Who can be woken at all
+
+- Only a waifu that is **enabled** and has **her own bot** (`botId`). Without a bot nothing wakes
+  her, not even an owner wake (`src/life/intake.ts` `castWaifus`; `src/life/wakeRouter.ts`
+  `routeNow`: `if (!waifu?.enabled || !waifu.botId) return "dropped"`).
+- Room messages reach intake only from a channel that has an enabled waifu cast (or a thread
+  inheriting one), in a server that is not paused, while the app is not paused. Messages from bots
+  that are not one of our waifu bots are ignored (`src/orchestration/runtime.ts`
+  `handleDiscordMessage`).
+- Her own messages never wake her (`selfAuthorIds`: her bot id and its application id).
+- A turn needs a model; without one her wakes wait in the queue. The detector also skips cast
+  members with no model (`Intake.runDetector`).
+
+## Triggers
+
+| Reason | When exactly | Routed | Source |
+|---|---|---|---|
+| `mention` | Her bot user is @mentioned, or a message replies to one of her messages. From a person or another waifu. | Person: when the burst fires. Waifu author: at once. | `Intake.routeGuildMessage` |
+| `mention` (edit) | A person edits a message **under 2 minutes old** so that it newly mentions her; once per message per waifu. Other edits and deletes wake nobody. | At once | `Intake.onEdit`, `EDIT_MENTION_WINDOW_MS` |
+| `role` | A role her bot member holds is mentioned (person or waifu author). Roles are fetched per guild and kept current from member/role events. | Person: with the burst. Waifu: at once. | `routeGuildMessage`, `src/life/botRoles.ts` |
+| `everyone` | `@everyone`/`@here` in a person's message in a channel where she is cast. Never from a waifu's message. | With the burst | `routeGuildMessage` |
+| `name` | Her name, display name or server nickname (each ≥ 3 characters) appears as a whole word in a **person's** message, and `wakeOnName` is on (default). Not counted when the same message already mentions her. Never for waifu-written messages. | With the burst | `namesOf`, `wordBoundaryIncludes` |
+| `dm` | A person's DM to her bot (she must be DM-eligible: [dms.md](dms.md)). | When the DM burst fires | `Intake.onDirectMessage`, `fireDm` |
+| `watch` | A binding of one of her watches matches a message ([her-computer.md](her-computer.md)). In a room: at once. In a DM: rides on the `dm` wake after the DM hold. | See left | `src/life/watches.ts` `fireWatches` |
+| `watch_timeout` | A watch's `timeout` passed (scheduler tick, every 15 s). A `once` watch that already matched never times out. | Scheduler | `Scheduler.watchTimeouts` |
+| `reminder` | A reminder in `~/life/reminders.json` came due (scheduler tick). Routed under a fixed id per occurrence, then removed or moved to its next daily/weekly occurrence. Late reminders after downtime fire once at the first tick. | Scheduler | `Scheduler.reminders` |
+| `detector` | Jev picked her for a burst nobody was addressed in (`waifu_<i>`, the `anyone` draw, `all`), or picked her to chime in. See [detector.md](detector.md). | After the burst and the detector call | `Intake.runDetector` |
+| `morning` | Her day starts (bed time end, or `life.dayStartHourLocal`), or deferred wakes are released. Enqueued directly, not through the router. See [day-and-bed-time.md](day-and-bed-time.md). | Scheduler | `Scheduler.morning` |
+| `owner` | `/wake` (Discord), the dashboard's Wake button, `waifus wake`, `POST /api/waifus/:id/wake`, the assistant's `wake_waifu`. Note ≤ 500 characters, shown as `- nudge · "<note>"`. | At once | `LivingCast.ownerWake` |
+| follow-up | Not a queued wake: a turn that failed with a model error gets one follow-up turn 60 s later. | Life loop | `Life.failTurn` |
+
+There are no proactive wakes besides these: she starts conversations only from inside a turn she
+already has (her reminders, watches and morning are how she plans ahead).
+
+### Staggering
+
+When one person's message (or burst) wakes **two or more** waifus only through `@everyone` or a
+shared role (no mention, no name for that waifu), each of those wakes is routed after a random
+**0–20 s** delay so later ones can see earlier replies (`STAGGER_MAX_MS`, `Intake.routeDirect`,
+`isShared`). Detector `all` wakes for several waifus are staggered the same way.
+
+## Intake holds (bursts and typing)
+
+Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
+(`src/life/intakeHold.ts` `TypingHolds`). A burst fires at
+
+`min(first + max(quiet, cap), max(last message + quiet, latest typing event + typingHold))`
+
+| | Quiet after the last message | Cap from the first message | Typing holds it? |
+|---|---|---|---|
+| Room burst (people) | `discord.debounce.serverMs` 1.5 s | `serverMaxWaitMs` 10 s | Yes |
+| DM burst | `dmMs` 2.5 s | `dmMaxWaitMs` 60 s | Yes |
+| A waifu's own lines in a place | `serverMs` 1.5 s | `serverMaxWaitMs` 10 s | Never |
+
+- A typing event counts as "still typing" for `typingHoldMs` (**6 s**), or until a message from
+  that person arrives. Only typing by a person **with a message in the pending burst**, in that same
+  channel/thread/DM, holds it. Bots and other people never hold anything (`TypingHolds.typing`,
+  `Intake.onTyping`). Typing comes from the House bot's and DM bots' raw `TYPING_START` packets.
+- **One room burst per place**: every person's message joins it, direct or not. A burst is "direct"
+  when any message in it produced a direct reason for anyone; a direct burst never reaches the
+  detector.
+- **Waifu bursts** are per place **and author**; her direct wakes (mention, role, reply) route at
+  once, and the burst only exists to ask the detector who speaks next when none of her lines was
+  direct.
+- **Not held**: room watches, a waifu's direct wakes, edit mentions, and catch-up after a restart or
+  resume (a place's caught-up bursts fire right after its messages are taken).
+
+## What gets merged
+
+- **A person's direct wakes in a burst** become **one wake per waifu** when the burst fires: reasons
+  merged in the order `mention, role, everyone, name` (a mention drops `name`), every message of the
+  burst kept as its own line (up to 50, older ones counted as `earlier`), each with the reasons it
+  gave her; the preview and ref point at the newest message by the person who woke her
+  (`Intake.mergeHeld`, `src/life/wakeMessages.ts`). So "@Lumi" then "what do you think about…" is
+  one notification whose last line is the question.
+- **A DM burst** is one `dm` wake with one line per message. The first watch matching a message
+  rides on that message's line (`dm, watch · … · "match" · … · your note: …`); further watches on
+  the same burst route as `watch` wakes and join their message's line. If the DM wake is dropped
+  (rate limit), each match still reaches her as a plain `watch` wake (`Intake.fireDm`).
+- **One wake per message (D-c)**: a waifu whose watch fired for a message in a burst is skipped by
+  the detector for that burst. A burst whose whole candidate cast was woken by watches never reaches
+  the detector.
+- **Queued wakes for one place** render as one group of lines in the next turn (joined by message
+  id, reasons merged; [life-and-turns.md](life-and-turns.md)). Past 200 queued wakes, a new wake for a
+  place that already has one is merged into it as a counter (`MAX_IMMEDIATE_WAKES`, `mergeInto`).
+- A wake whose id is already queued, held or deferred is never added again (catch-up, a re-routed
+  reminder, a re-queued turn).
+
+## The wake router's guards, in order
+
+`src/life/wakeRouter.ts` `WakeRouter.routeNow`. Outcomes: `queued`, `deferred`, `held`, `quiet`,
+`dropped`.
+
+| # | Guard | Effect | Applies to owner wakes? |
+|---|---|---|---|
+| 1 | **Paused** app, or the room wake's server `paused`, or she is disabled / has no bot | `dropped` | Yes |
+| 2 | **DM rate limit** (`dm` wakes): `dm.rateLimit` per person per waifu (default 30 replies per 60 min) | `dropped`; the limit notice is sent once per limited period when `dm.notifyWhenLimited` (no model call) | n/a |
+| 3 | **Per-user wake limit** (rooms; reasons `mention`, `name`, `role`, `everyone`, `detector`): more than `life.maxWakesPerUserPerHour` (20) wakes from one person to one waifu in the last hour | `quiet`: becomes a `- +N more from <name> (<place>)` line that rides on her next turn and never starts one (`admitUserWake`) | Skipped |
+| 4 | **Bed time, asleep**: only `reminder` and `owner` get through | Everything else `deferred` (reason `sleep`) to the morning; a `dm` wake also triggers the sleep notice once per bed time per person | Skipped |
+| 4a | **Bed time, up late or dozing**: gets through if any reason is in the busy set (`mention`, `name`, `dm`, `owner`, `reminder`, `watch`, `watch_timeout`, `morning`) or she sent in that place in the last `life.busyEngagedMinutes` (10 min) | Else `deferred` (reason `sleep`); no sleep notice | Skipped |
+| 4b | **Busy block** of today's `~/life/schedule.json` (only outside bed time): gets through if any reason is in the busy set, or the place is open for her in this block (`busyOpen`) | Else `held` until her next phone check in the block, else the block's end | Skipped |
+| 5 | **Daily budget** `life.dailyBudgetUsd` (default none) reached for the local day | `deferred` (reason `budget`) to the next local day | Skipped |
+| 6 | **Room loop guard** `life.maxWaifuTriggeredTurns` (default 0 = off): waifu-authored wakes in a place after that many waifu messages have woken someone since the last person's message there; each message counts once however many it wakes | `dropped` (it never blocks a send) | Skipped |
+
+Then the wake is queued and her life is poked.
+
+Details:
+
+- The owner's wake still passes guard 1, so it is dropped while the app is paused or when she is
+  disabled or has no bot (it carries no server, so a paused server does not stop it). The HTTP wake route queues an `owner` wake directly in
+  `wakes.json` (`outcome: "queued_offline"`) when the cast is offline or reloading; Discord's
+  `/wake` instead answers "can't be woken right now (paused or disabled)" in that case
+  ([owner-controls.md](owner-controls.md)).
+- Guard 5 is checked again when a turn starts (queued wakes from before the budget ran out move to
+  `deferred`, except the owner's) and after every model call of a running turn (the turn ends with
+  `[system] turn ended: daily budget reached`, unless it has an owner wake). Her spend counts every
+  ledger line with her waifu id (life, compaction, dream/maintenance, web digests) for the host's
+  local day; detector calls are not hers (`src/life/budget.ts` `DailyCost`).
+- A deferred batch, whatever deferred it, is never released as a `morning` wake while she is over
+  budget (`Scheduler.morning`).
+- Guard 3 is per room wake only (`context.guildId`); DMs have their own rate limit (guard 2).
+
+## Catch-up after downtime, pause and reload
+
+- At boot, messages newer than each place's intake high-water mark (`app/intake-marks.json`), her
+  read cursor and the DM forget floor, and at most `discord.dm.resumeWindowMinutes` (60) old, are
+  fed through intake as if live. Older ones wake nobody but stay readable (`LivingCast.catchUpAndResume`).
+- After an explicit pause, the resume catch-up starts at the pause start (kept in
+  `intake-marks.json` `pausedAt`, so a restart while paused still catches up from it). Messages that
+  arrive while paused are not routed live; the DM state is still updated.
+- A message intake already handled (even one it decided to ignore) never wakes anyone again: the mark
+  moves only once a message's routing has resolved and never past a message still held (a
+  staggered wake, a debouncing burst, a running detector call) (`src/life/intakeMarks.ts`,
+  `Intake.mark`).
+- Rooms in a paused server are skipped by catch-up.
+
+## Spec differs
+
+- §4.5/D10 said sleep defers every wake including reminders; the code (§21.6c) lets `reminder` and
+  `owner` through while asleep and lets the busy set through while up late or dozing.
+- §4.4 lists guard 1 as "paused server or app"; the code also drops every wake (owner included) for
+  a disabled waifu or one without her own bot.
+- §4.1 calls the follow-up a wake reason; as built a failed turn's follow-up is a turn with no wakes
+  (`FOLLOW_UP_NOTE`), and `followup` only appears in deferred-batch rendering.

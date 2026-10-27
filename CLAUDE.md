@@ -6,6 +6,13 @@ Read alongside `AGENTS.md` for repository/release guidelines and the README's Re
 section for setup instructions. Keep all three synchronized with current behavior; historical
 specs and plans describe earlier checkpoints and do not establish present release readiness.
 
+## TOP PRIORITY: keep `docs/behaviour/` true
+
+`docs/behaviour/` is the reference for how the waifus behave. Any change to waifu behaviour
+(triggers, routing, prompts, tools, files and folders, schedules, dreaming, privacy, remote
+behaviour) must update `docs/behaviour/` in the same commit. When those docs and the code disagree,
+the code is right: fix the docs.
+
 ## Commands
 
 - `npm run build` — backend (`tsc -p tsconfig.json` → `dist/`) + frontend (`vite build` → `dist-frontend/`).

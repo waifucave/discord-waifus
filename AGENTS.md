@@ -6,6 +6,8 @@ This is a Node 20+ TypeScript ESM project for a local host of Discord waifus, ea
 
 Remote management lives in `src/remote/` (local gateway, helper verification, transport, sessions), `src/backend/remoteAccess/` (host lifecycle), `src/api/remoteAccess.ts` (host endpoints), and `src/frontend/remote-shell/` (connection window). Read `CLAUDE.md` for detailed architecture and security invariants, and the README's Remote management section for the user-facing setup flow. Keep these files synchronized when behavior changes; verify the current source and package pins rather than treating old plans as current implementation.
 
+**Top priority:** any change to waifu behaviour (triggers, routing, prompts, tools, files/folders, schedules, dreaming, privacy, remote behaviour) updates `docs/behaviour/` in the same commit; when those docs and the code disagree, fix the docs.
+
 ## Build, Test, and Development Commands
 
 - `npm run dev`: start the local CLI development flow via `waifus dev`.
