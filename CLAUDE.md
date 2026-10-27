@@ -246,7 +246,9 @@ newer file and archive the other; index and journal paths rewritten; begun lives
 start), `living-cast-drop-busy-v1` (owner busy blocks archived and dropped) and
 `living-cast-bed-time-v1` (`availability.sleep` → `availability.bedTime`, document archived), all in
 `migrationSteps/livingCastLifeFolder.ts`; the life-folder step keeps a per-waifu marker
-(`life/life-folder-v1.json`, written by `HomeStore` for every life the app runs) and records each part,
+(`life/life-folder-v1.json`, written by `HomeStore` under its lock on every write to her home, so a
+profile or file the app writes before her first tick is covered; a `life/` holding only app file
+names is the app's) and records each part,
 so a lost ledger never moves her later files and a crash resumes where it stopped. Retired data shapes the migrations
 still read live in `migrationSteps/legacySchemas.ts`; nothing else imports it. Legacy-step tests
 run `MIGRATION_STEPS` minus the L2 ids; `tests/livingCastMigrations.test.ts` covers the L2 steps on

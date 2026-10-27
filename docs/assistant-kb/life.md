@@ -112,7 +112,7 @@ simulated Bash (nothing she runs can reach the host or the network):
   when it is written, and a ref stays usable for as long as its line exists). She searches it with
   Read and Bash (`grep -r`, `cat`, Python), or with ReadMessages: `people:` and `search:` (one place,
   several, or `everywhere`; newest days first, at most 400 days per place and 32 MiB per call, and
-  the reply says which days it searched) read it, and `before|after|around` a ref, a time or a day
+  the reply says which days it searched and, for `everywhere`, which places the limit cut) read it, and `before|after|around` a ref, a time or a day
   jump into a conversation; nothing
   can change it and SendMessage can't attach it. A waifu added to a room later sees only what was
   said after she arrived; one removed from it keeps what she saw. The app writes it (one shared
