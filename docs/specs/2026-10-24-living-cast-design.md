@@ -2757,3 +2757,78 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 - Tests: `tests/lifeNotificationLines.test.ts`; goldens `life-dm-wake.txt` (the DM burst now shows
   both messages), `life-room-burst.txt` (new) and `life-mid-turn.txt` (the folded arrival is now two
   messages from Mina, one line each).
+
+## 21. Her day: `~/life/` and a daily schedule she writes (owner request, 2026-10-27)
+
+### 21.1 Owner decisions (2026-10-27)
+
+| # | Decision |
+|---|---|
+| S1 | Her app-managed files move into **`~/life/`**: `schedule.json` (new: her day), `reminders.json` (today's `schedule.json`, renamed), `watches.json`, `profile.json`, `places.md`. **`MEMORY.md` stays at the root** with her notes (it is their index). The root is hers; `~/life/` is her daily machinery. |
+| S2 | Every morning she is woken by a harness notification asking her to **write today's schedule**; after that turn her context is compacted so the new schedule is in her system prompt. |
+| S3 | The owner-set **busy blocks are dropped**; the owner keeps only **sleep** times. Busy blocks, why, phone checks and the rest of the day come from her own `~/life/schedule.json`. |
+| S4 | **Busy holds room wakes; DMs and direct address get through**: during one of her busy blocks a DM, an @mention or reply to her, her name (wake on name), the owner's wakes, her own reminders and her watches still wake her at once; addressee-detector picks (including chime-ins), `@everyone`/role mentions and follow-ups wait for her next phone check inside the block or the block's end, then arrive together. |
+
+### 21.2 `~/life/schedule.json`
+
+```json
+{
+  "date": "2026-10-27",
+  "mood": "slow morning, want a quiet day",
+  "busy": [
+    { "from": "12:00", "to": "15:30", "why": "studio shift" },
+    { "from": "19:00", "to": "20:30", "why": "gym with Mira" }
+  ],
+  "phoneChecks": ["13:30", "14:45"],
+  "plans": [
+    { "at": "21:00", "what": "movie night in kingdom-16062/#general" },
+    { "what": "finish the rain poem for Lianne" }
+  ],
+  "note": "if Kevin asks about saturday: yes"
+}
+```
+
+- `date` (her local date, required); `mood` (≤ 200 chars); `busy` (≤ 12 blocks, `HH:MM` local, `from` < `to`, no overlaps, inside her waking hours, `why` ≤ 120 chars); `phoneChecks` (≤ 24 times, inside a busy block to matter; outside one they are harmless); `plans` (≤ 20, optional `at`, `what` ≤ 200 chars; informational, she sets reminders herself if she wants a wake); `note` (≤ 500 chars). Unknown keys are refused.
+- A special file like `watches.json` (strict JSON with line and column, written through `homeStore`, a stale whole-file Write gets "changed since you read it"). A file whose `date` is not today counts as **no plan today** (no busy blocks); it is never deleted, she overwrites it.
+- **Live**: the wake router, the detector's availability and her time line read the file on every use. Her own edits during the day take effect at once there; the system prompt's copy updates at the next compaction (no forced compaction for a midday edit).
+- Sleep stays the owner's (`availability.sleep`); she cannot set sleep in this file.
+
+### 21.3 The morning wake
+
+- When her sleep ends (or at `life.dayStartHourLocal`, default 8, for a waifu without a sleep window) the scheduler routes one `morning` wake. Its notification opens with:
+
+  > [system] Good morning, it's Tue 27 Oct. Before anything else, write today's schedule in
+  > ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your
+  > mood, your plans. Your day is yours to plan: keep it believable for who you are. Your sleep
+  > (00:30–08:30) is fixed. Then deal with what came in overnight.
+
+  followed by the overnight batch as today (§4.4 morning batch).
+- After that turn ends the loop compacts with reason `day` (A rebuilt, so `<schedule>` shows today). If the turn ended without a valid schedule for today, she has no plan today (no busy blocks) and the compaction still runs once.
+- Deferred morning (she is mid-turn, paused, or the host was down): the wake fires at the next cycle; on a host that was down all morning it fires at boot catch-up.
+
+### 21.4 Busy holds (S4)
+
+- A wake router guard after sleep: if she is in a busy block of today's schedule and the wake is not one that gets through (S4), the wake is **held** (persisted in `wakes.json` with `heldUntil` = the next phone check inside the block, else the block's end). Held wakes are released together as one notification, with the usual one line per message (§20) and a first line `- phone check (busy: <why>)` or `- free again (<why> is over)`.
+- The detector's availability is `busy` during a block (weight ×1, §4.3) from the file.
+- The time line shows `busy: <why> until HH:MM` from the file; `availability.busy` is no longer read anywhere.
+
+### 21.5 Prompt
+
+- `<schedule>` renders the sleep line and today's plan from the file (busy blocks with why, phone checks, mood, plans, note), or "No plan for today yet." It is part of block A (snapshotted per epoch, §21.3 compaction refreshes it). `scheduleInPrompt = false` keeps it out of the prompt (the file still works).
+- `<life>` replaces the reminders/watches paths with `~/life/reminders.json` and `~/life/watches.json`, `profile.json` with `~/life/profile.json`, adds one sentence: "Your day is in ~/life/schedule.json: you write it each morning and may change it during the day; while you're busy only direct messages and people talking to you reach you, the rest waits for your phone checks."
+
+### 21.6 Everything that moves
+
+- Tools: `ScheduleWake` writes `~/life/reminders.json`; `WatchFor` `~/life/watches.json`; descriptions updated. Path rules, special files, the files index (provenance entries' paths), pending Bash change sets, forget scrub rules (reminders/watches as today; `schedule.json` text fields scrubbed like notes), "never attached by SendMessage" (all of `~/life/`), and dreaming: **dreaming leaves `~/life/` alone** (it tidies notes and `MEMORY.md` only).
+- `places.md` is generated at `~/life/places.md` (read-only as today).
+- API/CLI/dashboard: her files, reminders and watches routes keep their URLs but read the new paths; Life → Files shows `life/`; the Cast editor drops busy blocks (sleep stays); the settings registry drops `availability.busy`; `life.dayStartHourLocal` (default 8) is added.
+- Migration (`living-cast-life-folder-v1`, once): per waifu move `home/schedule.json` → `home/life/reminders.json`, `home/watches.json`, `home/profile.json`, `home/places.md` → `home/life/`, rewriting files-index paths; a name collision is resolved by keeping the newer file and archiving the other under `user/.archive/living-cast/life-folder/`. A second step archives and drops `availability.busy` from every waifu config (the archive keeps the old blocks). Each life gets a pending epoch start (the harness changed).
+- Prebuilt cast: busy blocks removed; personas keep any wording about routines (she uses it to plan her day).
+
+### 21.7 Tests
+
+Migration (moves, collisions, index paths, busy dropped and archived, idempotent re-run); the schedule file's checks (each rule, line and column); the morning wake (notification text, overnight batch after it, compaction `day` after the turn, no-plan path, no-sleep-window hour, boot catch-up); busy holds (each S4 class through or held, release at phone check and block end as one notification, holds survive restart); detector availability and time line from the file; prompt goldens (`<schedule>` with a plan and without, `<life>` sentence, morning notification); forget scrubs `schedule.json` text; dreaming refuses writes under `~/life/`.
+
+### 21.8 Release
+
+A feature release (3.3.0).
