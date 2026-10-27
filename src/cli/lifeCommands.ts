@@ -47,7 +47,7 @@ const WAKE_OUTCOMES: Record<WakeResult["outcome"], string> = {
   queued_offline: "queued: Discord is offline, the wake runs when the cast connects"
 };
 
-/** `waifus wake WAIFU [NOTE…]`: an owner wake (skips sleep and budget), with a note she sees. */
+/** `waifus wake WAIFU [NOTE…]`: an owner wake (skips her bed time and budget), with a note she sees. */
 export async function wakeCommand(ctx: CliContext, args: readonly string[], o: { stdin?: boolean } = {}): Promise<ExitCode> {
   const waifuId = waifuIdArg(args[0]);
   const note = (o.stdin ? ((await ctx.readStdin()) ?? "") : args.slice(1).join(" ")).trim();
@@ -103,12 +103,17 @@ export function renderLogLine(line: LifeLog["lines"][number]): string[] {
 }
 
 function statusLines(status: LifeStatus): string[] {
+  const a = status.availability;
   const availability =
-    status.availability.state === "awake"
-      ? "awake"
-      : status.availability.state === "asleep"
-        ? `asleep${status.availability.until ? ` until ${status.availability.until}` : ""}`
-        : `busy${status.availability.reason ? ` (${status.availability.reason}` : ""}${status.availability.until ? ` until ${status.availability.until}` : ""}${status.availability.reason ? ")" : ""}`;
+    a.bed === "up_late"
+      ? "up late (bed time)"
+      : a.bed === "dozing"
+        ? `dozing (bed time${a.until ? ` until ${a.until}` : ""})`
+        : a.state === "awake"
+          ? "awake"
+          : a.state === "asleep"
+            ? `asleep${a.until ? ` until ${a.until}` : ""}`
+            : `busy${a.reason ? ` (${a.reason}` : ""}${a.until ? ` until ${a.until}` : ""}${a.reason ? ")" : ""}`;
   const model = status.model ? `${status.model.providerId}/${status.model.modelId}${status.model.effort ? `@${status.model.effort}` : ""}` : "(none)";
   const lines = [
     `${status.displayName} (${status.waifuId})${status.enabled ? "" : " [disabled]"}`,

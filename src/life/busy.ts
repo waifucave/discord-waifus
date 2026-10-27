@@ -8,20 +8,31 @@
 // a place and she sends a message there, that place is open for `life.busyEngagedMinutes` after her
 // latest send there (each send extends it): held kinds get through there too. The open places are in
 // her life state (`busyOpen`, they survive a restart) and end with the busy block.
+//
+// Her bed time (§21.6c) counts from her last send (`lastSentAt`): up late while it is recent, then
+// dozing, then asleep (`clock.ts` `bedPhaseAt`). Up late or dozing, the same kinds get through as
+// while busy, and so does anything in a place she sent to in the last `life.busyEngagedMinutes`
+// (`recentSends`); the rest waits for the morning.
 
-import type { Wake, WakeReason } from "../shared/schemas/life.js";
+import type { LifeState, Wake, WakeReason } from "../shared/schemas/life.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeDeps } from "./deps.js";
+import { availabilityAt, type AvailabilityNow, type BedContext } from "./clock.js";
 import { busyAt } from "./home/daySchedule.js";
 import { dayPlanFor } from "./home/index.js";
 import { readLifeState, updateLifeState } from "./lifeStore.js";
 
-/** Wake reasons that reach her while she is busy (S4). */
+/** Wake reasons that reach her while she is busy (S4) or up late / dozing in her bed time (§21.6c). */
 export const BUSY_THROUGH_REASONS: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "reminder", "watch", "watch_timeout", "morning"]);
 
 /** A wake that reaches her while she is busy: any of its reasons does (a burst with a mention does). */
 export function getsThroughBusy(wake: Pick<Wake, "reason" | "reasons">): boolean {
   return [wake.reason, ...(wake.reasons ?? [])].some((reason) => BUSY_THROUGH_REASONS.has(reason));
+}
+
+/** Wake reasons that reach her while she is asleep in her bed time (§21.6c): her reminders and the owner's wakes. */
+export function getsThroughAsleep(wake: Pick<Wake, "reason" | "reasons">): boolean {
+  return [wake.reason, ...(wake.reasons ?? [])].some((reason) => reason === "reminder" || reason === "owner");
 }
 
 /** The place is open for her while busy (§21.4): her latest send there was recent, inside this block. */
@@ -32,24 +43,47 @@ export function placeOpen(open: Record<string, { until: string; blockEnd: string
   return Date.parse(entry.until) > now.getTime() && Date.parse(entry.blockEnd) === blockEnd.getTime();
 }
 
+/** She sent there in the last `minutes` (§21.6c: open while she is up late or dozing). */
+export function sentRecently(recentSends: Record<string, string> | undefined, placeKey: string | undefined, now: Date, minutes: number): boolean {
+  if (!placeKey || minutes <= 0) return false;
+  const at = recentSends?.[placeKey];
+  return at !== undefined && now.getTime() - Date.parse(at) < minutes * 60_000;
+}
+
+/** What her bed time phase counts from (§21.6c). */
+export function bedContextOf(deps: Pick<LifeDeps, "config">, state: Pick<LifeState, "lastSentAt">): BedContext {
+  const life = deps.config().life;
+  return { lastSentAt: state.lastSentAt, engagedMinutes: life.busyEngagedMinutes, dozeMinutes: life.bedDozeMinutes };
+}
+
+/** Where she is now: her bed time phase (from her life state), else her day's busy blocks, else awake. */
+export async function availabilityFor(deps: Pick<LifeDeps, "storage" | "config" | "timeZone">, waifu: WaifuConfig, now: Date, state?: Pick<LifeState, "lastSentAt">): Promise<AvailabilityNow> {
+  const current = state ?? (await readLifeState(deps.storage, waifu.id));
+  return availabilityAt(waifu.availability, now, deps.timeZone, { day: await dayPlanFor(deps, waifu), bed: bedContextOf(deps, current) });
+}
+
 /**
- * She sent a message in a place (§21.4): while she is busy, the place opens (or stays open) for
- * `life.busyEngagedMinutes` when a wake that got through woke her there (`wakes`: her turn's), or it
- * was open already. Entries of other blocks and lapsed ones are dropped.
+ * She sent a message in a place: her last send (`lastSentAt`, her bed time's clock, §21.6c) and the
+ * place's latest send (`recentSends`, kept for `life.busyEngagedMinutes`) are recorded. While she is
+ * busy (§21.4) the place opens (or stays open) for `life.busyEngagedMinutes` when a wake that got
+ * through woke her there (`wakes`: her turn's), or it was open already. Entries of other blocks and
+ * lapsed ones are dropped.
  */
-export async function noteBusySend(deps: LifeDeps, waifu: WaifuConfig, placeKey: string, wakes: readonly Wake[]): Promise<void> {
+export async function noteSend(deps: LifeDeps, waifu: WaifuConfig, placeKey: string, wakes: readonly Wake[]): Promise<void> {
   const minutes = deps.config().life.busyEngagedMinutes;
-  if (minutes <= 0) return;
   const now = deps.now();
-  const busy = busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone);
-  if (!busy) return;
+  const nowIso = now.toISOString();
+  const busy = minutes > 0 ? busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone) : undefined;
   const state = await readLifeState(deps.storage, waifu.id);
   const reached = wakes.some((wake) => wake.placeKey === placeKey && getsThroughBusy(wake));
-  if (!reached && !placeOpen(state.busyOpen, placeKey, now, busy.end)) return;
+  const opens = busy !== undefined && (reached || placeOpen(state.busyOpen, placeKey, now, busy.end));
   const until = new Date(now.getTime() + minutes * 60_000).toISOString();
-  const blockEnd = busy.end.toISOString();
   await updateLifeState(deps.storage, waifu.id, (current) => {
+    const recent = Object.fromEntries(Object.entries(current.recentSends ?? {}).filter(([, at]) => now.getTime() - Date.parse(at) < minutes * 60_000));
+    const next: LifeState = { ...current, lastSentAt: nowIso, recentSends: minutes > 0 ? { ...recent, [placeKey]: nowIso } : {} };
+    if (!opens) return next;
+    const blockEnd = busy.end.toISOString();
     const kept = Object.fromEntries(Object.entries(current.busyOpen ?? {}).filter(([, entry]) => entry.blockEnd === blockEnd && Date.parse(entry.until) > now.getTime()));
-    return { ...current, busyOpen: { ...kept, [placeKey]: { until, blockEnd } } };
+    return { ...next, busyOpen: { ...kept, [placeKey]: { until, blockEnd } } };
   });
 }

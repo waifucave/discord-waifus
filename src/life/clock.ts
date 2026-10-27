@@ -1,4 +1,4 @@
-// Local time for lives (Living cast spec §4.5, §5.4, §6.6): her schedule, the permanent time lines,
+// Local time for lives (Living cast spec §4.5, §5.4, §6.6, §21.6c): her bed time and day, the time lines,
 // local days (budgets, maintenance) and the local "2026-10-25 18:00" times `ScheduleWake` takes.
 // Everything is computed in one IANA zone (the host's, injectable for tests) so wall-clock values
 // never depend on the process's TZ.
@@ -136,38 +136,67 @@ function intervalContains(minutes: number, start: number, end: number): boolean 
   return start < end ? minutes >= start && minutes < end : minutes >= start || minutes < end;
 }
 
-export type AvailabilityNow =
-  | { state: "awake" }
-  | { state: "busy"; reason: string; until: string }
-  | { state: "asleep"; windowStart: Date; windowEnd: Date };
+type BedTimeOf = Pick<WaifuAvailability, "bedTime">;
 
 /**
- * Where she is in her day right now: asleep (the owner's sleep window) first, then busy in a block
- * of today's plan (`day`: her `~/life/schedule.json`, §21.2), else awake.
+ * Where she is in her bed time (§21.6c): `up_late` while her last send is under
+ * `engagedMinutes` old, `dozing` until `dozeMinutes` after the later of the bed time's start and her
+ * last send, then `asleep` (`asleepAt`: when she fell asleep).
  */
-export function availabilityAt(availability: Pick<WaifuAvailability, "sleep">, now: Date, timeZone: string, day?: DayPlan): AvailabilityNow {
-  const minutes = minutesOfDay(now, timeZone);
-  const sleep = availability.sleep;
-  if (sleep.enabled) {
-    const start = hhmmMinutes(sleep.start);
-    const end = hhmmMinutes(sleep.end);
-    if (intervalContains(minutes, start, end)) {
-      const window = sleepWindowContaining(availability, now, timeZone)!;
-      return { state: "asleep", windowStart: window.start, windowEnd: window.end };
-    }
-  }
-  const busy = busyAt(day, now, timeZone);
+export type BedPhase = { phase: "up_late" | "dozing" | "asleep"; windowStart: Date; windowEnd: Date; asleepAt: Date };
+
+/** What decides her bed time phase: her last send (life state) and the two settings. */
+export type BedContext = { lastSentAt?: string | undefined; engagedMinutes: number; dozeMinutes: number };
+
+/** The defaults of `life.busyEngagedMinutes` and `life.bedDozeMinutes`, for views without the app's config. */
+export const DEFAULT_BED_CONTEXT: BedContext = { engagedMinutes: 10, dozeMinutes: 60 };
+
+export function bedPhaseAt(availability: BedTimeOf, now: Date, timeZone: string, bed: BedContext = DEFAULT_BED_CONTEXT): BedPhase | undefined {
+  const window = bedTimeContaining(availability, now, timeZone);
+  if (!window) return undefined;
+  const sent = bed.lastSentAt ? Date.parse(bed.lastSentAt) : Number.NaN;
+  const lastSent = Number.isFinite(sent) && sent <= now.getTime() ? sent : Number.NEGATIVE_INFINITY;
+  const from = Math.max(window.start.getTime(), lastSent);
+  const asleepAt = new Date(from + bed.dozeMinutes * 60_000);
+  const base = { windowStart: window.start, windowEnd: window.end, asleepAt };
+  if (now.getTime() - lastSent < bed.engagedMinutes * 60_000) return { phase: "up_late", ...base };
+  if (now.getTime() < asleepAt.getTime()) return { phase: "dozing", ...base };
+  return { phase: "asleep", ...base };
+}
+
+export type AvailabilityNow =
+  | { state: "awake"; bed?: BedPhase }
+  | { state: "busy"; reason: string; until: string; bed?: BedPhase }
+  | { state: "asleep"; windowStart: Date; windowEnd: Date; bed?: BedPhase };
+
+/** Her day file and her bed time context: what `availabilityAt` reads besides the owner's bed time. */
+export type AvailabilityContext = { day?: DayPlan | undefined; bed?: BedContext };
+
+/**
+ * Where she is in her day right now: in her bed time (§21.6c) up late (awake), dozing (busy:
+ * "dozing (bed time)") or asleep; else busy in a block of today's plan (`day`: her
+ * `~/life/schedule.json`, §21.2), else awake.
+ */
+export function availabilityAt(availability: BedTimeOf, now: Date, timeZone: string, ctx: AvailabilityContext = {}): AvailabilityNow {
+  const bed = bedPhaseAt(availability, now, timeZone, ctx.bed);
+  if (bed?.phase === "asleep") return { state: "asleep", windowStart: bed.windowStart, windowEnd: bed.windowEnd, bed };
+  if (bed?.phase === "dozing") return { state: "busy", reason: DOZING, until: clockText(bed.windowEnd, timeZone), bed };
+  if (bed) return { state: "awake", bed };
+  const busy = busyAt(ctx.day, now, timeZone);
   if (busy) return { state: "busy", reason: busy.why || "busy", until: busy.until };
   return { state: "awake" };
 }
 
+/** The busy reason while she dozes in her bed time (§21.6c). */
+export const DOZING = "dozing (bed time)";
+
 /**
- * The start of her current day (§21.3): the latest end of her sleep window at or before `now`, or,
- * without a sleep window, the latest `hourLocal`:00 at or before `now`.
+ * The start of her current day (§21.3): the latest end of her bed time at or before `now`, or,
+ * without a bed time, the latest `hourLocal`:00 at or before `now`.
  */
-export function dayStartAt(waifu: { availability: Pick<WaifuAvailability, "sleep"> }, now: Date, timeZone: string, hourLocal: number): Date {
-  const sleep = waifu.availability.sleep;
-  const [hour, minute] = sleep.enabled ? (sleep.end.split(":").map(Number) as [number, number]) : [hourLocal, 0];
+export function dayStartAt(waifu: { availability: BedTimeOf }, now: Date, timeZone: string, hourLocal: number): Date {
+  const bedTime = waifu.availability.bedTime;
+  const [hour, minute] = bedTime.enabled ? (bedTime.end.split(":").map(Number) as [number, number]) : [hourLocal, 0];
   const p = localParts(now, timeZone);
   for (const shift of [0, -1, -2]) {
     const day = new Date(Date.UTC(p.year, p.month - 1, p.day + shift));
@@ -177,12 +206,12 @@ export function dayStartAt(waifu: { availability: Pick<WaifuAvailability, "sleep
   return now;
 }
 
-/** The sleep window (start, end instants) containing `now`, or undefined when she is awake. */
-export function sleepWindowContaining(availability: Pick<WaifuAvailability, "sleep">, now: Date, timeZone: string): { start: Date; end: Date } | undefined {
-  const sleep = availability.sleep;
-  if (!sleep.enabled) return undefined;
-  const start = hhmmMinutes(sleep.start);
-  const end = hhmmMinutes(sleep.end);
+/** The bed time (start, end instants) containing `now`, or undefined outside it. */
+export function bedTimeContaining(availability: BedTimeOf, now: Date, timeZone: string): { start: Date; end: Date } | undefined {
+  const bedTime = availability.bedTime;
+  if (!bedTime.enabled) return undefined;
+  const start = hhmmMinutes(bedTime.start);
+  const end = hhmmMinutes(bedTime.end);
   const minutes = minutesOfDay(now, timeZone);
   if (!intervalContains(minutes, start, end)) return undefined;
   const p = localParts(now, timeZone);
@@ -195,11 +224,23 @@ export function sleepWindowContaining(availability: Pick<WaifuAvailability, "sle
   return minutes >= start ? { start: today(start, 0), end: today(end, 1) } : { start: today(start, -1), end: today(end, 0) };
 }
 
+/** The bed time that ended last at or before `now` (its start and end), or undefined without one. */
+export function lastBedTime(availability: BedTimeOf, now: Date, timeZone: string, hourLocal = 0): { start: Date; end: Date } | undefined {
+  if (!availability.bedTime.enabled) return undefined;
+  const end = dayStartAt({ availability }, now, timeZone, hourLocal);
+  return bedTimeContaining(availability, new Date(end.getTime() - 60_000), timeZone);
+}
+
 export const MEMORY_WARNING = "your memory of today will be summarised soon; save anything worth keeping to your notes";
 
-/** The permanent time line every appended user message ends with (§5.4); busy from her day (§21.4). */
-export function timeLine(o: { now: Date; timeZone: string; availability: Pick<WaifuAvailability, "sleep">; day?: DayPlan; memoryWarning?: boolean }): string {
-  const status = availabilityAt(o.availability, o.now, o.timeZone, o.day);
-  const label = status.state === "busy" ? `busy: ${status.reason} until ${status.until}` : status.state;
-  return `[${dayTimeText(o.now, o.timeZone)} · ${label}${o.memoryWarning ? ` · ${MEMORY_WARNING}` : ""}]`;
+/** The time line's word for where she is: `awake`, `up late`, `dozing (bed time)`, `busy: …`, `asleep`. */
+export function availabilityLabel(status: AvailabilityNow): string {
+  if (status.state === "busy") return status.bed ? DOZING : `busy: ${status.reason} until ${status.until}`;
+  if (status.state === "awake" && status.bed) return "up late";
+  return status.state;
+}
+
+/** The permanent time line every appended user message ends with (§5.4); `status`: `availabilityAt` now. */
+export function timeLine(o: { now: Date; timeZone: string; status: AvailabilityNow; memoryWarning?: boolean }): string {
+  return `[${dayTimeText(o.now, o.timeZone)} · ${availabilityLabel(o.status)}${o.memoryWarning ? ` · ${MEMORY_WARNING}` : ""}]`;
 }

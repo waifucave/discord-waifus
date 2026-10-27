@@ -1,11 +1,11 @@
-// Steps `living-cast-life-folder-v1` and `living-cast-drop-busy-v1` (Living cast spec §21.6): her
+// Steps `living-cast-life-folder-v1`, `living-cast-drop-busy-v1` and `living-cast-bed-time-v1` (Living cast spec §21.6, §21.6c): her
 // app-managed files move into `~/life/` (reminders renamed), name collisions keep the newer file and
 // archive the other, provenance and journal paths follow, a begun life starts a new epoch, and the
-// owner-set busy blocks are archived and dropped. Re-running either changes nothing.
+// owner-set busy blocks are archived and dropped, and her sleep window becomes her bed time. Re-running any changes nothing.
 import { mkdir, readdir, readFile, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "../src/backend/migrationSteps/livingCastLifeFolder.js";
+import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "../src/backend/migrationSteps/livingCastLifeFolder.js";
 import { MIGRATION_STEPS } from "../src/backend/migrations.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
@@ -166,10 +166,41 @@ describe("living-cast-drop-busy-v1 (§21.6, S3)", () => {
     const ids = MIGRATION_STEPS.map((step) => step.id);
     const stamp = ids.findIndex((id) => id.startsWith("stamp-schema-version-"));
     expect(stamp).toBe(ids.length - 1);
-    for (const id of ["living-cast-life-folder-v1", "living-cast-drop-busy-v1"]) {
+    for (const id of ["living-cast-life-folder-v1", "living-cast-drop-busy-v1", "living-cast-bed-time-v1"]) {
       expect(ids.indexOf(id)).toBeGreaterThan(ids.indexOf("living-cast-typing-holds-v1"));
       expect(ids.indexOf(id)).toBeLessThan(stamp);
       expect(MIGRATION_STEPS.find((step) => step.id === id)?.frequency).toBe("once");
     }
+  });
+});
+
+describe("living-cast-bed-time-v1 (§21.6c)", () => {
+  it("renames availability.sleep to bedTime after archiving the document, and changes nothing on a re-run", async () => {
+    const root = await oldRoot();
+    await migrateLivingCastDropBusy(root, { now: () => NOW });
+    const original = JSON.parse((await read(root, "user/waifus/ella/waifu.json"))!) as Record<string, unknown>;
+    expect(await migrateLivingCastBedTime(root, { now: () => NOW })).toBe("living-cast-bed-time-2");
+    const waifu = JSON.parse((await read(root, "user/waifus/ella/waifu.json"))!) as { availability: Record<string, unknown> };
+    expect(waifu.availability).toEqual({ bedTime: { enabled: true, start: "00:30", end: "08:30" } });
+    expect(JSON.parse((await read(root, "user/.archive/living-cast/bed-time/ella.json"))!)).toEqual({ waifuId: "ella", archivedAt: NOW.toISOString(), waifu: original });
+    const before = await snapshot(root);
+    expect(await migrateLivingCastBedTime(root, { now: () => NOW })).toBeUndefined();
+    expect(await snapshot(root)).toEqual(before);
+  });
+
+  it("keeps a bedTime that is already there and drops the old key", async () => {
+    const root = await oldRoot();
+    await write(root, "user/waifus/ella/waifu.json", json({ id: "ella", availability: { sleep: { enabled: true, start: "22:00", end: "06:00" }, bedTime: { enabled: true, start: "01:00", end: "09:00" } } }));
+    await migrateLivingCastBedTime(root, { now: () => NOW });
+    const waifu = JSON.parse((await read(root, "user/waifus/ella/waifu.json"))!) as { availability: Record<string, unknown> };
+    expect(waifu.availability).toEqual({ bedTime: { enabled: true, start: "01:00", end: "09:00" } });
+  });
+
+  it("leaves an unparsable waifu file alone and reports itself incomplete", async () => {
+    const root = await oldRoot();
+    await write(root, "user/waifus/broken/waifu.json", "{ not json");
+    const outcome = await migrateLivingCastBedTime(root, { now: () => NOW });
+    expect(outcome).toMatchObject({ incomplete: "1 waifu file(s) could not be parsed" });
+    expect(await read(root, "user/waifus/broken/waifu.json")).toBe("{ not json");
   });
 });

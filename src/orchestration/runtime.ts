@@ -550,7 +550,7 @@ export class CastRuntime {
     return ids;
   }
 
-  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips sleep and budget (§4.5). Only this server's cast. */
+  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips her bed time and budget (§4.5). Only this server's cast. */
   async handleWakeCommand(event: DiscordWakeCommandEvent): Promise<void> {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");

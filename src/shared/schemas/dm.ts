@@ -17,7 +17,7 @@ export const WaifuDmSettingsSchema = z.object({
   rateLimit: DmRateLimitSchema.nullable().default({ ...DEFAULT_DM_RATE_LIMIT }), // null = unlimited
   notifyWhenLimited: z.boolean().default(true),
   limitNotice: z.string().max(300).default(""), // "" = built-in template
-  // Living cast §4.5: sent once per sleep window per user when a DM wake is deferred for sleep
+  // Living cast §4.5, §21.6c: sent once per bed time per user when a DM wake is deferred while she is asleep
   // ("" = none). No model call; not counted by the rate limit.
   sleepNotice: z.string().max(300).default("")
 });
@@ -58,7 +58,7 @@ export const DmLimitStateSchema = RevisionedRecordSchema.extend({
    * never deletes this file.
    */
   floorMessageId: z.string().min(1).optional(),
-  /** Living cast §4.5: the start (ISO) of the sleep window the sleep notice was last sent for. */
+  /** Living cast §4.5: the start (ISO) of the bed time the sleep notice was last sent for. */
   sleepNoticeSentFor: IsoDateStringSchema.optional(),
   /** Automatic notices (limit, sleep) she sent: `ReadMessages` renders them as `[auto] …`. */
   autoMessageIds: z.array(z.string().min(1)).max(50).default([])

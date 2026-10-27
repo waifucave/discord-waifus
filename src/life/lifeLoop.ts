@@ -18,9 +18,9 @@
 // in parallel up to `life.maxConcurrentTurns`.
 
 import { isDmPlaceKey } from "./lifeView.js";
-import { noteBusySend } from "./busy.js";
+import { availabilityFor, noteSend } from "./busy.js";
 import { withPlaceRecord } from "./placeRecorder.js";
-import { dayPlanFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
+import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { createHash } from "node:crypto";
 import type { ContentBlockLike, ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
@@ -355,9 +355,9 @@ export class Life {
     const config = this.deps.config();
     const trigger = config.compaction.triggerRatio * lifeBudget(model, config.life.maxContextTokens);
     // The rest notice replaces the "memory nearly full" warning (§19.2); with it off, the warning stays.
-    // Busy from her day file, read on every use (§21.2).
-    const day = await dayPlanFor(this.deps, waifu);
-    const line = timeLine({ now: this.deps.now(), timeZone: this.deps.timeZone, availability: waifu.availability, day, memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
+    // Busy from her day file, read on every use (§21.2); her bed time phase from her last send (§21.6c).
+    const now = this.deps.now();
+    const line = timeLine({ now, timeZone: this.deps.timeZone, status: await availabilityFor(this.deps, waifu, now), memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
     // A summary she wrote that was not used is explained once, on her next time line (§21.6b).
     const refused = (await readLifeState(this.deps.storage, this.waifuId)).selfSummaryRefused;
     if (refused === undefined) return line;
@@ -916,11 +916,12 @@ export class Life {
       if (run.typing && tool && !output.isError && call.name === "SendMessage") {
         for (const place of places) run.typing.keeper.sent(place);
       }
-      // While she is busy, a place she answers in after a wake that got through stays open (§21.4).
+      // Her last send starts her bed time clock again (§21.6c); while she is busy, a place she answers
+      // in after a wake that got through stays open (§21.4).
       if (tool && !output.isError && call.name === "SendMessage") {
         for (const place of places) {
-          await noteBusySend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
-            deps.logger.warn("Could not note a send while busy", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+          await noteSend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
+            deps.logger.warn("Could not note a send", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
           });
         }
       }

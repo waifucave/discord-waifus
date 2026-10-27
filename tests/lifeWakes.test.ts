@@ -439,7 +439,7 @@ describe("addressee detector (§4.3)", () => {
   });
 
   it("chime-in: with `human`, one awake waifu gets a soft wake, at most once per room every 10 minutes", async () => {
-    const sleeping = { sleep: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+    const sleeping = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
     const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, availability: sleeping }] });
     w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 0.8, nobody: 0.2 } } };
     await say(w, "Sam what should I bake for my mom? she loves lemon");
@@ -711,7 +711,7 @@ describe("guards in order (§4.4, §4.5)", () => {
   });
 
   it("4. asleep: wakes are deferred (DMs too); the sleep notice goes once per window; the owner's wake goes through", async () => {
-    const sleeping = { sleep: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+    const sleeping = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
     const w = await world({
       waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", availability: sleeping, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "", sleepNotice: "zzz, I'll answer in the morning" } }]
     });
@@ -755,7 +755,7 @@ describe("guards in order (§4.4, §4.5)", () => {
   });
 
   it("combined guards apply in order: the first that matches decides", async () => {
-    const sleeping = { sleep: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+    const sleeping = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
     const w = await world({
       waifus: [
         {

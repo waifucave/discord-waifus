@@ -242,8 +242,8 @@ describe("data root and config", () => {
     const firstPath = path.join(root, "user", "waifus", first.id, "waifu.json");
     const seeded = JSON.parse(await readFile(firstPath, "utf8"));
     expect(seeded.displayName).toBe(first.displayName);
-    expect(seeded.availability.sleep.enabled).toBe(true);
-    // Only her sleep is the owner's: her busy times are her own day file (spec §21 S3).
+    expect(seeded.availability.bedTime.enabled).toBe(true);
+    // Only her bed time is the owner's: her busy times are her own day file (spec §21 S3).
     expect(seeded.availability).not.toHaveProperty("busy");
     expect(seeded).not.toHaveProperty("tools");
     expect(seeded).not.toHaveProperty("params");
@@ -345,7 +345,7 @@ describe("data root and config", () => {
     expect(waifu).not.toHaveProperty("promptLayout");
   });
 
-  it("keeps only her sleep in waifu availability: a stray busy key is dropped (spec §21 S3)", () => {
+  it("keeps only her bed time in waifu availability: a stray busy key is dropped (spec §21 S3)", () => {
     const waifu = WaifuConfigSchema.parse({
       schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: 0,
@@ -355,10 +355,10 @@ describe("data root and config", () => {
       displayName: "Old",
       persona: "",
       availability: {
-        sleep: { enabled: true, start: "23:00", end: "07:00" },
+        bedTime: { enabled: true, start: "23:00", end: "07:00" },
         busy: [{ start: "09:00", end: "10:00", reason: "class" }]
       }
     });
-    expect(waifu.availability).toEqual({ sleep: { enabled: true, start: "23:00", end: "07:00" } });
+    expect(waifu.availability).toEqual({ bedTime: { enabled: true, start: "23:00", end: "07:00" } });
   });
 });

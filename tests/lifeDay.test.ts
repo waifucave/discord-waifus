@@ -37,7 +37,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const SLEEPER: WaifuSeed = { id: "ella", name: "Ella", botId: "ella-bot", availability: { sleep: { enabled: true, start: "00:30", end: "08:30" } } };
+const SLEEPER: WaifuSeed = { id: "ella", name: "Ella", botId: "ella-bot", availability: { bedTime: { enabled: true, start: "00:30", end: "08:30" } } };
 const ROOM_2_KEY = conversationKey({ kind: "guild", guildId: GUILD, channelId: CHANNEL_2 });
 const at = (iso: string) => Date.parse(iso);
 const plan = (date: string, extra: Record<string, unknown> = {}) =>
@@ -58,7 +58,7 @@ async function queue(w: LifeWorld) {
 }
 
 describe("the morning wake (§21.3)", () => {
-  it("when her sleep ends she is asked to write today's schedule, overnight things follow; after the turn her context is compacted with today's plan", async () => {
+  it("when her bed time ends she is asked to write today's schedule, overnight things follow; after the turn her context is compacted with today's plan", async () => {
     const w = await lifeWorld(roots, {
       waifus: [SLEEPER],
       scripts: script(
@@ -71,9 +71,9 @@ describe("the morning wake (§21.3)", () => {
     w.clock.ms = at("2026-10-23T20:00:00Z");
     await w.cast.scheduler.tick();
     await beginLife(w);
-    // Asleep: a reminder that comes due is deferred to her morning.
+    // Asleep: a watch that times out is deferred to her morning.
     w.clock.ms = at("2026-10-24T02:00:00Z");
-    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 03:00", note: "water the basil" }]));
+    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-24 03:00", once: true, note: "water the basil", when: [] }]));
     w.clock.ms = at("2026-10-24T03:01:00Z");
     await w.cast.scheduler.tick();
     expect((await queue(w)).immediate).toEqual([]);
@@ -88,9 +88,9 @@ describe("the morning wake (§21.3)", () => {
     expect(morning).toHaveLength(1);
     expect(morning[0]).toMatchObject({ id: "w-day-2026-10-24", reason: "morning", day: "2026-10-24" });
     expect(morning[0]!.batch![0]).toBe(
-      "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Your day is yours to plan: keep it believable for who you are. Your sleep (00:30–08:30) is fixed. Then deal with what came in overnight."
+      "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Your day is yours to plan: keep it believable for who you are. Your bed time (00:30–08:30) is fixed. Then deal with what came in overnight."
     );
-    expect(morning[0]!.batch!.slice(1)).toEqual(["- while you were asleep (00:30–08:30):", '  · reminder (Sat 03:00): "water the basil"']);
+    expect(morning[0]!.batch!.slice(1)).toEqual(["- during your bed time (00:30–08:30):", '  · watch timed out (Sat 03:00) · your note: "water the basil"']);
 
     await w.cast.life("ella").runNow();
     const calls = w.anthropic.calls.map((call) => call.request);
@@ -103,7 +103,7 @@ describe("the morning wake (§21.3)", () => {
     const state = await readLifeState(w.storage, "ella");
     expect(state.lastCompaction).toMatchObject({ reason: "day", summarized: true });
     expect(state.dayCompactionDue).toBeUndefined();
-    expect(state.systemSnapshot!.harness).toContain("<schedule>\nYou sleep from 00:30 to 08:30.\nToday (2026-10-24)");
+    expect(state.systemSnapshot!.harness).toContain("<schedule>\nYour bed time is 00:30–08:30.\nToday (2026-10-24)");
     expect(state.systemSnapshot!.harness).toContain("Busy 12:00–15:30: studio shift");
     expect(state.systemSnapshot!.harness).toContain("Phone checks while busy: 13:30");
     // One morning a day.

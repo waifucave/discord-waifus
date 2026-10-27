@@ -62,14 +62,14 @@ function section(tag: string, body: string): string {
 export const DAY_PLAN_PLACEHOLDER = "(today's plan)";
 
 /**
- * `<schedule>` (§21.5): her sleep (the owner's, fixed) and today's plan from her
+ * `<schedule>` (§21.5, §21.6c): her bed time (the owner's, fixed) and today's plan from her
  * `~/life/schedule.json` as it was when the epoch began, or "No plan for today yet." `day: "hash"`
  * renders the placeholder instead (the harness hash).
  */
 function scheduleText(waifu: WaifuConfig, timeZone: string, day: DayPlan | undefined | "hash"): string {
   const lines: string[] = [];
-  const sleep = waifu.availability.sleep;
-  if (sleep.enabled) lines.push(`You sleep from ${sleep.start} to ${sleep.end}.`);
+  const bedTime = waifu.availability.bedTime;
+  if (bedTime.enabled) lines.push(`Your bed time is ${bedTime.start}–${bedTime.end}.`);
   lines.push(...(day === "hash" ? [DAY_PLAN_PLACEHOLDER] : dayPlanLines(day)));
   lines.push(`Times are local (${timeZone}).`);
   return lines.join("\n");

@@ -5,7 +5,10 @@
 //      limited period (no model call)
 //   3. per-user wake limit (guilds): past `life.maxWakesPerUserPerHour`, the wake becomes one
 //      "+N more from Kevin" line that rides along with her next turn
-//   4. sleep: defer (DMs get the sleep notice once per sleep window per user)
+//   4. bed time (§21.6c): asleep, everything but her reminders and the owner's wakes is deferred to
+//      the morning (DMs get the sleep notice once per bed time per user); up late or dozing, what
+//      doesn't talk to her is deferred too, unless she sent in that place in the last
+//      `life.busyEngagedMinutes` (`busy.ts`)
 //   4b. busy (§21.4): in a busy block of her `~/life/schedule.json`, a wake that doesn't talk to
 //      her (detector picks, chime-ins, @everyone and role mentions, follow-ups) is held until her
 //      next phone check or the block's end, unless she is chatting in that place (`busy.ts`)
@@ -24,10 +27,9 @@ import { ServerConfigSchema, type WaifuConfig } from "../shared/schemas/domain.j
 import type { Wake } from "../shared/schemas/life.js";
 import { assignConversationRefs } from "../discord/refStore.js";
 import type { DailyCost } from "./budget.js";
-import { availabilityAt } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { admitUserWake, deferWake, enqueueWake, holdWake } from "./wakeQueue.js";
-import { getsThroughBusy, placeOpen } from "./busy.js";
+import { availabilityFor, getsThroughAsleep, getsThroughBusy, placeOpen, sentRecently } from "./busy.js";
 import { busyAt } from "./home/daySchedule.js";
 import { dayPlanFor } from "./home/index.js";
 import { readLifeState } from "./lifeStore.js";
@@ -163,18 +165,24 @@ export class WakeRouter {
       });
       if (!admitted) return "quiet";
     }
-    // 4. sleep
-    const availability = availabilityAt(waifu.availability, now, deps.timeZone);
-    if (availability.state === "asleep") {
+    // 4. bed time (§21.6c): asleep, only her reminders get through (the owner's already did); up late
+    // or dozing, what doesn't talk to her waits for the morning unless she was just chatting there.
+    const state = await readLifeState(deps.storage, waifuId);
+    const availability = await availabilityFor(deps, waifu, now, state);
+    if (availability.state === "asleep" && !getsThroughAsleep(wake)) {
       await deferWake(deps.storage, waifuId, wake, "sleep", now);
       if (wake.reason === "dm" && context.dmUserId && waifu.dm.sleepNotice.trim()) await this.maybeSleepNotice(waifu, context.dmUserId, availability.windowStart);
       return "deferred";
     }
+    if (availability.bed && availability.bed.phase !== "asleep" && !getsThroughBusy(wake) && !sentRecently(state.recentSends, wake.placeKey, now, deps.config().life.busyEngagedMinutes)) {
+      await deferWake(deps.storage, waifuId, wake, "sleep", now);
+      return "deferred";
+    }
     // 4b. busy (§21.4, S4): in a busy block of her day, what doesn't talk to her waits for her next
     // phone check (else the block's end), unless she is chatting in that place right now.
-    if (!getsThroughBusy(wake)) {
+    if (!getsThroughBusy(wake) && !availability.bed) {
       const busy = busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone);
-      if (busy && !placeOpen((await readLifeState(deps.storage, waifuId)).busyOpen, wake.placeKey, now, busy.end)) {
+      if (busy && !placeOpen(state.busyOpen, wake.placeKey, now, busy.end)) {
         await holdWake(deps.storage, waifuId, { ...wake, heldUntil: busy.release.toISOString(), heldFor: busy.why });
         return "held";
       }

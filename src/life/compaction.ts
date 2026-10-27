@@ -27,7 +27,8 @@ import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { buildBlockA, harnessHash } from "./lifeHarness.js";
 import { pruneOldEpochLogs, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
-import { dayPlanFor, homeStoreFor } from "./home/index.js";
+import { homeStoreFor } from "./home/index.js";
+import { availabilityFor } from "./busy.js";
 import { todaysPlan } from "./home/daySchedule.js";
 import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import { selfAuthorIds } from "./people.js";
@@ -431,8 +432,7 @@ export async function compactLife(
     try {
       const summaryLines = o.shrinkLastResults ? withoutLastResults(o.lines) : o.lines;
       const request = await buildLifeRequest(deps, { state: o.state, lines: summaryLines, route: o.summaryRoute!, missing: "text", ...(o.signal ? { signal: o.signal } : {}) });
-      const status = o.waifu.availability;
-      const instruction = `${compactionInstruction(o.omit)}\n\n${timeLine({ now, timeZone: deps.timeZone, availability: status, day: await dayPlanFor(deps, o.waifu) })}`;
+      const instruction = `${compactionInstruction(o.omit)}\n\n${timeLine({ now, timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, now, o.state) })}`;
       const result = await summarizeWithModel(deps.models, {
         route: { providerId: o.summaryRoute!.providerId, modelId: o.summaryRoute!.modelId },
         system: request.system,

@@ -8,7 +8,7 @@ import { ModelPicker } from "../components/ModelPicker";
 import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
-import { DailyBudgetField, OwnDayNote, SleepFields, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
+import { DailyBudgetField, OwnDayNote, BedTimeFields, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
 import { SectionHead } from "../components/SectionHead";
 import { WaifuDiscordProfileFields } from "../components/WaifuDiscordProfileFields";
 import { waifuDirty, waifuPatch, waifuProblems } from "./castEdit";
@@ -378,11 +378,11 @@ function CharacterEditor({
               <input type="checkbox" checked={draft.scheduleInPrompt ?? true} onChange={(e) => set({ scheduleInPrompt: e.target.checked })} />
               Show her schedule in her prompt
             </label>
-            <span className="field-hint">When on, her prompt shows her sleep and today's plan (the one she wrote this morning).</span>
+            <span className="field-hint">When on, her prompt shows her bed time and today's plan (the one she wrote this morning).</span>
           </div>
           <WakeOnNameField draft={draft} onChange={set} />
         </div>
-        <SleepFields draft={draft} onChange={set} />
+        <BedTimeFields draft={draft} onChange={set} />
         <OwnDayNote />
 
         {/* ---------- Direct messages ---------- */}

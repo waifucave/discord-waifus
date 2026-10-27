@@ -51,9 +51,9 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/u;
 /** Client-side checks that mirror the schema, so Save says what is wrong before the server does. */
 export function waifuProblems(draft: Partial<WaifuConfig>): string[] {
   const problems: string[] = [];
-  const sleep = draft.availability?.sleep;
-  if (sleep?.enabled && (!TIME.test(sleep.start) || !TIME.test(sleep.end))) problems.push("Sleep times use 24-hour HH:mm.");
-  if (sleep?.enabled && sleep.start === sleep.end) problems.push("Sleep must end at a different time than it starts.");
+  const bedTime = draft.availability?.bedTime;
+  if (bedTime?.enabled && (!TIME.test(bedTime.start) || !TIME.test(bedTime.end))) problems.push("Bed time uses 24-hour HH:mm.");
+  if (bedTime?.enabled && bedTime.start === bedTime.end) problems.push("Bed time must end at a different time than it starts.");
   const budget = draft.life?.dailyBudgetUsd;
   if (budget !== undefined && budget !== null && !(budget > 0 && budget <= 10_000)) problems.push("The daily budget is more than $0 and at most $10,000 (empty = no budget).");
   const limit = draft.dm?.rateLimit;

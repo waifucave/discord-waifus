@@ -965,7 +965,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     runtime: () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime
   });
   // Living cast §14.1: lives, usage, search, the detector, forget jobs and owner notices.
-  registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused });
+  registerLifeRoutes(app, { storage, cast: () => currentCast()?.cast, isPaused: () => options.runtime.paused, bedSettings: async () => (await loadAppConfig(options.dataRoot)).life });
   // Living cast §16.11: her files, reminders and watches.
   registerHomeRoutes(app, { storage, cast: () => currentCast()?.cast });
   registerCastRoutes(app, { storage, dataRoot: options.dataRoot, isPaused: () => options.runtime.paused, liveNotices, applyConfigPatch });

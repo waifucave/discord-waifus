@@ -1,25 +1,33 @@
-// The scheduler (Living cast spec §4.5, §7.3, §5.7, §16.4–§16.6, §16.9): her reminders and watch
-// timeouts (from her own files), the `morning` batch when her sleep (or budget pause) ends, nightly
-// maintenance and pending scrubs, `~/places.md` and `/tmp` expiry.
+// The scheduler (Living cast spec §4.5, §7.3, §5.7, §16.4–§16.6, §16.9, §21): her reminders and watch
+// timeouts (from her own files), held wakes at her phone checks, the morning wake of her day with
+// what waited overnight, nightly maintenance (dreaming) and pending scrubs, `~/life/places.md` and
+// `/tmp` expiry.
 //
 // One periodic tick (default every 15 s) checks every enabled waifu:
-// - due reminders in `~/schedule.json` fire once (through the router, so one due while she sleeps
-//   is deferred to her morning); repeating ones move to their next local occurrence. Late reminders
-//   after downtime fire once on the first tick.
-// - a watch whose timeout passed is removed from `~/watches.json` and she is told it timed out (a
-//   `watch_timeout` wake, so an empty watch works as a timer).
-// - `~/places.md` is rewritten when it would change, at most once a minute; `/tmp` files older than
-//   `life.tmp.retentionDays` go at the first tick and hourly after.
-// - deferred wakes become one `morning` notification once she is awake (or, for the budget pause,
-//   once her new local day starts under budget).
-// - maintenance: 30 minutes into her sleep window, or at `life.maintenanceHourLocal` without one;
-//   it takes her life lock, so it never overlaps a turn. Pending scrubs run with it.
+// - due reminders in `~/life/reminders.json` fire once (through the router, which lets them through
+//   even while she is asleep, §21.6c); repeating ones move to their next local occurrence. Late
+//   reminders after downtime fire once on the first tick.
+// - a watch whose timeout passed is removed from `~/life/watches.json` and she is told it timed out
+//   (a `watch_timeout` wake, so an empty watch works as a timer).
+// - wakes held while she was busy come back at her next phone check or the block's end (§21.4).
+// - `~/life/places.md` is rewritten when it would change, at most once a minute; `/tmp` files older
+//   than `life.tmp.retentionDays` go at the first tick and hourly after.
+// - when her bed time ends (or at `life.dayStartHourLocal` without one) the day wake asks her to
+//   write today's schedule, with what was deferred overnight (§21.3); deferred wakes otherwise become
+//   one `morning` notification once she is out of her bed time (for the budget pause, once her new
+//   local day starts under budget).
+// - maintenance: once she has been asleep `life.dreamAfterAsleepMinutes` in her bed time (at most
+//   once per bed time; none on a night she never sleeps that long, §21.6c), or at
+//   `life.maintenanceHourLocal` without a bed time; it takes her life lock, so it never overlaps a
+//   turn. Pending scrubs run with it; a bed time that ended without one runs the pending scrubs
+//   alone (no dream).
 
 import { listWaifus } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { Wake, WakeQueue } from "../shared/schemas/life.js";
 import type { DailyCost } from "./budget.js";
-import { availabilityAt, dayStartAt, instantOfLocal, localDayKey, localParts, parseLocalDateTime, sleepWindowContaining } from "./clock.js";
+import { bedPhaseAt, bedTimeContaining, dayStartAt, instantOfLocal, lastBedTime, localDayKey, localParts, parseLocalDateTime, type BedPhase } from "./clock.js";
+import { bedContextOf } from "./busy.js";
 import { busyAt } from "./home/daySchedule.js";
 import type { LifeDeps } from "./deps.js";
 import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
@@ -35,7 +43,6 @@ import { parseConversationKey } from "../orchestration/context/keys.js";
 import { selfAuthorIds } from "./people.js";
 
 export const DEFAULT_TICK_MS = 15_000;
-export const MAINTENANCE_DELAY_INTO_SLEEP_MS = 30 * 60_000;
 /** `~/places.md` is rewritten at most this often (§16.6; also at every turn start). */
 export const PLACES_REFRESH_MS = 60_000;
 /** `/tmp` expiry runs at the first tick and then this often (§16.9). */
@@ -43,8 +50,10 @@ export const TMP_SWEEP_MS = 3_600_000;
 
 export type SchedulerHooks = {
   poke(waifuId: string): void;
-  /** Runs maintenance (and pending scrubs) for her under her life lock; `signal` aborts it. */
-  maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void>;
+  /** Runs maintenance (pending scrubs, then the dream unless `dream` is false) under her life lock; `signal` aborts it. */
+  maintain(waifu: WaifuConfig, signal: AbortSignal, o?: { dream?: boolean }): Promise<void>;
+  /** Whether forget scrubs wait for her (a bed time that ended without a dream runs them alone). */
+  pendingScrubs?(waifuId: string): Promise<boolean>;
   /** A lease of busy work for the idle updater; undefined while the app is sealed for an update. */
   begin?(): (() => void) | undefined;
 };
@@ -85,18 +94,34 @@ export function nextOccurrence(reminder: Pick<ReminderEntry, "at" | "repeat">, n
   return undefined;
 }
 
-/** When her maintenance is due next after `lastAt` (the start of the window it belongs to). */
-export function maintenanceDue(waifu: WaifuConfig, now: Date, timeZone: string, hourLocal: number, lastAt: string | undefined): boolean {
+/**
+ * Whether her maintenance is due (`lastAt`: her last one). With a bed time (§21.6c): `dream` once
+ * `bed` (her phase now) has her asleep for `dreamAfterMinutes`, at most once per bed time;
+ * `scrubs` (pending forget scrubs alone, no dream) once a bed time ended without one. Without a bed
+ * time: `dream` at `hourLocal` every local day.
+ */
+export function maintenanceDue(
+  waifu: WaifuConfig,
+  now: Date,
+  timeZone: string,
+  hourLocal: number,
+  lastAt: string | undefined,
+  o: { bed?: BedPhase | undefined; dreamAfterMinutes?: number } = {}
+): "dream" | "scrubs" | false {
   const last = lastAt ? Date.parse(lastAt) : 0;
-  if (waifu.availability.sleep.enabled) {
-    const window = sleepWindowContaining(waifu.availability, now, timeZone);
-    if (!window) return false;
-    const at = window.start.getTime() + MAINTENANCE_DELAY_INTO_SLEEP_MS;
-    return now.getTime() >= at && now.getTime() < window.end.getTime() && last < window.start.getTime();
+  if (waifu.availability.bedTime.enabled) {
+    const bed = o.bed;
+    if (bed) {
+      if (bed.phase !== "asleep" || last >= bed.windowStart.getTime()) return false;
+      return now.getTime() - bed.asleepAt.getTime() >= (o.dreamAfterMinutes ?? 15) * 60_000 ? "dream" : false;
+    }
+    if (bedTimeContaining(waifu.availability, now, timeZone)) return false;
+    const previous = lastBedTime(waifu.availability, now, timeZone, hourLocal);
+    return previous && last < previous.start.getTime() ? "scrubs" : false;
   }
   const p = localParts(now, timeZone);
   const at = instantOfLocal(timeZone, p.year, p.month, p.day, hourLocal, 0).getTime();
-  return now.getTime() >= at && last < at;
+  return now.getTime() >= at && last < at ? "dream" : false;
 }
 
 export { dayStartAt } from "./clock.js";
@@ -302,18 +327,18 @@ export class Scheduler {
   }
 
   /**
-   * Her day starts (§21.3): when her sleep ends (or at `life.dayStartHourLocal` without a sleep
-   * window) one `morning` wake asks her to write today's schedule, followed by what came in
+   * Her day starts (§21.3): when her bed time ends, whatever she did in it (or at
+   * `life.dayStartHourLocal` without a bed time) one `morning` wake asks her to write today's schedule, followed by what came in
    * overnight; deferred wakes go with it. At other times deferred wakes become one `morning` wake
-   * when she is awake (and, for a budget pause, under budget again). A day whose start passed while
+   * when she is out of her bed time (and, for a budget pause, under budget again). A day whose start passed while
    * the host was down or she was paused gets its morning at the first tick after.
    */
   private async morning(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
     const now = deps.now();
     const queue = await readLifeFile(deps.storage, waifu.id, "wakes");
-    const availability = availabilityAt(waifu.availability, now, deps.timeZone);
-    if (availability.state === "asleep") return;
+    // In her bed time (up late, dozing or asleep) what waited stays for the morning at its end (§21.6c).
+    if (bedTimeContaining(waifu.availability, now, deps.timeZone)) return;
     const dayStart = dayStartAt(waifu, now, deps.timeZone, deps.config().life.dayStartHourLocal);
     const state = await readLifeState(deps.storage, waifu.id);
     let dayDue = state.lastDayStart === undefined || Date.parse(state.lastDayStart) < dayStart.getTime();
@@ -336,14 +361,14 @@ export class Scheduler {
       handles.set(key, await handleOf(deps.storage, waifu.id, key));
     }
     const view = { timeZone: deps.timeZone, handle: (key: string) => handles.get(key) ?? key, unread: () => undefined };
-    const sleep = waifu.availability.sleep;
+    const bedTime = waifu.availability.bedTime;
     const dayKey = localDayKey(now, deps.timeZone);
     // The morning wake of her day: the greeting, then the overnight batch (one id per day).
     const dayWake = (overnight: string[]): Wake => ({
       id: `w-day-${dayKey}`,
       reason: "morning",
       day: dayKey,
-      batch: [morningGreeting({ now, timeZone: deps.timeZone, ...(sleep.enabled ? { sleep } : {}), overnight: overnight.length > 0 }), ...overnight],
+      batch: [morningGreeting({ now, timeZone: deps.timeZone, ...(bedTime.enabled ? { bedTime } : {}), overnight: overnight.length > 0 }), ...overnight],
       at: now.toISOString()
     });
     let released = await takeDeferred(deps.storage, waifu.id, (deferred) => {
@@ -352,7 +377,7 @@ export class Scheduler {
         deferred.reason === "budget"
           ? morningBatch({ reason: "budget", since, until: now, places, items: deferred.items }, view)
           : morningBatch({ reason: "sleep", since, until: now, places, items: deferred.items }, view).map((line, index) =>
-              index === 0 && sleep.enabled ? `- while you were asleep (${sleep.start}–${sleep.end}):` : line
+              index === 0 && bedTime.enabled ? `- during your bed time (${bedTime.start}–${bedTime.end}):` : line
             );
       if (dayDue) return dayWake(header.length > 1 ? header : []);
       if (header.length <= 1) return undefined;
@@ -404,8 +429,14 @@ export class Scheduler {
     const key = `${deps.storage.dataRoot}\0${waifu.id}`;
     if (this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
     const state = await readLifeState(deps.storage, waifu.id);
-    const due = maintenanceDue(waifu, deps.now(), deps.timeZone, deps.config().life.maintenanceHourLocal, state.lastMaintenanceAt);
-    if (!due || this.stopped || this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
+    const now = deps.now();
+    const config = deps.config().life;
+    const bed = bedPhaseAt(waifu.availability, now, deps.timeZone, bedContextOf(deps, state));
+    const due = maintenanceDue(waifu, now, deps.timeZone, config.maintenanceHourLocal, state.lastMaintenanceAt, { bed, dreamAfterMinutes: config.dreamAfterAsleepMinutes });
+    if (!due) return;
+    // A bed time without a dream: only forget scrubs that wait for her run, and only when there are some.
+    if (due === "scrubs" && !(await this.o.hooks.pendingScrubs?.(waifu.id).catch(() => false))) return;
+    if (this.stopped || this.maintenanceRuns.has(waifu.id) || RUNNING_MAINTENANCE.has(key)) return;
     const lease = this.o.hooks.begin?.();
     if (this.o.hooks.begin && !lease) return;
     const controller = new AbortController();
@@ -413,7 +444,7 @@ export class Scheduler {
       try {
         // Aborted while it waited for her life lock (stop, pause, reload): it never starts (N1).
         await this.o.mutex.run(lifeLocks.life(waifu.id), async () => {
-          if (!controller.signal.aborted) await this.o.hooks.maintain(waifu, controller.signal);
+          if (!controller.signal.aborted) await this.o.hooks.maintain(waifu, controller.signal, { dream: due === "dream" });
         });
         // An aborted run (pause, shutdown, reload) runs again at its next chance.
         if (!controller.signal.aborted) await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, lastMaintenanceAt: deps.now().toISOString() }));

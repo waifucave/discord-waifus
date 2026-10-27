@@ -255,10 +255,12 @@ const LIFE_FIELDS = {
   notificationLinesPerPlace: z.number().int().min(1).max(50),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
   maintenanceHourLocal: z.number().int().min(0).max(23),
-  /** The morning wake's local hour for a waifu with no sleep window (§21.3). */
+  /** The morning wake's local hour for a waifu with no bed time (§21.3). */
   dayStartHourLocal: z.number().int().min(0).max(23),
   /** While busy, a place she sent to after a wake that got through stays open this long (§21.4). */
   busyEngagedMinutes: z.number().int().min(0).max(240),
+  bedDozeMinutes: z.number().int().min(0).max(720),
+  dreamAfterAsleepMinutes: z.number().int().min(0).max(720),
   dreamMaxRounds: z.number().int().min(5).max(200),
   dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000),
   restNotice: z.boolean(),
@@ -292,6 +294,8 @@ export const DEFAULT_LIFE_CONFIG = {
   maintenanceHourLocal: 5,
   dayStartHourLocal: 8,
   busyEngagedMinutes: 10,
+  bedDozeMinutes: 60,
+  dreamAfterAsleepMinutes: 15,
   dreamMaxRounds: 60,
   dreamWindowMaxChars: 200_000,
   restNotice: true,
@@ -317,6 +321,8 @@ export const LifeConfigSchema = z
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
     dayStartHourLocal: LIFE_FIELDS.dayStartHourLocal.default(DEFAULT_LIFE_CONFIG.dayStartHourLocal),
     busyEngagedMinutes: LIFE_FIELDS.busyEngagedMinutes.default(DEFAULT_LIFE_CONFIG.busyEngagedMinutes),
+    bedDozeMinutes: LIFE_FIELDS.bedDozeMinutes.default(DEFAULT_LIFE_CONFIG.bedDozeMinutes),
+    dreamAfterAsleepMinutes: LIFE_FIELDS.dreamAfterAsleepMinutes.default(DEFAULT_LIFE_CONFIG.dreamAfterAsleepMinutes),
     dreamModel: DreamModelSchema.optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
     dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.default(DEFAULT_LIFE_CONFIG.dreamWindowMaxChars),
@@ -465,6 +471,8 @@ export const UpdateAppConfigBodySchema = z.object({
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
     dayStartHourLocal: LIFE_FIELDS.dayStartHourLocal.optional(),
     busyEngagedMinutes: LIFE_FIELDS.busyEngagedMinutes.optional(),
+    bedDozeMinutes: LIFE_FIELDS.bedDozeMinutes.optional(),
+    dreamAfterAsleepMinutes: LIFE_FIELDS.dreamAfterAsleepMinutes.optional(),
     // null unsets it (the dream uses her own model again).
     dreamModel: DreamModelSchema.strict().nullable().optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.optional(),

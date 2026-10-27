@@ -123,8 +123,10 @@ export const LifeAvailabilitySchema = z.object({
   state: z.enum(["awake", "busy", "asleep"]),
   /** busy: the block's reason. */
   reason: z.string().optional(),
-  /** busy: when the block ends ("12:00"). asleep: when her sleep window ends (ISO). */
-  until: z.string().optional()
+  /** busy: when the block ends ("12:00"). asleep: when her bed time ends (ISO). */
+  until: z.string().optional(),
+  /** In her bed time (§21.6c): up late (awake), dozing (busy) or asleep. */
+  bed: z.enum(["up_late", "dozing", "asleep"]).optional()
 });
 
 /** One queued wake as the dashboard shows it. DM previews are hidden unless the request may see DM content. */

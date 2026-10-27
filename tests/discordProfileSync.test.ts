@@ -182,7 +182,7 @@ describe("profile schema", () => {
   });
 
   it("carries a prebuilt waifu's username and bio into her first record", () => {
-    const base = { id: "lumi", name: "Lumi", displayName: "Lumi", enabled: true, persona: "Warm.", availability: { sleep: { enabled: false, start: "23:00", end: "07:00" }, busy: [] } };
+    const base = { id: "lumi", name: "Lumi", displayName: "Lumi", enabled: true, persona: "Warm.", availability: { bedTime: { enabled: false, start: "23:00", end: "07:00" }, busy: [] } };
     const record = prebuiltWaifuRecord({ ...base, username: "Lumi", bio: "Cozy and bright." });
     expect(record).toMatchObject({ username: "Lumi", bio: "Cozy and bright." });
     expect("username" in prebuiltWaifuRecord(base)).toBe(false);

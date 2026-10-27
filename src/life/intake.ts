@@ -39,7 +39,6 @@ import type { Wake, WakeReason } from "../shared/schemas/life.js";
 import { createRevisionedBase } from "../shared/schemas/common.js";
 import type { DailyCost } from "./budget.js";
 import type { BotRoles } from "./botRoles.js";
-import { availabilityAt } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import {
   AddresseeDetector,
@@ -61,7 +60,8 @@ import type { ForgottenPerson } from "../orchestration/dm/forgotten.js";
 import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
 import { fireWatches, type FiredWatch } from "./watches.js";
-import { dayPlanFor, homeStoreFor } from "./home/index.js";
+import { homeStoreFor } from "./home/index.js";
+import { availabilityFor } from "./busy.js";
 import { TypingHolds, type HoldTiming } from "./intakeHold.js";
 import { newWakeId } from "./wakeQueue.js";
 import { joinMessages } from "./wakeMessages.js";
@@ -702,7 +702,8 @@ export class Intake {
 
   /** Her availability for the detector's state (§4.5): over her daily budget she counts as asleep. */
   private async availabilityOf(waifu: WaifuConfig, now: Date): Promise<DetectorAvailability> {
-    const state = availabilityAt(waifu.availability, now, this.deps.timeZone, await dayPlanFor(this.deps, waifu)).state;
+    // Her bed time counts (§21.6c): up late is awake, dozing busy, asleep asleep.
+    const state = (await availabilityFor(this.deps, waifu, now)).state;
     if (state === "asleep") return "asleep";
     const budget = waifu.life.dailyBudgetUsd;
     if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) return "asleep";
@@ -730,7 +731,7 @@ export class Intake {
     const buffered = deps.conversations.bufferedMessages(conversation);
     const members = [];
     for (const waifu of waifus) {
-      const state = availabilityAt(waifu.availability, now, deps.timeZone, await dayPlanFor(deps, waifu));
+      const state = await availabilityFor(deps, waifu, now);
       let availability: "awake" | "busy" | "unavailable" = state.state === "awake" ? "awake" : state.state === "busy" ? "busy" : "unavailable";
       const budget = waifu.life.dailyBudgetUsd;
       if (availability !== "unavailable" && budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) availability = "unavailable";

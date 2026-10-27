@@ -73,7 +73,7 @@ export const ROUTE_HELP: Readonly<Record<string, RouteHelpEntry>> = Object.freez
   "POST /api/waifus/:waifuId/discord-profile/sync": { summary: "Sync her profile to her bot now (rate-limited fields keep waiting); returns the status.", topic: "waifu" },
   "GET /api/waifus/:waifuId/life": { summary: "Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally).", topic: "life" },
   "GET /api/waifus/:waifuId/life/log": { summary: "Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1).", topic: "life" },
-  "POST /api/waifus/:waifuId/wake": { summary: "Wake her now with an optional note (skips sleep and budget).", topic: "life" },
+  "POST /api/waifus/:waifuId/wake": { summary: "Wake her now with an optional note (skips her bed time and budget).", topic: "life" },
   "POST /api/waifus/:waifuId/life/compact": { summary: "Summarise her life now (between turns).", topic: "life" },
   "POST /api/waifus/:waifuId/life/reset": { summary: "Reset her short-term memory: a fresh epoch, no summary ({confirm: true}).", topic: "life" },
   "GET /api/waifus/:waifuId/life/needs-review": { summary: "Forget review lines for the owner.", topic: "forget" },

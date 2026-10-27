@@ -38,7 +38,7 @@ const TimeOfDaySchema = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
 export type TimeOfDay = z.infer<typeof TimeOfDaySchema>;
 
-const WaifuSleepScheduleSchema = z
+const WaifuBedTimeSchema = z
   .object({
     enabled: z.boolean().default(false),
     start: TimeOfDaySchema.default("23:00"),
@@ -49,7 +49,7 @@ const WaifuSleepScheduleSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["end"],
-        message: "Sleep end time must differ from start time."
+        message: "Bed time end must differ from its start."
       });
     }
   })
@@ -58,17 +58,18 @@ const WaifuSleepScheduleSchema = z
     start: "23:00",
     end: "07:00"
   });
-export type WaifuSleepSchedule = z.infer<typeof WaifuSleepScheduleSchema>;
+export type WaifuBedTime = z.infer<typeof WaifuBedTimeSchema>;
 
-// Only her sleep is the owner's (spec §21 S3): her busy times come from her own
+// Only her bed time is the owner's (spec §21 S3, §21.6c): her busy times come from her own
 // `~/life/schedule.json`. The owner-set busy blocks were archived and dropped by the
-// `living-cast-drop-busy-v1` migration; a stray `busy` key is stripped.
+// `living-cast-drop-busy-v1` migration; a stray `busy` key is stripped. `bedTime` was `sleep`
+// before `living-cast-bed-time-v1` renamed it.
 export const WaifuAvailabilitySchema = z
   .object({
-    sleep: WaifuSleepScheduleSchema
+    bedTime: WaifuBedTimeSchema
   })
   .default({
-    sleep: {
+    bedTime: {
       enabled: false,
       start: "23:00",
       end: "07:00"

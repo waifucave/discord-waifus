@@ -340,6 +340,12 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     }
   );
   await dropDreamCursorEntries(deps.storage, waifu.id, new Set([dmKey])).catch(() => undefined);
+  // Her DM with them as an open place (§21.4, §21.6c): their DM key goes from her state too.
+  await updateLifeState(deps.storage, waifu.id, (current) => {
+    if (!current.busyOpen?.[dmKey] && !current.recentSends?.[dmKey]) return current;
+    const without = <T>(record: Record<string, T> | undefined) => (record ? Object.fromEntries(Object.entries(record).filter(([key]) => key !== dmKey)) : undefined);
+    return { ...current, busyOpen: without(current.busyOpen), recentSends: without(current.recentSends) };
+  });
   if (o.dmOnly) {
     let removed = transcriptLines + (await scrubWakeQueue(deps.storage, waifu.id, { userId: "", placeKeys: new Set([dmKey]), mentions: () => false }));
     removed += await dropWatches(home, deps.timeZone, (bindings) => bindings.some((binding) => binding.placeKey === dmKey));

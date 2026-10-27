@@ -30,8 +30,8 @@ export type BusyBlock = { from: string; to: string; why: string };
 export type DayPlanItem = { at?: string; what: string };
 export type DayPlan = { date: string; mood?: string; busy: BusyBlock[]; phoneChecks: string[]; plans: DayPlanItem[]; note?: string };
 
-/** Her sleep window as configured (the owner's; busy blocks stay out of it). */
-export type SleepWindow = { enabled: boolean; start: string; end: string };
+/** Her bed time as configured (the owner's; busy blocks stay out of it). */
+export type BedTimeWindow = { enabled: boolean; start: string; end: string };
 
 export type DayScheduleCheck = { ok: true; plan: DayPlan | undefined } | CheckFailure;
 
@@ -55,8 +55,8 @@ export function hhmmToMinutes(value: string): number {
   return Number(h) * 60 + Number(m);
 }
 
-/** The minute ranges of her sleep within one day (a window across midnight is two). */
-function sleepRanges(sleep: SleepWindow): Array<[number, number]> {
+/** The minute ranges of her bed time within one day (one across midnight is two). */
+function bedRanges(sleep: BedTimeWindow): Array<[number, number]> {
   if (!sleep.enabled) return [];
   const start = hhmmToMinutes(sleep.start);
   const end = hhmmToMinutes(sleep.end);
@@ -73,10 +73,10 @@ function validDate(text: string): boolean {
 }
 
 /**
- * Checks her day file. An empty file is no plan. `sleep`: her sleep window (busy blocks must be in
+ * Checks her day file. An empty file is no plan. `bedTime`: her bed time (busy blocks must be in
  * her waking hours); left out, that rule is not checked (reading a saved file).
  */
-export function checkDayScheduleText(text: string, ctx: { sleep?: SleepWindow } = {}): DayScheduleCheck {
+export function checkDayScheduleText(text: string, ctx: { bedTime?: BedTimeWindow } = {}): DayScheduleCheck {
   if (text.trim() === "") return { ok: true, plan: undefined };
   const parsed = syntaxProblem(FILE, text);
   if (!parsed.ok) return parsed;
@@ -117,11 +117,11 @@ export function checkDayScheduleText(text: string, ctx: { sleep?: SleepWindow } 
       const block = sorted[index]!;
       if (hhmmToMinutes(block.from) < hhmmToMinutes(before.to)) return fail(`busy blocks ${before.from}–${before.to} and ${block.from}–${block.to} overlap`);
     }
-    if (ctx.sleep) {
+    if (ctx.bedTime) {
       for (const block of plan.busy) {
         const [from, to] = [hhmmToMinutes(block.from), hhmmToMinutes(block.to)];
-        if (sleepRanges(ctx.sleep).some(([start, end]) => Math.max(from, start) < Math.min(to, end))) {
-          return fail(`busy ${block.from}–${block.to} is in your sleep (${ctx.sleep.start}–${ctx.sleep.end}), which is fixed; busy blocks go in your waking hours`);
+        if (bedRanges(ctx.bedTime).some(([start, end]) => Math.max(from, start) < Math.min(to, end))) {
+          return fail(`busy ${block.from}–${block.to} is in your bed time (${ctx.bedTime.start}–${ctx.bedTime.end}), which is fixed; busy blocks go in your waking hours`);
         }
       }
     }

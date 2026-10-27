@@ -242,19 +242,19 @@ export function renderNotifications(
  * The morning wake's first line (§21.3, S2): she writes today's schedule before anything else. The
  * overnight batch follows it when there is one.
  */
-export function morningGreeting(o: { now: Date; timeZone: string; sleep?: { start: string; end: string }; overnight: boolean }): string {
+export function morningGreeting(o: { now: Date; timeZone: string; bedTime?: { start: string; end: string }; overnight: boolean }): string {
   return [
     `[system] Good morning, it's ${dayText(o.now, o.timeZone)}.`,
     "Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans.",
     "Your day is yours to plan: keep it believable for who you are.",
-    ...(o.sleep ? [`Your sleep (${o.sleep.start}–${o.sleep.end}) is fixed.`] : []),
+    ...(o.bedTime ? [`Your bed time (${o.bedTime.start}–${o.bedTime.end}) is fixed.`] : []),
     ...(o.overnight ? ["Then deal with what came in overnight."] : [])
   ].join(" ");
 }
 
 export type MorningPlace ={ placeKey: string; kind: "room" | "thread" | "dm"; name?: string; mentions: number; messages: number };
 
-/** The `morning` batch lines (§4.7), built when her sleep (or budget pause) ends. */
+/** The `morning` batch lines (§4.7), built when her bed time (or budget pause) ends. */
 export function morningBatch(
   o: {
     reason: "sleep" | "budget";

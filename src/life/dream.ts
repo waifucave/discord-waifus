@@ -21,7 +21,7 @@ import { atomicWriteJson } from "../storage/atomic.js";
 import type { StorageService } from "../storage/storageService.js";
 import { clockText, dayTimeText, timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
-import { dayPlanFor } from "./home/index.js";
+import { availabilityFor } from "./busy.js";
 import { appendMaintenanceReport } from "./lifeStore.js";
 import { lifeModelOf } from "./lifeLoop.js";
 import { homeListing, runSession, type MaintenanceOutcome } from "./maintenance.js";
@@ -227,7 +227,7 @@ export async function runDream(deps: LifeDeps, o: { waifu: WaifuConfig; signal?:
         DREAM_INSTRUCTION,
         await homeListing(deps, o.waifu, { possessive: "Her" }),
         windowText(chunks, { start: window.start, timeZone: deps.timeZone, more: index < sessions.length - 1 }),
-        timeLine({ now: deps.now(), timeZone: deps.timeZone, availability: o.waifu.availability, day: await dayPlanFor(deps, o.waifu) })
+        timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })
       ],
       maxRounds: life.dreamMaxRounds,
       ...(chosen.effort ? { effort: chosen.effort } : {}),

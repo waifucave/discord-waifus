@@ -329,7 +329,7 @@ export class HomeStore {
       // Her day (§21.2): deleting it is no plan today; busy blocks stay in her waking hours.
       if (data === undefined) return {};
       const waifu = await readWaifu(this.storage, this.waifuId);
-      const checked = checkDayScheduleText(data.toString("utf8"), { sleep: waifu.availability.sleep });
+      const checked = checkDayScheduleText(data.toString("utf8"), { bedTime: waifu.availability.bedTime });
       if (!checked.ok) throw new HomeError(checked.error, "special");
       return { data };
     }

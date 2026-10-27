@@ -78,7 +78,7 @@ export const WakeSchema = z.object({
   earlier: z.number().int().positive().optional(),
   /** How many wakes were merged into this entry. */
   count: z.number().int().positive().optional(),
-  /** morning: the rendered batch (built when her sleep ends). */
+  /** morning: the rendered batch (built when her bed time ends). */
   batch: z.array(z.string()).optional(),
   /** detector: the detector said the burst is for the whole cast (`all`), not just maybe for her. */
   forAll: z.boolean().optional(),
@@ -175,6 +175,10 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
    * past the busy block's end (`blockEnd`). Keyed by place.
    */
   busyOpen: z.record(z.string(), z.object({ until: IsoDateStringSchema, blockEnd: IsoDateStringSchema })).optional(),
+  /** Her last send anywhere (§21.6c): up late, dozing or asleep in her bed time count from it. */
+  lastSentAt: IsoDateStringSchema.optional(),
+  /** Her latest send per place within `life.busyEngagedMinutes` (§21.6c: open while up late or dozing). */
+  recentSends: z.record(z.string(), IsoDateStringSchema).optional(),
   /**
    * Her bot's server nicknames as last seen (guild id → name), so block A does not change just
    * because the guild directory has not loaded a guild yet (review M11).

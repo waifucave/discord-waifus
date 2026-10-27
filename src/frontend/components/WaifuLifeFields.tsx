@@ -3,13 +3,13 @@ import type { WaifuConfig } from "../api/types";
 type Draft = Partial<WaifuConfig>;
 type Patch = (patch: Draft) => void;
 
-const DEFAULT_SLEEP = { enabled: false, start: "23:00", end: "07:00" };
+const DEFAULT_BED_TIME = { enabled: false, start: "23:00", end: "07:00" };
 const DEFAULT_DM = { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" };
 const DEFAULT_RATE_LIMIT = { maxReplies: 30, windowMinutes: 60 };
 
 function availabilityOf(draft: Draft) {
-  const availability = draft.availability ?? { sleep: DEFAULT_SLEEP };
-  return { availability, sleep: availability.sleep ?? DEFAULT_SLEEP };
+  const availability = draft.availability ?? { bedTime: DEFAULT_BED_TIME };
+  return { availability, bedTime: availability.bedTime ?? DEFAULT_BED_TIME };
 }
 
 /** Her name in a message wakes her (Living cast §4.1). */
@@ -50,19 +50,19 @@ export function DailyBudgetField({ draft, onChange }: { draft: Draft; onChange: 
   );
 }
 
-/** Her nightly sleep window (§4.5): the switch, then from and until. */
-export function SleepFields({ draft, onChange }: { draft: Draft; onChange: Patch }) {
-  const { availability, sleep } = availabilityOf(draft);
-  const setSleep = (next: Partial<typeof sleep>) => onChange({ availability: { ...availability, sleep: { ...sleep, ...next } } });
+/** Her nightly bed time (§4.5, §21.6c): the switch, then from and until. */
+export function BedTimeFields({ draft, onChange }: { draft: Draft; onChange: Patch }) {
+  const { availability, bedTime: sleep } = availabilityOf(draft);
+  const setSleep = (next: Partial<typeof sleep>) => onChange({ availability: { ...availability, bedTime: { ...sleep, ...next } } });
   return (
     <div className="fgrid sleep-row">
       <div className="fcell">
-        <span className="field-label">Sleep</span>
+        <span className="field-label">Bed time</span>
         <label className="checkbox-chip">
           <input type="checkbox" checked={sleep.enabled} onChange={(e) => setSleep({ enabled: e.target.checked })} />
-          {sleep.enabled ? "She sleeps every night" : "She never sleeps"}
+          {sleep.enabled ? "She goes to bed every night" : "She has no bed time"}
         </label>
-        <span className="field-hint">While she sleeps, wakes wait and she gets a morning summary; your own wakes still reach her.</span>
+        <span className="field-hint">She may stay up late while she keeps chatting, then dozes (only people talking to her get through) and falls asleep (only her reminders and your wakes). The rest waits for the morning, when she plans her day.</span>
       </div>
       <div className="fcell">
         <label className="field-label" htmlFor="waifu-sleep-start">From</label>
@@ -76,7 +76,7 @@ export function SleepFields({ draft, onChange }: { draft: Draft; onChange: Patch
   );
 }
 
-/** Her busy times are her own (§21 S3): she plans her day every morning; only sleep is yours. */
+/** Her busy times are her own (§21 S3): she plans her day every morning; only her bed time is yours. */
 export function OwnDayNote() {
   return (
     <div className="cell fcell">

@@ -218,7 +218,7 @@ export async function writeWaifuConfig(storage: StorageService, seed: WaifuSeed)
       enabled: true,
       model: { providerId: "anthropic", modelId: "claude-haiku-5-5" },
       persona: `${seed.name} is a sunny baker.`,
-      availability: { sleep: { enabled: false, start: "23:00", end: "07:00" } },
+      availability: { bedTime: { enabled: false, start: "23:00", end: "07:00" } },
       dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" },
       ...seed
     })
