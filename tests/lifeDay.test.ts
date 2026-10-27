@@ -139,6 +139,19 @@ describe("the morning wake (§21.3)", () => {
     expect((await readLifeState(w.storage, "ella")).epoch).toBe(state.epoch);
   });
 
+  it("a short epoch too heavy to keep whole is summarised by the day compaction (nothing is dropped unsummarised)", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn(`long thoughts ${"cake ".repeat(14_000)}`), textTurn("my day"), textTurn("Summary: a heavy Saturday.")) });
+    w.setConfig((config) => ({ ...config, life: { ...config.life, maxContextTokens: 32_000 } }));
+    w.clock.ms = at("2026-10-24T07:00:00Z");
+    await w.cast.scheduler.tick();
+    await beginLife(w);
+    w.clock.ms = at("2026-10-24T08:00:00Z");
+    await w.cast.scheduler.tick();
+    await w.cast.life("ella").runNow();
+    expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "day", summarized: true });
+    expect(w.anthropic.calls).toHaveLength(3);
+  });
+
   it("a longer epoch is summarised by the day compaction; one that began this morning (an upgrade's) is kept, so one compaction serves both", async () => {
     const turns = Array.from({ length: 4 }, (_, index) => textTurn(`turn ${index + 1}`));
     const w = await lifeWorld(roots, { scripts: script(...turns, textTurn("my day"), textTurn("Summary: a long Saturday.")) });

@@ -33,7 +33,7 @@ import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
 import { dayStartAt, timeLine } from "./clock.js";
-import { compactLife, compactRetiredTools, currentHarness, KEPT_TURNS, newTurnId, startEpoch, startPendingEpoch, turnCount, type HarnessNow } from "./compaction.js";
+import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
@@ -478,9 +478,9 @@ export class Life {
     // She had her rest turn and its compaction was interrupted: compact now, leaving that turn out (§19.4).
     if (state.restTurn?.epoch === state.epoch) return this.compact(waifu, state, lines, harness, "tokens", signal, { openTurnId: state.restTurn.turnId });
     // Her morning turn ended: her new day's plan goes into block A (§21.3), once. An epoch of at most
-    // the kept turns (it began this morning: an upgrade's or another compaction's) keeps them whole
-    // and its summary: no second summary right after the first.
-    if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal, turnCount(lines) <= KEPT_TURNS ? { truncate: true } : {});
+    // the kept turns that fit the kept budget (it began this morning: an upgrade's or another
+    // compaction's) keeps them whole and its summary: no second summary right after the first.
+    if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal, { keepWholeIfFits: true });
     const budget = lifeBudget(model, config.life.maxContextTokens);
     const messageLines = lines.filter((line) => line.message !== null).length;
     if ((state.lastRequestTokens ?? 0) >= config.compaction.triggerRatio * budget) return this.compact(waifu, state, lines, harness, "tokens", signal);
@@ -495,7 +495,7 @@ export class Life {
     harness: HarnessNow,
     reason: string,
     signal: AbortSignal,
-    o: { openTurnId?: string; truncate?: boolean } = {}
+    o: { openTurnId?: string; truncate?: boolean; keepWholeIfFits?: boolean } = {}
   ): Promise<LifeState> {
     // A model change compacts with the old model (§5.2); without it, the new one.
     const old = state.modelRoute ? findCuratedModel(state.modelRoute, this.deps.catalog()) : undefined;
@@ -510,6 +510,7 @@ export class Life {
       reason,
       ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}),
       ...(o.truncate ? { truncate: true } : {}),
+      ...(o.keepWholeIfFits ? { keepWholeIfFits: true } : {}),
       // Over budget: the summary request leaves the last results out instead of resending them (M1).
       ...(reason === "budget" || reason === "overflow" ? { shrinkLastResults: true } : {}),
       omit: { deleted: await this.deletedOmissions(state), people: [] },

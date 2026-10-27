@@ -420,6 +420,8 @@ export async function compactLife(
     keepTurns?: number;
     openTurnId?: string;
     truncate?: boolean;
+    /** No summary when the epoch's turns are all kept whole (at most `KEPT_TURNS`, within the kept budget). */
+    keepWholeIfFits?: boolean;
     omit: CompactionOmissions;
     deferEpoch?: boolean;
     emptySummaryOnFailure?: boolean;
@@ -432,7 +434,13 @@ export async function compactLife(
   const settings = deps.config().compaction;
   let summary: string | null = o.state.summary;
   let summarized = false;
-  const canSummarize = settings.enabled && !o.truncate && o.summaryRoute !== undefined && o.state.systemSnapshot !== null;
+  // The kept window: at most half the compaction trigger (M2).
+  const limit = o.summaryRoute ? 0.5 * settings.triggerRatio * lifeBudget(o.summaryRoute, deps.config().life.maxContextTokens) : Number.POSITIVE_INFINITY;
+  const whole =
+    o.keepWholeIfFits === true &&
+    turnCount(o.lines) <= (o.keepTurns ?? KEPT_TURNS) &&
+    linesTokens(keptTurnLines(o.lines, { keep: o.keepTurns ?? KEPT_TURNS, ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}), deletedIds: new Set(o.state.deletedReadIds) }).kept) <= limit;
+  const canSummarize = settings.enabled && !o.truncate && !whole && o.summaryRoute !== undefined && o.state.systemSnapshot !== null;
   if (canSummarize) {
     try {
       const summaryLines = o.shrinkLastResults ? withoutLastResults(o.lines) : o.lines;
@@ -476,7 +484,6 @@ export async function compactLife(
   }
   // The kept window shrinks (3 → 0 turns) while it alone would take more than half the compaction
   // trigger, so a new epoch never starts over budget (M2).
-  const limit = o.summaryRoute ? 0.5 * settings.triggerRatio * lifeBudget(o.summaryRoute, deps.config().life.maxContextTokens) : Number.POSITIVE_INFINITY;
   let keep = o.keepTurns ?? KEPT_TURNS;
   const keptOf = (count: number) =>
     keptTurnLines(o.lines, { keep: count, ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}), deletedIds: new Set(o.state.deletedReadIds), imageText });
