@@ -54,11 +54,6 @@ export function waifuProblems(draft: Partial<WaifuConfig>): string[] {
   const sleep = draft.availability?.sleep;
   if (sleep?.enabled && (!TIME.test(sleep.start) || !TIME.test(sleep.end))) problems.push("Sleep times use 24-hour HH:mm.");
   if (sleep?.enabled && sleep.start === sleep.end) problems.push("Sleep must end at a different time than it starts.");
-  for (const busy of draft.availability?.busy ?? []) {
-    if (!TIME.test(busy.start) || !TIME.test(busy.end)) problems.push("Busy times use 24-hour HH:mm.");
-    else if (busy.start === busy.end) problems.push("A busy block must end at a different time than it starts.");
-    if (!busy.reason.trim()) problems.push("Every busy block needs a reason.");
-  }
   const budget = draft.life?.dailyBudgetUsd;
   if (budget !== undefined && budget !== null && !(budget > 0 && budget <= 10_000)) problems.push("The daily budget is more than $0 and at most $10,000 (empty = no budget).");
   const limit = draft.dm?.rateLimit;

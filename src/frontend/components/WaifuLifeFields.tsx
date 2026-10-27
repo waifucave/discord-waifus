@@ -8,8 +8,8 @@ const DEFAULT_DM = { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes
 const DEFAULT_RATE_LIMIT = { maxReplies: 30, windowMinutes: 60 };
 
 function availabilityOf(draft: Draft) {
-  const availability = draft.availability ?? { sleep: DEFAULT_SLEEP, busy: [] };
-  return { availability, sleep: availability.sleep ?? DEFAULT_SLEEP, busy: availability.busy ?? [] };
+  const availability = draft.availability ?? { sleep: DEFAULT_SLEEP };
+  return { availability, sleep: availability.sleep ?? DEFAULT_SLEEP };
 }
 
 /** Her name in a message wakes her (Living cast §4.1). */
@@ -76,32 +76,14 @@ export function SleepFields({ draft, onChange }: { draft: Draft; onChange: Patch
   );
 }
 
-/** Daily busy blocks (§4.5): from, until and a reason each. */
-export function BusyBlocksField({ draft, onChange }: { draft: Draft; onChange: Patch }) {
-  const { availability, busy } = availabilityOf(draft);
-  const setBusy = (next: typeof busy) => onChange({ availability: { ...availability, busy: next } });
-  const update = (index: number, patch: Partial<(typeof busy)[number]>) => setBusy(busy.map((block, i) => (i === index ? { ...block, ...patch } : block)));
+/** Her busy times are her own (§21 S3): she plans her day every morning; only sleep is yours. */
+export function OwnDayNote() {
   return (
     <div className="cell fcell">
-      <span className="field-label">Busy blocks (daily)</span>
-      {busy.length === 0 && <span className="field-hint">None. A busy block tells her (and the people she talks to) she is away.</span>}
-      <div className="list-rows">
-        {busy.map((block, index) => (
-          <div key={index} className="busy-row">
-            <input className="input" type="time" aria-label={`Busy block ${index + 1} from`} value={block.start} onChange={(e) => update(index, { start: e.target.value })} />
-            <input className="input" type="time" aria-label={`Busy block ${index + 1} until`} value={block.end} onChange={(e) => update(index, { end: e.target.value })} />
-            <input className="input" aria-label={`Busy block ${index + 1} reason`} placeholder="reason (class, work…)" value={block.reason} onChange={(e) => update(index, { reason: e.target.value })} />
-            <button type="button" className="btn quiet sm" onClick={() => setBusy(busy.filter((_, i) => i !== index))}>
-              Remove
-            </button>
-          </div>
-        ))}
-      </div>
-      <div style={{ marginTop: 6 }}>
-        <button type="button" className="btn sm" onClick={() => setBusy([...busy, { start: "09:00", end: "12:00", reason: "" }])}>
-          Add busy block
-        </button>
-      </div>
+      <span className="field-label">Her day</span>
+      <span className="field-hint">
+        Every morning she writes her own day in ~/life/schedule.json: when she is busy and why, when she checks her phone, her mood and plans (see it under Life → her files). While she is busy, DMs and people talking to her still reach her; the rest waits for her phone checks.
+      </span>
     </div>
   );
 }

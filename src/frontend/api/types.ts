@@ -61,7 +61,6 @@ export type {
   ModelChoice,
   ProviderId,
   WaifuAvailability,
-  WaifuBusyInterval,
   WaifuConfig,
   WaifuSleepSchedule
 } from "../../shared/schemas/domain";

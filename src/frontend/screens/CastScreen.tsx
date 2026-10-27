@@ -8,7 +8,7 @@ import { ModelPicker } from "../components/ModelPicker";
 import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
-import { BusyBlocksField, DailyBudgetField, SleepFields, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
+import { DailyBudgetField, OwnDayNote, SleepFields, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
 import { SectionHead } from "../components/SectionHead";
 import { WaifuDiscordProfileFields } from "../components/WaifuDiscordProfileFields";
 import { waifuDirty, waifuPatch, waifuProblems } from "./castEdit";
@@ -376,14 +376,14 @@ function CharacterEditor({
             <span className="field-label">Schedule in her prompt</span>
             <label className="checkbox-chip">
               <input type="checkbox" checked={draft.scheduleInPrompt ?? true} onChange={(e) => set({ scheduleInPrompt: e.target.checked })} />
-              Mention her schedule in the prompt
+              Show her schedule in her prompt
             </label>
-            <span className="field-hint">When on, she knows what she is doing right now (sleeping, busy) and can say so.</span>
+            <span className="field-hint">When on, her prompt shows her sleep and today's plan (the one she wrote this morning).</span>
           </div>
           <WakeOnNameField draft={draft} onChange={set} />
         </div>
         <SleepFields draft={draft} onChange={set} />
-        <BusyBlocksField draft={draft} onChange={set} />
+        <OwnDayNote />
 
         {/* ---------- Direct messages ---------- */}
         <SectionHead index={creating ? "04" : "05"} title="Direct messages" hint="Whether she answers DMs to her bot, and how often." />
