@@ -3119,3 +3119,37 @@ With §21 in 3.3.0.
 - Tests: `tests/lifeReadMessages.test.ts`; goldens `life-transcript-day.txt` (new) and
   `life-system-prompt.txt` / `life-rest-epoch.txt` / `life-dream.txt` (the tool description, the
   `<life>` sentence, the transcript line format).
+
+## 23. The morning summary shows what came in, with times (owner request, 2026-10-27)
+
+While she is **asleep** (§21.6c) nothing but her reminders and the owner's wakes reaches her (as
+built in 3.3.0). This section makes what waited richer: the morning wake's single notification block
+(greeting + summary, §21.3) lists the night's messages with their times instead of only counts.
+
+```
+- while you were asleep (01:42–08:30):
+  · DMs:
+    · dm/kevin · 02:14 #d3 "you up? need a hand with the essay tmrw"
+    · dm/kevin · 02:15 #d4 "nvm going to sleep"
+  · kingdom-16062/#general: 2 mentions, 31 messages (01:50–07:58)
+    · mention · 03:02 #c41 from Lianne "@Lumi the cat did the thing again"
+    · mention · 07:40 #c70 from Kevin "@Lumi morning!!"
+  · winter-s-secret-room/#general: 4 messages (06:10–06:30)
+  · watch matched · kingdom-16062/#general · "sushi" · from Lianne · 05:12 #c55 · your note: "…"
+  · watch timed out (Tue 04:00) · your note: "…"
+```
+
+- **DMs**: one line per message (time, ref, 60-character preview, §20), oldest first, at most
+  `life.morningLinesPerPlace` (default 8) per DM with `+N earlier` on the first line.
+- **Rooms**: the counts line gains the time span of the night's messages; then one line per message
+  that **addressed her** (mention, reply to her, her name, a role or `@everyone` mention), with
+  reason, time, ref, author and preview, up to the same cap per room. Ordinary chatter stays a count
+  (she reads it with ReadMessages or /transcripts).
+- **Watches**: matches gain the time and ref of the matching message.
+- **Times** are her local `HH:MM`, with the weekday when the night crossed into another day than the
+  morning's (e.g. a nap batch or an all-nighter).
+- Every ref is assigned (§22.1) so she can reply or react directly. D14 redaction applies per line.
+- Order inside the block: DMs, then rooms by most mentions, then watches, then timeouts, then
+  reminders she had while asleep that she already handled are not repeated.
+- Tests: golden for the example above; caps and `+N earlier`; refs resolve in SendMessage/React;
+  D14 redaction; a budget pause batch uses the same format.
