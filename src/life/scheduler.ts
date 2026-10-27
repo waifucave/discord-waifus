@@ -37,7 +37,7 @@ import { morningBatch, morningGreeting, type MorningPlace } from "./notification
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
-import { deferForBudget, enqueueWake, hasDeferred, newWakeId, releaseHeld as releaseHeldWakes, takeDeferred } from "./wakeQueue.js";
+import { deferForBudget, deferHeld, enqueueWake, hasDeferred, newWakeId, releaseHeld as releaseHeldWakes, takeDeferred } from "./wakeQueue.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import { selfAuthorIds } from "./people.js";
@@ -302,13 +302,21 @@ export class Scheduler {
   /**
    * Wakes held while she was busy (§21.4) arrive together at her next phone check inside the block
    * (`phone check`) or when she is no longer busy (`free again`). Her day file is read now, so a
-   * phone check she added after a wake was held counts too.
+   * phone check she added after a wake was held counts too. Inside her bed time they are deferred to
+   * her morning instead.
    */
   private async releaseHeld(waifu: WaifuConfig): Promise<void> {
     const deps = this.o.deps;
     const queue = await readLifeFile(deps.storage, waifu.id, "wakes");
     if (queue.held.length === 0) return;
     const now = deps.now();
+    // Inside her bed time (a block that ended at its start, or the host was down) they wait for the
+    // morning like everything else that does not talk to her (§21.6c).
+    if (bedTimeContaining(waifu.availability, now, deps.timeZone)) {
+      const moved = await deferHeld(deps.storage, waifu.id, now);
+      if (moved > 0) deps.logger.info("Life held wakes deferred to the morning", { category: "life", waifuId: waifu.id, count: moved });
+      return;
+    }
     const day = await dayPlanFor(deps, waifu);
     const busy = busyAt(day, now, deps.timeZone);
     const count = await releaseHeldWakes(deps.storage, waifu.id, (wake) => {

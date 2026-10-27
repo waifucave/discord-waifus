@@ -256,6 +256,46 @@ describe("busy holds (§21.4, S4)", () => {
   });
 });
 
+describe("held wakes at the edges (§21.4, §21.6c)", () => {
+  it("held wakes that come due inside her bed time wait for her morning, not a poke", async () => {
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", availability: { bedTime: { enabled: true, start: "15:00", end: "20:00" } } }] });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await writeHerFile(w, "life/schedule.json", JSON.stringify({ date: "2026-10-24", busy: [{ from: "13:00", to: "15:00", why: "studio shift" }] }));
+    w.clock.ms = at("2026-10-24T14:40:00Z");
+    expect(await w.cast.router.route("ella", wake("detector", { at: "2026-10-24T14:40:00.000Z" }))).toBe("held");
+    // The block ends where her bed time starts (or the host was down until then).
+    w.clock.ms = at("2026-10-24T15:01:00Z");
+    await w.cast.scheduler.tick();
+    let q = await queue(w);
+    expect(q.held).toEqual([]);
+    expect(q.immediate).toEqual([]);
+    expect(q.deferred).toMatchObject({ reason: "sleep", places: { [ROOM_KEY]: { detector: 1 } } });
+    w.clock.ms = at("2026-10-24T20:01:00Z");
+    await w.cast.scheduler.tick();
+    q = await queue(w);
+    expect(q.immediate.map((entry) => entry.reason)).toEqual(["morning"]);
+    expect(q.immediate[0]!.batch).toContainEqual("- during your bed time (15:00–20:00):");
+  });
+
+  it("the held list is capped (a wake joins one of its place, else the oldest goes); a merge keeps why it was released", async () => {
+    const { withHeld, withImmediate, MAX_HELD_WAKES, MAX_IMMEDIATE_WAKES } = await import("../src/life/wakeQueue.js");
+    const empty = { immediate: [], held: [], quiet: [], deferred: { places: {}, items: [] } } as unknown as Parameters<typeof withHeld>[0];
+    let q = empty;
+    for (let index = 0; index < MAX_HELD_WAKES; index += 1) q = withHeld(q, wake("detector", { id: `h${index}`, placeKey: `g_1_${index}`, heldUntil: "2026-10-24T15:00:00.000Z" }));
+    const joined = withHeld(q, wake("detector", { id: "h-new", placeKey: "g_1_5", heldUntil: "2026-10-24T15:00:00.000Z" }));
+    expect(joined.held).toHaveLength(MAX_HELD_WAKES);
+    expect(joined.held[5]).toMatchObject({ id: "h5", count: 2 });
+    const dropped = withHeld(q, wake("detector", { id: "h-other", placeKey: "g_9_9", heldUntil: "2026-10-24T15:00:00.000Z" }));
+    expect(dropped.held).toHaveLength(MAX_HELD_WAKES);
+    expect(dropped.held[0]!.id).toBe("h1");
+    expect(dropped.held.at(-1)!.id).toBe("h-other");
+    let full = { ...empty } as typeof empty;
+    for (let index = 0; index < MAX_IMMEDIATE_WAKES; index += 1) full = withImmediate(full, wake("mention", { id: `i${index}`, placeKey: `g_2_${index}` }));
+    const merged = withImmediate(full, wake("detector", { id: "late", placeKey: "g_2_7", released: { kind: "phone", why: "studio shift" } }));
+    expect(merged.immediate[7]).toMatchObject({ id: "i7", released: { kind: "phone", why: "studio shift" } });
+  });
+});
+
 describe("staying in a conversation while busy (§21.4, owner addition)", () => {
   const SEND = toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "on shift, but sure" } }]);
 

@@ -16,6 +16,8 @@ import { readLifeFile, updateLifeFile } from "./lifeStore.js";
 import { joinMessages, messagesOf } from "./wakeMessages.js";
 
 export const MAX_IMMEDIATE_WAKES = 200;
+/** At most this many held wakes (§21.4): past it a wake joins one of the same place, else the oldest goes. */
+export const MAX_HELD_WAKES = 200;
 /** What forget leaves of her own note (a reminder's, a watch's) that named the person. */
 export const REMOVED_TEXT = "(removed)";
 const HOUR_MS = 3_600_000;
@@ -48,6 +50,8 @@ function mergeInto(existing: Wake, wake: Wake): Wake {
     ...(wake.fromUserId ? { fromUserId: wake.fromUserId } : {}),
     ...(wake.fromName ? { fromName: wake.fromName } : {}),
     ...(wake.forAll ? { forAll: true } : {}),
+    // A released wake keeps saying why it arrives now (§21.4), whichever of the two carried it.
+    ...(!existing.released && wake.released ? { released: wake.released } : {}),
     at: wake.at
   };
 }
@@ -152,10 +156,41 @@ export async function deferForBudget(storage: StorageService, waifuId: string): 
  * until the scheduler releases it. A wake whose id is already queued anywhere is not added again.
  */
 export async function holdWake(storage: StorageService, waifuId: string, wake: Wake): Promise<void> {
+  await updateLifeFile(storage, waifuId, "wakes", (queue) => withHeld(queue, wake));
+}
+
+/** Adds a held wake (pure), within `MAX_HELD_WAKES`. */
+export function withHeld(queue: WakeQueue, wake: Wake): WakeQueue {
+  if ([...queue.immediate, ...queue.held, ...queue.deferred.items].some((entry) => entry.id === wake.id)) return queue;
+  if (queue.held.length >= MAX_HELD_WAKES) {
+    const index = queue.held.findIndex((entry) => entry.placeKey !== undefined && entry.placeKey === wake.placeKey);
+    if (index >= 0) {
+      const held = [...queue.held];
+      held[index] = { ...mergeInto(held[index]!, wake), heldUntil: held[index]!.heldUntil ?? wake.heldUntil! } as Wake;
+      return { ...queue, held };
+    }
+    return { ...queue, held: [...queue.held.slice(queue.held.length - MAX_HELD_WAKES + 1), wake] };
+  }
+  return { ...queue, held: [...queue.held, wake] };
+}
+
+/**
+ * Held wakes that come due inside her bed time (§21.6c) wait for the morning instead: they move to
+ * `deferred` (reason `sleep`). Returns how many moved.
+ */
+export async function deferHeld(storage: StorageService, waifuId: string, now: Date): Promise<number> {
+  let count = 0;
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
-    if ([...queue.immediate, ...queue.held, ...queue.deferred.items].some((entry) => entry.id === wake.id)) return queue;
-    return { ...queue, held: [...queue.held, wake] };
+    if (queue.held.length === 0) return queue;
+    let next: WakeQueue = { ...queue, held: [] };
+    for (const wake of queue.held) {
+      const { heldUntil: _until, heldFor: _for, ...rest } = wake;
+      next = withDeferred(next, rest, "sleep", now);
+      count += 1;
+    }
+    return next;
   });
+  return count;
 }
 
 /**
