@@ -47,10 +47,12 @@ import { runDream } from "./dream.js";
 import { OwnerNotices } from "./ownerNotices.js";
 import { IntakeMarks } from "./intakeMarks.js";
 import { homeStoreFor } from "./home/index.js";
+import { markdownLinks, type HomeStore } from "./home/homeStore.js";
 import { MEMORY_INDEX } from "./home/memoryIndex.js";
+import { isDmFolderPath } from "./home/pathRules.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
-import { printLifeLines, printSystemPromptText } from "./lifeView.js";
+import { NOTES_INDEX_PRIVATE, printLifeLines, printNotesText, printSystemPromptText } from "./lifeView.js";
 import { compactLife, compactRetiredTools, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
@@ -834,16 +836,44 @@ export class LivingCast {
 
   // ---- /print -------------------------------------------------------------------------------------------
 
-  /** Blocks A and B; `<life_so_far>` (her summary) is hidden unless `private` (§10.4, D14). */
+  /**
+   * Blocks A and B; unless `private`, `<life_so_far>` (her summary) is hidden and so are the lines of
+   * her index copy that `/print notes` leaves out (§10.4, D14).
+   */
   async printSystemPrompt(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
-    return printSystemPromptText(await readLifeState(this.deps.storage, waifuId), { private: o.private === true });
+    const state = await readLifeState(this.deps.storage, waifuId);
+    if (o.private === true || !state.systemSnapshot) return printSystemPromptText(state, { private: o.private === true });
+    const store = homeStoreFor(this.deps, await readWaifu(this.deps.storage, waifuId));
+    return printSystemPromptText(state, { private: false, privateLine: await this.privateNoteLines(store, state.systemSnapshot.memoryIndex) });
   }
 
-  async printNotes(waifuId: string): Promise<string> {
+  /**
+   * Her `MEMORY.md` (§10.4). Unless `private`, D14 as in the dashboard's file views: a line linking to
+   * a file that came from a private chat (by provenance, or under `/tmp/dm/`) or naming a DM place
+   * or path is left out; an index whose own bytes came from a private chat is not shown at all.
+   */
+  async printNotes(waifuId: string, o: { private?: boolean } = {}): Promise<string> {
     const waifu = await readWaifu(this.deps.storage, waifuId);
     const store = homeStoreFor(this.deps, waifu);
-    const index = store.resolve(`~/${MEMORY_INDEX}`);
-    return (index.ok ? await store.files.readText(index.path).catch(() => undefined) : undefined) ?? "(no MEMORY.md yet)";
+    const index = await store.resolveExisting(`~/${MEMORY_INDEX}`);
+    const text = index.ok ? await store.files.readText(index.path).catch(() => undefined) : undefined;
+    if (text === undefined || !index.ok) return "(no MEMORY.md yet)";
+    if (o.private === true) return text;
+    if ((await store.dmOrigin(index.path).catch(() => "unknown")) !== undefined) return NOTES_INDEX_PRIVATE;
+    return printNotesText(text, { private: false, privateLine: await this.privateNoteLines(store, text) });
+  }
+
+  /** Which lines of an index link to one of her files from a private chat (D14); an unreadable files index counts every link as private. */
+  private async privateNoteLines(store: HomeStore, text: string): Promise<(line: string) => boolean> {
+    const filesIndex = await store.readIndex().catch(() => undefined);
+    const privateTargets = new Set<string>();
+    for (const target of new Set(markdownLinks(text))) {
+      const resolved = await store.resolveExisting(target.startsWith("/") || target.startsWith("~") ? target : `~/${target}`).catch(() => undefined);
+      if (!resolved?.ok) continue;
+      const origin = !filesIndex ? "unknown" : isDmFolderPath(resolved.path) ? "dm" : await store.dmOrigin(resolved.path, filesIndex).catch(() => "unknown");
+      if (origin !== undefined) privateTargets.add(target);
+    }
+    return (line) => privateTargets.size > 0 && markdownLinks(line).some((target) => privateTargets.has(target));
   }
 
   /** The last 20 life-log lines; unless `private`, DM content is left out by the §14.4 rule (§10.4, D14). */

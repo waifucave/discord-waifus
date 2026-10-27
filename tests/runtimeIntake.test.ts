@@ -110,9 +110,12 @@ describe("runtime facade", () => {
     await runtime.handleWakeCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "mina", respond });
     expect(wake.mock.calls).toEqual([["ella", "say hi"]]);
     // /print may target any waifu.
-    vi.spyOn(runtime.cast, "printNotes").mockResolvedValue("# Memory");
+    const notes = vi.spyOn(runtime.cast, "printNotes").mockResolvedValue("# Memory");
     await runtime.handlePrintCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "Mina", type: "notes", respond });
-    expect(replies).toEqual(["Woke Ella.", "I don't know that waifu.", "Mina isn't cast in this server.", "# Memory"]);
+    await runtime.handlePrintCommand({ guildId: GUILD, channelId: CHANNEL, userId: "1", waifuId: "Mina", type: "notes", private: true, respond });
+    // /print notes follows D14 like life and system_prompt: DM lines only with private:true.
+    expect(notes.mock.calls).toEqual([["mina", { private: false }], ["mina", { private: true }]]);
+    expect(replies).toEqual(["Woke Ella.", "I don't know that waifu.", "Mina isn't cast in this server.", "# Memory", "# Memory"]);
     const choices: unknown[] = [];
     const collect = async (list: unknown) => void choices.push(list);
     await runtime.handleWaifuAutocomplete({ commandName: "wake", guildId: GUILD, channelId: CHANNEL, focusedValue: "A", respond: collect });

@@ -1155,6 +1155,10 @@ rule (§14.4): by default they leave out every DM tool call and result, every qu
 notification line (also when folded into a tool result), her own assistant text in a turn whose
 wakes or tool calls touched a DM place, and her `<life_so_far>` summary. The boolean option
 `private:true` shows everything; the reply stays ephemeral, so only the owner who ran it sees it.
+*As built (2026-10-27):* `/print notes` follows the same option. Without it, every `MEMORY.md` line
+that links to a file from a private chat (files-index provenance, or under `/tmp/dm/`) or names a DM
+place or path reads `[private chat redacted]`, with a footer counting them; an index whose own bytes
+came from a private chat is not shown. `/print system_prompt` hides the same lines of its index copy.
 
 ## 11. Retirements and migrations
 

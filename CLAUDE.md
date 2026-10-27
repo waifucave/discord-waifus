@@ -197,8 +197,11 @@ model, over the window of transcript lines after `life/dream-cursor.json`, split
 sessions run through `runSession` in `maintenance.ts`) as a tracked background task (abortable; one
 process-wide run per waifu). The
 storage service skips writes whose content did not change. The House bot owns
-`/wake` and `/print` (`/print life|system_prompt` leave DM content out unless `private:true`, by the
-same rule as the dashboard, `src/life/lifeView.ts`): only the Discord application's owner or its team members may run them
+`/wake` and `/print` (`/print life|system_prompt|notes` leave DM content out unless `private:true`,
+`src/life/lifeView.ts`: life and system_prompt by the dashboard's rule; `notes`, and the index copy in
+system_prompt, turn every `MEMORY.md` line that links to a file from a private chat (files-index
+provenance or `/tmp/dm/`) or names a DM into `[private chat redacted]`, and an index that itself came
+from a private chat is not shown, `LivingCast.printNotes`): only the Discord application's owner or its team members may run them
 (`src/discord/applicationOwners.ts`, refreshed every 6 hours and checked again at run time;
 Administrator is only the commands' default visibility); `/wake` reaches only waifus cast in that
 server. DM bots keep `/forget`.

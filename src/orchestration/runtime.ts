@@ -575,7 +575,7 @@ export class CastRuntime {
     if (!waifu) return event.respond("I don't know that waifu.");
     const text =
       event.type === "notes"
-        ? await this.cast.printNotes(waifu.id)
+        ? await this.cast.printNotes(waifu.id, { private: event.private === true })
         : event.type === "life"
           ? await this.cast.printLife(waifu.id, { private: event.private === true })
           : event.type === "system_prompt"

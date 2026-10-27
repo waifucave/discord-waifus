@@ -88,7 +88,7 @@ House bot, in servers (`src/discord/client.ts`, `src/discord/applicationOwners.t
 | Command | Behaviour |
 |---|---|
 | `/wake waifu:<name> [note]` | Owner wake (note ≤ 500). Only a waifu cast in this server (autocomplete offers this server's cast); else "X isn't cast in this server." Replies "Woke X.", "X's wake is queued." or "X can't be woken right now (paused or disabled)." (also during a reload, where HTTP would queue it) |
-| `/print type:<system_prompt\|notes\|life> waifu:<name> [private]` | Her system prompt (summary hidden unless `private:true`), her `MEMORY.md` (unfiltered), or the last 20 life-log lines (DM content hidden unless `private:true`). Over 1,900 characters it is attached as `<type>.md` |
+| `/print type:<system_prompt\|notes\|life> waifu:<name> [private]` | Her system prompt (summary and the index lines from private chats hidden unless `private:true`), her `MEMORY.md` (lines that link to a file from a private chat or name a DM hidden, an index from a private chat not shown, unless `private:true`; [privacy-and-forget.md](privacy-and-forget.md)), or the last 20 life-log lines (DM content hidden unless `private:true`). Over 1,900 characters it is attached as `<type>.md` |
 
 - Only the House bot application's **owner or its team members** may run them; the list is fetched
   when the bot comes online, refreshed every 6 h and re-fetched at run time when older than 10 min; a
@@ -162,8 +162,6 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 
 ## Docs differ
 
-- `CLAUDE.md` and the KB list `/print life|system_prompt`; the code also has `/print notes`, which
-  prints `MEMORY.md` without the D14 filter.
 - The `files` command's `--root` help names `home|tmp`; the command also accepts `transcripts`.
 - The KB says an owner wake "skips her bed time and budget"; it skips guards 3–6 (per-user limit, bed
   time, busy holds, budget, loop guard) but is still dropped while the app is paused or when she is

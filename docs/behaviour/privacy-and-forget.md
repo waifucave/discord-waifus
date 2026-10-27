@@ -27,8 +27,8 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 | Life API `GET /api/waifus/:id/life`, `…/life/log` | Summary hidden; DM wakes' preview/note hidden (an owner note stays); log redacted; DM-turn lines marked `dm: true` | `includePrivate=1` |
 | Life screen | Same; reveal toggle "Show private chats" | Toggle (local only; disabled over Remote Access) |
 | `waifus life`, `files`, `watches` | Same | `--private` |
-| `/print life`, `/print system_prompt` | DM content and her summary hidden (ephemeral, owner only) | `private:true` |
-| `/print notes` | Prints `MEMORY.md` as it is (no DM filter; ephemeral, owner only) | — |
+| `/print life`, `/print system_prompt` | DM content and her summary hidden; in the system prompt's copy of `MEMORY.md`, the lines `/print notes` hides (ephemeral, owner only) | `private:true` |
+| `/print notes` | `MEMORY.md` with every line that links to a DM-origin file (files-index provenance, or under `/tmp/dm/`) or names a DM (`dm/…`, `dm_…`, `/tmp/dm/…`, `/transcripts/dm/…`, a migrated "(from a private chat…)" suffix) shown as `[private chat redacted]` (indent and list marker kept) and a footer counting them; a `MEMORY.md` whose own bytes came from a DM is not shown ("…Run /print notes private:true to see it, or open Life → Files on the host."); ephemeral, owner only | `private:true` |
 | Files API / Life → Files | A DM-origin file is listed as `[private chat redacted]` with no path; reading, writing, deleting it or listing a DM folder → 403; `/transcripts/dm/…` likewise; `watches.json` with a DM-bound watch reads as a redacted, read-only copy | `includePrivate=1` |
 | Web searches (`GET /api/search/usage`, Life "Web searches today") | A DM turn's queries (`dm: true`, also marked later by turn id) shown as `[private chat redacted]` | `includePrivate=1` |
 | Needs-review lines | A line from her summary or queue, a DM-bound watch, or naming a DM place reads redacted (same id); the forget response always redacts them | `includePrivate=1` |
@@ -41,6 +41,10 @@ request that came in directly over loopback (`127.x`, `::1`) gets the local prin
 dispatched by the Remote Access bridge or by the assistant carries that dispatch's principal and
 cannot reveal; `includePrivate` from it answers 403 `PrivateContentLocalOnly` ("DM content is only
 shown on the host itself (D14). Open the dashboard on that computer to reveal it.").
+
+A line she wrote herself about a DM, without linking a DM file or naming a DM, cannot be attributed
+and is shown, as her notes are in Life → Files (`LivingCast.printNotes`, `lifeView.ts`
+`redactNotesLines`).
 
 The Life view is keyed per waifu and per reveal state; a response whose `includePrivate` does not
 match the toggle is dropped (`LifeScreen.tsx` `matchingReveal`).
@@ -171,5 +175,3 @@ is salvaged on read.
   back to `life.dreamModel` and is skipped only when neither is offered.
 - §18.5 "their whole DM transcripts" is done as "everything at or below the floor at the forget's
   time".
-- `/print notes` is not covered by the D14 rule in any doc; it prints `MEMORY.md` unfiltered (the
-  reply is ephemeral and owner-only).

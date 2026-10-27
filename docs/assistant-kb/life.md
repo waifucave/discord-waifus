@@ -97,11 +97,14 @@ lists who was left out and why (`leftOut`).
 - Dashboard → Life: her status (awake, busy, up late, dozing or asleep; idle or mid-turn), her queue, today's cost
   against her budget, and a live timeline of her life log.
 - `waifus life <id> [--log]`, or `GET /api/waifus/:id/life` and `GET /api/waifus/:id/life/log`.
-- `/print life` and `/print system_prompt` (House bot, owner only) in Discord.
+- `/print life`, `/print system_prompt` and `/print notes` (her `MEMORY.md`) (House bot, owner
+  only, only the owner sees the reply) in Discord.
 
 Content from private chats is hidden by default everywhere: a DM notification; every tool call,
 result and her own text in a turn that touched a DM (a web search or a room send included); a call
-that touched a DM in any other turn; and her summary. The owner can
+that touched a DM in any other turn; her summary; and, in `/print notes` and the index copy in
+`/print system_prompt`, every `MEMORY.md` line that links to a file from a private chat or names a
+DM (an index that itself came from a private chat is not shown at all). The owner can
 reveal it on the host itself (the Life screen's reveal toggle, `waifus life --private`,
 `includePrivate=1`, `/print … private:true`). Over Remote Access, and for the dashboard assistant,
 it stays hidden.
