@@ -2896,3 +2896,80 @@ Migration (moves, collisions, index paths, busy dropped and archived, idempotent
 ### 21.8 Release
 
 A feature release (3.3.0).
+
+### 21.9 As built (2026-10-27)
+
+- **Files** (`src/life/home/pathRules.ts`): `LIFE_DIR` `life/` holds `schedule.json` (her day),
+  `reminders.json`, `watches.json`, `profile.json`, `places.md`; `MEMORY.md` stays at the root.
+  Everything under `~/life/` is private in the "never attached" sense (`isPrivateFile`); the
+  refusal texts say so. `UNKNOWN_PLACE` now points at `~/life/places.md`. The API's `special` enum
+  is `reminders | watches | profile | schedule` (`schedule` is her day; reminders kept their routes,
+  `GET /api/waifus/:id/schedule` still lists reminders). A file called `life` (not a folder) in her
+  home is archived by the migration before the move.
+- **Her day file** (`src/life/home/daySchedule.ts`): `why` is required (1–120) on a busy block; the
+  "inside her waking hours" rule is checked against her bed time on every write (her Write, Bash,
+  the API), not when reading a saved file. Unlike the other special files, a `Write` of
+  `~/life/schedule.json` needs no earlier `Read` (she writes it fresh every morning); the stale-read
+  check still applies when she did read it this turn. An empty file is no plan. The app's own
+  rewrites (forget) write `JSON.stringify(…, null, 2)`.
+- **Harness**: `<schedule>` always renders when `scheduleInPrompt` is on: the bed time line (when
+  set), today's plan lines or "No plan for today yet.", and the zone. The harness hash is computed
+  over block A with today's plan replaced by a placeholder, so her midday edits and a new day never
+  force a configuration compaction; the `day` compaction is a separate flag (`dayCompactionDue`,
+  set when the turn that ran the day wake ends normally, cleared by any new epoch).
+- **Morning** (`scheduler.ts` `morning`): the day wake has the id `w-day-<local date>` and a `day`
+  field, carries the greeting as the first line of its batch (inside `<notifications>`) and is never
+  folded into a running turn. A life that has not begun records the day start without a wake (her
+  first morning is the next one); a life's first epoch records it too; an upgraded life that has
+  begun gets a morning at the first tick after the upgrade. Without a bed time the greeting leaves
+  the bed time sentence out, and without anything overnight it leaves out "Then deal with…". The
+  overnight header reads `- during your bed time (00:30–08:30):`.
+- **Busy holds** (`src/life/busy.ts`, router guard 4b): the S4 set is `mention` (replies are
+  mentions), `name`, `dm`, `owner`, `reminder`, `watch`, `watch_timeout` and `morning`; a merged
+  wake gets through when any of its reasons does. Held wakes live in `wakes.json` `held` (with
+  `heldUntil`, `heldFor`) and never start a turn; the scheduler releases them when the phone check
+  their block had when held, or one she added later, passes (`- phone check (busy: why)`), or when
+  she is no longer busy (`- free again (why is over)`, also for a wake held in an earlier block).
+  Open places are `busyOpen` in her life state, keyed by place with the block's end, so a new block
+  closes them. A send opens a place only when a wake of that turn that got through was for that
+  place, or the place was open already.
+- **Prompt-copy note** (§21.2 addition): `promptCopyNote` in `tools/files.ts` for Write/Edit and in
+  `tools/bash.ts` for change sets, life sessions only (`ToolContext.session` marks maintenance,
+  scrub and dream sessions), only when the content actually changed, and for `schedule.json` only
+  when `scheduleInPrompt` is on. Once per file per turn (`TurnScratch.promptCopyNoted`).
+- **Dreaming** refuses Write/Edit under `~/life/` and Bash change sets that touch it
+  (`DREAM_LIFE_REFUSED`), and its instruction says to leave `~/life/` alone. Maintenance never counts
+  `life/places.md` as a change.
+- **Forget** scrubs her day file's `mood`, `why`, `what` and `note` texts that mention the person to
+  `(removed)` (uncertain names go to needs-review as `schedule`), and drops their DM key from her
+  open places (`busyOpen`, `recentSends`).
+- **Self summary** (§21.6b, `rest.ts` `selfSummaryOf`): the reply must be exactly one
+  `<summary>…</summary>` (no nested tag). The guard reasons said on the next time line are "it is
+  shorter than N characters", "your memory is still far from full" and "your last fresh start was
+  less than N minutes ago". The new epoch's summary is framed like a rest summary
+  (`REST_SUMMARY_FRAME`); boundary reason `self`. Any assistant text that is a lone `<summary>` is
+  hidden from the owner's views without a local reveal.
+- **Bed time** (§21.6c): `clock.ts` `bedPhaseAt` from `lastSentAt` (set on every successful
+  SendMessage, with the place in `recentSends`, kept for `life.busyEngagedMinutes`). Up late or
+  dozing, a place she sent to in the last `busyEngagedMinutes` is open whatever woke her there (a
+  send just before her bed time counts: before bed every wake reached her, so "exactly like the busy
+  rule" is read as "the places she is chatting in"). What waits while she is up late or dozing is
+  deferred to the morning (reason `sleep`), never held, and no sleep notice goes out (DMs get
+  through). Asleep, `reminder` and `owner` get through; watches and watch timeouts wait. Busy blocks
+  never apply inside a bed time (they cannot overlap it). `life.bedDozeMinutes` 0 means asleep at
+  once (the old hard sleep). The Life screen and `waifus life` show "Up late" / "Dozing"; the
+  status API adds `availability.bed`.
+- **Maintenance timing**: `maintenanceDue` returns `dream` once she has been asleep
+  `life.dreamAfterAsleepMinutes` (default 15, 0–720) in a bed time that has had none, or `scrubs`
+  after a bed time that ended without one: then only the pending forget scrubs run (no dream), and
+  only when some wait, so a DM `/forget` queued for the night is not put off by an all-nighter.
+- **Migrations**: `living-cast-life-folder-v1` marks begun lives for a pending epoch start with
+  reason `tools` (summarised, no kept turns, since the old turns name the old paths);
+  `living-cast-drop-busy-v1` archives `{waifuId, archivedAt, busy}`; `living-cast-bed-time-v1`
+  archives `{waifuId, archivedAt, waifu}` (the whole document) under
+  `user/.archive/living-cast/bed-time/` and, when both keys exist, keeps `bedTime`. All three are
+  registered after `living-cast-typing-holds-v1`, before the schema stamp.
+- **Settings**: `life.dayStartHourLocal` (8), `life.busyEngagedMinutes` (10, 0–240),
+  `life.selfSummaryMinRatio` (0.3), `life.selfSummaryCooldownMinutes` (120), `life.bedDozeMinutes`
+  (60, 0–720), `life.dreamAfterAsleepMinutes` (15, 0–720); Settings → Life "Her day" group. The
+  waifu keys are `availability.bedTime.{enabled,start,end}` ("Bed time").

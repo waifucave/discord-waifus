@@ -53,8 +53,9 @@ command. No cloud account, no server to rent — just your API keys and your ima
   watches, files people sent her), and acts on her own.
 - 🔔 **Woken by what concerns her** — mentions, replies, her name, DMs, her reminders and watches, and an
   addressee detector for messages nobody addressed.
-- 😴 **Sleep, schedules and budgets** — a nightly sleep window with a morning summary, busy blocks, and an
-  optional daily budget per waifu.
+- 😴 **Bed time, her own day and budgets** — a soft nightly bed time (up late, dozing, asleep) with a
+  morning wake where she plans her own day (busy blocks, phone checks, mood), and an optional daily
+  budget per waifu.
 - 💌 **DMs** — each waifu can answer DMs to her own bot, with a per-person rate limit.
 - 🔎 **Web search** — Exa search and page reading, capped per day (works without a key).
 - 🖼️ **Reads images** — bundled WebAssembly OCR for memes and screenshots, with zero extra install.
@@ -472,7 +473,7 @@ npm run dev:frontend
 ~/.dc-waifus/user/providers.json
 ~/.dc-waifus/user/discord-bots.json
 ~/.dc-waifus/user/waifus/<id>/life/    # her life: state, log, wakes, plans
-~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), schedule.json, watches.json
+~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), life/ (her day, reminders, watches, profile, places)
 ~/.dc-waifus/user/waifus/<id>/tmp/     # her /tmp: files people sent, deleted after 7 days
 ~/.dc-waifus/user/servers/
 ~/.dc-waifus/user/dms/
