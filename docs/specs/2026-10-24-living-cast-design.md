@@ -2958,13 +2958,32 @@ A feature release (3.3.0).
   through). Asleep, `reminder` and `owner` get through; watches and watch timeouts wait. Busy blocks
   never apply inside a bed time (they cannot overlap it). `life.bedDozeMinutes` 0 means asleep at
   once (the old hard sleep). The Life screen and `waifus life` show "Up late" / "Dozing"; the
-  status API adds `availability.bed`.
+  status API adds `availability.bed` (the running cast's settings, else the config file at most every
+  5 s). Held wakes that come due inside her bed time (a block ending where it starts, downtime) are
+  deferred to the morning instead of released. `held` holds at most 200 wakes (a new one joins one of
+  its place, else the oldest goes), and a merged wake keeps its release line.
+- **Review fixes (2026-10-27)**: today's day wake deferred for her budget comes back as itself
+  (greeting first, `day` kept) once she is under budget. A refused `<summary>` does not end the turn
+  by itself: the turn ends as any other, so a DM turn still gets the unsent-reply nudge (which then
+  carries the refusal note). The day compaction keeps an epoch of at most three turns whole (no
+  summary call, `summarized: false`): an upgraded life's `tools` compaction before her first morning
+  and the day's are not two summaries.
 - **Maintenance timing**: `maintenanceDue` returns `dream` once she has been asleep
   `life.dreamAfterAsleepMinutes` (default 15, 0–720) in a bed time that has had none, or `scrubs`
   after a bed time that ended without one: then only the pending forget scrubs run (no dream), and
   only when some wait, so a DM `/forget` queued for the night is not put off by an all-nighter.
 - **Migrations**: `living-cast-life-folder-v1` marks begun lives for a pending epoch start with
-  reason `tools` (summarised, no kept turns, since the old turns name the old paths);
+  reason `tools` (summarised, no kept turns, since the old turns name the old paths). It keeps a
+  per-waifu marker outside her home (`life/life-folder-v1.json`, also written by the app for every
+  life it runs, and implied by a state with `lastDayStart`; a waifu with nothing to move gets none
+  from the step, so a root without old files stays byte-identical): a re-run after a lost ledger skips a
+  waifu whose marker is done, so files she later writes at the top of her home (her old summaries
+  name `~/schedule.json`) never move over her reminders. Its parts (her own folder renamed, the
+  moves, index paths, journal paths, the epoch) are each recorded when finished, so a crash or an
+  unreadable file resumes at the part that did not finish and none runs twice. A folder `~/life/`
+  she had made herself (her notes) becomes `~/life-notes/` (`-2` … when taken) before the app's
+  files move in, and index and journal paths into it follow, so her notes never become private or
+  refused to her dreams; links in her notes to it are not rewritten;
   `living-cast-drop-busy-v1` archives `{waifuId, archivedAt, busy}`; `living-cast-bed-time-v1`
   archives `{waifuId, archivedAt, waifu}` (the whole document) under
   `user/.archive/living-cast/bed-time/` and, when both keys exist, keeps `bedTime`. All three are
@@ -3069,7 +3088,26 @@ With §21 in 3.3.0.
 - **D14**: every place whose lines are in the result is noted for the call (`notePlace`), so a call
   whose `everywhere` result includes a DM is private like any DM read.
 - **Old habits**: `limit` and `before` are no longer in the schema but are still read when sent
-  (as `max:` and `before #ref`), since her old log lines show them.
+  (as `max:` and `before #ref`) where the query has no `max:` or anchor of its own, since her old log
+  lines show them.
+- **Review fixes (2026-10-27)**:
+  - Refs: a page or search takes `refs.json` first, then the ref stored on the message's transcript
+    line, and only then assigns one; the writer assigns only to lines it has not written yet. A
+    message older than 30 days gets no new ref; a page edge without a ref gets a time in its hint
+    (`— more before: before 2026-09-01 10:04 —`). `refs.json` is pruned only once it holds 1,000
+    refs past the 10,000 span (so a 30-day-old ref can stay a little longer). `findTranscriptRef`
+    looks at every day (gap fills write new refs into older days), each first as text.
+  - Searches read days newest first (oldest first for `after` alone) without the schema, check the
+    call's signal between days, and stop at 400 days per place or 32 MiB per call; the reply then
+    names the days it searched and says it stopped (`add before or after to look further`). The
+    cache's tail is what is newer than the store's newest line of that place (anyone's), and for a
+    room only inside her interval.
+  - A forgotten person's lines (theirs, or naming their id, from before the forget) and DM lines at
+    or below the floor are left out of searches, ref lookups and `/transcripts` themselves, whether
+    or not the forget job's transcript part has run.
+  - `people:Max 5` is a name (inside people/search only a `key:` form, or an anchor after
+    before/after/around, starts a term); `max:100` asks once more to know whether there is more; a
+    `#ref` with `max:100` reads 101 in two pages; one call adds at most 200 ids to her read ids.
 - Tests: `tests/lifeReadMessages.test.ts`; goldens `life-transcript-day.txt` (new) and
   `life-system-prompt.txt` / `life-rest-epoch.txt` / `life-dream.txt` (the tool description, the
   `<life>` sentence, the transcript line format).

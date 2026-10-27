@@ -158,8 +158,8 @@ timeouts (`watch_timeout`), releases held wakes at her phone checks, refreshes `
 also at every turn start), expires `/tmp` (first tick, then hourly), sends the day wake when her
 bed time ends (else at `life.dayStartHourLocal`; id `w-day-<date>`: the greeting asking her to
 write `~/life/schedule.json`, then the overnight batch; never folded mid-turn; the turn after it
-sets `dayCompactionDue`, so the next cycle compacts with reason `day` and block A shows today's
-plan; the harness hash leaves the plan out, so midday edits never force a compaction) and starts
+sets `dayCompactionDue`, so the next cycle compacts with reason `day` (an epoch of at most three
+turns is kept whole, no summary) and block A shows today's plan; the harness hash leaves the plan out, so midday edits never force a compaction) and starts
 maintenance once she has been asleep `life.dreamAfterAsleepMinutes` in her bed time (once per bed
 time; a bed time without one runs only pending scrubs when it ends; no bed time:
 `life.maintenanceHourLocal`): pending scrubs, then the
@@ -245,7 +245,9 @@ special files move into `home/life/`, `schedule.json` becoming `reminders.json`;
 newer file and archive the other; index and journal paths rewritten; begun lives get a pending epoch
 start), `living-cast-drop-busy-v1` (owner busy blocks archived and dropped) and
 `living-cast-bed-time-v1` (`availability.sleep` → `availability.bedTime`, document archived), all in
-`migrationSteps/livingCastLifeFolder.ts`. Retired data shapes the migrations
+`migrationSteps/livingCastLifeFolder.ts`; the life-folder step keeps a per-waifu marker
+(`life/life-folder-v1.json`, written by `HomeStore` for every life the app runs) and records each part,
+so a lost ledger never moves her later files and a crash resumes where it stopped. Retired data shapes the migrations
 still read live in `migrationSteps/legacySchemas.ts`; nothing else imports it. Legacy-step tests
 run `MIGRATION_STEPS` minus the L2 ids; `tests/livingCastMigrations.test.ts` covers the L2 steps on
 a realistic main-era root (`tests/fixtures/main-era-config.toml` is main's config as written). The

@@ -92,7 +92,8 @@ simulated Bash (nothing she runs can reach the host or the network):
 
 - **Her home** `/home/<name>` (`~`): her notes, in any layout she likes; `MEMORY.md` is her index
   (one line per note, copied into her prompt at each epoch start). The files the app reads are in
-  `~/life/` (SendMessage never attaches them, like MEMORY.md and her notes):
+  `~/life/` (SendMessage never attaches them, like MEMORY.md and her notes; a `~/life/` folder of
+  her own from before 3.3.0 was renamed `~/life-notes/`):
   `schedule.json` her day (see "Her day"), `reminders.json` her reminders and `watches.json` her
   watches (she sets them with ScheduleWake and WatchFor and changes or cancels them by editing the
   files); `places.md` lists her rooms and private chats and is kept up to date by the app
@@ -110,8 +111,9 @@ simulated Bash (nothing she runs can reach the host or the network):
   `[14:02 #k5] Kevin ↩#k3: text [file: a.png]` (her own lines as `you`; every message gets its ref
   when it is written, and a ref stays usable for as long as its line exists). She searches it with
   Read and Bash (`grep -r`, `cat`, Python), or with ReadMessages: `people:` and `search:` (one place,
-  several, or `everywhere`) read it, and `before|after|around` a ref, a time or a day jump into a
-  conversation; nothing
+  several, or `everywhere`; newest days first, at most 400 days per place and 32 MiB per call, and
+  the reply says which days it searched) read it, and `before|after|around` a ref, a time or a day
+  jump into a conversation; nothing
   can change it and SendMessage can't attach it. A waifu added to a room later sees only what was
   said after she arrived; one removed from it keeps what she saw. The app writes it (one shared
   store, `user/transcripts/`) from the same Discord feed as everything else, from the first message
