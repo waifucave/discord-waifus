@@ -147,7 +147,7 @@ permanent text block (`src/life/clock.ts` `timeLine`):
 `[Sat 24 Oct 14:06 · awake]` — the label is `awake`, `busy: <why> until HH:MM`, `up late`,
 `dozing (bed time)` or `asleep`, read live from her day file and bed time.
 
-- With `life.restNotice` off, once her estimated request reaches 0.85 × the compaction trigger the
+- With `life.restNotice` off, once her estimated request reaches 0.85 × the trigger (`MEMORY_WARNING_RATIO`) the
   line adds `· your memory of today will be summarised soon; save anything worth keeping to your
   notes`.
 - After a refused `<summary>` her next time line adds once `(your summary was not used: <reason>)`.
@@ -216,8 +216,10 @@ your next summary. The file itself is current." Never in maintenance, scrub or d
 ## Epochs and compaction
 
 The **budget** is `min(life.maxContextTokens (96,000), model window − min(output cap, 8,192))`
-(`src/life/request.ts` `lifeBudget`; window 128,000 when unknown). The **trigger** is
-`compaction.triggerRatio` (0.7) × budget: 67,200 tokens with the defaults.
+(`src/life/request.ts` `lifeBudget`; window 128,000 when unknown). The **trigger** (the rest point)
+is `compaction.triggerRatio` (0.7) × budget: 67,200 tokens with the defaults. The **emergency** is
+`compaction.emergencyRatio` (0.9, must be greater than `triggerRatio`) × budget: 86,400 tokens
+(spec §26, `autoCompactionRatio` in `src/life/lifeLoop.ts`).
 
 **Triggers**, checked at the start of each cycle, before any wake (`Life.prepareEpoch`), in this
 order:
@@ -227,13 +229,17 @@ order:
 3. harness hash changed → `config`;
 4. an interrupted compaction after a rest turn → compacts leaving that turn out;
 5. `dayCompactionDue` (her morning turn ended) → `day`;
-6. last request ≥ trigger → `tokens`;
+6. last request ≥ the emergency → `tokens` (the **emergency summary**; with `life.restNotice` off,
+   at the trigger as before);
 7. log ≥ `life.maxLogMessages` (400) messages → `log_length`.
 
-> **Pending (spec §26):** the rest notice moves to the trigger (0.7 × budget, about 67k of 96k) and
-> trigger 6 (`tokens`) moves to a new `compaction.emergencyRatio` (0.9, about 86k), described as the
-> "emergency summary"; `life.restNoticeRatio` is removed. The other triggers stay. The compaction
-> instruction gets new owner-approved wording ("[system] Your memory is full and has to be summarised
+Between the trigger and the emergency she normally rests instead (below). Auto-compaction (her model
+summarising for her, three turns kept) is the emergency path: the Life screen labels its epochs
+"emergency summary (<reason>)" for `tokens`, `log_length`, `overflow`, `budget`, `image` and
+`bad_request` (other reasons, such as `config`, `day`, `forget`, `reset`, show as is), and the
+status line says "rested", "emergency summary" or "compacted" for her last new epoch.
+
+> **Pending (owner rewording):** the compaction instruction gets new owner-approved wording ("[system] Your memory is full and has to be summarised
 > now. Everything you can see goes away except what you write here; your computer and your notes stay
 > as they are. Write, in your own way, whatever you want to carry forward, including what still
 > matters from your last summary. Write it clearly, so you won't misunderstand it later without what
@@ -270,8 +276,7 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
 
 ## The rest notice (she summarises herself)
 
-> **Pending (spec §26):** §26 makes the rest notice fire at `compaction.triggerRatio` × budget
-> (0.7, about 67k of 96k) instead of `life.restNoticeRatio` × the trigger, with new wording ("[system]
+> **Pending (owner rewording):** the rest notice gets new wording ("[system]
 > Your memory is almost full. When this turn ends your context resets: everything you can see now goes
 > away except what you write as your final reply. Your computer stays exactly as you left it (your
 > home, /tmp and /transcripts), so anything that should last can go into your notes now. Then write,
@@ -279,8 +284,8 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
 > later without what you can see now. Write what happened and how you feel, not rules for yourself.
 > Don't message anyone in this turn."). The text below is what `main` does today.
 
-When `life.restNotice` is on (default) and her last request reached `life.restNoticeRatio` (0.85)
-× the trigger but not the trigger itself (57,120–67,199 tokens with the defaults), the next cycle is
+When `life.restNotice` is on (default) and her last request reached the trigger but not the
+emergency (67,200–86,399 tokens with the defaults; spec §26), the next cycle is
 a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/life/rest.ts`):
 
 - At most once per epoch (`state.restTurn`); not while compaction is backing off or an epoch start
@@ -294,8 +299,8 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
 - **Accepted**: the turn ended normally and her final text is at least `life.restSummaryMinChars`
   (200) characters → a new epoch whose `<life_so_far>` is `[your summary before the reset]` + her
   text, with no kept turns; boundary reason `rest` (Life: "rested (her own summary)").
-- **Ignored** (shorter, failed, capped): compaction runs at once as usual (`tokens`), leaving the rest
-  turn out.
+- **Ignored** (shorter, failed, capped): compaction runs at once as usual (`tokens`, an emergency
+  summary), leaving the rest turn out.
 - **Interrupted**: nothing recorded; the rest turn runs again next cycle.
 - A provider overflow in the rest turn goes down the mid-turn compaction path.
 

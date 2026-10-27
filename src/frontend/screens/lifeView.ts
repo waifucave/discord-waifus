@@ -203,12 +203,27 @@ export function fileSize(bytes: number): string {
 export function boundaryReasonLabel(reason: string): string {
   if (reason === "rest") return "rested (her own summary)";
   if (reason === "cache_rest") return "rested (her own summary, before her cache went cold)";
-  return reason === "self" ? "rested (her choice)" : reason;
+  if (reason === "self") return "rested (her choice)";
+  return emergencyReason(reason) ? `emergency summary (${reason})` : reason;
 }
 
 /** The epoch reasons where she wrote her own summary (§19, §21.6b, §25). */
 export function restedReason(reason: string | undefined): boolean {
   return reason === "rest" || reason === "cache_rest" || reason === "self";
+}
+
+/**
+ * Auto-compaction because her memory ran full (§26: the "emergency summary"): her last request at
+ * the emergency point or an ignored rest notice (`tokens`), a long log, an overflow, over budget
+ * mid-turn, an image that could not be fetched, repeated bad requests.
+ */
+export function emergencyReason(reason: string | undefined): boolean {
+  return reason === "tokens" || reason === "log_length" || reason === "overflow" || reason === "budget" || reason === "image" || reason === "bad_request";
+}
+
+/** The Life status line's word for her last new epoch. */
+export function lastEpochWord(reason: string | undefined): string {
+  return restedReason(reason) ? "rested" : emergencyReason(reason) ? "emergency summary" : "compacted";
 }
 
 export function breadcrumbs(list: Pick<HerFilesList, "root" | "dir" | "display">): Array<{ label: string; dir: string }> {

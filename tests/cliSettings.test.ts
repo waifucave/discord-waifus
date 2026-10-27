@@ -41,6 +41,9 @@ const makeApp = () => makeCliApp(roots, apps);
 /** Keys whose example is their default and whose type gives no other value to try. */
 const NON_DEFAULT: Record<string, string> = {
   "app.http.host": "127.0.0.2",
+  // compaction.emergencyRatio must stay greater than compaction.triggerRatio (§26).
+  "app.compaction.triggerRatio": "0.75",
+  "app.compaction.emergencyRatio": "0.95",
   "app.detector.target": "laya:english",
   "waifu.availability.bedTime.start": "22:15",
   "waifu.availability.bedTime.end": "06:45",

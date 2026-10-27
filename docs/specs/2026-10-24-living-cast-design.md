@@ -3343,3 +3343,34 @@ only when that failed or there is no room left:
   auto-compaction (reason kept in the log).
 - Tests: rest notice at 0.7, auto at 0.9 only, ignored rest → auto as before, migration drops the
   old key, settings/help/CLI updated, goldens for any changed text.
+
+### 26.1 As built (2026-10-27)
+
+- **Thresholds** (`src/life/lifeLoop.ts`): `restDue` holds from `compaction.triggerRatio` × her
+  budget up to (not including) `compaction.emergencyRatio` × her budget; `prepareEpoch`'s `tokens`
+  compaction runs at `autoCompactionRatio(config)` × her budget, which is `emergencyRatio` while
+  `life.restNotice` is on. With the rest notice off, compaction runs at `triggerRatio` as before
+  (§19.2: "auto-compaction only, as today"), and the time line's memory warning stays at 0.85 × the
+  trigger. The other forced cases are unchanged: an ignored or failed rest turn compacts at once
+  (`tokens`), mid-turn over budget / overflow / image / bad request, log length, a configuration or
+  model change, a forget, a manual compact. The §25 window (`cacheRestMinRatio` × the trigger up to
+  the trigger) and the §21.6b guard (`selfSummaryMinRatio` × the trigger) stay relative to the rest
+  point.
+- **Setting**: `compaction.emergencyRatio` (0.35–0.99, default 0.9) in the compaction settings
+  (`src/shared/schemas/compaction.ts`); the schema refuses a value not greater than `triggerRatio`
+  (a `refine` on the compaction object, so `PUT /api/config` answers 400). It is app-wide only
+  (per-server compaction overrides do not take it). The registry help for `compaction.triggerRatio`
+  now calls it the rest point.
+- **Migration**: `living-cast-drop-rest-notice-ratio-v1` (`migrationSteps/livingCastRestNoticeRatio.ts`,
+  once, after `living-cast-bed-time-v1`, before the schema stamp) deletes `life.restNoticeRatio` from
+  `config.toml`, copying the file first to `user/.archive/living-cast/rest-notice-ratio/config.toml`
+  (its own path: the L2 step's `config.toml` copy already exists on upgraded hosts). The key is gone
+  from the schema, the registry, the CLI and the Settings form.
+- **Life screen**: `boundaryReasonLabel` says "rested (…)" for `rest`, `cache_rest` and `self`, and
+  "emergency summary (<reason>)" for `tokens`, `log_length`, `overflow`, `budget`, `image` and
+  `bad_request`; other reasons (`config`, `day`, `forget`, `reset`, `manual`…) show as is. The status
+  line says "rested", "emergency summary" or "compacted" (`lastEpochWord`). The log keeps the reason.
+- **Tests**: `tests/lifeRest.test.ts` (the §19 suite at 0.8 × budget; "§26": the notice at 0.7 and
+  not below it, auto at 0.9 without a rest turn, the off switch's ratio, `emergencyRatio` validation
+  and default, the labels), `tests/livingCastRestNoticeRatioMigration.test.ts`, the rest golden's
+  request size (its text is unchanged), `tests/phase4Schemas.test.ts` defaults.

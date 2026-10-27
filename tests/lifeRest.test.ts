@@ -13,7 +13,9 @@ vi.mock("../src/life/request.js", async (importOriginal) => {
   return { ...real, estimateRequest: (...args: Parameters<typeof real.estimateRequest>) => estimate.value ?? real.estimateRequest(...args) };
 });
 
-import { REST_NOTICE, REST_REFUSED_RESULT, REST_SUMMARY_FRAME } from "../src/life/lifeLoop.js";
+import { autoCompactionRatio, REST_NOTICE, REST_REFUSED_RESULT, REST_SUMMARY_FRAME } from "../src/life/lifeLoop.js";
+import { boundaryReasonLabel, lastEpochWord } from "../src/frontend/screens/lifeView.js";
+import { AppConfigSchema, DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
 import { readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { lifeBudget } from "../src/life/request.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
@@ -57,10 +59,14 @@ async function owner(w: LifeWorld, note: string): Promise<void> {
   await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "reminder", note, at: w.clock.now().toISOString() });
 }
 
-/** 0.9 × her compaction trigger: past the rest notice (0.85), short of the trigger. */
-function nearlyFull(w: LifeWorld): number {
+function budgetOf(w: LifeWorld): number {
   const model = w.cast.deps.catalog().models.find((entry) => entry.modelId === "claude-haiku-5-5")!;
-  return Math.round(0.9 * w.config.compaction.triggerRatio * lifeBudget(model, w.config.life.maxContextTokens));
+  return lifeBudget(model, w.config.life.maxContextTokens);
+}
+
+/** 0.8 × her budget: past the rest point (compaction.triggerRatio 0.7), short of the emergency (0.9, §26). */
+function nearlyFull(w: LifeWorld): number {
+  return Math.round(0.8 * budgetOf(w));
 }
 
 function lastText(request: { messages: Array<{ content: unknown }> }): string {
@@ -221,8 +227,8 @@ describe("the rest notice (§19.2, §19.3)", () => {
     for (let tries = 0; w.anthropic.calls.length < 2 && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
     w.cast.life("ella").abort("pause");
     await running;
-    // Her memory reaches the trigger itself: compaction, which keeps her last turns.
-    estimate.value = Math.round(nearlyFull(w) / 0.9);
+    // Her memory reaches the emergency point: compaction, which keeps her last turns.
+    estimate.value = Math.round(w.config.compaction.emergencyRatio * budgetOf(w));
     await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastRequestTokens: estimate.value }));
     await owner(w, "second");
     await w.cast.life("ella").runNow();
@@ -238,7 +244,8 @@ describe("the rest notice (§19.2, §19.3)", () => {
       config: (config) => ({ ...config, life: { ...config.life, restNotice: false } }),
       scripts: [play(textTurn("noted")), play(textTurn("again"))]
     });
-    estimate.value = nearlyFull(w);
+    // Past the old warning point (0.85 × the trigger), short of the trigger, where compaction runs with the notice off.
+    estimate.value = Math.round(0.65 * budgetOf(w));
     await owner(w, "first");
     await w.cast.life("ella").runNow();
     await owner(w, "second");
@@ -257,5 +264,64 @@ describe("the rest notice (§19.2, §19.3)", () => {
     await w.cast.life("ella").runNow();
     expect(JSON.stringify(w.anthropic.calls.map((call) => call.request.messages))).not.toContain(MEMORY_WARNING);
     expect(ROOM_KEY).toMatch(/^g_/u);
+  });
+});
+
+describe("the rest notice is the norm, auto-compaction the emergency (§26)", () => {
+  it("the rest notice comes at compaction.triggerRatio × her budget, not below it", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), play(textTurn("again")), play(textTurn("noted")), thenSmall(textTurn(SUMMARY)), play(textTurn("hi"))] });
+    estimate.value = Math.round(0.69 * budgetOf(w));
+    await owner(w, "first");
+    await w.cast.life("ella").runNow();
+    await owner(w, "second");
+    await w.cast.life("ella").runNow();
+    expect(w.anthropic.calls.map((call) => lastText(call.request)).join("\n")).not.toContain("Your memory is almost full");
+    estimate.value = Math.round(0.7 * budgetOf(w)) + 1;
+    await owner(w, "third");
+    await w.cast.life("ella").runNow();
+    const calls = w.anthropic.calls.map((call) => call.request);
+    expect(lastText(calls[3]!)).toContain(REST_NOTICE.slice(0, 60));
+    expect((await readLifeState(w.storage, "ella")).lastCompaction).toMatchObject({ reason: "rest" });
+    expect(w.ledger.lines.map((line) => line.purpose)).not.toContain("compaction");
+  });
+
+  it("auto-compaction runs between turns only at compaction.emergencyRatio × her budget (no rest turn first)", async () => {
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), thenSmall(textTurn("We talked about Saturday in Bake Club.")), play(textTurn("hi"))] });
+    estimate.value = Math.round(0.9 * budgetOf(w)) + 1;
+    await owner(w, "first");
+    await w.cast.life("ella").runNow();
+    await owner(w, "second");
+    await w.cast.life("ella").runNow();
+    expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["life", "compaction", "life"]);
+    expect(JSON.stringify(w.anthropic.calls.map((call) => call.request.messages))).not.toContain("Your memory is almost full");
+    const state = await readLifeState(w.storage, "ella");
+    expect(state.epoch).toBe(2);
+    expect(state.lastCompaction).toMatchObject({ reason: "tokens", summarized: true });
+  });
+
+  it("with the rest notice off, compaction runs at the trigger as before", () => {
+    const config = AppConfigSchema.parse(DEFAULT_APP_CONFIG);
+    expect(autoCompactionRatio(config)).toBe(0.9);
+    expect(autoCompactionRatio({ ...config, life: { ...config.life, restNotice: false } })).toBe(0.7);
+  });
+
+  it("compaction.emergencyRatio defaults to 0.9 and must be greater than compaction.triggerRatio", () => {
+    expect(AppConfigSchema.parse({}).compaction).toMatchObject({ triggerRatio: 0.7, emergencyRatio: 0.9 });
+    expect(() => AppConfigSchema.parse({ compaction: { triggerRatio: 0.8, emergencyRatio: 0.8 } })).toThrow(/emergencyRatio/u);
+    expect(() => AppConfigSchema.parse({ compaction: { emergencyRatio: 0.6 } })).toThrow(/emergencyRatio/u);
+    expect(AppConfigSchema.parse({ compaction: { triggerRatio: 0.6, emergencyRatio: 0.95 } }).compaction.emergencyRatio).toBe(0.95);
+    expect("restNoticeRatio" in AppConfigSchema.parse({}).life).toBe(false);
+  });
+
+  it("the Life screen says rested for her own summaries and emergency summary for auto-compaction", () => {
+    expect(boundaryReasonLabel("rest")).toBe("rested (her own summary)");
+    expect(boundaryReasonLabel("tokens")).toBe("emergency summary (tokens)");
+    expect(boundaryReasonLabel("overflow")).toBe("emergency summary (overflow)");
+    expect(boundaryReasonLabel("config")).toBe("config");
+    expect(lastEpochWord("rest")).toBe("rested");
+    expect(lastEpochWord("cache_rest")).toBe("rested");
+    expect(lastEpochWord("self")).toBe("rested");
+    expect(lastEpochWord("log_length")).toBe("emergency summary");
+    expect(lastEpochWord("day")).toBe("compacted");
   });
 });

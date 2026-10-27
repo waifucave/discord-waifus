@@ -251,10 +251,10 @@ describe("Living cast goldens", () => {
     await seedNotes(w);
     await mention(w, "are you coming saturday? we need someone on dessert");
     await w.cast.life("ella").runNow();
-    // Her last request reached 0.9 of the compaction trigger: the rest notice is due (§19.2).
+    // Her last request reached the rest point (compaction.triggerRatio × budget), short of the emergency: the rest notice is due (§19.2, §26).
     const route = (await readLifeState(w.storage, "ella")).modelRoute!;
     const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === route.providerId && entry.modelId === route.modelId)!;
-    const tokens = Math.round(0.9 * w.config.compaction.triggerRatio * lifeBudget(model, w.config.life.maxContextTokens));
+    const tokens = Math.round(0.8 * lifeBudget(model, w.config.life.maxContextTokens));
     await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastRequestTokens: tokens }));
     await w.cast.life("ella").runNow();
     const rest = w.anthropic.calls[3]!.request;

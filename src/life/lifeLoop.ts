@@ -95,6 +95,14 @@ const SEALED_RETRY_MS = 30_000;
 /** Quota and billing errors open a provider cooldown: her wakes wait for it (review I6). */
 const COOLDOWN_KINDS = new Set(["quota", "billing"]);
 
+/**
+ * Where compaction summarises for her between turns (§26): `compaction.emergencyRatio` × her budget
+ * while the rest notice is on (she rests at `compaction.triggerRatio`), else the trigger as before.
+ */
+export function autoCompactionRatio(config: { life: { restNotice: boolean }; compaction: { triggerRatio: number; emergencyRatio: number } }): number {
+  return config.life.restNotice ? Math.max(config.compaction.emergencyRatio, config.compaction.triggerRatio) : config.compaction.triggerRatio;
+}
+
 /** Her curated route, or undefined when she has no offered model. */
 /** Her token calibration, unless it was learned under another estimator (then it starts over). */
 export function currentCalibration<T extends { estimator?: number | undefined }>(calibration: T | undefined): T | undefined {
@@ -403,17 +411,18 @@ export class Life {
   }
 
   /**
-   * A rest turn is due (§19.2): the rest notice is on, her epoch is running, compaction is not
-   * backing off, no rest notice was given in this epoch yet, and her last request reached `life.restNoticeRatio` × the compaction trigger but not
-   * the trigger itself (that one compacts for her, as before).
+   * A rest turn is due (§19.2, §26): the rest notice is on, her epoch is running, compaction is not
+   * backing off, no rest notice was given in this epoch yet, and her last request reached the rest
+   * point (`compaction.triggerRatio` × her budget) but not the emergency (`compaction.emergencyRatio`
+   * × her budget, where compaction summarises for her).
    */
   private restDue(state: LifeState, model: CuratedModel): boolean {
     const config = this.deps.config();
     if (!config.life.restNotice || !state.systemSnapshot || state.pendingEpochStart || state.restTurn?.epoch === state.epoch) return false;
     if (state.compactionPausedUntil !== undefined && Date.parse(state.compactionPausedUntil) > this.deps.now().getTime()) return false;
-    const trigger = config.compaction.triggerRatio * lifeBudget(model, config.life.maxContextTokens);
+    const budget = lifeBudget(model, config.life.maxContextTokens);
     const tokens = state.lastRequestTokens ?? 0;
-    return tokens >= config.life.restNoticeRatio * trigger && tokens < trigger;
+    return tokens >= config.compaction.triggerRatio * budget && tokens < autoCompactionRatio(config) * budget;
   }
 
   private async append(run: TurnRun, kind: LifeLogKind, message: ProviderMessageLike | Record<string, unknown>, extra: Partial<LifeLogLine> = {}): Promise<void> {
@@ -484,7 +493,8 @@ export class Life {
     if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal, { keepWholeIfFits: true });
     const budget = lifeBudget(model, config.life.maxContextTokens);
     const messageLines = lines.filter((line) => line.message !== null).length;
-    if ((state.lastRequestTokens ?? 0) >= config.compaction.triggerRatio * budget) return this.compact(waifu, state, lines, harness, "tokens", signal);
+    // The emergency summary (§26): with the rest notice on, only at compaction.emergencyRatio.
+    if ((state.lastRequestTokens ?? 0) >= autoCompactionRatio(config) * budget) return this.compact(waifu, state, lines, harness, "tokens", signal);
     if (messageLines >= config.life.maxLogMessages) return this.compact(waifu, state, lines, harness, "log_length", signal);
     return state;
   }

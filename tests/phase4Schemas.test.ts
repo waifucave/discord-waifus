@@ -112,7 +112,7 @@ describe("pre-Phase-4 files still parse", () => {
     const config = await loadAppConfig(root);
     expect(config.http.port).toBe(4000);
     expect(config.ocr.enabled).toBe(false);
-    expect(config.compaction).toEqual({ enabled: true, triggerRatio: 0.7, maxMessages: 150, keepRecent: 30, waitTimeoutMs: 6000 });
+    expect(config.compaction).toEqual({ enabled: true, triggerRatio: 0.7, emergencyRatio: 0.9, maxMessages: 150, keepRecent: 30, waitTimeoutMs: 6000 });
     expect(config).not.toHaveProperty("memory");
     expect(config.life).toMatchObject({ maxConcurrentTurns: 4, maxContextTokens: 96000, maintenanceHourLocal: 5, maxInlineImagesPerEpoch: 8 });
     expect(config.discord.images).toEqual({

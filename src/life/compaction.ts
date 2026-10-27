@@ -7,10 +7,11 @@
 // 3 complete turns are carried over with their opaque reasoning stripped, and A/B are rebuilt from
 // the current configuration, notes and places.
 //
-// Triggers (checked between turns by the loop): estimated tokens ≥ triggerRatio × budget, log length
-// ≥ `life.maxLogMessages`, a provider overflow (mid-turn too), a manual compact, a configuration
-// change (A, tools or model), a forget scrub. `compaction.enabled = false` truncates at the same
-// triggers without a summary.
+// Triggers (checked between turns by the loop): estimated tokens ≥ `compaction.emergencyRatio` ×
+// budget (§26: the emergency summary; she rests at `triggerRatio`, and with `life.restNotice` off
+// this is `triggerRatio` as before), an ignored rest turn, log length ≥ `life.maxLogMessages`, a
+// provider overflow (mid-turn too), a manual compact, a configuration change (A, tools or model), a
+// forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
 
 import { REST_NOTICE_PREFIX } from "./rest.js";
 import { randomBytes } from "node:crypto";

@@ -138,10 +138,11 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | | `life.busyEngagedMinutes` | 10 | Open place / up late |
 | | `life.bedDozeMinutes` | 60 | Dozing before asleep (0 = hard sleep) |
 | Context | `life.maxContextTokens` | 96,000 | Budget cap |
-| | `compaction.triggerRatio` | 0.7 | Compaction trigger (pending §26: the rest point) |
+| | `compaction.triggerRatio` | 0.7 | The rest point: her rest notice (with `life.restNotice` off, compaction) |
+| | `compaction.emergencyRatio` | 0.9 | Emergency summary: auto-compaction between turns (must be > `triggerRatio`) |
 | | `life.maxLogMessages` | 400 | Log-length trigger |
 | | `life.maxInlineImagesPerEpoch` / `…BytesPerEpoch` | 8 / 12 MiB | Inline images |
-| Rest | `life.restNotice` / `restNoticeRatio` / `restSummaryMinChars` | true / 0.85 / 200 | Rest turn (pending §26: `restNoticeRatio` removed, `compaction.emergencyRatio` 0.9 added) |
+| Rest | `life.restNotice` / `restSummaryMinChars` | true / 200 | Rest turn (`life.restNoticeRatio` was removed in §26) |
 | | `life.cacheRestMinRatio` / `cacheRestLeadMinutes` | 0.5 / 10 | Rest before her prompt cache goes cold (§25): from this share of the trigger, this many minutes before the 1-hour cache expires |
 | | `life.selfSummaryMinRatio` / `selfSummaryCooldownMinutes` | 0.3 / 120 | `<summary>` guards |
 | Dreaming | `life.dreamAfterAsleepMinutes` | 15 | Asleep before the dream |

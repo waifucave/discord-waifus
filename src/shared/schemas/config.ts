@@ -266,7 +266,6 @@ const LIFE_FIELDS = {
   dreamMaxRounds: z.number().int().min(5).max(200),
   dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000),
   restNotice: z.boolean(),
-  restNoticeRatio: z.number().min(0.5).max(0.99),
   restSummaryMinChars: z.number().int().min(0).max(5_000),
   /** Her own `<summary>` reset (§21.6b): her last request reached this share of the compaction trigger. */
   selfSummaryMinRatio: z.number().min(0).max(0.99),
@@ -306,7 +305,6 @@ export const DEFAULT_LIFE_CONFIG = {
   dreamMaxRounds: 60,
   dreamWindowMaxChars: 200_000,
   restNotice: true,
-  restNoticeRatio: 0.85,
   restSummaryMinChars: 200,
   selfSummaryMinRatio: 0.3,
   selfSummaryCooldownMinutes: 120,
@@ -337,7 +335,6 @@ export const LifeConfigSchema = z
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
     dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.default(DEFAULT_LIFE_CONFIG.dreamWindowMaxChars),
     restNotice: LIFE_FIELDS.restNotice.default(DEFAULT_LIFE_CONFIG.restNotice),
-    restNoticeRatio: LIFE_FIELDS.restNoticeRatio.default(DEFAULT_LIFE_CONFIG.restNoticeRatio),
     restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.default(DEFAULT_LIFE_CONFIG.restSummaryMinChars),
     selfSummaryMinRatio: LIFE_FIELDS.selfSummaryMinRatio.default(DEFAULT_LIFE_CONFIG.selfSummaryMinRatio),
     selfSummaryCooldownMinutes: LIFE_FIELDS.selfSummaryCooldownMinutes.default(DEFAULT_LIFE_CONFIG.selfSummaryCooldownMinutes),
@@ -438,6 +435,7 @@ export const UpdateAppConfigBodySchema = z.object({
   compaction: z.object({
     enabled: z.boolean().optional(),
     triggerRatio: z.number().min(0.3).max(0.95).optional(),
+    emergencyRatio: z.number().min(0.35).max(0.99).optional(),
     maxMessages: z.number().int().min(20).max(200).optional(),
     keepRecent: z.number().int().min(5).max(120).optional(),
     waitTimeoutMs: z.number().int().min(0).max(30_000).optional()
@@ -491,7 +489,6 @@ export const UpdateAppConfigBodySchema = z.object({
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.optional(),
     dreamWindowMaxChars: LIFE_FIELDS.dreamWindowMaxChars.optional(),
     restNotice: LIFE_FIELDS.restNotice.optional(),
-    restNoticeRatio: LIFE_FIELDS.restNoticeRatio.optional(),
     restSummaryMinChars: LIFE_FIELDS.restSummaryMinChars.optional(),
     selfSummaryMinRatio: LIFE_FIELDS.selfSummaryMinRatio.optional(),
     selfSummaryCooldownMinutes: LIFE_FIELDS.selfSummaryCooldownMinutes.optional(),

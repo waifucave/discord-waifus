@@ -6,6 +6,8 @@ import { z } from "zod";
 const fields = {
   enabled: z.boolean(),
   triggerRatio: z.number().min(0.3).max(0.95),
+  /** Auto-compaction between turns (spec §26): her last request reached this share of her budget. */
+  emergencyRatio: z.number().min(0.35).max(0.99),
   maxMessages: z.number().int().min(20).max(200),
   keepRecent: z.number().int().min(5).max(120),
   waitTimeoutMs: z.number().int().min(0).max(30_000)
@@ -14,6 +16,7 @@ const fields = {
 export const DEFAULT_COMPACTION_SETTINGS = {
   enabled: true,
   triggerRatio: 0.7,
+  emergencyRatio: 0.9,
   maxMessages: 150,
   keepRecent: 30,
   waitTimeoutMs: 6_000
@@ -23,10 +26,13 @@ export const CompactionSettingsSchema = z
   .object({
     enabled: fields.enabled.default(DEFAULT_COMPACTION_SETTINGS.enabled),
     triggerRatio: fields.triggerRatio.default(DEFAULT_COMPACTION_SETTINGS.triggerRatio),
+    emergencyRatio: fields.emergencyRatio.default(DEFAULT_COMPACTION_SETTINGS.emergencyRatio),
     maxMessages: fields.maxMessages.default(DEFAULT_COMPACTION_SETTINGS.maxMessages),
     keepRecent: fields.keepRecent.default(DEFAULT_COMPACTION_SETTINGS.keepRecent),
     waitTimeoutMs: fields.waitTimeoutMs.default(DEFAULT_COMPACTION_SETTINGS.waitTimeoutMs)
   })
+  // The emergency comes after the rest point (§26).
+  .refine((settings) => settings.emergencyRatio > settings.triggerRatio, { message: "compaction.emergencyRatio must be greater than compaction.triggerRatio", path: ["emergencyRatio"] })
   .default({ ...DEFAULT_COMPACTION_SETTINGS });
 export type CompactionSettings = z.infer<typeof CompactionSettingsSchema>;
 

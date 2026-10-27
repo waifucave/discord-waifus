@@ -11,7 +11,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-/** The request size the life loop sees: forced only to bring the rest notice on (§19). */
+/** The request size the life loop sees: forced only to bring the rest notice on (§19, §25, §26). */
 const estimate = vi.hoisted(() => ({ value: undefined as number | undefined }));
 vi.mock("../../src/life/request.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../../src/life/request.js")>();
@@ -130,7 +130,7 @@ describe("the rest turn (§19.3)", { timeout: 120_000 }, () => {
     const route = (await readLifeState(w.storage, "ella")).modelRoute!;
     const model = w.cast.deps.catalog().models.find((entry) => entry.providerId === route.providerId && entry.modelId === route.modelId)!;
     const budget = lifeBudget(model, w.config.life.maxContextTokens);
-    estimate.value = Math.round(0.9 * w.config.compaction.triggerRatio * budget);
+    estimate.value = Math.round(0.8 * budget);
     await roomWake(w, "last question: lemon or lime?", 4);
     trace("rest", server.exchanges);
     const at = server.exchanges.findIndex((exchange) => isRest(exchange.body));

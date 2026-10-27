@@ -96,8 +96,10 @@ each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` leas
 [A, B] snapshotted per epoch, the epoch's log with permanent time lines, and compaction
 (`compaction.ts`) keeps the last three complete turns (fewer when they alone would be over half
 the trigger; images frozen with their cached OCR text; an aborted summary changes nothing).
-Before that she rests (spec §19, `Life.restTurn`): when her last request reaches
-`life.restNoticeRatio` × the trigger (and is below it), the next cycle, before any queued wake, is a
+Normally she rests instead (spec §19, §26, `Life.restTurn`): when her last request reaches the rest
+point `compaction.triggerRatio` × her budget (and is below `compaction.emergencyRatio` × her budget,
+where auto-compaction runs between turns: the "emergency summary", `autoCompactionRatio`; with
+`life.restNotice` off compaction runs at the trigger as before), the next cycle, before any queued wake, is a
 rest turn opened by `REST_NOTICE` (same system blocks and tools, so the cache holds; `SendMessage`,
 `React`, `WebSearch`, `WebFetch` are refused at run time; no wakes fold in); a final reply of at least
 `life.restSummaryMinChars` starts a new epoch whose `<life_so_far>` is that summary alone (framed

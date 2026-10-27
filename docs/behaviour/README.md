@@ -9,13 +9,13 @@ and the difference is noted ("Spec differs: …").
 **Describes:** the code on `main` at `8895610` (package version 3.3.0; the commits after `a3304a9`
 change only the spec). Behaviour merged after the 3.3.0 release commit (`2b10731`) is marked
 **unreleased (on main)**: the richer morning summary (§23), "Jev only sees who is around" (§24) and
-the rest before the prompt cache goes cold (§25).
+the rest before the prompt cache goes cold (§25) and the rest notice at the trigger with
+auto-compaction only as the emergency (§26).
 
-**Pending** (specified on `main`, being built on other branches; marked "pending (spec §26)"
-where they will change a rule, and to be finalised here when they merge):
+**Pending** (specified on `main`, being built on other branches; marked "pending" where they will
+change a rule, and to be finalised here when they merge):
 
-- §26 the rest notice at `compaction.triggerRatio` and auto-compaction only at a new
-  `compaction.emergencyRatio`, with `life.restNoticeRatio` removed and new rest/compaction wording;
+- the owner's new rest notice and compaction wording;
 - Remote Access helper 0.1.17 (NAT public address pool).
 
 **Rule:** any change to waifu behaviour (triggers, routing, prompts, tools, files and folders,

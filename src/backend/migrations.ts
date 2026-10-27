@@ -31,6 +31,7 @@ import { checkStoredModelEfforts } from "./migrationSteps/modelEffortCheck.js";
 import { migrateLivingCastTypingHolds } from "./migrationSteps/livingCastDebounce.js";
 import { migrateLivingCastHome } from "./migrationSteps/livingCastHome.js";
 import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "./migrationSteps/livingCastLifeFolder.js";
+import { DROP_REST_NOTICE_RATIO_STEP_ID, migrateLivingCastDropRestNoticeRatio } from "./migrationSteps/livingCastRestNoticeRatio.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
 import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
@@ -188,6 +189,8 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "living-cast-drop-busy-v1", frequency: "once", run: (dataRoot) => migrateLivingCastDropBusy(dataRoot) },
   // Bed time (spec §21.6c): the owner's availability.sleep is renamed availability.bedTime (archived first).
   { id: "living-cast-bed-time-v1", frequency: "once", run: (dataRoot) => migrateLivingCastBedTime(dataRoot) },
+  // The rest notice at the trigger (spec §26): life.restNoticeRatio is dropped from config.toml (archived first).
+  { id: DROP_REST_NOTICE_RATIO_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastDropRestNoticeRatio(dataRoot) },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's
