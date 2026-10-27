@@ -111,8 +111,10 @@ it stays hidden.
 
 ## Acting on it
 
-- **Wake**: an owner wake with an optional note she sees. It skips her bed time and budget. With
-  Discord offline it waits in her queue.
+- **Wake**: an owner wake with an optional note she sees. It skips her per-user wake limit, bed
+  time, busy holds, budget and room loop guard, but is dropped while the app is paused or when she is
+  disabled or has no bot of her own. With Discord offline, or the cast reloading, it waits in her
+  queue (`queued_offline`).
 - **Compact**: summarise her life now and start a new epoch. Needs Discord connected and a model.
 - **Reset**: start a fresh epoch with no summary. Her files (notes, reminders and watches) and
   queued wakes stay; the old log is kept for 7 days.

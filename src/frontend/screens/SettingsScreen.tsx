@@ -632,7 +632,7 @@ function DetectorTab() {
     <div className="content">
       <SectionHead
         title="Addressee detector"
-        hint="A message nobody addressed (no mention, reply or name) goes to the detector, which picks the waifu it is for, if any. Off: a first message in 10 minutes or a question wakes one waifu at random. A server can override this in Rooms."
+        hint="A message nobody addressed (no mention, reply or name) goes to the detector, which picks the waifu it is for, if any. Off: a first message in 10 minutes or a question wakes one waifu who is around, by a weighted draw that favours whoever spoke there least recently. A server can override this in Rooms."
       />
       <MessageCell message={message} />
       <div className="fgrid pair-action">

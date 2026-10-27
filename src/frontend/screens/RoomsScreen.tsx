@@ -174,7 +174,7 @@ function GuildScreen({ guildId, onNavigate }: { guildId: string; onNavigate: (vi
             )}
           </div>
           <span className="field-hint">
-            Picks who a message nobody addressed is for. Off: a first message in 10 minutes or a question wakes one waifu at random.
+            Picks who a message nobody addressed is for. Off: a first message in 10 minutes or a question wakes one waifu who is around, by a weighted draw that favours whoever spoke there least recently.
             {history.data && history.data.entries.length > 0 ? ` Last decision ${new Date(history.data.entries[0]!.at).toLocaleString()}.` : ""}
           </span>
         </div>

@@ -68,12 +68,12 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
   },
   {
     name: "files",
-    summary: "Her files: list a folder of her home or /tmp, or print a text file.",
-    usage: ["waifus files WAIFU [PATH] [--root tmp] [--private]", "waifus files aria people/kevin.md", "waifus files aria --root tmp"],
+    summary: "Her files: list a folder of her home, /tmp or /transcripts, or print a text file.",
+    usage: ["waifus files WAIFU [PATH] [--root tmp|transcripts] [--private]", "waifus files aria people/kevin.md", "waifus files aria --root tmp"],
     description:
-      "PATH is her path (/home/aria/people/kevin.md, /tmp/x.png), ~-based, or relative to her home (to /tmp with --root tmp); without one, her home (or /tmp) is listed. A text file is printed as it is; anything else is described (open images and PDFs in the dashboard). Files from private chats are listed without their names and open only with --private, on the host itself.",
+      "PATH is her path (/home/aria/people/kevin.md, /tmp/x.png), ~-based, or relative to her home (to /tmp with --root tmp, to her read-only /transcripts with --root transcripts); without one, that folder is listed. A text file is printed as it is; anything else is described (open images and PDFs in the dashboard). Files from private chats are listed without their names and open only with --private, on the host itself.",
     flags: [
-      { name: "--root", value: "home|tmp", help: "Which folder a relative PATH (or no PATH) means (default home)." },
+      { name: "--root", value: "home|tmp|transcripts", help: "Which folder a relative PATH (or no PATH) means (default home)." },
       { name: "--private", help: "Include files from private chats (local only)." }
     ],
     topic: "life"

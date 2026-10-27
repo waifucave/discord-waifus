@@ -99,7 +99,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `search.maxPerSecond` | integer 0–10 | `2` | Web searches started per second, host-wide (paced, not refused; 0 = no WebSearch). |
 | `search.maxPerDay` | integer 0–10000 | `50` | Web searches per day, host-wide (0 = no WebSearch). The optional Exa key is the `exa` provider credential, not config. |
 | `search.maxPerWaifuPerDay` | integer 0–10000 | `20` | Web searches one waifu may make per day (0 = no WebSearch). |
-| `detector.target` | string | `openrouter:typesafe/jev-1.14` | The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:typesafe/jev-1.14, openai:gpt-6-luna or laya:english; "" turns it off (then a first message in 10 minutes or a question wakes one waifu at random). Also GET/PUT /api/detector/config. |
+| `detector.target` | string | `openrouter:typesafe/jev-1.14` | The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:typesafe/jev-1.14, openai:gpt-6-luna or laya:english; "" turns it off (then a first message in 10 minutes or a question wakes one waifu who is around, by a weighted draw that favours whoever spoke there least recently). Also GET/PUT /api/detector/config. |
 | `updates.enabled` | boolean | `false` | Install newer patch releases automatically when every managed process is idle (global npm installs only). (local-only write) |
 | `updates.checkIntervalMinutes` | integer 15–1440 [minutes] | `60` | How often npm is checked for a newer patch release. (local-only write) |
 | `updates.idleMinutes` | integer 1–120 [minutes] | `5` | How long everything must be quiet before an update installs. (local-only write) |
@@ -353,7 +353,7 @@ DC_WAIFUS_HOME overrides the data root (default ~/.dc-waifus). DC_WAIFUS_LAYA_PY
 - `waifus unset TARGET KEY [KEY…] [--yes]` · `waifus unset waifu:aria life.dailyBudgetUsd` — Reset keys: a key that takes null is cleared, any other key goes back to its default.
 - `waifus wake WAIFU [NOTE…]` — Wake a waifu now, with an optional note she sees (an owner wake skips her bed time and budget).
 - `waifus life WAIFU [--log] [--limit N] [--private]` — A waifu's life: status, queue and today's cost; --log adds the recent life log.
-- `waifus files WAIFU [PATH] [--root tmp] [--private]` · `waifus files aria people/kevin.md` · `waifus files aria --root tmp` — Her files: list a folder of her home or /tmp, or print a text file.
+- `waifus files WAIFU [PATH] [--root tmp|transcripts] [--private]` · `waifus files aria people/kevin.md` · `waifus files aria --root tmp` — Her files: list a folder of her home, /tmp or /transcripts, or print a text file.
 - `waifus schedule WAIFU` — Her reminders (~/life/reminders.json), in the host's time zone.
 - `waifus watches WAIFU [--private]` — Her watches (~/life/watches.json): what each waits for and when it times out.
 - `waifus forget USER_ID [--yes] [--dry-run]` — Forget a Discord user everywhere (best-effort scrub); asks for confirmation unless --yes.

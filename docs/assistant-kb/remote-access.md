@@ -11,8 +11,9 @@ WaifuCave server. If the two devices cannot establish a direct path, the connect
 1. Activate Remote Access from the host's bound local dashboard.
 2. Enable it in Settings -> Remote Access.
 3. Create a short-lived invitation using the secure dashboard card.
-4. On the other device, run `waifus remote`, enter or scan the invitation, and compare the safety
-   phrase on both devices before the host approves it.
+4. On the other device, run `waifus remote`, paste the invitation token or type its short code (the
+   remote side has no QR scanner), and compare the safety phrase on both devices before the host
+   approves it.
 5. The remote downloads the host-pinned dashboard build, so UI and API capabilities match the host
    even when the installed CLI versions differ. Protocol negotiation still rejects an incompatible
    helper instead of guessing.

@@ -162,9 +162,3 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 
 ## Docs differ
 
-- The `files` command's `--root` help names `home|tmp`; the command also accepts `transcripts`.
-- The KB says an owner wake "skips her bed time and budget"; it skips guards 3–6 (per-user limit, bed
-  time, busy holds, budget, loop guard) but is still dropped while the app is paused or when she is
-  disabled or has no bot.
-- UI hints say the detector-off fallback "wakes one waifu at random"; it is the weighted draw over
-  waifus who are around.
