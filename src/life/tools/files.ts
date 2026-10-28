@@ -18,6 +18,7 @@ import { checkEnvFor, homeStoreFor } from "../home/index.js";
 import { HomeError, isTextBytes, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
+import { PLAN_WAKE_TEXT } from "../home/daySchedule.js";
 import { herSlug, isLifeDirPath, isMemoryFile, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
@@ -272,6 +273,22 @@ export function promptCopyNote(ctx: Pick<ToolContext, "mode" | "turn" | "waifu">
   return promptCopyText(p.display);
 }
 
+/**
+ * After she changed her day (`~/life/schedule.json`) in her life and it has a plan with a time
+ * (§29): those plans wake her then. Said once per turn, never outside her life.
+ */
+export async function planWakeNote(ctx: Pick<ToolContext, "mode" | "turn">, store: Pick<HomeStore, "readDay">, p: HerPath): Promise<string | undefined> {
+  if (ctx.mode === "session" || specialJsonFile(p) !== "schedule") return undefined;
+  ctx.turn.promptCopyNoted ??= new Set();
+  if (ctx.turn.promptCopyNoted.has(PLAN_NOTE_KEY)) return undefined;
+  const day = await store.readDay().catch(() => undefined);
+  if (!day?.plans.some((plan) => plan.at !== undefined)) return undefined;
+  ctx.turn.promptCopyNoted.add(PLAN_NOTE_KEY);
+  return PLAN_WAKE_TEXT;
+}
+
+const PLAN_NOTE_KEY = "\0plan-wake";
+
 export function promptCopyText(file: string): string {
   return `The copy of ${file} in your system prompt still shows the old version; it updates at your next summary. The file itself is current.`;
 }
@@ -322,8 +339,9 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
     await keepTranscriptOrigin(ctx, store, result.path, result.hash);
     await noteDmFile(store, result.path);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
-    const stale = before !== result.hash ? promptCopyNote(ctx, result.path) : undefined;
-    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}${stale ? `\n${stale}` : ""}` };
+    const changed = before !== result.hash;
+    const notes = changed ? [promptCopyNote(ctx, result.path), await planWakeNote(ctx, store, result.path)].filter(Boolean) : [];
+    return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}${notes.map((note) => `\n${note}`).join("")}` };
   } catch (error) {
     return failure(error);
   }
@@ -356,8 +374,9 @@ async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     await keepTranscriptOrigin(ctx, store, target.path, result.hash);
     const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
-    const stale = promptCopyNote(ctx, await store.files.canonical(target.path));
-    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}${stale ? `\n${stale}` : ""}` };
+    const canonical = await store.files.canonical(target.path);
+    const notes = [promptCopyNote(ctx, canonical), await planWakeNote(ctx, store, canonical)].filter(Boolean);
+    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}${notes.map((note) => `\n${note}`).join("")}` };
   } catch (error) {
     return failure(error);
   }

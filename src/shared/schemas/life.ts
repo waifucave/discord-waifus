@@ -33,7 +33,7 @@ export const SystemSnapshotSchema = z.object({
 });
 export type SystemSnapshot = z.infer<typeof SystemSnapshotSchema>;
 
-export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "morning", "owner", "followup"]);
+export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "plan", "morning", "owner", "followup"]);
 export type WakeReason = z.infer<typeof WakeReasonSchema>;
 
 /**
@@ -78,6 +78,8 @@ export const WakeSchema = z.object({
   earlier: z.number().int().positive().optional(),
   /** How many wakes were merged into this entry. */
   count: z.number().int().positive().optional(),
+  /** plan: the plans of her day (`~/life/schedule.json`) whose time came at one tick (§29). */
+  plans: z.array(z.object({ at: z.string(), what: z.string() })).optional(),
   /** morning: the rendered batch (built when her bed time ends). */
   batch: z.array(z.string()).optional(),
   /** morning: the batch shows something from a DM (a DM's lines, a DM watch, an earlier batch that did): her turn is a DM turn (D14). */
@@ -370,6 +372,19 @@ export const ScheduleIdsSchema = z.object({
   recoveredAt: IsoDateStringSchema.optional()
 });
 export type ScheduleIds = z.infer<typeof ScheduleIdsSchema>;
+
+/**
+ * `life/plans-fired.json` (§29): today's timed plans of her day as the scheduler saw them, by key
+ * `<at> <hash of what>` (no plan text): when each was first seen, and the ones that fired or were
+ * skipped (too late). A record of another day is dropped.
+ */
+export const PlansFiredSchema = RevisionedRecordSchema.extend({
+  date: z.string().optional(),
+  seen: z.record(z.string(), IsoDateStringSchema).default({}),
+  fired: z.array(z.string()).default([]),
+  skipped: z.array(z.string()).default([])
+});
+export type PlansFired = z.infer<typeof PlansFiredSchema>;
 
 // ---- files-index.json: where her downloads came from (§16.2 provenance) ------------------------------
 

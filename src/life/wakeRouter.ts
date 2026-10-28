@@ -5,8 +5,9 @@
 //      limited period (no model call)
 //   3. per-user wake limit (guilds): past `life.maxWakesPerUserPerHour`, the wake becomes one
 //      "+N more from Kevin" line that rides along with her next turn
-//   4. bed time (§21.6c): asleep, everything but her reminders and the owner's wakes is deferred to
-//      the morning (DMs get the sleep notice once per bed time per user); up late or dozing, what
+//   4. bed time (§21.6c): asleep, everything but her reminders, her timed plans (§29) and the
+//      owner's wakes is deferred to the morning (DMs get the sleep notice once per bed time per
+//      user); up late or dozing, what
 //      doesn't talk to her is deferred too, unless she sent in that place in the last
 //      `life.busyEngagedMinutes` (`busy.ts`)
 //   4b. busy (§21.4): in a busy block of her `~/life/schedule.json`, a wake that doesn't talk to
@@ -165,7 +166,7 @@ export class WakeRouter {
       });
       if (!admitted) return "quiet";
     }
-    // 4. bed time (§21.6c): asleep, only her reminders get through (the owner's already did); up late
+    // 4. bed time (§21.6c): asleep, only her reminders and plans get through (the owner's already did); up late
     // or dozing, what doesn't talk to her waits for the morning unless she was just chatting there.
     const state = await readLifeState(deps.storage, waifuId);
     const availability = await availabilityFor(deps, waifu, now, state);

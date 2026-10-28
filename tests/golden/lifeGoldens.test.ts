@@ -1,7 +1,7 @@
 // Goldens for owner review (Living cast spec §12, §16.12): the system prompt and tools, a wake turn
 // (notification → read → send), a DM wake, a turn that downloads and reads an image, a Bash call, a
 // watch timeout, a `morning` batch, her day (the morning wake, her plan in <schedule>, a busy
-// block's phone check), a dream session, a compaction request, the detector state,
+// block's phone check), a timed plan's wake (§29), a dream session, a compaction request, the detector state,
 // the WebFetch digest prompt and ~/life/places.md. Deterministic (fixed clock, fake Discord,
 // scripted winter fakes); each file is the request (or file) as the model would see it.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,7 @@ import { readWaifu } from "../../src/orchestration/stores/config.js";
 import { readLifeState, updateLifeState } from "../../src/life/lifeStore.js";
 import { lifeBudget } from "../../src/life/request.js";
 import { buildWebFetchDigestRequest } from "../../src/life/web/index.js";
+import { enqueueWake } from "../../src/life/wakeQueue.js";
 import { writeWaifuConfig } from "../lifeFixtures.js";
 import { textTurn } from "../modelFakes.js";
 import { FakeImageFetcher } from "../contextFixtures.js";
@@ -227,6 +228,36 @@ describe("Living cast goldens", () => {
     await expect(
       `${serializeSystem(phone).replace(/^[\s\S]*?(<schedule>[\s\S]*?<\/schedule>)[\s\S]*$/u, "(block A up to here: see life-system-prompt.txt)\n$1")}\n${serializeMessages(phone.messages, phone.messages.length - 1)}\n`
     ).toMatchFileSnapshot("./__snapshots__/life-day-busy.txt");
+  }, 30_000);
+
+  it("a plan with a time wakes her: the schedule write's note, then the plan wake (§29)", async () => {
+    const day = JSON.stringify(
+      {
+        date: "2026-10-24",
+        plans: [
+          { at: "17:30", what: "send one photo to dm/kevin if Kevin is around" },
+          { at: "17:30", what: "check bake-club/#general for the cake contest" },
+          { what: "finish the rain poem" }
+        ]
+      },
+      null,
+      2
+    );
+    const w = await lifeWorld(roots, {
+      waifus: [ELLA],
+      scripts: script(toolTurn([{ name: "Write", input: { file_path: "~/life/schedule.json", content: day } }]), textTurn("(planned)"), textTurn("(on it)"))
+    });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    // Today's maintenance already ran: the ticks only look at her plans.
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, lastMaintenanceAt: w.clock.now().toISOString() }));
+    await enqueueWake(w.storage, "ella", { id: "w-reminder-evening", reason: "reminder", note: "plan the evening", at: w.clock.now().toISOString() });
+    await w.cast.life("ella").runNow();
+    await w.cast.scheduler.tick({ waitForMaintenance: false });
+    w.clock.ms = Date.parse("2026-10-24T17:30:00.000Z");
+    await w.cast.scheduler.tick({ waitForMaintenance: false });
+    await w.cast.life("ella").runNow();
+    const last = w.anthropic.calls[w.anthropic.calls.length - 1]!.request;
+    await expect(serializeMessages(last.messages) + "\n").toMatchFileSnapshot("./__snapshots__/life-plan.txt");
   }, 30_000);
 
   it("a dream session (§18.4)", async () => {

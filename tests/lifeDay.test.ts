@@ -19,6 +19,7 @@ import { scanDmContent, viewLogLine } from "../src/life/lifeView.js";
 import { lifeBudget } from "../src/life/request.js";
 import { REST_SUMMARY_FRAME } from "../src/life/rest.js";
 import { DREAM_LIFE_REFUSED, promptCopyText } from "../src/life/tools/files.js";
+import { PLAN_WAKE_TEXT } from "../src/life/home/daySchedule.js";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
 import type { ToolContext, ToolOutput } from "../src/life/tools/types.js";
 import { selfAuthorIds } from "../src/life/people.js";
@@ -87,7 +88,7 @@ describe("the morning wake (§21.3)", () => {
     expect(morning).toHaveLength(1);
     expect(morning[0]).toMatchObject({ id: "w-day-2026-10-24", reason: "morning", day: "2026-10-24" });
     expect(morning[0]!.batch![0]).toBe(
-      "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Your day is yours to plan: keep it believable for who you are. Your bed time (00:30–08:30) is fixed. Then deal with what came in overnight."
+      "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Plans with a time wake you then. Your day is yours to plan: keep it believable for who you are. Your bed time (00:30–08:30) is fixed. Then deal with what came in overnight."
     );
     expect(morning[0]!.batch!.slice(1)).toEqual(["- during your bed time (00:30–08:30):", '  · watch timed out (Sat 03:00) · your note: "water the basil"']);
 
@@ -126,7 +127,7 @@ describe("the morning wake (§21.3)", () => {
     const [morning] = (await queue(w)).immediate;
     // Without a sleep window or anything overnight, the greeting says neither.
     expect(morning!.batch).toEqual([
-      "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Your day is yours to plan: keep it believable for who you are."
+      "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Plans with a time wake you then. Your day is yours to plan: keep it believable for who you are."
     ]);
     await w.cast.life("ella").runNow();
     const state = await readLifeState(w.storage, "ella");
@@ -465,7 +466,8 @@ describe("her prompt's copy of her day and MEMORY.md (§21.2)", () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
     const first = await run("Write", { file_path: "~/life/schedule.json", content: plan("2026-10-24") }, ctx);
-    expect(text(first)).toBe(`wrote ~/life/schedule.json (${Buffer.byteLength(plan("2026-10-24"))} B)\n${DAY_NOTE}`);
+    // Her day has a plan with a time: the write also says those wake her (§29).
+    expect(text(first)).toBe(`wrote ~/life/schedule.json (${Buffer.byteLength(plan("2026-10-24"))} B)\n${DAY_NOTE}\n${PLAN_WAKE_TEXT}`);
     expect(text(await run("Edit", { file_path: "~/life/schedule.json", old_string: "slow morning", new_string: "sleepy" }, ctx))).toBe("edited ~/life/schedule.json");
     expect(text(await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n" }, ctx))).toContain(MEMORY_NOTE);
     expect(text(await run("Write", { file_path: "~/people/kevin.md", content: "# Kevin\n" }, ctx))).not.toContain("system prompt");

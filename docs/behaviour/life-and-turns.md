@@ -118,7 +118,7 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
 - **Reasons** are the message's own: a message of the burst that woke her for nothing has no label
   (so a line never claims someone else's mention). Labels (`REASON_LABELS`): `mention`, `your name`,
   `role mention`, `@everyone`, `watch`, `watch timed out`, `dm`, `maybe for you` (detector),
-  `reminder`, `morning`, `nudge` (owner), `follow-up`. A detector wake for `all` reads
+  `reminder`, `plan`, `morning`, `nudge` (owner), `follow-up`. A detector wake for `all` reads
   `for all of you`; a chime-in reads `for someone else, you could chime in`.
 - **Preview**: the message rendered as a transcript body (mentions as names, attachments as
   `[image]`), whitespace collapsed, first **60 characters** then `…` (`PREVIEW_CHARS`). Quotes
@@ -129,8 +129,9 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
 - **Cap**: at most `life.notificationLinesPerPlace` lines per place (default 8, 1–50), the newest;
   the first shown line then says `+N earlier`. `N unread` (messages newer than her read cursor and
   the DM floor, not hers) appears on the last line only when unread exceeds the lines shown.
-- Lines without a place: `- reminder (Sat 14:20): "<note>"` (the due time), `- watch timed out ·
-  your note: "<note>"`, `- nudge · "<owner note>"`, the morning batch's own lines.
+- Lines without a place: `- reminder (Sat 14:20): "<note>"` (the due time), `- plan · 17:30 ·
+  "<what>"` (one per timed plan of her day, spec §29), `- watch timed out · your note: "<note>"`,
+  `- nudge · "<owner note>"`, the morning batch's own lines.
 - `- +N more from Kevin (bake-club/#general)` lines come from the per-user wake limit.
 - `- (Kevin deleted a message you read in bake-club/#general: #k3)` lines are pending notices.
 - Wakes released from a busy hold get one first line: `- phone check (busy: <why>)` or

@@ -55,7 +55,8 @@ lines per place, the newest; the first then says `+N earlier`.
 summary with times: each DM one line per message (time, ref, preview), each room its counts with
 the night's time span and then one line per message that talked to her (a mention or reply, her
 name, a role or `@everyone`; ordinary chatter stays a count), rooms with the most mentions first,
-then watch matches (with the matching message's time and ref), timed-out watches and reminders.
+then watch matches (with the matching message's time and ref), timed-out watches, reminders and
+timed plans (a budget pause defers those).
 Times are her local `HH:MM`, with the weekday when not on the morning's day. At most
 `life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
 `+N earlier`. Every line has its ref, so she can reply or react without reading first; DM lines are
@@ -74,8 +75,14 @@ time), `phoneChecks` (HH:MM), `plans` (`{at?, what}`) and `note`; a broken one i
 line and column. She may change it during the day; a Write, Edit or Bash change to it (or to
 MEMORY.md) tells her the prompt's copy updates at her next summary.
 
-**Busy.** In a busy block DMs, mentions, replies, her name, the owner's wakes, her reminders and
-watches reach her at once; detector picks, chime-ins, `@everyone` and role mentions and follow-ups
+**Timed plans.** A plan with `at` wakes her once at that time (a `plan` wake: `- plan · 17:30 ·
+"<what>"`, all plans due at one moment together), up to 15 minutes late (later it is skipped). A
+plan written after its time, or whose time is inside her bed time, does not wake her; editing a
+plan's text or time makes it a new plan. The app keeps only hashes of the plans that fired
+(`life/plans-fired.json`). Plans without a time stay notes. Reminders are for what must happen.
+
+**Busy.** In a busy block DMs, mentions, replies, her name, the owner's wakes, her reminders, timed
+plans and watches reach her at once; detector picks, chime-ins, `@everyone` and role mentions and follow-ups
 are held until her next phone check in the block (else its end) and arrive together with a line
 saying why. A place where something that got through woke her and she then sent stays open for
 `life.busyEngagedMinutes` (10) after her latest send there.

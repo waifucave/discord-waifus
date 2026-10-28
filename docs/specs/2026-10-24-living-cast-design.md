@@ -3570,3 +3570,38 @@ On Beta (2026-10-28) every waifu wrote timed plans ("17:30 send K a photo", "09:
   does not fire, inside bed time does not fire, busy block gets through, several at once = one wake,
   budget defer, golden for the notification line and the greeting; `docs/behaviour/day-and-bed-time.md`
   and `triggers.md`.
+
+### 29.1 As built (2026-10-28)
+
+- **Scheduler** (`scheduler.ts` `plans`, after reminders in each tick): today's timed plans come
+  from `daySchedule.ts` `timedPlans` (the file's `date` must be today; a plan listed twice counts
+  once). The key is `<at> <first 16 hex of sha256(what)>` (`planKey`); `life/plans-fired.json`
+  (`PlansFiredSchema`, a revisioned life file) keeps `date`, `seen` (key → when first seen),
+  `fired` and `skipped`, and no plan text, so forget has nothing to scrub there. It is reset to
+  today the next time she has a timed plan; a waifu with no timed plan gets no file.
+- **"Written after its time"**: the app does not know when a plan was written, so the first tick
+  that sees a key records the *previous* tick's time (in memory per scheduler; the first tick after
+  a start records its own). A plan whose `at` is at or before that is skipped. So a plan written in
+  the 15 s before its time fires, one written after it does not, and one first seen after a restart
+  counts as written then (a hand edit while the host was down). File mtimes were not used (the
+  tests' fixed clock, and an edit of another field moves them).
+- **Decided once**: written after its time, inside her bed time (`bedTimeContaining` at the plan's
+  instant) or more than `PLAN_LATE_MS` (15 min) late → `skipped` (the late case is logged); else it
+  fires. A plan edited after it fired is a new key first seen after its time, so it never fires
+  again; a forget rewrite of a plan's text behaves the same (a future plan fires with `(removed)`).
+- **The wake**: one per tick, reason `plan`, `plans: [{at, what}]` (new optional `Wake` field), no
+  place, `at` = the latest plan's time, id `w-plan-<date>-<12 hex of the keys>`. `seen` is written
+  first, then the wake is routed, then the keys are recorded as fired (a crash in between routes the
+  same id again, which the queue does not add twice while it is still queued, as with reminders). An
+  unreadable record is replaced with the plans already due counted as fired.
+- **Routing**: `plan` is in `BUSY_THROUGH_REASONS` and `getsThroughAsleep`. A budget deferral keeps
+  the wake whole in `deferred.items`; the batch lists `  · plan (Sat 17:30): "<what>"` after the
+  reminders. Forget turns a queued or deferred plan text that names the person into `(removed)`.
+- **Text**: `PLAN_WAKE_TEXT` "Plans with a time wake you then." in the greeting (after "your
+  plans."), at the end of the `plans` field's errors (not a list, an entry not an object, a bad
+  `at`), and as a tool-result line after a Write/Edit/Bash change of `~/life/schedule.json` in her
+  life when the saved file has a plan with `at` (`tools/files.ts` `planWakeNote`, once per turn,
+  whatever `scheduleInPrompt` says). The settings registry's life topic says it too. The owner's
+  queue view (`GET /api/waifus/:id/life`) shows a plan wake by reason only (no plan text).
+- Tests: `tests/lifePlans.test.ts`; goldens `life-plan.txt` (new: the write's note, then two plans
+  at one tick) and `life-day-morning.txt` (the greeting).

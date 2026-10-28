@@ -15,6 +15,7 @@ import {
   LifeStateSchema,
   LifeUsageSchema,
   PlaceHandlesSchema,
+  PlansFiredSchema,
   ReadCursorsSchema,
   WakeQueueSchema,
   type LifeIntent,
@@ -22,6 +23,7 @@ import {
   type LifeState,
   type LifeUsage,
   type PlaceHandles,
+  type PlansFired,
   type ReadCursors,
   type WakeQueue
 } from "../shared/schemas/life.js";
@@ -83,6 +85,12 @@ const files = {
     schema: WakeQueueSchema,
     empty: () => WakeQueueSchema.parse({ ...createRevisionedBase() })
   } satisfies FileSpec<WakeQueue>,
+  plans: {
+    path: lifePaths.plansFired,
+    lock: lifeLocks.plans,
+    schema: PlansFiredSchema,
+    empty: () => PlansFiredSchema.parse({ ...createRevisionedBase() })
+  } satisfies FileSpec<PlansFired>,
   usage: {
     path: lifePaths.usage,
     lock: lifeLocks.usage,

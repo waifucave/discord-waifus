@@ -12,6 +12,7 @@ import { compareIds } from "../discord/rawMessage.js";
 import { snowflakeTime } from "../discord/refStore.js";
 import { clockText, dayText, localDayKey, weekdayTimeText } from "./clock.js";
 import { messagesOf } from "./wakeMessages.js";
+import { PLAN_WAKE_TEXT } from "./home/daySchedule.js";
 
 /** The release line of held wakes (§21.4): first in the notification that brings them. */
 export function releaseLine(released: NonNullable<Wake["released"]>): string {
@@ -33,6 +34,7 @@ export const REASON_LABELS: Record<WakeReason, string> = {
   dm: "dm",
   detector: "maybe for you",
   reminder: "reminder",
+  plan: "plan",
   morning: "morning",
   owner: "nudge",
   followup: "follow-up"
@@ -177,6 +179,9 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
     case "reminder":
       // §16.4: `reminder (Sat 14:20): "<note>"`, the time it was due.
       return [`- reminder (${weekdayTimeText(new Date(wake.at), view.timeZone)}): ${quote(wake.note ?? "")}`];
+    case "plan":
+      // §29: `plan · 17:30 · "<what>"`, one line per plan whose time came (no place; she decides).
+      return (wake.plans ?? []).map((plan) => `- ${REASON_LABELS.plan} · ${plan.at} · ${quote(plan.what)}`);
     case "watch_timeout":
       // §16.5: a watch always ends at its timeout, so an empty one is a timer.
       return [`- ${REASON_LABELS.watch_timeout} · your note: ${quote(wake.note ?? "")}`];
@@ -247,6 +252,7 @@ export function morningGreeting(o: { now: Date; timeZone: string; bedTime?: { st
   return [
     `[system] Good morning, it's ${dayText(o.now, o.timeZone)}.`,
     "Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans.",
+    PLAN_WAKE_TEXT,
     "Your day is yours to plan: keep it believable for who you are.",
     ...(o.bedTime ? [`Your bed time (${o.bedTime.start}–${o.bedTime.end}) is fixed.`] : []),
     ...(o.overnight ? ["Then deal with what came in overnight."] : [])
@@ -278,7 +284,7 @@ const ADDRESSED: readonly WakeReason[] = ["mention", "name", "role", "everyone"]
 /**
  * The `morning` batch lines (§4.7, §23), built when her bed time (or budget pause) ends: DMs with one
  * line per message, then rooms by most mentions (counts with the night's span, then one line per
- * message that addressed her), then watch matches, watch timeouts, reminders and the rest. Times
+ * message that addressed her), then watch matches, watch timeouts, reminders, plans and the rest. Times
  * are her local `HH:MM`, with the weekday when not on the morning's day; every line has its ref.
  */
 export function morningBatch(
@@ -374,7 +380,13 @@ export function morningBatch(
     if (item.reason === "reminder") lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
   }
   for (const item of o.items) {
-    if (isWatch(item) || item.reason === "watch_timeout" || item.reason === "reminder") continue;
+    // A timed plan deferred for her budget (§29): one line per plan, with the weekday of its day.
+    if (item.reason !== "plan") continue;
+    const weekday = weekdayTimeText(new Date(item.at), view.timeZone).split(" ")[0];
+    for (const plan of item.plans ?? []) lines.push(`  · plan (${weekday} ${plan.at}): ${quote(plan.what)}`);
+  }
+  for (const item of o.items) {
+    if (isWatch(item) || item.reason === "watch_timeout" || item.reason === "reminder" || item.reason === "plan") continue;
     if (item.reason === "followup") {
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
     } else if (item.reason === "morning" && item.batch) {

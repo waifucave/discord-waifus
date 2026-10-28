@@ -1,0 +1,28 @@
+=== 0 user ===
+--- text ---
+<notifications>
+- reminder (Sat 14:00): "plan the evening"
+</notifications>
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 1 assistant ===
+--- tool call Write (call_1_Write) ---
+{"file_path":"~/life/schedule.json","content":"{\n  \"date\": \"2026-10-24\",\n  \"plans\": [\n    {\n      \"at\": \"17:30\",\n      \"what\": \"send one photo to dm/kevin if Kevin is around\"\n    },\n    {\n      \"at\": \"17:30\",\n      \"what\": \"check bake-club/#general for the cake contest\"\n    },\n    {\n      \"what\": \"finish the rain poem\"\n    }\n  ]\n}"}
+=== 2 user ===
+--- tool result call_1_Write ---
+wrote ~/life/schedule.json (285 B)
+The copy of ~/life/schedule.json in your system prompt still shows the old version; it updates at your next summary. The file itself is current.
+Plans with a time wake you then.
+--- text ---
+[Sat 24 Oct 14:00 · awake]
+=== 3 assistant ===
+--- text ---
+(planned)
+=== 4 user ===
+--- text ---
+<notifications>
+- plan · 17:30 · "send one photo to dm/kevin if Kevin is around"
+- plan · 17:30 · "check bake-club/#general for the cake contest"
+</notifications>
+--- text ---
+[Sat 24 Oct 17:30 · awake]

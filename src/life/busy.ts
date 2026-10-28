@@ -1,6 +1,7 @@
 // Busy holds (Living cast spec §21.4, owner decision S4): during a busy block of her day
 // (`~/life/schedule.json`), wakes that talk to her get through at once — a DM, a mention or reply,
-// her name, the owner's wake, her reminders, her watches and their timeouts, the morning — and the
+// her name, the owner's wake, her reminders and timed plans (§29), her watches and their timeouts,
+// the morning — and the
 // rest (detector picks and chime-ins, `@everyone` and role mentions, follow-ups) are held in her
 // queue until her next phone check inside the block, else the block's end, then arrive together.
 //
@@ -23,16 +24,16 @@ import { dayPlanFor } from "./home/index.js";
 import { readLifeState, updateLifeState } from "./lifeStore.js";
 
 /** Wake reasons that reach her while she is busy (S4) or up late / dozing in her bed time (§21.6c). */
-export const BUSY_THROUGH_REASONS: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "reminder", "watch", "watch_timeout", "morning"]);
+export const BUSY_THROUGH_REASONS: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "reminder", "plan", "watch", "watch_timeout", "morning"]);
 
 /** A wake that reaches her while she is busy: any of its reasons does (a burst with a mention does). */
 export function getsThroughBusy(wake: Pick<Wake, "reason" | "reasons">): boolean {
   return [wake.reason, ...(wake.reasons ?? [])].some((reason) => BUSY_THROUGH_REASONS.has(reason));
 }
 
-/** Wake reasons that reach her while she is asleep in her bed time (§21.6c): her reminders and the owner's wakes. */
+/** Wake reasons that reach her while she is asleep in her bed time (§21.6c): her reminders (and timed plans, §29) and the owner's wakes. */
 export function getsThroughAsleep(wake: Pick<Wake, "reason" | "reasons">): boolean {
-  return [wake.reason, ...(wake.reasons ?? [])].some((reason) => reason === "reminder" || reason === "owner");
+  return [wake.reason, ...(wake.reasons ?? [])].some((reason) => reason === "reminder" || reason === "plan" || reason === "owner");
 }
 
 /** The place is open for her while busy (§21.4): her latest send there was recent, inside this block. */
