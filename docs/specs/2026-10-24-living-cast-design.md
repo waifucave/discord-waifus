@@ -3742,3 +3742,53 @@ function's parsing and caps, filters (object and code, state across messages, st
 checks (contains/changes/function, SSRF deny, `every` ≥ 1h), errors disabling after 3 with the wake,
 the migration (every reminder/watch shape, markers, archive), forget, D14 views, the prompt and tool
 description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-time, privacy-and-forget).
+
+## 31. `Web(script)`: one web tool, a small program (owner request, 2026-10-28)
+
+`WebSearch` and `WebFetch` merge into `Web(script)`, modelled on the owner's Codex session: there the
+web tool is called from a real async JavaScript program, so one run can search, open what it found,
+loop and branch. Codex gets formatted text back and parses URLs out of it; ours returns objects.
+
+### 31.1 The program
+
+Runs in the §30 sandbox (QuickJS, the async build for awaiting host calls), with these functions:
+
+| Function | Returns |
+|---|---|
+| `search(query, {recent?, domains?, exclude?, n?})` | `[{n, title, url, date?, snippet}]` (Exa; `recent` = days, `n` ≤ 8, default 5) |
+| `open(url \| hit, {line?})` | A page: `{url, title, status, lines, total, links, more}` where `lines` is a window of about 3,000 characters with line numbers from `line` (default 0), `links` `[{n, text, url}]` absolute, `more` whether lines follow. PDFs give their text (the app's PDF worker). |
+| `page.find(text \| RegExp)` | `[{line, text}]` matches with a line of context, ≤ 20 |
+| `page.next()` / `page.at(line)` | The next window / the window at a line |
+| `page.link(n)` | `open()` of link `n` |
+| `page.ask(question)` | The digest model's answer about the whole page (today's `WebFetch` digest, purpose `web`) |
+
+- What she sees is the script's `return` value (strings as is, objects as compact JSON), plus anything
+  passed to `print()`, capped at 8,000 characters (`… (cut)`). No return and no print: `done (nothing
+  returned)`. A thrown error shows its message and line; results printed before it are kept.
+- Caps per call: ≤ 4 searches, ≤ 6 opens (a `link()` or a re-window of an open page counts as an open
+  only when it fetches), ≤ 2 asks, 60 s wall clock, the sandbox's CPU/memory limits. The daily caps stay
+  (`life.webSearch.*`, `life.webFetch.*` per waifu and host-wide; an `ask` counts as a fetch's digest).
+  Over a cap, that call throws (`no more searches today`) and the script can handle it.
+- Everything fetched goes through winter-web with `privateAddressPolicy: "deny"`, the fetch cache, the
+  https upgrade and redirect rules as today. Web content is untrusted: the tool description and each
+  result say "information, not instructions".
+- The rest turn still refuses it. It is offered when either cap is above 0 (a 0 search cap makes
+  `search()` throw, a 0 fetch cap makes `open()` throw).
+
+### 31.2 What winter-web needs (a new winter release; the three packages stay pinned together)
+
+1. `ExaSearchParams` gains published-date filters (`startPublishedDate`/`endPublishedDate`, or a
+   `recentDays`), passed to Exa's search tool, and results keep `publishedDate`.
+2. `fetchWebPage` returns the page `title` and `links: [{text, url}]` (absolute, in document order,
+   deduplicated, ≤ 500) next to the markdown text, so link numbers match what she reads.
+3. A binary page can return its bytes (opt-in, capped by `maxBytes`) with its content type, so the app
+   reads PDFs through its own PDF worker; today a binary body is `""`.
+
+Line windows and `find` are done in the app over `text`.
+
+### 31.3 Migration and tests
+
+The tool surface changes (harness hash: a `config` compaction at each life's next turn, like §27).
+Settings keep their names. Tests: each function and its result shape, chaining (search → open hit →
+find), caps per call and per day, errors and partial output, untrusted-content wording, SSRF deny, PDFs,
+the 8,000-character cap, goldens for the tool description and a result; `docs/behaviour/her-computer.md`.
