@@ -166,7 +166,7 @@ const WEB_FETCH_FIELDS = {
 export const DEFAULT_WEB_FETCH_CONFIG = {
   model: "",
   maxPerWaifuPerDay: 20,
-  maxPerTurn: 3,
+  maxPerTurn: 6,
   directMaxChars: 2_000,
   maxBytes: 5 * 1024 * 1024,
   timeoutMs: 20_000,

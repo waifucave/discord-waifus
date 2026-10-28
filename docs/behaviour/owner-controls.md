@@ -152,7 +152,7 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | Computer | `life.home.*`, `life.tmp.*`, `life.attachments.maxBytes` | 50 MiB, 2,000 files, 500 folders; 200 MiB, 2,000 files, 7 days; 10 MiB | Folder limits |
 | | `life.bash.enabled` / `python` / `maxTimeoutMs` / `maxOutputChars` / `maxMemoryMb` | true / true / 60 s / 16,000 / 512 | Bash |
 | Web | `search.maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | 2 / 50 / 20 | `search()` in her Web scripts (0 = off) |
-| | `life.webFetch.maxPerTurn` / `maxPerWaifuPerDay` / `cacheMinutes` | 3 / 20 / 15 | `open()` in her Web scripts (0 = off; both off: no Web tool); `life.webFetch.model` answers `page.ask()`; `directMaxChars` is no longer used |
+| | `life.webFetch.maxPerTurn` / `maxPerWaifuPerDay` / `cacheMinutes` | 6 / 20 / 15 | `open()` in her Web scripts (0 = off; both off: no Web tool); `life.webFetch.model` answers `page.ask()`; `directMaxChars` is no longer used |
 | Detector | `detector.target` | `openrouter:typesafe/jev-1.14` | `""` = fallback only |
 | Waifu | `wakeOnName` / `scheduleInPrompt` | true / true | |
 | | `life.dailyBudgetUsd` | none | Daily budget |

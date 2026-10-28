@@ -222,7 +222,7 @@ branches, and what she `return`s and `print`s (also `console.log`) is what she s
   one script`), 24 web calls of any kind, 60 seconds in all (`your script ran for 60 seconds and was
   stopped`). On top: the daily caps (`search.maxPerWaifuPerDay`, `search.maxPerDay`,
   `life.webFetch.maxPerWaifuPerDay`; each search and each open counts, a cached page too) and
-  `life.webFetch.maxPerTurn` (3) pages across all her scripts in one turn (`open: you've opened 3
+  `life.webFetch.maxPerTurn` (6) pages across all her scripts in one turn (`open: you've opened 6
   pages this turn; that's the most for one turn`), also for opens run at once (each takes its place
   before it waits for anything; one the daily cap refuses gives it back). An ask counts only against its script's 2. With
   search off `search()` throws `web search is off`, with page opening off `open()` throws `page

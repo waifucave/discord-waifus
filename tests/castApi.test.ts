@@ -161,7 +161,7 @@ describe("search, detector, forget jobs and owner notices", () => {
       JSON.stringify({ schemaVersion: 2, revision: 1, updatedAt: today, day: "2000-01-01", searches: 9, fetches: 4, recent: [{ at: today, waifuId: "ella", kind: "search", query: "lemon tart", ok: true }, { at: today, waifuId: "ella", kind: "fetch", query: "https://example.com", ok: false }] })
     );
     const body = SearchUsageResponseSchema.parse((await app.inject({ method: "GET", url: "/api/search/usage" })).json());
-    expect(body).toMatchObject({ searches: 0, fetches: 0, exaKeyConfigured: false, limits: { maxPerDay: 50, maxPerWaifuPerDay: 20, fetchMaxPerTurn: 3 } });
+    expect(body).toMatchObject({ searches: 0, fetches: 0, exaKeyConfigured: false, limits: { maxPerDay: 50, maxPerWaifuPerDay: 20, fetchMaxPerTurn: 6 } });
     expect(body.recent.map((entry) => entry.query)).toEqual(["https://example.com", "lemon tart"]);
   });
 

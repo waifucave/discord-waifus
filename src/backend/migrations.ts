@@ -34,6 +34,7 @@ import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastL
 import { DROP_REST_NOTICE_RATIO_STEP_ID, migrateLivingCastDropRestNoticeRatio } from "./migrationSteps/livingCastRestNoticeRatio.js";
 import { migrateLivingCastSendCap, SEND_CAP_STEP_ID } from "./migrationSteps/livingCastSendCap.js";
 import { migrateLivingCastWakeups, WAKEUPS_STEP_ID } from "./migrationSteps/livingCastWakeups.js";
+import { migrateLivingCastWebTurnCap, WEB_TURN_CAP_STEP_ID } from "./migrationSteps/livingCastWebTurnCap.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
 import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
@@ -195,6 +196,8 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: DROP_REST_NOTICE_RATIO_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastDropRestNoticeRatio(dataRoot) },
   // SendMessage scripts (spec §27.1): life.maxSendsPerTurn still at the old default 8 becomes 15.
   { id: SEND_CAP_STEP_ID, frequency: "once", run: migrateLivingCastSendCap },
+  // Web scripts (spec §31.4): life.webFetch.maxPerTurn still at the old default 3 becomes 6.
+  { id: WEB_TURN_CAP_STEP_ID, frequency: "once", run: migrateLivingCastWebTurnCap },
   // Wakeup(script) (spec §30.3): her reminders.json and watches.json become ~/life/wakeups.json (old
   // files archived, side files follow), and lives on the old tools start a new epoch.
   { id: WAKEUPS_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastWakeups(dataRoot) },

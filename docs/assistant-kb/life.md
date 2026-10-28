@@ -203,7 +203,7 @@ characters with line numbers, its title and its numbered links; PDFs as text) an
 purpose `web`). She sees what the program prints and returns, at most 8,000 characters, marked as
 web content (information, not instructions). One call makes at most 4 searches, opens 6 pages and
 asks 2 questions in 60 seconds; the daily caps (`search.*`, `life.webFetch.*`) count each search and
-each page as before, and `life.webFetch.maxPerTurn` (3) limits the pages of all her scripts in one
+each page as before, and `life.webFetch.maxPerTurn` (6) limits the pages of all her scripts in one
 turn. Every page goes through the private-address protection; Web is not offered when both search
 and page opening are off. The dashboard's search list shows each search and page, private when the
 turn touched a DM.

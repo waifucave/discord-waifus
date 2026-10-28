@@ -77,7 +77,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.dreamWindowMaxChars` | integer 20000–2000000 [characters] | `200000` | When what was said since her last dream is longer than this, the dream runs in several sessions (oldest days first), each moving her dream cursor for what it covered. |
 | `life.webFetch.model` | string | `""` | Route that answers page.ask() in her Web scripts, reading the whole page ("" = the cheapest offered route with a key; name a contributor route here to allow one). |
 | `life.webFetch.maxPerWaifuPerDay` | integer 0–500 | `20` | Pages one waifu may open per day with open() in her Web scripts (0 = open() is off; with search off too, the Web tool is not offered). |
-| `life.webFetch.maxPerTurn` | integer 0–20 | `3` | Pages she may open in one turn, across her Web scripts (0 = open() is off; one script opens at most 6). |
+| `life.webFetch.maxPerTurn` | integer 0–20 | `6` | Pages she may open in one turn, across her Web scripts (0 = open() is off; one script opens at most 6). |
 | `life.webFetch.directMaxChars` | integer 0–20000 [characters] | `2000` | Not used since the Web tool (spec §31): a page comes to her in windows of about 3,000 characters and page.ask() reads the whole page. Kept so saved settings still load. |
 | `life.webFetch.maxBytes` | integer 65536–10485760 [bytes] | `5242880` | Largest page downloaded. |
 | `life.webFetch.timeoutMs` | integer 2000–60000 [ms] | `20000` | Time limit for one page. |
