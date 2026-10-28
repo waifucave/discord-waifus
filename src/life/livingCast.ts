@@ -69,7 +69,7 @@ export type LivingCastOptions = {
   logger: Logger;
   discord: () => DiscordGatewayFacade | undefined;
   conversations: ConversationMessageCache;
-  directory: Pick<GuildDirectory, "view" | "memberName" | "findEmoji" | "members">;
+  directory: Pick<GuildDirectory, "view" | "memberName" | "findEmoji" | "members" | "availableEmojis">;
   models: ModelClient;
   config: () => AppConfig;
   isPaused: () => boolean;

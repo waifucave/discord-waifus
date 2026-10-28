@@ -47,7 +47,7 @@ something first"); nothing is written.
 | `~/life/reminders.json` | Her reminders (`ScheduleWake` appends) | JSON array of `{id?, at, repeat?, note}` | Her + app (fires, removes, moves) | Yes; whole-file Write needs a current Read this turn | Yes (= no reminders) | Strict JSON; `at` local `YYYY-MM-DD HH:MM`, 5 min–30 days ahead (an unchanged past `at` kept), `repeat` daily/weekly, note ≤ 200, ids unique, ≤ 20 | New entries get the next `r<n>` id and the file is rewritten one entry per line |
 | `~/life/watches.json` | Her watches (`WatchFor` appends) | JSON array of `{id?, timeout, once?, note, when[]}` | Her + app (match, timeout) | Yes; whole-file Write needs a current Read | Yes (= no watches) | Strict JSON; timeout in the future, ≤ 7 days; ≤ 5 bindings, each `place`/`from`/`words` (1–10, ≤ 60 chars)/`any_message`; names resolvable; ≤ 10 watches; a `once` watch that already matched can't come back | `from` names resolved to user ids in `life/watch-ids.json` |
 | `~/life/profile.json` | Her Discord profile: `name` (read-only), `username`, `bio`, `nicknames` keyed by server slug | JSON object | Her + app (rewritten from her config) | Yes, outside sessions; whole-file Write needs a current Read | **No** | Discord username rules, bio ≤ 400, nickname 1–32, known servers, `name` unchanged | Saved to her config, then profile sync runs; the result says when Discord will show it |
-| `~/life/places.md` | Her rooms and DMs | Markdown | App only (≤ 1/min, every turn start, when a new place folds in) | **No** (`places.md is kept up to date for you and can't be changed`) | **No** | — | — |
+| `~/life/places.md` | Her rooms, her servers' emojis and her DMs | Markdown | App only (≤ 1/min, every turn start, when a new place folds in) | **No** (`places.md is kept up to date for you and can't be changed`) | **No** | — | — |
 | `/tmp/<place>/<ref>-<name>` | Attachments `ReadMessages` downloaded | the file | App | Yes | Yes | `/tmp` limits | Expire after 7 days |
 | `/tmp/dm/<name>/…` | Downloads from a DM | the file | App | Yes | Yes | — | Private (D14) |
 | `/transcripts/…` | Transcripts | rendered Markdown | App | **No** (`EROFS: transcripts are read-only`) | **No** | — | `cp` out into her folders works |
@@ -65,6 +65,19 @@ Sources: `src/life/home/pathRules.ts` (`LIFE_FILES`), `src/life/home/homeStore.t
   changes to it (`error: profile.json isn't changed while tidying; leave it as it is`); the forget
   scrub never edits it.
 - **Dreaming** refuses every change under `~/life/` (`DREAM_LIFE_REFUSED`).
+- **places.md** (`src/life/home/index.ts` `placesFileText`): `Rooms:` (one line per room, see
+  [rooms.md](rooms.md)), then `Server emojis:` with one line per server she is cast in that has
+  usable emojis, `- bake-club (Bake Club): :kekw: :pepe_cry: :blobheart: (+12 more)` (the server as
+  her handles name it; a paused server too), then `Private chats:` (see [dms.md](dms.md)). No server
+  with emojis: no `Server emojis:` section. Only `available` emojis, one per name, at most 50; most
+  used first, counted as `:name:` in the server's transcript lines (every room and thread, whoever
+  wrote them) of the last 30 days, then by name (case-insensitive); animated ones like the others.
+  Reactions are not in transcripts, so they don't count. The counts are kept in memory per server
+  and recounted at most once an hour (`src/life/home/serverEmojis.ts`); the emoji list itself is read
+  from the directory at every refresh, so an added, removed or renamed emoji shows at the next
+  refresh (a renamed one counts as unused until the next recount). The emoji lines carry no counts
+  or times, so they change the file only when an emoji or the hourly order changes (an unchanged
+  text is never written). The list is not in the system prompt; sending and `React` are unchanged.
 - **Side files** outside her folders (never visible to her): `life/watch-ids.json`,
   `life/schedule-ids.json` (id counters, resolutions, fire times, already-routed occurrences, newest
   100), `life/files-index.json` (download provenance, newest 10,000). A side file that does not parse

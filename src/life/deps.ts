@@ -26,7 +26,7 @@ export type LifeDeps = {
   logger: Logger;
   discord: () => DiscordGatewayFacade | undefined;
   conversations: ConversationMessageCache;
-  directory: Pick<GuildDirectory, "view" | "memberName" | "findEmoji" | "members">;
+  directory: Pick<GuildDirectory, "view" | "memberName" | "findEmoji" | "members" | "availableEmojis">;
   models: ModelClient;
   images?: LifeImageFetcher;
   ocr?: OcrTextLookup;

@@ -3523,3 +3523,24 @@ gains one line per server she is cast in:
   (room sends match `:name:` to the closest server emoji; `React` refuses unknown names).
 - Tests: the line (cap, order, `+N more`, no emojis), refresh when emojis change, golden for
   places.md; `docs/behaviour/her-computer.md` (places.md) updated.
+
+### 28.1 As built (2026-10-28)
+
+- **Layout**: a `Server emojis:` section between `Rooms:` and `Private chats:`, one line per server,
+  `- bake-club (Bake Club): :kekw: :pepe_cry: (+12 more)` (the server slug from her handles, then its
+  name), servers in the order her rooms list them. The section is left out when no server has
+  emojis. No literal `…` before `(+N more)`. Golden: `tests/golden/__snapshots__/life-places.txt`.
+- **List**: `GuildDirectory.availableEmojis` (live, files loaded first), one entry per name; ties and
+  unused ones by name, case-insensitive (`src/life/home/serverEmojis.ts` `emojiListText`).
+  Role-restricted emojis are listed like the rest.
+- **Counts**: `:name:` (2–32 of `[A-Za-z0-9_]`) in the text of every `g_<guild>_*` transcript
+  conversation, day files from the day 30 days ago on, lines whose `at` is within 30 days; counted
+  for the server, not per waifu (her access intervals don't apply: only the order is shown).
+  Transcripts carry no reactions, so reactions don't count.
+- **Cost and writes**: counts are cached in memory per data root and server and recounted at most
+  once an hour (`EMOJI_USAGE_TTL_MS`); a refresh between recounts reads no transcript. The emoji
+  set comes live from the directory, so an added, removed or renamed emoji shows at the next
+  refresh; a renamed one counts as unused until the next recount. The lines carry no counts or
+  times, and `HomeStore.writePlaces` still skips an unchanged text, so places.md is rewritten only
+  when a place, an emoji or the hourly order really changes. A failed count is cached as empty for
+  the hour (order by name). Tests: `tests/lifePlacesEmojis.test.ts`.

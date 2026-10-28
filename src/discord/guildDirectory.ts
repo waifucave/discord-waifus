@@ -341,6 +341,11 @@ export class GuildDirectory implements CacheDirectoryHooks {
     return matches.find((emoji) => emoji.name === name) ?? matches[0];
   }
 
+  /** The server's usable emojis (`available`), files loaded first (`~/life/places.md`, Living cast §28). */
+  async availableEmojis(guildId: string): Promise<GuildEmojiCacheEntry[]> {
+    return [...(await this.ensureLoaded(guildId)).emojis.values()].filter((emoji) => emoji.available);
+  }
+
   /**
    * Known members of a guild (people she may name in `WatchFor`, Living cast §6.5; names for the
    * forget scrub, §7.5). Files are loaded first.

@@ -10,10 +10,11 @@ import type { StorageService } from "../../storage/storageService.js";
 import { dayTimeText } from "../clock.js";
 import type { LifeDeps } from "../deps.js";
 import { resolvePerson } from "../people.js";
-import { collectPlaces, placeLabel, placesWithHandles } from "../places.js";
+import { collectPlaces, placeLabel, placesWithHandles, type PlaceInfo } from "../places.js";
 import { normalizeName } from "../text.js";
 import { HomeStore, homeLimitsOf, type CheckEnv } from "./homeStore.js";
 import { herSlug } from "./pathRules.js";
+import { emojiListText, emojiUsage } from "./serverEmojis.js";
 import type { PersonResolution } from "./specialFiles.js";
 import type { DayPlan } from "./daySchedule.js";
 
@@ -80,12 +81,37 @@ const DAY_MS = 24 * 3_600_000;
 
 export const PLACES_FILE_NOTE = "(This file is kept up to date for you: you can read it, but changes to it are refused.)";
 
-/** `~/places.md` (§16.6): her rooms with who was around today and when, and her private chats. */
+/**
+ * One line per server she is cast in that has usable emojis (§28): `- bake-club (Bake Club): :a: :b:
+ * (+N more)`, the server named as her handles name it, in the order her rooms list the servers.
+ */
+async function serverEmojiLines(deps: LifeDeps, places: ReadonlyArray<PlaceInfo & { handle: string }>): Promise<string[]> {
+  const servers = new Map<string, { slug: string; name?: string }>();
+  for (const place of places) {
+    if (!place.guildId || servers.has(place.guildId)) continue;
+    servers.set(place.guildId, { slug: place.handle.split("/")[0]!, ...(place.serverName ? { name: place.serverName } : {}) });
+  }
+  const lines: string[] = [];
+  for (const [guildId, server] of servers) {
+    const emojis = await deps.directory.availableEmojis(guildId).catch(() => []);
+    if (emojis.length === 0) continue;
+    const counts = await emojiUsage({ dataRoot: deps.storage.dataRoot, timeZone: deps.timeZone, guildId, now: deps.now() });
+    const list = emojiListText(emojis, counts);
+    if (list) lines.push(`- ${server.slug}${server.name ? ` (${server.name})` : ""}: ${list}`);
+  }
+  return lines;
+}
+
+/**
+ * `~/places.md` (§16.6): her rooms with who was around today and when, her servers' emojis (§28)
+ * and her private chats.
+ */
 export async function placesFileText(deps: LifeDeps, waifuId: string): Promise<string> {
   const places = await placesWithHandles(deps.storage, waifuId);
   const now = deps.now();
   const rooms: string[] = [];
   const dms: string[] = [];
+  const emojis = await serverEmojiLines(deps, places);
   for (const place of places) {
     const buffered = deps.conversations.bufferedMessages(place.ref);
     const newest = buffered[buffered.length - 1]?.createdAt;
@@ -110,6 +136,7 @@ export async function placesFileText(deps: LifeDeps, waifuId: string): Promise<s
     rooms.length > 0 ? "Rooms:" : "Rooms: none",
     ...rooms,
     "",
+    ...(emojis.length > 0 ? ["Server emojis:", ...emojis, ""] : []),
     dms.length > 0 ? "Private chats:" : "Private chats: none",
     ...dms,
     ""

@@ -1,14 +1,16 @@
 // Goldens for owner review (Living cast spec §12, §16.12): the system prompt and tools, a wake turn
 // (notification → read → send), a DM wake, a turn that downloads and reads an image, a Bash call, a
 // watch timeout, a `morning` batch, her day (the morning wake, her plan in <schedule>, a busy
-// block's phone check), a dream session, a compaction request, the detector state
-// and the WebFetch digest prompt. Deterministic (fixed clock, fake Discord, scripted winter fakes);
-// each file is the request as the model would see it.
+// block's phone check), a dream session, a compaction request, the detector state,
+// the WebFetch digest prompt and ~/life/places.md. Deterministic (fixed clock, fake Discord,
+// scripted winter fakes); each file is the request (or file) as the model would see it.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectorQuestion } from "../../src/life/detector/decider.js";
 import { availabilityAt, timeLine } from "../../src/life/clock.js";
 import { buildBlockA } from "../../src/life/lifeHarness.js";
 import { TranscriptView } from "../../src/life/transcripts/view.js";
+import type { GuildDirectory } from "../../src/discord/guildDirectory.js";
+import { refreshPlacesFile } from "../../src/life/home/index.js";
 import { readWaifu } from "../../src/orchestration/stores/config.js";
 import { readLifeState, updateLifeState } from "../../src/life/lifeStore.js";
 import { lifeBudget } from "../../src/life/request.js";
@@ -16,7 +18,7 @@ import { buildWebFetchDigestRequest } from "../../src/life/web/index.js";
 import { writeWaifuConfig } from "../lifeFixtures.js";
 import { textTurn } from "../modelFakes.js";
 import { FakeImageFetcher } from "../contextFixtures.js";
-import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
+import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herFile, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
 import { removeTempRoot } from "../testUtils.js";
 import { serializeMessages, serializeRequest, serializeSystem, serializeTools } from "./serialize.js";
 
@@ -398,5 +400,21 @@ describe("Living cast goldens", () => {
     await feed(w.discord.post(ROOM, "save one for later\nplease", { authorId: MINA_USER, authorName: "Mina", replyTo: own.id }));
     const view = new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: "UTC", now: w.clock.now });
     await expect(await view.read(["bake-club", "general", "2026-10-24.md"])).toMatchFileSnapshot("./__snapshots__/life-transcript-day.txt");
+  });
+
+  it("~/life/places.md: rooms, the server's emojis most used first (§28), private chats", async () => {
+    const w = await lifeWorld(roots, { waifus: [ELLA] });
+    const dm = w.discord.post(dmOf("ella"), "hey ella");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.close();
+    await seedTranscript(w, [{ text: "the tarts are out :blobheart: :kekw:", author: "Mina", authorId: MINA_USER }, { text: ":kekw: menace cat strikes again" }, { text: "who ate the last one :pepe_cry:" }, { text: ":kekw:" }]);
+    const directory = w.cast.deps.directory as GuildDirectory;
+    await directory.availableEmojis(GUILD);
+    const names = ["blobheart", "kekw", "pepe_cry", "party_parrot", "menace", "lemon", "oven", "gone"];
+    for (const [index, name] of names.entries()) {
+      directory.handle({ type: "emojiUpsert", guildId: GUILD, emoji: { id: `60000000000000000${index}`, name, animated: name === "party_parrot", available: name !== "gone", roles: [], fetchedAt: "2026-10-24T00:00:00.000Z" } });
+    }
+    expect(await refreshPlacesFile(w.cast.deps, ELLA)).toBe(true);
+    await expect(await herFile(w, "ella", "home/life/places.md")).toMatchFileSnapshot("./__snapshots__/life-places.txt");
   });
 });
