@@ -32,6 +32,7 @@ import { migrateLivingCastTypingHolds } from "./migrationSteps/livingCastDebounc
 import { migrateLivingCastHome } from "./migrationSteps/livingCastHome.js";
 import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "./migrationSteps/livingCastLifeFolder.js";
 import { DROP_REST_NOTICE_RATIO_STEP_ID, migrateLivingCastDropRestNoticeRatio } from "./migrationSteps/livingCastRestNoticeRatio.js";
+import { migrateLivingCastSendCap, SEND_CAP_STEP_ID } from "./migrationSteps/livingCastSendCap.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
 import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
@@ -191,6 +192,8 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: "living-cast-bed-time-v1", frequency: "once", run: (dataRoot) => migrateLivingCastBedTime(dataRoot) },
   // The rest notice at the trigger (spec §26): life.restNoticeRatio is dropped from config.toml (archived first).
   { id: DROP_REST_NOTICE_RATIO_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastDropRestNoticeRatio(dataRoot) },
+  // SendMessage scripts (spec §27.1): life.maxSendsPerTurn still at the old default 8 becomes 15.
+  { id: SEND_CAP_STEP_ID, frequency: "once", run: migrateLivingCastSendCap },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

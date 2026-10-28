@@ -90,8 +90,8 @@ describe("GET /api/help", () => {
     const app = await makeApp();
     const group = (await app.inject({ method: "GET", url: "/api/help/app" })).json();
     const sends = group.keys.find((key: { path: string }) => key.path === "life.maxSendsPerTurn");
-    expect(sends).toMatchObject({ type: "integer", min: 1, max: 50, default: 8, applies: "reload" });
-    expect(sends.cli).toContain("waifus set app life.maxSendsPerTurn 8");
+    expect(sends).toMatchObject({ type: "integer", min: 1, max: 50, default: 15, applies: "reload" });
+    expect(sends.cli).toContain("waifus set app life.maxSendsPerTurn 15");
     const provider = (await app.inject({ method: "GET", url: "/api/help/provider.apiKey" })).json();
     expect(provider).toMatchObject({ kind: "key", key: { flags: ["secret"], path: "apiKey" } });
     expect(JSON.stringify(provider)).not.toContain("[REDACTED]");

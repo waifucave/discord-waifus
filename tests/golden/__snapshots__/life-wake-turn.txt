@@ -22,9 +22,9 @@ bake-club/#general (Bake Club › #general)
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"bake-club/#general","text":"yes!! i'm bringing lemon tarts","reply_to":"#a1"}
+{"place":"bake-club/#general","script":"reply #a1\nm: yes!!\nm: i'm bringing lemon tarts"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-sent #a2
+sent #a2 #a3
 --- text ---
 [Sat 24 Oct 14:00 · awake]

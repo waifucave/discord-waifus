@@ -254,13 +254,20 @@ export const LifeIntentSchema = z.object({
   argsDigest: z.string().min(1),
   at: IsoDateStringSchema,
   done: z.boolean().optional(),
-  /** done lines: what the tool returned (send: the Discord message id). */
+  /** done lines: what the tool returned (send: the Discord message ids, comma-separated). */
   resultRef: z.string().optional(),
   /**
    * SendMessage, written just before the Discord call: a digest of the final outgoing content
    * (after mentions and emoji were resolved), so boot repair recognises the message (§5.7).
    */
-  contentDigest: z.string().optional()
+  contentDigest: z.string().optional(),
+  /**
+   * SendMessage scripts (§27.1): the script line one message starts on. A line's own intent (with
+   * `contentDigest`) is written just before its Discord call and its `lineDone` line (with the message
+   * id as `resultRef`) right after, so boot repair knows each message on its own.
+   */
+  line: z.number().int().min(1).optional(),
+  lineDone: z.literal(true).optional()
 });
 export type LifeIntent = z.infer<typeof LifeIntentSchema>;
 

@@ -31,7 +31,8 @@ import { safeJournalName } from "./home/homeStore.js";
 import { stripCopiedHeader } from "./outbound.js";
 import { selfAuthorIds } from "./people.js";
 import { resolvePlace } from "./places.js";
-import { contentDigest } from "./tools/messages.js";
+import { contentDigest, sendCallSteps } from "./tools/messages.js";
+import { scriptSends, sendLabel, type ScriptSend } from "./tools/sendScript.js";
 import { requeueWakes } from "./wakeQueue.js";
 import { dmFloorAt } from "../orchestration/dm/dmStore.js";
 
@@ -65,10 +66,11 @@ async function recoverCall(
   if (intent.done) {
     if ((call.name === "SendMessage" || call.name === "send_message") && intent.done.resultRef && typeof input["place"] === "string") {
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
+      // A script's done line names every message it sent (§27.1).
+      const ids = intent.done.resultRef.split(",").filter(Boolean);
       if (place) {
-        const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [intent.done.resultRef], deps.now());
-        const ref = refs.get(intent.done.resultRef);
-        if (ref) return { text: `sent #${ref} (recovered)`, isError: false };
+        const refs = await assignConversationRefs(deps.storage, place.placeKey as never, ids, deps.now());
+        if (ids.every((id) => refs.has(id))) return { text: `sent ${ids.map((id) => `#${refs.get(id)}`).join(" ")} (recovered)`, isError: false };
       }
       return { text: "sent (recovered)", isError: false };
     }
@@ -106,28 +108,10 @@ async function recoverCall(
     case "SendMessage":
     case "send_message": {
       if (typeof input["place"] !== "string" || !waifu) return { text: "[interrupted] not sent", isError: true };
-      const sentText = typeof input["text"] === "string" ? input["text"] : "";
+      const steps = sendCallSteps(input, deps.config().life.send.maxFiles);
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
-      if (!place) return { text: "[interrupted] not sent", isError: true };
-      // The digest of the final content (written just before the Discord call) matches the message
-      // even when Discord's side rewrote mentions or emoji; the loose text compare is the fallback.
-      const digests = new Set(intent.lines.flatMap((line) => (line.contentDigest ? [line.contentDigest] : [])));
-      const self = await selfAuthorIds(deps.storage, waifu);
-      const wanted = loose(stripCopiedHeader(sentText, [waifu.name, waifu.displayName]));
-      // Every message after the intent (not only the newest page): a busy room may have moved on.
-      const since = Math.min(...intent.lines.map((line) => Date.parse(line.at)));
-      let messages;
-      try {
-        if (!deps.discord()) throw new Error("Discord is not connected");
-        messages = (await deps.conversations.fetchSince({ conversation: place.ref, afterMessageId: dmFloorAt(new Date(since - 2_000)), maxMessages: 500 })).messages;
-      } catch {
-        // Unknown is not "not sent": she must look before sending again.
-        return { text: UNCERTAIN_SEND, isError: true };
-      }
-      const found = messages.find((message) => self.includes(message.authorId) && (digests.has(contentDigest(message.content)) || loose(message.content) === wanted));
-      if (!found) return { text: "[interrupted] not sent", isError: true };
-      const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [found.id], deps.now());
-      return { text: `sent #${refs.get(found.id) ?? "?"} (recovered)`, isError: false };
+      if (!place || !steps) return { text: "[interrupted] not sent", isError: true };
+      return recoverScript(deps, waifu, place, scriptSends(steps), intent.lines);
     }
     case "Write": {
       const p = await resolvePath(input["file_path"]);
@@ -165,6 +149,68 @@ async function recoverCall(
     default:
       return { text: "[interrupted]", isError: true };
   }
+}
+
+/**
+ * A SendMessage call a crash cut off (§5.7, §27.1): each message of its script on its own. A line with
+ * a done line was sent; a line whose intent (its final content's digest, written just before the
+ * Discord call) is there is looked for among her messages since (else by its text with mentions and
+ * emoji set aside); a line with neither was never tried, and nothing after it was. The conversation
+ * unreadable: "unknown", never "not sent". Nothing is sent again here.
+ */
+async function recoverScript(
+  deps: LifeDeps,
+  waifu: NonNullable<Awaited<ReturnType<typeof readWaifu>>>,
+  place: NonNullable<Awaited<ReturnType<typeof resolvePlace>>>,
+  sends: readonly ScriptSend[],
+  lines: readonly LifeIntent[]
+): Promise<{ text: string; isError: boolean }> {
+  // Before §27 a send's one digest line had no `line`: it is the first (and only) message's.
+  const ofLine = (send: ScriptSend, index: number) => lines.filter((line) => line.line === send.line || (index === 0 && line.line === undefined && line.contentDigest !== undefined));
+  type Outcome = { send: ScriptSend; id?: string; check?: { digests: Set<string>; wanted: string }; unknown?: boolean };
+  const outcomes: Outcome[] = [];
+  for (const [index, send] of sends.entries()) {
+    const mine = ofLine(send, index);
+    const done = mine.find((line) => line.lineDone && line.resultRef);
+    if (done) {
+      outcomes.push({ send, id: done.resultRef! });
+      continue;
+    }
+    // The first message not known to be done is looked for (by its digest when the line got that
+    // far, else by its text); sends run one after another, so nothing after it was tried.
+    const digests = new Set(mine.flatMap((line) => (line.contentDigest ? [line.contentDigest] : [])));
+    outcomes.push({ send, check: { digests, wanted: loose(stripCopiedHeader(send.text, [waifu.name, waifu.displayName])) } });
+    break;
+  }
+  const checking = outcomes.filter((outcome) => outcome.check);
+  if (checking.length > 0) {
+    const self = await selfAuthorIds(deps.storage, waifu);
+    // Every message after the intent (not only the newest page): a busy room may have moved on.
+    const since = Math.min(...lines.map((line) => Date.parse(line.at)).filter(Number.isFinite));
+    try {
+      if (!deps.discord()) throw new Error("Discord is not connected");
+      const messages = (await deps.conversations.fetchSince({ conversation: place.ref, afterMessageId: dmFloorAt(new Date(since - 2_000)), maxMessages: 500 })).messages;
+      const known = new Set(outcomes.flatMap((outcome) => (outcome.id ? [outcome.id] : [])));
+      for (const outcome of checking) {
+        const found = messages.find((message) => self.includes(message.authorId) && !known.has(message.id) && (outcome.check!.digests.has(contentDigest(message.content)) || (outcome.check!.wanted !== "" && loose(message.content) === outcome.check!.wanted)));
+        if (found) {
+          outcome.id = found.id;
+          known.add(found.id);
+        }
+      }
+    } catch {
+      for (const outcome of checking) outcome.unknown = true;
+    }
+  }
+  const sentIds = outcomes.flatMap((outcome) => (outcome.id ? [outcome.id] : []));
+  const unknown = outcomes.find((outcome) => outcome.unknown);
+  if (sentIds.length === 0) return { text: unknown ? UNCERTAIN_SEND : "[interrupted] not sent", isError: true };
+  const refs = await assignConversationRefs(deps.storage, place.placeKey as never, sentIds, deps.now());
+  const parts = [`sent ${sentIds.map((id) => `#${refs.get(id) ?? "?"}`).join(" ")} (recovered)`];
+  const rest = sends.slice(sentIds.length);
+  if (unknown) parts.push(`it is unknown whether line ${unknown.send.line} was sent; read the place before sending it again`);
+  const notSent = unknown ? rest.slice(1) : rest;
+  return { text: [parts.join("; "), ...notSent.map((send) => `not sent: ${sendLabel(send)}`)].join("\n"), isError: false };
 }
 
 /** Both texts are JSON arrays with the same entries once `id` is set aside (her special files). */
@@ -229,7 +275,7 @@ export async function repairLife(deps: LifeDeps, waifuId: string): Promise<Repai
       const results: ContentBlockLike[] = [];
       for (const call of calls) {
         const mine = intents.filter((intent) => intent.toolCallId === call.id && intent.argsDigest === argsDigest(call.input));
-        const recovered = await recoverCall(deps, waifuId, call, { start: mine.find((intent) => !intent.done), done: mine.find((intent) => intent.done), lines: mine.filter((intent) => !intent.done) }, recoveredSet);
+        const recovered = await recoverCall(deps, waifuId, call, { start: mine.find((intent) => !intent.done && intent.line === undefined && intent.contentDigest === undefined) ?? mine.find((intent) => !intent.done), done: mine.find((intent) => intent.done), lines: mine.filter((intent) => !intent.done) }, recoveredSet);
         if (!recovered.isError) outcome.recovered += 1;
         outcome.closedCalls += 1;
         results.push({ type: "tool_result", tool_use_id: call.id, content: recovered.text, ...(recovered.isError ? { is_error: true } : {}) });

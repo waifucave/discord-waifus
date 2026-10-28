@@ -915,6 +915,10 @@ export class Life {
       run.typing?.lookups.delete(call.id);
       run.typing?.ran.add(call.id);
       run.typing?.sends.delete(call.id);
+      // A script shows typing itself, before each message and for its `typing` lines; never during
+      // its waits (§27.1).
+      if (call.name === "SendMessage") run.typing?.keeper.stop();
+      const sendsBefore = run.scratch.sends ?? 0;
       let places: ReadonlySet<string> = new Set();
       let output: ToolOutput;
       if (!tool) {
@@ -962,12 +966,14 @@ export class Life {
           });
         }
       }
-      if (run.typing && tool && !output.isError && call.name === "SendMessage") {
+      // A script that sent anything (even one stopped part way, §27.1) counts as a send.
+      const sent = tool !== undefined && call.name === "SendMessage" && (run.scratch.sends ?? 0) > sendsBefore;
+      if (run.typing && sent) {
         for (const place of places) run.typing.keeper.sent(place);
       }
       // Her last send starts her bed time clock again (§21.6c); while she is busy, a place she answers
       // in after a wake that got through stays open (§21.4).
-      if (tool && !output.isError && call.name === "SendMessage") {
+      if (sent) {
         for (const place of places) {
           await noteSend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
             deps.logger.warn("Could not note a send", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });

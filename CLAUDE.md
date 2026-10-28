@@ -89,7 +89,7 @@ staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → 
 `life.maxConcurrentTurns` slot; notifications (`notifications.ts`: one line per message with its ref,
 at most `life.notificationLinesPerPlace` per place, the first saying `+N earlier`; wakes ready mid-turn
 are folded into the next tool-results message after its results, recorded in `currentTurn` before
-they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing only once a SendMessage's place has streamed in (`typing.ts`, spec §6.3); an
+they leave the queue), the tool loop, the unsent-reply check, caps, her bot typing only once a SendMessage's place has streamed in, until the call runs (`typing.ts`, spec §6.3; a script types itself before each `m:`, never during a `wait`); an
 interrupted turn, a provider cooldown and boot repair put the turn's wakes back in the queue;
 each turn cycle, maintenance run and forget scrub holds an `UpdateActivity` lease and counts in
 `queues.active`) → `ModelClient`. The prompt (`lifeHarness.ts`, `request.ts`) is system blocks
@@ -127,7 +127,7 @@ pause start) so catch-up never re-wakes a message it already handled; a mark nev
 still held (a staggered wake, a debouncing burst, a running detector call), and every forget path
 drops the person's DM marks at once. `stop()` aborts lives and maintenance before awaiting them.
 Her tool surface is "her own computer" (spec §16): eleven PascalCase tools in `tools/` —
-`ReadMessages`, `SendMessage` (+ `files`), `React` (messages.ts), `WatchFor`, `ScheduleWake`
+`ReadMessages`, `SendMessage`, `React` (messages.ts), `WatchFor`, `ScheduleWake`
 (planning.ts), `Read`, `Write`, `Edit` (files.ts), `Bash` (bash.ts), `WebSearch`, `WebFetch` (web.ts).
 `ReadMessages(place, query?)` (spec §22): up to 5 places or `everywhere`; the freeform query
 (`tools/readQuery.ts`: `before|after|around <#ref | date time | date | HH:MM | yesterday HH:MM>`, a
@@ -137,7 +137,16 @@ not cover it; time anchors become snowflakes) or, with `people:`/`search:`, her 
 intervals) plus the cache's unwritten tail. A line is `[14:02 #k3] Kevin ↩#k1: text` there and in
 `/transcripts` (`render.ts` `chatLine`). Refs are assigned at ingest by the transcript writer and
 stored on each line; a ref `refs.json` pruned resolves through the transcript
-(`store.ts` `findTranscriptRef`, `messageIdForRef` for ReadMessages, `reply_to` and React).
+(`store.ts` `findTranscriptRef`, `messageIdForRef` for ReadMessages, a script's `reply`/`react` and React).
+`SendMessage(place, script)` (spec §27, parser `tools/sendScript.ts`): one command per line, `m: <text>`
+(indented lines continue it), `reply #ref` (the next send), `attach <path>` (right after an `m:` its
+file, else a file-only message), `react #ref <emoji>`, `wait <1-60>` (anyone else writing there stops
+the rest; what came in is shown with refs), `typing <1-10>`. The whole script is checked first (any
+error refuses it with its line number, nothing sent); each `m:` counts against `life.maxSendsPerTurn`
+(15; migration `living-cast-send-cap-15-v1` moves a saved 8), waits ≤ 120 s per script, one place per
+call; each message has its own intent and `lineDone` lines for boot repair; the result adds a length
+nudge when a line is over max(3 × the place's median message from people, 120) characters. A pre-§27
+call (`text`, `reply_to`, `files`) still runs as one message.
 Her folders are `/home/<slug>` and `/tmp`, backed by `user/waifus/<id>/home/` and `.../tmp/`;
 `src/life/home/` holds the one path-rules module (`pathRules.ts`), link-refusing file access
 (`herFiles.ts`), the store every write path goes through (`homeStore.ts`: limits, case collisions,

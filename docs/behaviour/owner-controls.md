@@ -124,8 +124,8 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 |---|---|---|---|
 | Turns | `life.maxConcurrentTurns` | 4 | Host-wide turn slots |
 | | `life.maxTurnMs` | 180 s | Turn wall-time cap |
-| Sending | `life.maxSendPlacesPerTurn` / `maxSendsPerTurn` | 3 / 8 | Per-turn send caps |
-| | `life.send.maxFiles` | 4 | Attachments per message (0 = no `files`) |
+| Sending | `life.maxSendPlacesPerTurn` / `maxSendsPerTurn` | 3 / 15 | Per-turn send caps (each `m:` line counts one) |
+| | `life.send.maxFiles` | 4 | Attachments per message (0 = no `attach` lines) |
 | Wakes | `life.maxWakesPerUserPerHour` | 20 | Per-user wake limit |
 | | `life.maxWatchFiresPerDay` | 24 | Repeating watch cap |
 | | `life.notificationLinesPerPlace` / `morningLinesPerPlace` | 8 / 8 | Lines per place |

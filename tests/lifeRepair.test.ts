@@ -137,6 +137,59 @@ describe("crash repair (§5.7)", () => {
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.map((entry) => entry.id)).toEqual(["w-lost"]);
   });
 
+  /** A script crashed after its first message went out and just before its second's Discord call (§27.1). */
+  const scriptCrash = async (o: { secondArrived: boolean; readable?: boolean }) => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
+    const input = { place: "bake-club/#general", script: "m: one\nwait 2\nm: two\nm: three" };
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
+    const base = { turnId: "t-crash", toolCallId: "call_send", tool: "SendMessage", argsDigest: digest(input) };
+    const first = w.discord.post(ROOM, "one", { authorId: ELLA_BOT, authorName: "Ella", bot: true });
+    await appendIntent(w.storage, "ella", { ...base, at: w.clock.now().toISOString(), line: 1, contentDigest: contentDigest("one") });
+    await appendIntent(w.storage, "ella", { ...base, at: w.clock.now().toISOString(), line: 1, lineDone: true, resultRef: first.id });
+    // Line 3's intent was written just before its Discord call.
+    await appendIntent(w.storage, "ella", { ...base, at: w.clock.now().toISOString(), line: 3, contentDigest: contentDigest("two") });
+    if (o.secondArrived) w.discord.post(ROOM, "two", { authorId: ELLA_BOT, authorName: "Ella", bot: true });
+    if (o.readable === false) {
+      w.discord.fetchContextSince = async () => {
+        throw new Error("503 Service Unavailable");
+      };
+    }
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("ella"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    expect(w.discord.sent).toEqual([]);
+    return ((await tail(w)).message as { content: Array<{ content?: string; is_error?: boolean }> }).content[0]!;
+  };
+
+  it("a script cut off by a crash: messages with a done line were sent; the next one not found on Discord was not, nor anything after it (§27.1)", async () => {
+    const lost = await scriptCrash({ secondArrived: false });
+    expect(lost.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ \(recovered\)$/u), "not sent: two", "not sent: three"]);
+    expect(lost.is_error).toBeUndefined();
+  });
+
+  it("a script cut off by a crash: the next message found on Discord (by its digest) counts as sent (§27.1)", async () => {
+    const arrived = await scriptCrash({ secondArrived: true });
+    expect(arrived.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u), "not sent: three"]);
+  });
+
+  it("a script cut off by a crash: a conversation it cannot read leaves that message unknown (§27.1)", async () => {
+    const unknown = await scriptCrash({ secondArrived: false, readable: false });
+    expect(unknown.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ \(recovered\); it is unknown whether line 3 was sent; read the place before sending it again$/u), "not sent: three"]);
+  });
+
+  it("a script whose call finished before the crash (its done line) recovers every message it sent", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
+    const input = { place: "bake-club/#general", script: "m: one\nm: two" };
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
+    const ids = ["one", "two"].map((text) => w.discord.post(ROOM, text, { authorId: ELLA_BOT, authorName: "Ella", bot: true }).id);
+    await appendIntent(w.storage, "ella", { turnId: "t-crash", toolCallId: "call_send", tool: "SendMessage", argsDigest: digest(input), at: w.clock.now().toISOString(), done: true, resultRef: ids.join(",") });
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("ella"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    const result = ((await tail(w)).message as { content: Array<{ content?: string }> }).content[0]!;
+    expect(result.content).toMatch(/^sent #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u);
+  });
+
   it("a crash before the send reached Discord: interrupted, not sent (and not retried by repair)", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     await crashAfter(w, { id: "call_send", name: "SendMessage", input: { place: "bake-club/#general", text: "never arrived" } }, { intent: true });

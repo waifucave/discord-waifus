@@ -29,7 +29,7 @@ export function lifeTurn(place: () => string, o: { answer?: string } = {}) {
     const results = blocksOf(last).filter((block) => block.type === "tool_result");
     if (results.length === 0) return { thinking: "Someone needs me; let me read.", toolCalls: [{ name: "ReadMessages", input: { place: place(), limit: 15 } }] };
     if (JSON.stringify(results).includes("sent #")) return { thinking: "That's said.", text: "(done)" };
-    return { thinking: "I'll answer them.", toolCalls: [{ name: "SendMessage", input: { place: place(), text: o.answer ?? "on it!" } }] };
+    return { thinking: "I'll answer them.", toolCalls: [{ name: "SendMessage", input: { place: place(), script: `m: ${o.answer ?? "on it!"}` } }] };
   };
 }
 

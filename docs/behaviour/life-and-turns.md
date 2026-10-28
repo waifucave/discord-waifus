@@ -76,13 +76,18 @@ Source: `Life.turn`, `Life.rounds`, `Life.runTools` in `src/life/lifeLoop.ts`.
 
 Tools run one after another in the order she called them. Before a side-effecting tool
 (`SendMessage`, `React`, `Write`, `Edit`, `WatchFor`, `ScheduleWake`) an intent line goes to
-`life/intents.jsonl`, and a `done` line after it. A `SendMessage` also writes the digest of the
-final outgoing text just before the Discord call. `Bash` journals its own change set
-(`life/pending-changes/<toolCallId>.json`). Boot repair uses these to close an interrupted turn:
-a send found among her messages after the intent reads `sent #ref (recovered)`, else
-`[interrupted] not sent`, or `[interrupted] it is unknown whether this was sent; read the place
-before sending it again` when Discord can't be checked; then `[system] interrupted by a restart`
-(`src/life/repair.ts`).
+`life/intents.jsonl`, and a `done` line after it. A `SendMessage` script also writes, for each
+message, the digest of its final outgoing text with its script `line` just before the Discord call,
+and a `lineDone` line with the message id right after (§27.1). `Bash` journals its own change set
+(`life/pending-changes/<toolCallId>.json`). Boot repair uses these to close an interrupted turn
+and never sends anything itself: in a script cut off by a crash, a message with its `lineDone` line
+was sent; the first message after those is looked for among her messages since the intent (by its
+digest, else by its text with mentions and emoji set aside); nothing after it was tried. All sent:
+`sent #k9 #ka (recovered)`; part: `sent #k9 (recovered)` then a `not sent: <text>` line per message
+left; none: `[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether
+this was sent; read the place before sending it again` (or, after messages that were sent, `it is
+unknown whether line 3 was sent; …`); then `[system] interrupted by a restart`
+(`src/life/repair.ts`). A pre-§27 call (`text`) is one message, its digest line without `line`.
 
 ## Mid-turn notifications (folding)
 
@@ -124,8 +129,8 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   `[image]`), whitespace collapsed, first **60 characters** then `…` (`PREVIEW_CHARS`). Quotes
   inside become `'` and line breaks spaces, so a quote always closes on its line.
 - **Ref**: every message a notification names gets its ref when the block is rendered, together
-  with the refs of the messages before it, so refs stay in message order and she can `reply_to` or
-  `React` without reading first (`Life.notificationView`).
+  with the refs of the messages before it, so refs stay in message order and she can `reply` or
+  react without reading first (`Life.notificationView`).
 - **Cap**: at most `life.notificationLinesPerPlace` lines per place (default 8, 1–50), the newest;
   the first shown line then says `+N earlier`. `N unread` (messages newer than her read cursor and
   the DM floor, not hers) appears on the last line only when unread exceeds the lines shown.
@@ -162,9 +167,11 @@ Her bot shows "typing…" only where a message is on its way (`src/life/typing.t
 - while a `SendMessage` call streams, its `place` is read from the arguments as soon as that string
   is complete and typing starts there, before the text has finished; the call waits for that lookup
   before it runs, so typing never starts after the send;
-- refreshed every 8 s (`TYPING_REFRESH_MS`), one place at a time; the send clears it;
-- the send itself also shows typing for `30 ms × characters`, clamped to 0.6–4.5 s, before it posts
-  (`src/life/outbound.ts` `typingDelayMs`);
+- refreshed every 8 s (`TYPING_REFRESH_MS`), one place at a time, until the call runs: a script
+  shows typing itself, so it never types during a `wait` (§27.1);
+- before every `m:` the script shows typing for `30 ms × characters`, clamped to 0.6–4.5 s, before
+  it posts (`src/life/outbound.ts` `typingDelayMs`), and a `typing <seconds>` line shows it without
+  sending;
 - reading, notes, Bash, searches and her thoughts show nothing; maintenance, dreaming and
   compaction never type; it stops at turn end, abort and before a mid-turn compaction;
 - only her own bot types (a room needs her `botId`; a DM must be hers). Failures are warnings at

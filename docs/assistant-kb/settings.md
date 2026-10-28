@@ -55,7 +55,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxInlineImagesPerEpoch` | integer 0–20 | `8` | Images shown to her as images per epoch; later ones are described by their OCR text. |
 | `life.maxInlineImageBytesPerEpoch` | integer 0–20971520 [bytes] | `12582912` | Image bytes shown to her as images per epoch. |
 | `life.maxSendPlacesPerTurn` | integer 1–10 | `3` | Distinct places she may send to in one turn. |
-| `life.maxSendsPerTurn` | integer 1–50 | `8` | Messages she may send in one turn. |
+| `life.maxSendsPerTurn` | integer 1–50 | `15` | Messages she may send in one turn (each m: line of a SendMessage script counts one, and so does a message with only files). |
 | `life.maxWakesPerUserPerHour` | integer 1–200 | `20` | Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line. |
 | `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches may fire per day. |
 | `life.notificationLinesPerPlace` | integer 1–50 | `8` | Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out. |

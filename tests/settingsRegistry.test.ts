@@ -109,7 +109,7 @@ describe("settings registry", () => {
     for (const key of ["waifu.model", "waifu.life.dailyBudgetUsd", "waifu.dm.sleepNotice", "waifu.wakeOnName", "server.detector.target", "channel.threads"]) {
       expect(findKey(key), key).toBeDefined();
     }
-    expect(findKey("app.life.maxSendsPerTurn")).toMatchObject({ type: "integer", default: 8 });
+    expect(findKey("app.life.maxSendsPerTurn")).toMatchObject({ type: "integer", default: 15 });
     expect(findKey("waifu.life.dailyBudgetUsd")).toMatchObject({ nullable: true, default: null });
     expect(findKey("waifu.verbosity")).toBeUndefined();
     expect(findKey("app.ocr.engine")).toMatchObject({ type: "enum" });

@@ -51,6 +51,13 @@ or a watch match is on the line of the message it belongs to, and a message arou
 not for her has a line with no reason. At most `life.notificationLinesPerPlace` (default 8)
 lines per place, the newest; the first then says `+N earlier`.
 
+**Sending.** One SendMessage call is a short script for one place: each `m:` line is its own
+message (so she can write several short lines like people do), with `reply #ref`, `attach <path>`,
+`react #ref <emoji>`, `wait <seconds>` (someone else writing there meanwhile stops the rest) and
+`typing <seconds>` lines. A script with any wrong line sends nothing. Each message counts against
+`life.maxSendsPerTurn` (default 15). When a line is much longer than what people in that place
+usually write, her result says so (nothing is refused for length).
+
 **The morning summary.** What waited for her morning (her bed time, or a budget pause) comes as one
 summary with times: each DM one line per message (time, ref, preview), each room its counts with
 the night's time span and then one line per message that talked to her (a mention or reply, her
