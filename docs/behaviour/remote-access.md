@@ -9,18 +9,22 @@ Remote management section and `docs/assistant-kb/remote-access.md`.
 
 - A signed native child process, `ts-connect`. The host supervises one when Remote Access is enabled;
   `waifus remote` (the remote gateway, no Discord runtime) supervises its own.
-- Pinned exactly to **0.1.17** for the five targets (macOS ARM64, Windows x64/ARM64, Linux x64/ARM64)
+- Pinned exactly to **0.1.18** for the five targets (macOS ARM64, Windows x64/ARM64, Linux x64/ARM64)
   in `package.json` `optionalDependencies`. The trust window in `src/remote/helperReleaseTrust.ts`
-  covers release sequences 13–18 (0.1.12–0.1.17). Intel macOS and Linux ARMv7 are not supported and
+  covers release sequences 13–19 (0.1.12–0.1.18). Intel macOS and Linux ARMv7 are not supported and
   never fall back.
 - **NAT address pool (0.1.17):** remembers the NAT's public address pool (an address counts only when at
   least 2 STUN destinations confirm it), uses short-lived learning sockets, asks 7 STUN services from 6
   operators (Cloudflare, Google, Twilio, Nextcloud, sipgate, BlackBerry), and ranks the candidates it
   currently observes first. Still direct only.
+- **Direct UDP port (0.1.18):** one port per pairing and role in 41642–44999 (below the OS ephemeral
+  ranges and next to Tailscale's 41641), because some networks drop outbound UDP to high destination
+  ports (one measured cut-off: above 45395). A busy port walks the next 15 ports of the range, then falls
+  back to a random port. The first start after an upgrade announces the new port once.
 - Before launch it is verified fail-closed (`src/remote/helperBinary.ts`): package inventory (no
   links), Ed25519-signed manifest, binary and notices hashes, target metadata, embedded build info
-  (5 s probe), and `remote-compatibility.json` (the app's version; helper ≥ 0.1.17, < 0.2.0, release
-  sequence ≥ 18; protocol majors; six required capabilities). Errors: `helper_missing`,
+  (5 s probe), and `remote-compatibility.json` (the app's version; helper ≥ 0.1.18, < 0.2.0, release
+  sequence ≥ 19; protocol majors; six required capabilities). Errors: `helper_missing`,
   `helper_signature_invalid`, `helper_incompatible`, `unsupported_platform`.
 - A missing or invalid helper never stops the host from booting; Remote Access is then unavailable.
 - **Supervision** (`src/remote/helperSupervisor.ts`, constants in `helperTypes.ts`): restarts after

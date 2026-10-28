@@ -32,7 +32,7 @@ installed-helper launch/cold-restart checks on every native target before it pub
 publishes through npm trusted publishing (GitHub OIDC for this repo and `npm-root-package.yml`,
 configured on the npm package), so no npm token is stored.
 The five `@waifucave/ts-connect-*` helper packages are published: `package.json` pins them
-exactly (currently 0.1.17) and `package-lock.json` resolves each from registry.npmjs.org with an
+exactly (currently 0.1.18) and `package-lock.json` resolves each from registry.npmjs.org with an
 integrity hash. A helper bump must publish all five first; a missing one blocks the release.
 Always publish reviewed tarballs using `scripts/publish-archive.mjs <archive> <sha256>
 <package-name> <version> <latest|next> --yes` on macOS/Linux, including manual fallbacks.
