@@ -4034,3 +4034,79 @@ the 8,000-character cap, goldens for the tool description and a result; `docs/be
   PDFs, caps per call, per turn and per day, errors, option checks, SSRF deny), the rest refusal, the
   retired-tools compaction, goldens `life-system-prompt.txt` (the description) and
   `life-web-script.txt` (a result).
+
+## 32. One tool family: every tool is a small program calling `tools.*` (owner request, 2026-10-28)
+
+The tools should look like one family to her model, not tools plugged together. Owner decision
+(2026-10-28): every tool except `Bash` takes one JavaScript `script`, shaped like Codex's function
+calls (`const r = await tools.web__run({…}); text(r);`, `tools.apply_patch("*** Begin Patch\n…")`),
+but each stays its own tool (no single exec tool). `Bash` is unchanged. `React` is switched off (kept
+in the code, not offered; `send_message` reacts). `Write` and `Edit` become one `Edit` whose function is
+`apply_patch` (Write kept in the code, not offered). This supersedes the call shapes of §22 (query
+language), §27 (send script lines), §30.2 and §31.1 (free functions); their rules (caps, privacy,
+waits, closures, budgets) stay.
+
+### 32.1 Shared rules
+
+- Input `{ "script": string }` (≤ 20,000 chars), run in the §30.1 sandbox worker (QuickJS, a fresh
+  context per call, 1 s of her own CPU, 16 MiB, 256 KiB stack). The wall clock is per tool: 60 s, and
+  for SendMessage 150 s (its waits and typing stay ≤ 120 s).
+- Inside, `tools` holds only that tool's function(s); a function of another tool throws its readable
+  error naming the tool to use (`tools.read_file is the Read tool's; call Read`). Every function is
+  async, takes one object (`apply_patch` one string), snake_case fields, lists of operations where one
+  call does several things. Unknown fields and bad values throw before anything runs.
+- `text(value)` shows a value to her (a string as is, anything else as compact JSON; an image result
+  from `read_file` as the picture). If the script calls `text()` nowhere, its return value is shown
+  (owner choice over Codex's strict rule); nothing at all → `done`. A thrown error shows after what was
+  shown, with its line. The output cap is the tool's own (Read 100,000 chars as today, Web 8,000,
+  ReadMessages its §22 cap, the rest 8,000).
+- Per-script call caps per function (below) on top of the per-turn and daily caps that exist today.
+  Privacy (D14) is per call as today: a script that read or sent anything in a DM is a DM call, also
+  when it fails half-way.
+
+### 32.2 The functions
+
+- **ReadMessages** → `tools.read_messages({ place, around | before | after, max, people, search })`.
+  `place` a handle, a list of ≤ 5, or `"everywhere"` (with `people` or `search`); anchors are a `#ref`
+  or a §22 time; `max` 1–100 (15); `people` a list of names (`"you"` = herself); `search` a list, any one
+  matching, every word of an entry required. Returns the §22 text lines. ≤ 5 calls per script.
+- **SendMessage** → `tools.send_message({ place, messages: [...] })`, items in order:
+  `{ text, reply_to?, attach? }` (attach ≤ 4 paths; `{ attach }` alone sends just the files),
+  `{ react, to }`, `{ wait: 1–60 }`, `{ typing: 1–10 }`. §27's rules hold: a wait stops the rest when
+  anyone else writes there, waits and typing ≤ 120 s per script, the room-aware length nudge, the
+  per-turn send cap. Several calls (several places) in one script are fine within the per-turn place
+  cap. Returns `{ sent: [refs], stopped?: "…what came in…" }`.
+- **Read** → `tools.read_file({ path, offset?, limit?, pages? })`, as today's Read (2,000 lines, line
+  cut 2,000 chars, PDFs 20 pages, images shown). ≤ 10 calls per script, their output 100,000 chars in all.
+- **Edit** → `tools.apply_patch(patch)`, Codex's grammar exactly: `*** Begin Patch` / `*** End Patch`;
+  `*** Add File: path` (`+` lines), `*** Delete File: path`, `*** Update File: path` with optional
+  `*** Move to: path`, chunks starting `@@` or `@@ <anchor line>`, lines prefixed space / `-` / `+`,
+  optional `*** End of File`. Matching as Codex (exact, then trim-end, then trim, then Unicode
+  punctuation normalised; an anchor narrows; chunks in file order against the original file). Safer
+  than Codex (owner choice): the whole patch is saved or nothing is (all files checked, then one
+  commit like Bash's), a chunk whose old lines match in two places is refused (`…match in 2 places
+  (lines 4 and 19); add a line above or below to say which. Nothing was changed.`), and Add File on an
+  existing file is refused. Her folder rules hold (~/life/places.md can't change; the other ~/life/
+  files are checked after the patch; /transcripts is read-only; 256 KB per file). Returns
+  `"Updated: M ~/MEMORY.md, A ~/people/mina.md"`. ≤ 4 calls per script.
+- **Wakeup** → `tools.wakeup({ at, every, watch, page, cancel })`, each a list: `at: [{ when, note }]`,
+  `every: [{ when, note }]`, `watch: [{ places, from?, words?, any?, filter?, for, once?, note }]`
+  (`filter` her `(m, state) =>` function, §30's closure rule), `page: [{ url, contains? | changes? |
+  check?, every, for, note }]`, `cancel: [ids]`. §30's file, limits and timings hold. Returns what was
+  set (ids, next firings). ≤ 4 calls per script.
+- **Web** → `tools.web__run({ search_query, open, click, find, ask, response_length })`, Codex's shape
+  plus `ask`: `search_query: [{ q, domains?, exclude?, recency?, n? }]`, `open: [{ ref_id, lineno? }]`
+  (`ref_id` a URL), `click: [{ ref_id, id }]` (link `id` of an opened page), `find: [{ ref_id, pattern }]`,
+  `ask: [{ ref_id, question }]`, `response_length` `"short" | "medium" | "long"` (the page window and
+  result count). In one call: searches, then opens and clicks, then finds and asks (a ref not yet open
+  is opened). Returns `{ search: [...], pages: [...], find: [...], ask: [...] }`. §31's caps hold
+  (4 searches, 6 opens, 2 asks, 24 operations per script; `life.webFetch.maxPerTurn` per turn).
+
+### 32.3 Migration, prompt and tests
+
+- The tool list (and descriptions) is part of the harness hash, so every life summarises once at her
+  next turn; a saved epoch offering removed tools is summarised as in §31. No file migration.
+- The prompt's tool paragraphs and examples move to the new calls; nightly maintenance and the forget
+  scrub get Read, Edit and Bash. Goldens are regenerated; each tool keeps its abuse and privacy tests
+  (send-script, wakeup and web reviews), moved to the new shapes, plus an apply_patch suite (grammar,
+  matching passes, anchors, duplicates refused, all-or-nothing, protected files, Move, Delete).
