@@ -50,6 +50,8 @@ export const lifePaths = {
   wakes: (waifuId: string) => path.join(lifeDir(waifuId), "wakes.json"),
   /** How her watches resolved, their fires, and the id counter (§16.5; not in her folder). */
   watchIds: (waifuId: string) => path.join(lifeDir(waifuId), "watch-ids.json"),
+  /** Today's timed plans of her day: first seen, fired, skipped (§29; hashes, no plan text). */
+  plansFired: (waifuId: string) => path.join(lifeDir(waifuId), "plans-fired.json"),
   /** Her reminder id counter and the occurrences already fired (§16.4). */
   scheduleIds: (waifuId: string) => path.join(lifeDir(waifuId), "schedule-ids.json"),
   /** Where her downloads came from (§16.2 provenance). */
@@ -74,6 +76,7 @@ export const lifeLocks = {
   reads: (waifuId: string) => `life-reads:${waifuId}`,
   handles: (waifuId: string) => `life-handles:${waifuId}`,
   wakes: (waifuId: string) => `life-wakes:${waifuId}`,
+  plans: (waifuId: string) => `life-plans:${waifuId}`,
   maintenance: (waifuId: string) => `life-maintenance:${waifuId}`,
   /** Every write to her two folders and their side files (watch-ids, schedule-ids, files-index). */
   home: (waifuId: string) => `home:${waifuId}`,

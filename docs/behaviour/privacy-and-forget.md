@@ -106,8 +106,8 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    person queues the whole scrub again.
 3. **Other state**: their wakes (and their DM's), their lines in someone else's wake (a quote naming
    them becomes `(removed)`), pending notices, watches from or bound to them (a word naming them →
-   dropped or reviewed), reminder notes naming them → `(removed)` (the reminder still fires), her day
-   file texts, open places, her DM read cursor and handle, `maintenance.jsonl` lines, earlier review
+   dropped or reviewed), reminder notes naming them → `(removed)` (the reminder still fires), a
+   queued or deferred `plan` wake's plan texts naming them → `(removed)`, her day file texts, open places, her DM read cursor and handle, `maintenance.jsonl` lines, earlier review
    lines, the host's recent web queries naming them, her archive slice, her transcripts' DM and her
    dream cursor's DM entry.
 4. **Notes scrub**: a session with her identity and persona (30 rounds) removes everything about

@@ -77,7 +77,7 @@ chime-in for 10 minutes (`CHIME_IN_INTERVAL_MS`), `chime_in`; with `human` a chi
 over them); the state carries each line's
 `minutesAgo` (a stale address to someone gone 30+ minutes reads as `anyone`); no loop cap on
 waifu-only rounds beyond the optional room loop guard and daily budgets) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
-per-user wake limit, bed time (§21.6c: asleep, only `reminder` and `owner` get through, the rest is
+per-user wake limit, bed time (§21.6c: asleep, only `reminder`, `plan` and `owner` get through, the rest is
 deferred to the morning with the DM sleep notice; up late or dozing, the busy set (`busy.ts`
 `getsThroughBusy`) and places she sent to in the last `life.busyEngagedMinutes` get through, the
 rest is deferred; the phase comes from `lastSentAt`, `clock.ts` `bedPhaseAt`), busy holds (§21.4:
@@ -180,12 +180,16 @@ under the DM they came from). Web search/fetch in
 by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
 `privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
 `log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `watch-ids.json`,
-`schedule-ids.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
+`schedule-ids.json`, `plans-fired.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
 `needs-review.json`, `usage.json`) and her home `user/waifus/<id>/home/` (`MEMORY.md` index at the root; `life/` with her day
 `schedule.json`, `reminders.json`, `watches.json`, `profile.json`, `places.md`; spec §21). Boot repairs every life (`repair.ts`: finishes
 journalled change sets first), runs queued
 owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
-fires reminders from her file (routed under a deterministic wake id before removal), routes watch
+fires reminders from her file (routed under a deterministic wake id before removal), fires her
+timed plans (spec §29, `Scheduler.plans`: a plan with `at` in today's `~/life/schedule.json` is one
+`plan` wake at that time, the plans of one tick together, each once by `<at> <hash of what>` in
+`life/plans-fired.json`; up to 15 min late; not when written after its time (first seen = the
+previous tick) or inside her bed time; `plan` gets through busy and bed time like `reminder`), routes watch
 timeouts (`watch_timeout`), releases held wakes at her phone checks, refreshes `places.md` (≤1/min;
 also at every turn start), expires `/tmp` (first tick, then hourly), sends the day wake when her
 bed time ends (else at `life.dayStartHourLocal`; id `w-day-<date>`: the greeting asking her to

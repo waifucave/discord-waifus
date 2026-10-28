@@ -122,7 +122,7 @@ export function withDeferred(queue: WakeQueue, wake: Wake, reason: "sleep" | "bu
   };
   // A `morning` batch deferred again (her budget ran out before she read it) is carried whole.
   // A DM wake that carried a watch match (§16.5) keeps its note too.
-  const keepsNote = wake.reason === "reminder" || wake.reason === "watch" || wake.reason === "watch_timeout" || wake.reason === "owner" || wake.reason === "followup" || wake.reason === "morning" || wake.reasons?.includes("watch") === true;
+  const keepsNote = wake.reason === "reminder" || wake.reason === "plan" || wake.reason === "watch" || wake.reason === "watch_timeout" || wake.reason === "owner" || wake.reason === "followup" || wake.reason === "morning" || wake.reasons?.includes("watch") === true;
   if (keepsNote) deferred.items.push(wake);
   if (wake.placeKey && (wake.reason !== "reminder" && wake.reason !== "followup")) {
     const place = { ...(deferred.places[wake.placeKey] ?? emptyPlace()) };
@@ -470,6 +470,18 @@ export async function scrubWakeQueue(
             else delete next[field];
             changed = true;
           } else o.review?.(text);
+        }
+        // Her timed plans (§29) are hers like a reminder's note: they stay and lose the text.
+        if (next.plans) {
+          const plans = next.plans.map((plan) => {
+            if (!o.mentions(plan.what)) {
+              o.review?.(plan.what);
+              return plan;
+            }
+            changed = true;
+            return { ...plan, what: REMOVED_TEXT };
+          });
+          next.plans = plans;
         }
         if (next.batch) {
           const batch = next.batch.filter((line) => !o.mentions(line));

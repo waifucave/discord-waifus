@@ -7,6 +7,8 @@
 // - due reminders in `~/life/reminders.json` fire once (through the router, which lets them through
 //   even while she is asleep, §21.6c); repeating ones move to their next local occurrence. Late
 //   reminders after downtime fire once on the first tick.
+// - a plan with `at` in today's `~/life/schedule.json` fires once at that time (a `plan` wake, §29),
+//   up to 15 minutes late; one written after its time, or whose time is in her bed time, stays a note.
 // - a watch whose timeout passed is removed from `~/life/watches.json` and she is told it timed out
 //   (a `watch_timeout` wake, so an empty watch works as a timer).
 // - wakes held while she was busy come back at her next phone check or the block's end (§21.4).
@@ -24,20 +26,23 @@
 // - the quiet-time rest (§25): with a large context, no turn running or queued, shortly before her
 //   prompt cache expires, her life is poked; the life loop runs the rest turn (`cacheRest.ts`).
 
+import { createHash } from "node:crypto";
 import { listWaifus } from "../orchestration/stores/config.js";
+import { createRevisionedBase } from "../shared/schemas/common.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
-import type { Wake, WakeQueue } from "../shared/schemas/life.js";
+import { PlansFiredSchema, type PlansFired, type Wake, type WakeQueue } from "../shared/schemas/life.js";
+import { StorageValidationError } from "../storage/errors.js";
 import type { DailyCost } from "./budget.js";
 import { bedPhaseAt, bedTimeContaining, dayStartAt, instantOfLocal, lastBedTime, localDayKey, localParts, parseLocalDateTime, type BedPhase } from "./clock.js";
 import { bedContextOf } from "./busy.js";
 import { cacheRestDueFor } from "./cacheRest.js";
-import { busyAt } from "./home/daySchedule.js";
+import { busyAt, timedPlans, type TimedPlan } from "./home/daySchedule.js";
 import type { LifeDeps } from "./deps.js";
-import { readLifeFile, readLifeState, updateLifeState } from "./lifeStore.js";
+import { readLifeFile, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { checkEnvFor, dayPlanFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { onceKey, type ReminderEntry, type WatchEntry } from "./home/specialFiles.js";
 import { morningBatch, morningGreeting, type MorningLine, type MorningPlace, type NotificationView } from "./notifications.js";
-import { lifeLocks } from "./paths.js";
+import { lifeLocks, lifePaths } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
 import { deferForBudget, deferHeld, enqueueWake, hasDeferred, newWakeId, releaseHeld as releaseHeldWakes, takeDeferred } from "./wakeQueue.js";
@@ -77,6 +82,14 @@ const RUNNING_MAINTENANCE = new Map<string, Promise<void>>();
 export function reminderWakeId(reminder: Pick<ReminderEntry, "id" | "at">, timeZone: string): string {
   const due = parseLocalDateTime(reminder.at, timeZone)?.getTime() ?? 0;
   return `w-reminder-${reminder.id}-${due.toString(36)}`;
+}
+
+/** A timed plan fires at most this late (host down, paused, a turn's tick behind); later it is skipped (§29). */
+export const PLAN_LATE_MS = 15 * 60_000;
+
+/** One wake id per tick's plans (their date and keys), so a crash before they are recorded routes the same wake again. */
+export function planWakeId(date: string, keys: readonly string[]): string {
+  return `w-plan-${date}-${createHash("sha256").update(keys.join("\n"), "utf8").digest("hex").slice(0, 12)}`;
 }
 
 /** One wake id per watch timeout (its id and local timeout). */
@@ -146,6 +159,8 @@ export class Scheduler {
   /** Per waifu: when `~/places.md` and `/tmp` were last looked after (in memory: a restart does both again). */
   private readonly placesAt = new Map<string, number>();
   private readonly tmpAt = new Map<string, number>();
+  /** Per waifu: when her timed plans were last looked at (in memory; §29 "written after its time"). */
+  private readonly planCheckAt = new Map<string, number>();
   /** Maintenance runs in the background (a tick never waits for one): abortable, awaited by stop(). */
   private readonly maintenanceRuns = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
@@ -207,6 +222,7 @@ export class Scheduler {
     for (const waifu of waifus) {
       try {
         await this.reminders(waifu);
+        await this.plans(waifu);
         await this.watchTimeouts(waifu);
         await this.releaseHeld(waifu);
         await this.morning(waifu);
@@ -257,6 +273,71 @@ export class Scheduler {
         return next ? [{ ...reminder, at: next }] : [];
       })
     );
+  }
+
+  /**
+   * Her timed plans (§29): a plan in today's `~/life/schedule.json` with `at` wakes her once at that
+   * time (`plan`; the plans due at one tick are one wake). Each is decided once, by key (time + hash
+   * of the text, `planKey`), in `life/plans-fired.json`: fired, or skipped when it was written after
+   * its time, its time is inside her bed time, or it is more than `PLAN_LATE_MS` late. When a plan was
+   * written is known to the tick: the first tick that sees it records the tick before as its time
+   * (the first tick of this scheduler records itself), so a plan written in the 15 s before its time
+   * still fires and one written after the next tick does not. Like reminders, the wake is routed
+   * (under a fixed id) before it is recorded as fired.
+   */
+  private async plans(waifu: WaifuConfig): Promise<void> {
+    const deps = this.o.deps;
+    const now = deps.now();
+    const previous = this.planCheckAt.get(waifu.id);
+    this.planCheckAt.set(waifu.id, now.getTime());
+    const date = localDayKey(now, deps.timeZone);
+    const plans = timedPlans(await dayPlanFor(deps, waifu), now, deps.timeZone);
+    let record: PlansFired;
+    try {
+      record = await readLifeFile(deps.storage, waifu.id, "plans");
+    } catch (error) {
+      if (!(error instanceof StorageValidationError)) throw error;
+      // An unreadable record: what is due now may have fired already, so it counts as decided.
+      const fresh = PlansFiredSchema.parse({
+        ...createRevisionedBase(),
+        date,
+        seen: Object.fromEntries(plans.map((plan) => [plan.key, now.toISOString()])),
+        fired: plans.filter((plan) => plan.due.getTime() <= now.getTime()).map((plan) => plan.key)
+      });
+      await deps.storage.writeJson(lifeLocks.plans(waifu.id), lifePaths.plansFired(waifu.id), PlansFiredSchema, fresh);
+      deps.logger.warn("Life plans record was unreadable; replaced", { waifuId: waifu.id });
+      return;
+    }
+    const today = record.date === date ? record : { ...record, date, seen: {}, fired: [], skipped: [] };
+    // No timed plan and nothing to forget (an empty record, or today's with nothing seen): no write.
+    const empty = Object.keys(record.seen).length === 0 && record.fired.length === 0 && record.skipped.length === 0;
+    if (plans.length === 0 && (empty || (record.date === date && Object.keys(record.seen).length === 0))) return;
+    const decided = new Set([...today.fired, ...today.skipped]);
+    const firstSeen = new Date(previous ?? now.getTime()).toISOString();
+    const seen = Object.fromEntries(plans.map((plan) => [plan.key, today.seen[plan.key] ?? firstSeen]));
+    const fire: TimedPlan[] = [];
+    const skipped: string[] = [];
+    for (const plan of plans) {
+      if (decided.has(plan.key) || plan.due.getTime() > now.getTime()) continue;
+      // Written at or after its time, inside her bed time, or too late: it stays a note.
+      if (Date.parse(seen[plan.key]!) >= plan.due.getTime() || bedTimeContaining(waifu.availability, plan.due, deps.timeZone)) skipped.push(plan.key);
+      else if (now.getTime() - plan.due.getTime() > PLAN_LATE_MS) {
+        skipped.push(plan.key);
+        deps.logger.info("Life plan skipped: too late", { category: "life", waifuId: waifu.id, at: plan.at });
+      } else fire.push(plan);
+    }
+    // Seen (and today's record) first, so a failed route below never makes a plan look written later.
+    await updateLifeFile(deps.storage, waifu.id, "plans", (current) => ({ ...current, date, seen, fired: today.fired, skipped: [...today.skipped, ...skipped] }));
+    if (fire.length === 0) return;
+    const keys = fire.map((plan) => plan.key);
+    const wake: Wake = {
+      id: planWakeId(date, keys),
+      reason: "plan",
+      plans: fire.map((plan) => ({ at: plan.at, what: plan.what })),
+      at: fire[fire.length - 1]!.due.toISOString()
+    };
+    await this.o.router.route(waifu.id, wake);
+    await updateLifeFile(deps.storage, waifu.id, "plans", (current) => (current.date === date ? { ...current, fired: [...new Set([...current.fired, ...keys])] } : current));
   }
 
   /** A watch whose timeout passed (§16.5): routed as `watch_timeout`, then removed from her file. */

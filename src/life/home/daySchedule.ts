@@ -13,10 +13,15 @@
 //
 // A file whose `date` is not today counts as no plan today (no busy blocks); it is never deleted.
 // The wake router (busy holds, §21.4), the detector's availability and her time line read it on
-// every use; block A's `<schedule>` shows the copy from the start of her epoch.
+// every use; block A's `<schedule>` shows the copy from the start of her epoch. A plan with `at`
+// wakes her then (§29, the scheduler's `plan` wake); one without is a note.
 
+import { createHash } from "node:crypto";
 import { instantOfLocal, localDayKey, minutesOfDay } from "../clock.js";
 import { syntaxProblem, type CheckFailure } from "./specialFiles.js";
+
+/** What she is told about timed plans (§29): in the morning greeting, the plans field's help and a schedule write's result. */
+export const PLAN_WAKE_TEXT = "Plans with a time wake you then.";
 
 export const MAX_MOOD_CHARS = 200;
 export const MAX_BUSY_BLOCKS = 12;
@@ -137,15 +142,15 @@ export function checkDayScheduleText(text: string, ctx: { bedTime?: BedTimeWindo
   }
   if (value["plans"] !== undefined) {
     const plans = value["plans"];
-    if (!Array.isArray(plans)) return fail('plans is a list, like [{"at": "21:00", "what": "movie night"}, {"what": "finish the poem"}]');
+    if (!Array.isArray(plans)) return fail(`plans is a list, like [{"at": "21:00", "what": "movie night"}, {"what": "finish the poem"}]. ${PLAN_WAKE_TEXT}`);
     if (plans.length > MAX_PLANS) return fail(`plans has ${plans.length} entries; at most ${MAX_PLANS}`);
     for (let index = 0; index < plans.length; index += 1) {
       const item = plans[index];
       const where = `plans ${index + 1}`;
-      if (!isRecord(item)) return fail(`${where}: each plan is {"at": "HH:MM", "what": "…"} (at is optional)`);
+      if (!isRecord(item)) return fail(`${where}: each plan is {"at": "HH:MM", "what": "…"} (at is optional). ${PLAN_WAKE_TEXT}`);
       const unknown = Object.keys(item).find((key) => !(PLAN_FIELDS as readonly string[]).includes(key));
       if (unknown !== undefined) return fail(`${where}: unknown field "${unknown}" (plans have at and what)`);
-      if (item["at"] !== undefined && (typeof item["at"] !== "string" || !HHMM.test(item["at"]))) return fail(`${where}: at is a local time like "21:00" (or left out)`);
+      if (item["at"] !== undefined && (typeof item["at"] !== "string" || !HHMM.test(item["at"]))) return fail(`${where}: at is a local time like "21:00" (or left out). ${PLAN_WAKE_TEXT}`);
       if (typeof item["what"] !== "string" || !item["what"].trim()) return fail(`${where}: what is required`);
       if (chars(item["what"]) > MAX_PLAN_CHARS) return fail(`${where}: what can be at most ${MAX_PLAN_CHARS} characters`);
       plan.plans.push({ ...(typeof item["at"] === "string" ? { at: item["at"] } : {}), what: item["what"] });
@@ -211,6 +216,33 @@ export function busyAt(plan: DayPlan | undefined, now: Date, timeZone: string): 
     .sort((a, b) => a.getTime() - b.getTime());
   const next = checks[0];
   return { why: block.why.trim(), from: block.from, until: block.to, start, end, release: next ?? end, releaseKind: next ? "phone" : "free" };
+}
+
+/** A timed plan as the scheduler sees it (§29): its time, text, instant and key. */
+export type TimedPlan = { at: string; what: string; due: Date; key: string };
+
+/**
+ * A timed plan's key in `life/plans-fired.json` (§29): `<at> <hash of what>`, so an edit of the text
+ * or the time is a new plan, and no plan text is kept outside her file.
+ */
+export function planKey(plan: { at: string; what: string }): string {
+  return `${plan.at} ${createHash("sha256").update(plan.what, "utf8").digest("hex").slice(0, 16)}`;
+}
+
+/** Today's plans with a time (§29), in time order; a plan listed twice counts once. */
+export function timedPlans(plan: DayPlan | undefined, now: Date, timeZone: string): TimedPlan[] {
+  const today = todaysPlan(plan, now, timeZone);
+  if (!today) return [];
+  const seen = new Set<string>();
+  const out: TimedPlan[] = [];
+  for (const item of today.plans) {
+    if (item.at === undefined) continue;
+    const key = planKey({ at: item.at, what: item.what });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ at: item.at, what: item.what, due: instantOn(today.date, item.at, timeZone), key });
+  }
+  return out.sort((a, b) => a.due.getTime() - b.due.getTime());
 }
 
 /** The `<schedule>` section's plan lines (§21.5): her day as she wrote it, or that there is none. */

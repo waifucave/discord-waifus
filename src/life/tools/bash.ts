@@ -29,7 +29,7 @@ function touchesLifeDir(virtual: string, slug: string): boolean {
 }
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
-import { DREAM_LIFE_REFUSED, noteDmFile, promptCopyNote, storeOf, transcriptViewOf } from "./files.js";
+import { DREAM_LIFE_REFUSED, noteDmFile, planWakeNote, promptCopyNote, storeOf, transcriptViewOf } from "./files.js";
 import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
@@ -177,6 +177,8 @@ async function bashTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
       if (!touched.has(canonical.display)) continue;
       const note = promptCopyNote(ctx, canonical);
       if (note) lines.push(note);
+      const plans = await planWakeNote(ctx, store, canonical);
+      if (plans) lines.push(plans);
     }
     return { content: lines.join("\n") };
   } catch (error) {

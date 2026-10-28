@@ -27,7 +27,7 @@ saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
 | `mood` | Text ≤ 200 characters |
 | `busy` | ≤ 12 blocks `{from, to, why}`; `HH:MM`; `to` after `from` on the same day; `why` required, ≤ 120; no overlaps; **not inside her bed time** (checked against the current bed time on write, not when reading a saved file) |
 | `phoneChecks` | ≤ 24 `HH:MM` times; only those strictly inside a busy block matter |
-| `plans` | ≤ 20 `{at?, what}`; `what` required, ≤ 200; informational only (no wake) |
+| `plans` | ≤ 20 `{at?, what}`; `what` required, ≤ 200; a plan with `at` wakes her then ([Timed plans](#timed-plans)); one without is a note |
 | `note` | Text ≤ 500 |
 | anything else | Refused ("unknown field") |
 
@@ -40,9 +40,42 @@ saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
 - **Live readers**: the wake router (busy holds), Jev's "around" check and her time line read the
   file on every use. The `<schedule>` copy in her system prompt is from her epoch start and
   refreshes at the next compaction; a midday edit never forces one (the harness hash leaves the plan
-  out). A Write/Edit/Bash change in her life adds the stale-copy note when `scheduleInPrompt` is on.
+  out). A Write/Edit/Bash change in her life adds the stale-copy note when `scheduleInPrompt` is on,
+  and, once per turn when the saved file has a plan with `at`, "Plans with a time wake you then."
+  (`tools/files.ts` `planWakeNote`). The errors for the `plans` field end with the same sentence.
+- The scheduler reads it every tick for her timed plans (below).
 - Dreaming never changes it. A forget scrubs its `mood`, `why`, `what` and `note` texts that name the
-  person to `(removed)`.
+  person to `(removed)` (a rewritten timed plan is a new plan, written then: one whose time passed
+  does not fire again).
+
+## Timed plans
+
+`Scheduler.plans` in `src/life/scheduler.ts`, every 15 s tick (spec §29):
+
+- A plan with `at` in **today's** file (its `date` is today) wakes her once at that time with a
+  `plan` wake. Plans without `at`, phone checks and busy blocks never wake her.
+- Each plan is decided once, by its key `<at> <first 16 hex of sha256(what)>`, in
+  `user/waifus/<id>/life/plans-fired.json` (`seen`: when each key was first seen, `fired`,
+  `skipped`; no plan text). An edit of the text or the time is a new key, a new plan; the same key
+  never fires twice. The record of a past day is dropped (reset to today) the next time she has a
+  timed plan.
+- **Written after its time**: the first tick that sees a key records the previous tick's time as
+  when it was written (the first tick after a start records its own time). A plan whose `at` is at
+  or before that never fires. So a plan written in the 15 s before its time still fires; one written
+  after its time does not; one the app first sees after a restart counts as written then.
+- **Late**: a plan fires up to 15 minutes late (`PLAN_LATE_MS`: host down, app paused); later it is
+  skipped (logged "Life plan skipped: too late"). Reminders are for what must happen.
+- **Bed time**: a plan whose `at` falls inside her bed time never fires (it stays a note). A plan
+  just before her bed time that fires late in it gets through like a reminder.
+- **One wake per tick**: all plans that fire at one tick are one wake (`plans: [{at, what}]`, id
+  `w-plan-<date>-<hash of the keys>`, routed before they are recorded as fired, like reminders). It
+  has no place: she decides where (if anywhere) to act.
+- **Routing**: `plan` is in the busy set (gets through a busy block, and up late or dozing) and gets
+  through while asleep, like `reminder`. Over her daily budget it is deferred (reason `budget`) and
+  listed in the batch as `  · plan (Sat 17:30): "<what>"`.
+- **Notification**: one line per plan, `- plan · 17:30 · "send one photo to dm/k if K is around"`
+  (golden `life-plan.txt`). It folds into a running turn like any other wake.
+- An unreadable `plans-fired.json` is replaced; plans already due then count as fired (never twice).
 
 ## The morning wake
 
@@ -57,8 +90,8 @@ time:
 
   > [system] Good morning, it's Tue 27 Oct. Before anything else, write today's schedule in
   > ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your
-  > mood, your plans. Your day is yours to plan: keep it believable for who you are. Your bed time
-  > (00:30–08:30) is fixed. Then deal with what came in overnight.
+  > mood, your plans. Plans with a time wake you then. Your day is yours to plan: keep it believable
+  > for who you are. Your bed time (00:30–08:30) is fixed. Then deal with what came in overnight.
 
   The bed time sentence is left out without a bed time; "Then deal with…" only when something waited.
 - It is followed by the overnight batch (below), is enqueued directly (not through the router), is
@@ -100,8 +133,8 @@ Built when her bed time ends (or a budget pause lifts) from `wakes.json` `deferr
   ref, author and preview. Ordinary chatter, detector picks and chime-ins stay counts. At most
   `life.morningLinesPerPlace` (8) lines per DM or room, the newest, the first saying `+N earlier`.
   In 3.3.0 DMs and rooms were counts only.
-- Then watch matches (with the matching message's time and ref), watch timeouts, reminders (only a
-  budget pause defers them), follow-ups and an earlier unread batch.
+- Then watch matches (with the matching message's time and ref), watch timeouts, reminders and timed
+  plans (only a budget pause defers them), follow-ups and an earlier unread batch.
 - Times are `HH:MM`, with the weekday when not on the morning's day.
 - Kept lines per place are the newest 50 (`wakeQueue.ts` `morningLinesOf`). Messages counted come
   from the conversation cache since the pause began (at most 10 minutes earlier, `NIGHT_LEAD_MS`).
@@ -119,7 +152,7 @@ talk to her (`src/life/wakeRouter.ts` guard 4b, `src/life/busy.ts`):
 
 | Gets through at once | Held |
 |---|---|
-| `dm`, `mention` (incl. replies to her), `name`, `owner`, `reminder`, `watch`, `watch_timeout`, `morning` | `detector` picks and chime-ins, `@everyone`, `role` mentions, anything else |
+| `dm`, `mention` (incl. replies to her), `name`, `owner`, `reminder`, `plan`, `watch`, `watch_timeout`, `morning` | `detector` picks and chime-ins, `@everyone`, `role` mentions, anything else |
 
 - A merged wake gets through when any of its reasons does (a burst with a mention in it).
 - **Held wakes** go to `wakes.json` `held` with `heldUntil` = her next phone check strictly inside
@@ -144,9 +177,9 @@ send anywhere (`state.lastSentAt`) (`src/life/clock.ts` `bedPhaseAt`):
 
 | Phase | Exactly when | Time line | What reaches her |
 |---|---|---|---|
-| **Up late** | Her last send is under `life.busyEngagedMinutes` (10 min) old | `up late` | The busy set (DMs, mentions, replies, her name, owner, reminders, watches, timeouts) and anything in a place she sent to in the last 10 min. The rest is deferred to the morning. |
+| **Up late** | Her last send is under `life.busyEngagedMinutes` (10 min) old | `up late` | The busy set (DMs, mentions, replies, her name, owner, reminders, timed plans, watches, timeouts) and anything in a place she sent to in the last 10 min. The rest is deferred to the morning. |
 | **Dozing** | Not up late, and less than `life.bedDozeMinutes` (60 min) since the later of the bed time's start and her last send | `dozing (bed time)` | Same as up late. |
-| **Asleep** | 60 min or more since the later of the start and her last send | `asleep` | Only her own **reminders** and the **owner's** wakes. Everything else is deferred to the morning. |
+| **Asleep** | 60 min or more since the later of the start and her last send | `asleep` | Only her own **reminders** (and timed plans that fire late into it) and the **owner's** wakes. Everything else is deferred to the morning. |
 
 - A send of hers starts the clock again (up late, then dozing for another hour). A turn she has
   while asleep (a reminder) does not count unless she sends.

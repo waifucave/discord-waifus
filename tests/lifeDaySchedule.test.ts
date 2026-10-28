@@ -63,7 +63,7 @@ describe("~/life/schedule.json checks (§21.2)", () => {
     expect(errorOf({ date: "2026-10-27", phoneChecks: Array.from({ length: 25 }, () => "13:00") })).toBe("error: schedule.json: phoneChecks has 25 times; at most 24");
     expect(errorOf({ date: "2026-10-27", plans: Array.from({ length: 21 }, () => ({ what: "x" })) })).toBe("error: schedule.json: plans has 21 entries; at most 20");
     expect(errorOf({ date: "2026-10-27", plans: [{ at: "21:00" }] })).toBe("error: schedule.json: plans 1: what is required");
-    expect(errorOf({ date: "2026-10-27", plans: [{ at: "9pm", what: "x" }] })).toBe('error: schedule.json: plans 1: at is a local time like "21:00" (or left out)');
+    expect(errorOf({ date: "2026-10-27", plans: [{ at: "9pm", what: "x" }] })).toBe('error: schedule.json: plans 1: at is a local time like "21:00" (or left out). Plans with a time wake you then.');
     expect(errorOf({ date: "2026-10-27", plans: [{ what: "z".repeat(201) }] })).toBe("error: schedule.json: plans 1: what can be at most 200 characters");
     expect(errorOf({ date: "2026-10-27", plans: [{ what: "x", who: "Kevin" }] })).toBe('error: schedule.json: plans 1: unknown field "who" (plans have at and what)');
     expect(errorOf({ date: "2026-10-27", note: "n".repeat(501) })).toBe("error: schedule.json: note can be at most 500 characters");
