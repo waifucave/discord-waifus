@@ -1,4 +1,4 @@
-// The tools a life is offered (Living cast spec §16.3): eleven, in a fixed order so the tool list is
+// The tools a life is offered (Living cast spec §16.3, §30): ten, in a fixed order so the tool list is
 // part of the epoch's stable prefix. `WebSearch` / `WebFetch` are offered only while their caps
 // allow them, `Bash` only while `life.bash.enabled` is on.
 
@@ -8,11 +8,11 @@ import type { LifeDeps } from "../deps.js";
 import { bashTool_ } from "./bash.js";
 import { fileTools } from "./files.js";
 import { messageTools } from "./messages.js";
-import { planningTools } from "./planning.js";
 import type { LifeTool } from "./types.js";
+import { wakeupTool } from "./wakeup.js";
 import { webTools } from "./web.js";
 
-export const ALL_LIFE_TOOLS: readonly LifeTool[] = [...messageTools, ...planningTools, ...fileTools, bashTool_, ...webTools];
+export const ALL_LIFE_TOOLS: readonly LifeTool[] = [...messageTools, wakeupTool, ...fileTools, bashTool_, ...webTools];
 
 /** The tools nightly maintenance and a forget's notes scrub get (§16.8): her files only. */
 export const MAINTENANCE_TOOL_NAMES = ["Read", "Write", "Edit", "Bash"] as const;

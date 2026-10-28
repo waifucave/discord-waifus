@@ -159,7 +159,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
 
   it("watches fire with her note, never on her own messages", async () => {
     const w = await world();
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "bake-club/#general", filter: { words: ["brownie"] }, options: { until: "2026-10-25 14:00", once: false }, note: "Mina wanted brownie tips" }]));
     await say(w, "anyone have a good brownie recipe?");
     const wake = (await queued(w, "ella")).immediate[0];
     expect(wake).toMatchObject({ reason: "watch", watchId: "w1", matched: "brownie", note: "Mina wanted brownie tips", fromName: "Kevin" });
@@ -174,7 +174,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [] }));
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "ask how his exam went", when: [{ from: "Kevin", words: ["exam"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: { from: "Kevin", words: ["exam"] }, options: { until: "2026-10-25 14:00", once: true }, note: "ask how his exam went" }]));
     const message = w.discord.post(dmOf("ella"), "the exam went great btw");
     await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     // Nothing at once: the watch waits for the DM's hold.
@@ -209,7 +209,7 @@ describe("wake reasons (§4.1, §4.2)", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [] }));
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "his exam", when: [{ from: "Kevin", words: ["exam"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: { from: "Kevin", words: ["exam"] }, options: { until: "2026-10-25 14:00", once: true }, note: "his exam" }]));
     const at = w.clock.now().toISOString();
     await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, replyTimestamps: [at] }));
     const message = w.discord.post(dmOf("ella"), "exam done!");
@@ -474,7 +474,7 @@ describe("addressee detector (§4.3)", () => {
 
   it("chime-in never picks an asleep, watched or authoring waifu", async () => {
     const w = await world();
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "lemons", when: [{ place: "bake-club/#general", words: ["lemon"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "bake-club/#general", filter: { words: ["lemon"] }, options: { until: "2026-10-25 14:00", once: false }, note: "lemons" }]));
     w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 1 } } };
     await say(w, "Sam where do you buy a lemon?");
     expect(await reasons(w, "ella")).toEqual(["watch"]);
@@ -527,7 +527,7 @@ describe("addressee detector (§4.3)", () => {
     const history = DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8")));
     expect(history.entries.at(-1)).toMatchObject({ choice: "all", woke: ["ella", "mina"] });
     // Her watch already woke Ella for the burst: only Mina gets the detector wake, never staggered alone.
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "movies", when: [{ place: "bake-club/#general", words: ["movie"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "bake-club/#general", filter: { words: ["movie"] }, options: { until: "2026-10-25 14:00", once: false }, note: "movies" }]));
     routes.length = 0;
     await say(w, "you two pick a movie for tonight");
     expect(routes).toEqual([
@@ -595,7 +595,7 @@ describe("addressee detector (§4.3)", () => {
 
   it("one wake per message: the detector skips a waifu her watch already woke for the burst; others can still be picked (D-c)", async () => {
     const w = await world();
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: false, note: "brownies", when: [{ place: "bake-club/#general", words: ["brownie"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "bake-club/#general", filter: { words: ["brownie"] }, options: { until: "2026-10-25 14:00", once: false }, note: "brownies" }]));
     // The detector picks her: she already has the watch wake, so nothing more.
     w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
     await say(w, "brownie emergency, help");

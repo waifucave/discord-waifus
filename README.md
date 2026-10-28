@@ -38,7 +38,7 @@
 
 You set up a cast of **waifus** — each one with her own persona, AI model and (optionally) her own
 Discord bot. Since **3.0.0, the Living cast**, every waifu is an autonomous agent with **one
-continuous life**: a mention, a reply, her name, a DM, one of her own reminders or watches wakes
+continuous life**: a mention, a reply, her name, a DM, one of her own wakeups wakes
 her; she reads the room, decides whether to answer (or to stay quiet), keeps notes as her memory in
 her own folder and tidies them every night. There is no director picking speakers: each waifu decides for herself.
 
@@ -49,9 +49,9 @@ command. No cloud account, no server to rent — just your API keys and your ima
 
 ## ✨ Features
 
-- 🎭 **A cast that lives** — every waifu has her own persona, model, life log and folder (notes, reminders,
-  watches, files people sent her), and acts on her own.
-- 🔔 **Woken by what concerns her** — mentions, replies, her name, DMs, her reminders and watches, and an
+- 🎭 **A cast that lives** — every waifu has her own persona, model, life log and folder (notes, wakeups,
+  files people sent her), and acts on her own.
+- 🔔 **Woken by what concerns her** — mentions, replies, her name, DMs, her own wakeups (times, watches, web pages; she can write their filters in JavaScript), and an
   addressee detector for messages nobody addressed.
 - 😴 **Bed time, her own day and budgets** — a soft nightly bed time (up late, dozing, asleep) with a
   morning wake where she plans her own day (busy blocks, phone checks, mood), and an optional daily
@@ -357,7 +357,7 @@ summary, queue and files. A DM user can also use `/forget` in their DM with a wa
 - **Cast** — persona, style, model and effort, her bot, wake-on-name, schedule, daily budget, DMs.
 - **Life** — each waifu's live timeline (tool calls with their arguments; private chats hidden unless
   you reveal them on the host itself), Wake / Compact / Reset, review lines, today's web searches,
-  her reminders and watches (with delete buttons), a browser and text editor for her files (her home
+  her wakeups (with their code and delete buttons), a browser and text editor for her files (her home
   and `/tmp`; files from private chats stay unnamed unless revealed on the host), and the forget form.
 - **Rooms** — servers and channels, who may speak where, threads, and the detector override.
 - **Activity** — logs, model calls (a life's calls show metadata only) and usage by day, waifu,
@@ -385,7 +385,7 @@ it all, offline):
 | `waifus wake WAIFU [note]` | Wake a waifu now, with a note she sees. |
 | `waifus life WAIFU [--log]` | Her status, queue and today's cost; `--log` adds her recent life (`--private` on the host shows DMs). |
 | `waifus files WAIFU [PATH] [--root tmp]` | List a folder of her home (or `/tmp`), or print one of her text files (`--private` on the host shows files from DMs). |
-| `waifus schedule WAIFU` / `waifus watches WAIFU` | Her reminders and her watches. |
+| `waifus wakeups WAIFU [--private]` | Her wakeups with their code (`schedule` and `watches` show only timed ones or watches and pages). |
 | `waifus forget USER_ID` | Forget a person (asks for confirmation; `--yes` for scripts). |
 | `waifus usage [--by waifu]` | Model calls and cost by local day, waifu, purpose or model. |
 | `waifus remote` / `remote status` / `remote stop` | The remote-management gateway on another device. |
@@ -484,7 +484,7 @@ npm run dev:frontend
 ~/.dc-waifus/user/providers.json
 ~/.dc-waifus/user/discord-bots.json
 ~/.dc-waifus/user/waifus/<id>/life/    # her life: state, log, wakes, plans
-~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), life/ (her day, reminders, watches, profile, places)
+~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), life/ (her day, wakeups, profile, places)
 ~/.dc-waifus/user/waifus/<id>/tmp/     # her /tmp: files people sent, deleted after 7 days
 ~/.dc-waifus/user/servers/
 ~/.dc-waifus/user/dms/

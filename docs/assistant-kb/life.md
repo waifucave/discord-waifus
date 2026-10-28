@@ -5,7 +5,7 @@ How to see what a waifu is doing, wake her, compact or reset her life, and forge
 ## What a life is
 
 Each waifu is an autonomous agent with one continuous life. Things that concern her (a mention, a
-reply, her name, a DM, one of her reminders or watches, the addressee detector's pick) arrive as
+reply, her name, a DM, one of her wakeups, the addressee detector's pick) arrive as
 wakes in her queue. She handles them one turn at a time: she reads, decides what to do, and only
 what she sends reaches people. Her life is split into epochs: when it grows long, compaction
 summarises it into her `<life_so_far>` and a new epoch starts with her last few turns kept.
@@ -14,7 +14,7 @@ summarises it into her `<life_so_far>` and a new epoch starts with her last few 
 `compaction.triggerRatio` (default 0.7) of her context budget, the turn after the running one is
 a rest turn: a notice tells her that her context will be reset to the summary she writes now, that
 her home, `/tmp` and `/transcripts` stay as they are, and to write it clearly. In that turn she can
-use her files, Bash, reminders and watches, but SendMessage, React, WebSearch and WebFetch answer
+use her files, Bash and Wakeup, but SendMessage, React, WebSearch and WebFetch answer
 "finish your summary first". Queued wakes wait until after it. If her final reply is at least
 `life.restSummaryMinChars` (default 200) characters, a new epoch starts from that summary alone
 (Life shows "rested (her own summary)"); a shorter reply, a failed turn or a cap means compaction
@@ -62,7 +62,7 @@ usually write, her result says so (nothing is refused for length).
 summary with times: each DM one line per message (time, ref, preview), each room its counts with
 the night's time span and then one line per message that talked to her (a mention or reply, her
 name, a role or `@everyone`; ordinary chatter stays a count), rooms with the most mentions first,
-then watch matches (with the matching message's time and ref), timed-out watches, reminders and
+then watch matches (with the matching message's time and ref), timed-out watches, her timed wakeups and
 timed plans (a budget pause defers those).
 Times are her local `HH:MM`, with the weekday when not on the morning's day. At most
 `life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
@@ -86,10 +86,10 @@ MEMORY.md) tells her the prompt's copy updates at her next summary.
 "<what>"`, all plans due at one moment together), up to 15 minutes late (later it is skipped). A
 plan written after its time, or whose time is inside her bed time, does not wake her; editing a
 plan's text or time makes it a new plan. The app keeps only hashes of the plans that fired
-(`life/plans-fired.json`). Plans without a time stay notes. Reminders are for what must happen.
+(`life/plans-fired.json`). Plans without a time stay notes. Her wakeups are for what must happen.
 
-**Busy.** In a busy block DMs, mentions, replies, her name, the owner's wakes, her reminders, timed
-plans and watches reach her at once; detector picks, chime-ins, `@everyone` and role mentions and follow-ups
+**Busy.** In a busy block DMs, mentions, replies, her name, the owner's wakes, her timed wakeups,
+timed plans and watches reach her at once; detector picks, chime-ins, `@everyone` and role mentions and follow-ups
 are held until her next phone check in the block (else its end) and arrive together with a line
 saying why. A place where something that got through woke her and she then sent stays open for
 `life.busyEngagedMinutes` (10) after her latest send there.
@@ -98,7 +98,7 @@ saying why. A place where something that got through woke her and she then sent 
 send is under `life.busyEngagedMinutes` old (people talking to her, and places she just sent to,
 reach her), then *dozing* until `life.bedDozeMinutes` (60) after the later of the bed time's start
 and her last send (like busy, but what waits is kept for the morning), then *asleep*: only her own
-reminders and the owner's wakes reach her, a DM gets the sleep notice once per bed time, and
+timed wakeups (and stopped-wakeup notices) and the owner's wakes reach her, a DM gets the sleep notice once per bed time, and
 everything else waits for the morning wake at the bed time's end. A send of hers starts the clock
 again. The addressee detector only offers waifus who are around in that place: awake, or busy or
 up late or dozing in a place she sent to in the last `life.busyEngagedMinutes` (she joined in
@@ -130,12 +130,12 @@ it stays hidden.
   disabled or has no bot of her own. With Discord offline, or the cast reloading, it waits in her
   queue (`queued_offline`).
 - **Compact**: summarise her life now and start a new epoch. Needs Discord connected and a model.
-- **Reset**: start a fresh epoch with no summary. Her files (notes, reminders and watches) and
+- **Reset**: start a fresh epoch with no summary. Her files (notes and wakeups) and
   queued wakes stay; the old log is kept for 7 days.
 - **Needs review**: after a forget, lines that mention a name someone else also has are listed per
   waifu instead of being removed. Check each one and dismiss it.
 
-## Her own computer: files, reminders and watches
+## Her own computer: files
 
 Each waifu has her own small, isolated machine. She works in it with Read, Write, Edit and a
 simulated Bash (nothing she runs can reach the host or the network):
@@ -144,9 +144,8 @@ simulated Bash (nothing she runs can reach the host or the network):
   (one line per note, copied into her prompt at each epoch start). The files the app reads are in
   `~/life/` (SendMessage never attaches them, like MEMORY.md and her notes; a `~/life/` folder of
   her own from before 3.3.0 was renamed `~/life-notes/`):
-  `schedule.json` her day (see "Her day"), `reminders.json` her reminders and `watches.json` her
-  watches (she sets them with ScheduleWake and WatchFor and changes or cancels them by editing the
-  files); `places.md` lists her rooms and private chats and is kept up to date by the app
+  `schedule.json` her day (see "Her day"), `wakeups.json` her wakeups (see "Her wakeups");
+  `places.md` lists her rooms and private chats and is kept up to date by the app
   (read-only); `profile.json` is her Discord profile (`name` shown read-only,
   `username`, `bio`, `nicknames` keyed by server as her places name it, like `bake-club`): the
   same values as her waifu config, so her edit changes her config (and her bot), and a dashboard
@@ -176,22 +175,51 @@ grows past `life.bash.maxMemoryMb` while it runs. Names are compared as a case-i
 does: `~/Memory.md` is `~/MEMORY.md`.
 
 To look at them: Dashboard → Life (a file browser for her home, `/tmp` and her transcripts, with a
-text editor and image previews, and her reminders and watches with delete buttons), `waifus files
-<id> [path] [--root tmp|transcripts]`, `waifus schedule <id>`, `waifus watches <id>`, or the routes `GET /api/waifus/:id/files`,
-`GET|PUT|DELETE /api/waifus/:id/files/<path>`, `GET /api/waifus/:id/schedule` (her reminders) and `/watches`. A save
+text editor and image previews, and her wakeups with delete buttons), `waifus files
+<id> [path] [--root tmp|transcripts]`, `waifus wakeups <id>`, or the routes `GET /api/waifus/:id/files`,
+`GET|PUT|DELETE /api/waifus/:id/files/<path>` and `GET /api/waifus/:id/wakeups`. A save
 from the dashboard or the API passes the same checks as her own Write tool: `life/places.md` is refused,
-`life/schedule.json`, `life/reminders.json`, `life/watches.json` and `life/profile.json` must stay valid (a broken one is refused with its line and
-column, and nothing is saved), and a file changed since it was read is a conflict. Transcripts are
+`life/schedule.json`, `life/wakeups.json` and `life/profile.json` must stay valid (a broken one is refused with its line and
+column, and nothing is saved; her wakeups' functions are compiled first), and a file changed since it was read is a conflict. Transcripts are
 read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
 
 Files from private chats (a download from a DM, a copy she made of one, anything under `/tmp/dm/`,
-her DM transcripts under `/transcripts/dm/`, and an exact copy of one in her home) are listed as `[private chat redacted]` and open only with the reveal on the host; a watch bound to
-a DM is shown without its words, and `watches.json` itself then reads as a redacted, read-only copy
-(changing or deleting it needs the reveal on the host). A note (`.md`) whose lines link to a file from
+her DM transcripts under `/transcripts/dm/`, and an exact copy of one in her home) are listed as `[private chat redacted]` and open only with the reveal on the host; a wakeup watching
+a DM is shown without its words (and an "everywhere" watch without its state), and `wakeups.json`
+itself then reads as a redacted, read-only copy (changing or deleting it needs the reveal on the
+host). A note (`.md`) whose lines link to a file from
 a private chat or name a DM reads the same way: those lines are `[private chat redacted]`, the copy is
 read-only, and its `hash` is still the real file's. Over Remote Access, and for the dashboard assistant, they stay
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
 click on its secure dashboard card applies.
+
+## Her wakeups
+
+She plans ahead with one tool, `Wakeup(script)`: a short JavaScript script calling `at(when, note)`
+(once: "fri 18:00", "in 45m"), `every(when, note)` (repeating: "weekday 08:30", "mon,fri 18:30" or a
+cron, steps of at least 15 minutes), `watch(places, filter, options, note)` (a message in some places,
+or "everywhere", passes a filter: an object like `{from: "Mina", words: ["brownie"]}` or her own
+function `(msg, state) => …`; ends after `for` / `until`, at most 7 days, and she is told when it ends,
+so it also works as a timer), `page(url, check, options, note)` (a web page checked every `every` (at
+least 1h) for at most 7 days: `{contains: "in stock"}`, `"changes"` or her own function) and
+`cancel(id)`. A script is all or nothing: any error refuses it with its line and saves nothing.
+Everything is in `~/life/wakeups.json` (ids `t4` timed, `w3` watch, `p1` page), which she may also
+edit; at most 20 timed, 10 watches and 3 pages.
+
+Her functions run in a sandbox (QuickJS in a worker thread, no network or host access, 50 ms each)
+and may not use anything from outside themselves; `state` lets them remember things between runs (it
+is saved in her file at most once a minute). One that fails three times in a row is stopped
+(`disabled` in her file, with the reason) and she is told; changing its code turns it back on.
+Pages are fetched by the app with the same private-address protection as WebFetch and no model call,
+at most 72 a day, and not at all while page fetching is off (a `life.webFetch` cap at 0: then she
+can't set a new page).
+
+The owner sees them on Dashboard → Life (each with its code, state and why it stopped, a Delete
+button), with `waifus wakeups <id> [--private]` (`schedule` and `watches` show only some kinds),
+`GET /api/waifus/:id/wakeups` and the assistant's `list_wakeups`. Deleting one rewrites her file;
+she is not told. A wakeup watching a private chat is a private entry: shown only as private unless
+revealed on the host. Her reminders and watches from before this became wakeups on the first start
+of the new version (a reminder `r4` is now `t4`; the old files are archived).
 
 ## Dreaming
 
@@ -222,7 +250,7 @@ changes anything under `~/life/`. `waifus help dreaming` explains it on the comm
 a Discord user from every DM, the member lists, the archive and every transcript (their lines, the
 lines that mention them or a name only they have, and their DM transcripts whole), and scrubs every
 waifu's life log, summary, queue and files (her notes and every other text file in her home, her
-reminders and watches, and the files the person sent her). A DM user's `/forget conversation`
+wakeups naming or watching them, and the files the person sent her). A DM user's `/forget conversation`
 deletes that DM's transcript; `/forget everything` also removes their lines in the rooms that
 waifu can see. Forget is a best-effort scrub:
 

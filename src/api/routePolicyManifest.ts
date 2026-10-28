@@ -242,15 +242,13 @@ export const ROUTE_POLICY_MANIFEST: readonly RoutePolicyDefinition[] = Object.fr
   mutation("POST", "/api/waifus/:waifuId/life/reset", "transactional", "waifu.life.reset"),
   safe("/api/waifus/:waifuId/life/needs-review"),
   mutation("DELETE", "/api/waifus/:waifuId/life/needs-review/:itemId", "transactional", "waifu.life.review.dismiss"),
-  // Living cast §16.11: her files, reminders and watches.
+  // Living cast §16.11, §30.3: her files and wakeups.
   safe("/api/waifus/:waifuId/files"),
   safe("/api/waifus/:waifuId/files/*"),
   mutation("PUT", "/api/waifus/:waifuId/files/*", "transactional", "waifu.files.write"),
   mutation("DELETE", "/api/waifus/:waifuId/files/*", "transactional", "waifu.files.delete"),
-  safe("/api/waifus/:waifuId/schedule"),
-  mutation("DELETE", "/api/waifus/:waifuId/schedule/:reminderId", "transactional", "waifu.schedule.delete"),
-  safe("/api/waifus/:waifuId/watches"),
-  mutation("DELETE", "/api/waifus/:waifuId/watches/:watchId", "transactional", "waifu.watches.delete"),
+  safe("/api/waifus/:waifuId/wakeups"),
+  mutation("DELETE", "/api/waifus/:waifuId/wakeups/:wakeupId", "transactional", "waifu.wakeups.delete"),
   safe("/api/usage"),
   safe("/api/search/usage"),
   safe("/api/detector/config"),

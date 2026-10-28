@@ -429,7 +429,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
           }}
         >
           <p className="t-small">
-            She starts a fresh epoch with no summary of what happened before. Her files (notes, reminders and watches) and
+            She starts a fresh epoch with no summary of what happened before. Her files (notes and wakeups) and
             queued wakes stay; the old log is kept for 7 days.
           </p>
         </ConfirmDialog>

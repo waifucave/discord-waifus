@@ -29,7 +29,8 @@ export function messagesOf(wake: Wake): Array<WakeMessage & { reasons: WakeReaso
       preview: wake.preview ?? "",
       reasons: fallback,
       ...(wake.matched !== undefined ? { matched: wake.matched } : {}),
-      ...(wake.note !== undefined && wake.reason !== "owner" ? { note: wake.note } : {})
+      ...(wake.note !== undefined && wake.reason !== "owner" ? { note: wake.note } : {}),
+      ...(wake.wakeups && wake.wakeups.length > 0 ? { wakeups: wake.wakeups } : {})
     }
   ];
 }
@@ -42,7 +43,8 @@ export function mergeMessage(a: WakeMessage, b: WakeMessage): WakeMessage {
     ...a,
     ...(reasons ? { reasons } : {}),
     ...(a.matched ?? b.matched ? { matched: (a.matched ?? b.matched)! } : {}),
-    ...(a.note ?? b.note ? { note: (a.note ?? b.note)! } : {})
+    ...(a.note ?? b.note ? { note: (a.note ?? b.note)! } : {}),
+    ...(a.wakeups || b.wakeups ? { wakeups: [...(a.wakeups ?? []), ...(b.wakeups ?? []).filter((fired) => !(a.wakeups ?? []).some((known) => known.id === fired.id))] } : {})
   };
 }
 

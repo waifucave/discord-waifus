@@ -75,7 +75,7 @@ Source: `Life.turn`, `Life.rounds`, `Life.runTools` in `src/life/lifeLoop.ts`.
 ## Tool-call order and side effects
 
 Tools run one after another in the order she called them. Before a side-effecting tool
-(`SendMessage`, `React`, `Write`, `Edit`, `WatchFor`, `ScheduleWake`) an intent line goes to
+(`SendMessage`, `React`, `Write`, `Edit`, `Wakeup`) an intent line goes to
 `life/intents.jsonl`, and a `done` line after it. A `SendMessage` script also writes, for each
 message, the digest of its final outgoing text with its script `line` just before the Discord call,
 and a `lineDone` line with the message id right after (§27.1). `Bash` journals its own change set
@@ -88,6 +88,10 @@ left (also when the call had finished, stopped part way, and only its result was
 this was sent; read the place before sending it again` (or, after messages that were sent, `it is
 unknown whether line 3 was sent; …`); then `[system] interrupted by a restart`
 (`src/life/repair.ts`). A pre-§27 call (`text`) is one message, its digest line without `line`.
+A `Wakeup` writes, just before saving, a digest of what it adds (kind, time and note of each) and
+cancels; repair finds those in `~/life/wakeups.json` (`set t2; cancelled t1 (recovered)`) or says
+`[interrupted] not saved`. A `ScheduleWake`/`WatchFor` call from before §30 is found by its note (and
+a one-off reminder's time) in the migrated file.
 
 ## Mid-turn notifications (folding)
 
@@ -189,7 +193,7 @@ Golden: `tests/golden/__snapshots__/life-system-prompt.txt`.
 
 | Section | Content |
 |---|---|
-| `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; WatchFor/ScheduleWake habits; her day file and busy rule; the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system; DM discretion. `/tmp` retention follows `life.tmp.retentionDays`. |
+| `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; Wakeup habits (watch for answers, a wakeup to ask how it went, her own filter code, everything in `~/life/wakeups.json`); her day file and busy rule; the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system; DM discretion. `/tmp` retention follows `life.tmp.retentionDays`. |
 | `<identity>` | `Your name is …`, her display name, her server nicknames (as last seen, kept in `state.serverNicknames` so an unloaded guild never changes the block), the other enabled waifus by name. |
 | `<persona>` | Her persona text (when not empty). |
 | `<schedule>` | Only when `scheduleInPrompt` is on (default): `Your bed time is HH:MM–HH:MM.` (when enabled), today's plan from `~/life/schedule.json` as it was at epoch start, or `No plan for today yet.`, then `Times are local (<zone>).` |
@@ -300,7 +304,7 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   one ("…When this turn ends, your context will be reset…"), so rest turns in older logs stay private
   and are never kept by compaction.
 - `SendMessage`, `React`, `WebSearch`, `WebFetch` answer `error: finish your summary first; you can
-  do this after the reset`. File tools, Bash, `ScheduleWake`, `WatchFor` work. No wake is taken or
+  do this after the reset`. File tools, Bash, `Wakeup` work. No wake is taken or
   folded in.
 - **Accepted**: the turn ended normally and her final text is at least `life.restSummaryMinChars`
   (200) characters → a new epoch whose `<life_so_far>` is `[your summary before the reset]` + her

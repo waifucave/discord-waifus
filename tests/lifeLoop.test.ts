@@ -174,6 +174,30 @@ describe("life loop", () => {
     expect(text).toContain("ella cake?");
   });
 
+  it("a Wakeup in a room turn that watches a DM is a DM call: the owner's views hide it (D14, §30.3)", async () => {
+    const world = await lifeWorld(roots, {
+      scripts: script(
+        textTurn("(later)"),
+        toolTurn([{ name: "Wakeup", input: { script: 'watch("dm/kevin", {words: ["biopsy"]}, {for: "1d"}, "ask how the biopsy went")\nat("in 1h", "bake")' } }]),
+        textTurn("cake time")
+      )
+    });
+    const dm = world.discord.post(dmOf("ella"), "hi");
+    await world.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    world.cast.intake.flushDms();
+    await world.cast.settle();
+    await world.cast.life("ella").runNow();
+    await mention(world, "ella cake?");
+    await world.cast.life("ella").runNow();
+    const state = await readLifeState(world.storage, "ella");
+    const log = await readLifeLog(world.storage, "ella", state.epoch);
+    const results = log.filter((line) => line.kind === "tool_results");
+    expect(results.at(-1)!.dmCalls).toHaveLength(1);
+    const scan = scanDmContent(log);
+    const text = JSON.stringify(log.map((line) => viewLogLine(line, scan, { includePrivate: false }).view));
+    expect(text).not.toContain("biopsy");
+  });
+
   it("records a DM turn's web searches as private, also one made before the turn touched a DM (review: DM turns)", async () => {
     const backend = {
       search: async () => ({ ok: true as const, tier: "anonymous" as const, tool: "web_search_exa", rawText: "", truncated: false, results: [] }),

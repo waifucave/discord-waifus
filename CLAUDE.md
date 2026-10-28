@@ -20,7 +20,7 @@ the code is right: fix the docs.
 - `npm run typecheck` — type-checks backend and frontend configs separately, no emit.
 - `npm run test` / `npm run test:watch` — Vitest, Node environment, `tests/**/*.test.ts`. Run one file with `npx vitest run tests/<name>.test.ts`; one test with `npx vitest run -t "<name pattern>"`.
 - `npm run benchmark:decisions` — preview bounded decision judgments without inference; `-- --live` runs the benchmark through `ModelClient` using saved provider settings. Local Laya uses a separate Python environment. See `docs/decision-api-benchmark.md`; this tooling does not enable anything in production.
-- `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`, and the settings and life commands `help`, `list`, `get`, `set`, `unset`, `wake`, `life`, `files`, `schedule`, `watches`, `forget`, `usage`). `remote status` and `remote stop` target only the remote gateway daemon.
+- `npm run waifus -- <cmd>` — invoke the CLI through the local bin (`start`, `dev`, `stop`, `restart`, `status`, `remote`, `doctor`, `clean`, `update`, and the settings and life commands `help`, `list`, `get`, `set`, `unset`, `wake`, `life`, `files`, `wakeups` (with `schedule` and `watches`, filtered views), `forget`, `usage`). `remote status` and `remote stop` target only the remote gateway daemon.
 - `npm run docs:settings:generate` / `:check` — regenerate or verify `docs/assistant-kb/settings.md` and the generated endpoint table of `docs/assistant-kb/api.md` (`tests/settingsDocs.test.ts` fails when they are stale).
 - `npm run dev:frontend` — Vite dashboard on `:5173`, proxies `/api` to `127.0.0.1:3888`. Pair with `npm run waifus -- dev` for end-to-end iteration.
 - `npm run release:beta -- <version> --yes --message "..."` — full release from a clean `main`: validates (tests, build, `check-no-file-deps`), packs, pushes the `v<version>` tag, and the GitHub workflow publishes the tarball to npm (`npm publish <tarball>` runs no lifecycle scripts, so `prepublishOnly` never fires on that path). Deploying to a machine is a separate manual `npm install -g @waifucave/discord-waifus@<version>` + `waifus restart`.
@@ -55,7 +55,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1–L4 done; L3's own
 choices are listed in spec §14.4, L4's "as built" notes in §16, which overrides §6 and §7.1–§7.3;
-her day, busy holds and bed time in §21 with its as-built §21.9)**: each waifu is an autonomous agent with one continuous
+her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
 `LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: typing-aware holds in
@@ -64,9 +64,9 @@ an author of the burst is typing there (6 s per typing event, from the House bot
 `TYPING_START` packets), capped at 10 s / 60 s from the first message; a human message's
 mentions/replies/names/`@everyone`/shared roles wait for its burst (one merged wake per waifu
 that keeps every message of the burst in `messages`, each with the reasons it gave her; spec §20,
-`wakeMessages.ts`), room watches and waifu-authored direct wakes route at
-once, a DM's watch matches ride on its `dm` wake after the DM hold (on the line of the message
-they matched), and
+`wakeMessages.ts`), room watches (her wakeups, §30) and waifu-authored direct wakes route at
+once, a DM's wakeup matches ride on its `dm` wake after the DM hold (on the line of the message
+they matched; several of her wakeups on one message are one wake, a line each), and
 everything else, a person's burst or a waifu's own burst (her lines per place, 1.5 s quiet, never
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
@@ -77,7 +77,7 @@ chime-in for 10 minutes (`CHIME_IN_INTERVAL_MS`), `chime_in`; with `human` a chi
 over them); the state carries each line's
 `minutesAgo` (a stale address to someone gone 30+ minutes reads as `anyone`); no loop cap on
 waifu-only rounds beyond the optional room loop guard and daily budgets) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
-per-user wake limit, bed time (§21.6c: asleep, only `reminder`, `plan` and `owner` get through, the rest is
+per-user wake limit, bed time (§21.6c: asleep, only `reminder`, `plan`, `wakeup_error` and `owner` get through, the rest is
 deferred to the morning with the DM sleep notice; up late or dozing, the busy set (`busy.ts`
 `getsThroughBusy`) and places she sent to in the last `life.busyEngagedMinutes` get through, the
 rest is deferred; the phase comes from `lastSentAt`, `clock.ts` `bedPhaseAt`), busy holds (§21.4:
@@ -126,9 +126,34 @@ Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.t
 pause start) so catch-up never re-wakes a message it already handled; a mark never passes a message
 still held (a staggered wake, a debouncing burst, a running detector call), and every forget path
 drops the person's DM marks at once. `stop()` aborts lives and maintenance before awaiting them.
-Her tool surface is "her own computer" (spec §16): eleven PascalCase tools in `tools/` —
-`ReadMessages`, `SendMessage`, `React` (messages.ts), `WatchFor`, `ScheduleWake`
-(planning.ts), `Read`, `Write`, `Edit` (files.ts), `Bash` (bash.ts), `WebSearch`, `WebFetch` (web.ts).
+Her tool surface is "her own computer" (spec §16): ten PascalCase tools in `tools/` —
+`ReadMessages`, `SendMessage`, `React` (messages.ts), `Wakeup` (wakeup.ts), `Read`, `Write`, `Edit`
+(files.ts), `Bash` (bash.ts), `WebSearch`, `WebFetch` (web.ts).
+`Wakeup(script)` (spec §30, `src/life/wakeups/`): her JavaScript script calls `at(when, note)`,
+`every(when, note)` (day/weekday lists or a 5-field cron, steps ≥ 15 min; the result echoes the next
+three times), `watch(places, filter, options, note)` (an object filter `{from, words, any, place}`, a
+list of them (`[]` a timer), or her function `(msg, state) => true | "line" | false`; ≤ 7 days),
+`page(url, check, options, note)` (`{contains}`, `"changes"` or a function; every ≥ 1h, ≤ 7 days,
+fetched by the scheduler through `WebTools.fetchForWakeup`: the SSRF-denying winter-web fetcher, no
+cache, no model call, nothing while page fetching is off, a URL never sooner than its `every` across
+edits, at most 72 a day) and `cancel(id)`; the calls are recorded in a 500 ms run, then checked
+(`file.ts` `checkEntry`; her functions must not use names from outside them: acorn 8.19.0 free-name
+analysis in `functionSource.ts`) and compiled, and saved all or nothing through `HomeStore.applyWakeups`
+(any error: `error: line N: …; nothing was saved`). Caps 20 timed / 10 watches / 3 pages. Her code runs in
+`src/life/sandbox/` (quickjs-emscripten 0.32.0, exact pin, the sync build; the asyncify build is in the
+same package for §31): one long-lived worker thread, a fresh QuickJS runtime per run with no host
+functions (JSON in, JSON out, read with built-ins captured before her code and cut in the worker;
+`Date` on the app clock in her zone), 50 ms CPU / 16 MiB / 64 KiB stack per event run, each run also
+timed whole (a native call over its budget is a time hit), a per-run watchdog (budget + 250 ms) and a
+worker restart after a crash or limit hit; the host checks every answer (`codeRunOf`) and her
+wakeups are caught per waifu in intake and per step in the scheduler;
+`tests/sandboxIsolation.test.ts` is the escape suite. `wakeups/run.ts` matches watches (every function
+of hers for one message in one sandbox request), checks pages, counts errors (three in a row:
+`disabled` and a `wakeup_error` wake); `state.ts` keeps her code's state in memory, written into her
+file at most once a minute (`saveWakeupStates`, also at stop and before a forget); `view.ts` is the
+owner views' D14 redaction (a wakeup watching a DM is a private entry; an "everywhere" watch's state
+and stop reason are redacted; her Read/Bash read of a file holding one is a DM call; their error
+wakes are DM wakes).
 `ReadMessages(place, query?)` (spec §22): up to 5 places or `everywhere`; the freeform query
 (`tools/readQuery.ts`: `before|after|around <#ref | date time | date | HH:MM | yesterday HH:MM>`, a
 #ref anchor included, before + after a range, `max:N`, `people:`, `search:`) pages a conversation
@@ -150,9 +175,9 @@ call (`text`, `reply_to`, `files`) still runs as one message.
 Her folders are `/home/<slug>` and `/tmp`, backed by `user/waifus/<id>/home/` and `.../tmp/`;
 `src/life/home/` holds the one path-rules module (`pathRules.ts`), link-refusing file access
 (`herFiles.ts`), the store every write path goes through (`homeStore.ts`: limits, case collisions,
-`life/places.md` read-only, the strict JSON checks of the special files in `~/life/` (`reminders.json`,
-`watches.json`, `profile.json` in `specialFiles.ts`/`profileFile.ts`, her day `schedule.json` in
-`daySchedule.ts`) with line/column errors, Bash change sets journalled in `life/pending-changes/` and applied all or
+`life/places.md` read-only, the strict JSON checks of the special files in `~/life/` (`wakeups.json` in
+`src/life/wakeups/file.ts`, `profile.json` in `profileFile.ts`, her day `schedule.json` in
+`daySchedule.ts`; `specialFiles.ts` the shared JSON parser) with line/column errors, Bash change sets journalled in `life/pending-changes/` and applied all or
 nothing, `/tmp` expiry and size cap, the provenance index `life/files-index.json`, private files),
 `places.md` generation (`index.ts`) and PDF text in its own worker (`pdf.ts`). `Bash` is just-bash
 3.6.0 (exact pin) with WebAssembly CPython in a worker thread per call over an in-memory copy of
@@ -179,18 +204,20 @@ under the DM they came from). Web search/fetch in
 `search.ts` over `web/` (a thin adapter over `@yanlinglabs/winter-web`: Exa's hosted MCP, keyless
 by default with the `exa` provider credential as fallback, and the SSRF-checked page fetcher, always
 `privateAddressPolicy: "deny"`, with a digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
-`log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `watch-ids.json`,
-`schedule-ids.json`, `plans-fired.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
+`log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `wakeup-ids.json`,
+`wakeups-v1.json`, `plans-fired.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
 `needs-review.json`, `usage.json`) and her home `user/waifus/<id>/home/` (`MEMORY.md` index at the root; `life/` with her day
-`schedule.json`, `reminders.json`, `watches.json`, `profile.json`, `places.md`; spec §21). Boot repairs every life (`repair.ts`: finishes
+`schedule.json`, `wakeups.json`, `profile.json`, `places.md`; spec §21, §30). Boot repairs every life (`repair.ts`: finishes
 journalled change sets first), runs queued
 owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
-fires reminders from her file (routed under a deterministic wake id before removal), fires her
+runs her wakeups (`Scheduler.wakeups`, spec §30.2: a due `at`/`every` is a `reminder` wake routed
+under a deterministic wake id before an `at` is removed; watch and page ends are `watch_timeout`;
+pages are checked; her code's state is saved at most once a minute; a file changed outside
+`HomeStore` is resolved again), fires her
 timed plans (spec §29, `Scheduler.plans`: a plan with `at` in today's `~/life/schedule.json` is one
 `plan` wake at that time, the plans of one tick together, each once by `<at> <hash of what>` in
 `life/plans-fired.json`; up to 15 min late; not when written after its time (first seen = the
-previous tick) or inside her bed time; `plan` gets through busy and bed time like `reminder`), routes watch
-timeouts (`watch_timeout`), releases held wakes at her phone checks, refreshes `places.md` (≤1/min;
+previous tick) or inside her bed time; `plan` gets through busy and bed time like `reminder`), releases held wakes at her phone checks, refreshes `places.md` (≤1/min;
 also at every turn start), expires `/tmp` (first tick, then hourly), sends the day wake when her
 bed time ends (else at `life.dayStartHourLocal`; id `w-day-<date>`: the greeting asking her to
 write `~/life/schedule.json`, then the overnight batch (spec §23, `notifications.ts` `morningBatch`: DMs
@@ -293,7 +320,14 @@ start), `living-cast-drop-busy-v1` (owner busy blocks archived and dropped) and
 (`life/life-folder-v1.json`, written by `HomeStore` under its lock on every write to her home, so a
 profile or file the app writes before her first tick is covered; a `life/` holding only app file
 names is the app's) and records each part,
-so a lost ledger never moves her later files and a crash resumes where it stopped. Retired data shapes the migrations
+so a lost ledger never moves her later files and a crash resumes where it stopped. §30 added
+`living-cast-wakeups-v1` (`migrationSteps/livingCastWakeups.ts`, once, after the send-cap step):
+her `reminders.json` and `watches.json` become `~/life/wakeups.json` (`r4` → `t4`, `w3` stays; a daily
+or weekly reminder an `every`), `schedule-ids.json`/`watch-ids.json` become `life/wakeup-ids.json`
+(counters, resolutions, fires, routed wake ids renamed), the old files are archived under
+`user/.archive/living-cast/wakeups/<id>/`, and a life whose epoch snapshot offers `WatchFor` or
+`ScheduleWake` gets a pending epoch start (reason `tools`); its per-waifu marker `life/wakeups-v1.json`
+(also written by `HomeStore`, like the life-folder marker) records `convert`, `archive`, `epoch`. Retired data shapes the migrations
 still read live in `migrationSteps/legacySchemas.ts`; nothing else imports it. Legacy-step tests
 run `MIGRATION_STEPS` minus the L2 ids; `tests/livingCastMigrations.test.ts` covers the L2 steps on
 a realistic main-era root (`tests/fixtures/main-era-config.toml` is main's config as written). The
@@ -378,7 +412,7 @@ PUT shim in `src/api/server.ts`.
   (`forgetConversationImageIndex`), and a write never recreates a missing conversation directory.
 
 **Living cast API, settings registry and CLI (L3, spec §14)**: life routes in `src/api/lifeRoutes.ts`
-(status, log, wake, compact, reset, needs-review); her files, reminders and watches in
+(status, log, wake, compact, reset, needs-review); her files and wakeups (`GET /api/waifus/:id/wakeups` with their sources, `DELETE …/wakeups/:wakeupId`) in
 `src/api/homeRoutes.ts` (§16.11: list/read/`?raw=1` bytes/PUT/DELETE through her `HomeStore`, so the
 API is held to her Write tool's checks; revision by content hash; a DM-origin file is unnamed in
 listings and opens only with a local `includePrivate=1`; a `.md` note with lines from private chats
@@ -408,9 +442,9 @@ statically. Incomplete migration steps are also kept in `app/migrations-incomple
 
 **API conventions** (`src/api/server.ts`, `src/api/errors.ts`): errors carry a machine-readable `code` (`BadRequest`/`NotFound`/`Conflict`/`PreconditionRequired`) via `ApiError`. Revision enforcement is deliberately split: waifu writes require `expectedRevision` (missing → 428, mismatch → 409); other resources accept it optionally and are last-writer-wins otherwise. A waifu's or the assistant's `model` is replaced whole when sent (`null` unsets it, omission keeps it) and must be a route `GET /api/models` offers with an effort that route lists (400 `model_not_available` / `unsupported_effort`). `waifu.botId` uses the same null-to-unset pattern.
 
-**Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`: Home, Cast, Life, Rooms, Activity, Settings); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen; screens poll). One stylesheet, `styles/system.css`: colour tokens on `:root` with a `prefers-color-scheme: dark` override, one hover wash and 2px focus ring, one switch for every on/off choice, one button set (`.btn`, `.primary`, `.quiet`/`.ghost`, `.danger`, `.sm`; `.cell.btn` for a whole grid cell), `SectionHead` rows for grouped forms, and container queries on `.frame` so layouts follow the main column, not the window. Home is a menu (`HOME_MENU`) with a Needs-you bar only when `homeNotices` has something; the waifu status board and recent sends live on Life. The assistant docks beside the main column (`App.tsx` `AppShell`, open/closed remembered per browser in `state/assistantDock.ts`; a full-width sheet below 900 px). API types in `src/frontend/api/types.ts` are derived from the shared zod schemas with type-only imports (I17: `z.output`/`z.input`, the runtime state's non-remote part in `src/shared/schemas/runtime.ts`); the shapes still hand-mirrored are those the server builds by hand: curated models and `ModelsResponse`, `ModelWarning`, `HealthResponse`, `StatusResponse`, `AutoUpdateStatus`, the Discord-bots file view, provider metadata and `ProvidersResponse`, `LogsResponse`, the help payloads (`HelpKey`, `HelpTopic`), `DetectorModelsResponse`, `ApiErrorBody`, the assistant's events and action detail/confirmation, and Remote Access (D5: config, status, activation, pairing, trusted devices, diagnostics and the diagnostic bundle). `tests/frontendSharedImports.test.ts` fails on a value import from `src/shared/` other than the zod-free `src/shared/constants/`. The Life screen (`LifeScreen.tsx`, helpers in `lifeView.ts`) renders the life log generically over tool names; its DM reveal is local only. Her files, reminders and watches are in `LifeFiles.tsx` (keyed by the reveal; images previewed from `?raw=1` as blob URLs, like the Cast avatars; the remote dashboard CSP allows `img-src 'self' blob:` for them and nothing else). Settings forms come from the registry over `GET /api/help/<topic>` (`components/RegistryForm.tsx`, labelled by each key's registry `label`, the dotted key shown small in the hint) and every write sends only the changed keys (`castEdit.ts` for waifus). Settings → Models is a list of switches over `GET /api/models` (`models`, `hidden`, and `available`: curated routes the allow list leaves out) that saves `models.allowed`. Every model choice (Cast, Onboarding, Settings → Assistant) uses `components/ModelPicker.tsx` over `GET /api/models` (route + effort); the Direction and Memory screens are gone. The Discord bot setup is one interactive guide (`components/DiscordBotGuide.tsx` over `useDiscordBotSetup.ts`; pure logic in `utils/discordBots.ts`, intent/permission lists in `utils/discord.ts`, pinned to the gateway's real intents and discord.js' permission bits by `tests/frontendDiscordBots.test.ts`): Settings → App uses it with a bot list, onboarding step 4 in House-only mode. A waifu bot is saved with `POST /api/waifus/:id/link-bot` (entry id = her id, sets her `botId`) and then `PUT /api/discord-bots`; the House bot is the `orchestrator` entry. Only the House bot reads (Message Content, optional Server Members); a waifu bot has no privileged intent and cannot post unless she is linked to her own bot. Bot tokens live only in React state. Her bot's Discord profile (spec §17: `username`, `bio`, `nicknames`, the uploaded avatar/banner) is set on her own bot by `src/discord/profileSync.ts` (owned by `CastRuntime`; only differing fields, per-field rate-limit retry times in `app/discord-profile-sync.json`, never the House bot or a shared bot; with no local avatar/banner it imports the one her bot already shows from Discord's CDN once per hash, recorded as in sync so it is never pushed back); `GET /api/waifus/:id/discord-profile` and the Cast editor's "Discord profile" section (`components/WaifuDiscordProfileFields.tsx`) show its status. Her `~/life/profile.json` (spec §17.1, `src/life/home/profileFile.ts`) is the same three fields as a special file she edits: checked on write and saved to her config, rewritten from her config after a dashboard edit, never changed during maintenance.
+**Frontend** (`src/frontend/`): React 19 SPA. `screens/` mirrors top-level navigation (`nav.ts`: Home, Cast, Life, Rooms, Activity, Settings); shared client state lives in `state/` (`runtimeStore.ts` exists but is not wired into any screen; screens poll). One stylesheet, `styles/system.css`: colour tokens on `:root` with a `prefers-color-scheme: dark` override, one hover wash and 2px focus ring, one switch for every on/off choice, one button set (`.btn`, `.primary`, `.quiet`/`.ghost`, `.danger`, `.sm`; `.cell.btn` for a whole grid cell), `SectionHead` rows for grouped forms, and container queries on `.frame` so layouts follow the main column, not the window. Home is a menu (`HOME_MENU`) with a Needs-you bar only when `homeNotices` has something; the waifu status board and recent sends live on Life. The assistant docks beside the main column (`App.tsx` `AppShell`, open/closed remembered per browser in `state/assistantDock.ts`; a full-width sheet below 900 px). API types in `src/frontend/api/types.ts` are derived from the shared zod schemas with type-only imports (I17: `z.output`/`z.input`, the runtime state's non-remote part in `src/shared/schemas/runtime.ts`); the shapes still hand-mirrored are those the server builds by hand: curated models and `ModelsResponse`, `ModelWarning`, `HealthResponse`, `StatusResponse`, `AutoUpdateStatus`, the Discord-bots file view, provider metadata and `ProvidersResponse`, `LogsResponse`, the help payloads (`HelpKey`, `HelpTopic`), `DetectorModelsResponse`, `ApiErrorBody`, the assistant's events and action detail/confirmation, and Remote Access (D5: config, status, activation, pairing, trusted devices, diagnostics and the diagnostic bundle). `tests/frontendSharedImports.test.ts` fails on a value import from `src/shared/` other than the zod-free `src/shared/constants/`. The Life screen (`LifeScreen.tsx`, helpers in `lifeView.ts`) renders the life log generically over tool names; its DM reveal is local only. Her files and wakeups (`PlansPanel`, `WakeupList`) are in `LifeFiles.tsx` (keyed by the reveal; images previewed from `?raw=1` as blob URLs, like the Cast avatars; the remote dashboard CSP allows `img-src 'self' blob:` for them and nothing else). Settings forms come from the registry over `GET /api/help/<topic>` (`components/RegistryForm.tsx`, labelled by each key's registry `label`, the dotted key shown small in the hint) and every write sends only the changed keys (`castEdit.ts` for waifus). Settings → Models is a list of switches over `GET /api/models` (`models`, `hidden`, and `available`: curated routes the allow list leaves out) that saves `models.allowed`. Every model choice (Cast, Onboarding, Settings → Assistant) uses `components/ModelPicker.tsx` over `GET /api/models` (route + effort); the Direction and Memory screens are gone. The Discord bot setup is one interactive guide (`components/DiscordBotGuide.tsx` over `useDiscordBotSetup.ts`; pure logic in `utils/discordBots.ts`, intent/permission lists in `utils/discord.ts`, pinned to the gateway's real intents and discord.js' permission bits by `tests/frontendDiscordBots.test.ts`): Settings → App uses it with a bot list, onboarding step 4 in House-only mode. A waifu bot is saved with `POST /api/waifus/:id/link-bot` (entry id = her id, sets her `botId`) and then `PUT /api/discord-bots`; the House bot is the `orchestrator` entry. Only the House bot reads (Message Content, optional Server Members); a waifu bot has no privileged intent and cannot post unless she is linked to her own bot. Bot tokens live only in React state. Her bot's Discord profile (spec §17: `username`, `bio`, `nicknames`, the uploaded avatar/banner) is set on her own bot by `src/discord/profileSync.ts` (owned by `CastRuntime`; only differing fields, per-field rate-limit retry times in `app/discord-profile-sync.json`, never the House bot or a shared bot; with no local avatar/banner it imports the one her bot already shows from Discord's CDN once per hash, recorded as in sync so it is never pushed back); `GET /api/waifus/:id/discord-profile` and the Cast editor's "Discord profile" section (`components/WaifuDiscordProfileFields.tsx`) show its status. Her `~/life/profile.json` (spec §17.1, `src/life/home/profileFile.ts`) is the same three fields as a special file she edits: checked on write and saved to her config, rewritten from her config after a dashboard edit, never changed during maintenance.
 
-**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else an enabled waifu's model that is offered, keyed and not a contributor variant; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry); Living cast tools are `get_life` (never DM content), `wake_waifu`, `list_files`, `read_file`, `list_schedule`, `list_watches` (never DM files), `write_file` (secure confirmation card with the exact `PUT`, at most 16 KB), `get_usage`, `get_setting_help`, `update_app_config` (ordinary keys apply directly; `http.host`, `frontend.staticDir`, `updates.*` and `remoteAccess.*` only go to a secure confirmation card, and `PUT /api/config` refuses them from a delegation without the card's pending action id) and `forget_person` (secure confirmation card with the scrub limits). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change; `settings.md` and the endpoint table in `api.md` are generated (`npm run docs:settings:generate`).
+**Dashboard assistant** (`src/api/assistant/`): a built-in agent reachable from the dashboard chat. `routes.ts` exposes conversations under `/api/assistant/*` with SSE streaming; `service.ts` runs the tool loop over `ModelClient.stream` (model from `PUT /api/assistant/config`, else an enabled waifu's model that is offered, keyed and not a contributor variant; text deltas stream as `text_delta` events); `tools.ts` defines self-REST tools that mutate app state by dispatching to the app's own HTTP routes via `app.inject` (with revision-conflict retry); Living cast tools are `get_life` (never DM content), `wake_waifu`, `list_files`, `read_file`, `list_wakeups` (never DM files or a DM wakeup's words), `write_file` (secure confirmation card with the exact `PUT`, at most 16 KB), `get_usage`, `get_setting_help`, `update_app_config` (ordinary keys apply directly; `http.host`, `frontend.staticDir`, `updates.*` and `remoteAccess.*` only go to a secure confirmation card, and `PUT /api/config` refuses them from a delegation without the card's pending action id) and `forget_person` (secure confirmation card with the scrub limits). Its knowledge base is `docs/assistant-kb/*.md`, served read-only at `/api/docs` — update those docs when endpoint semantics change; `settings.md` and the endpoint table in `api.md` are generated (`npm run docs:settings:generate`).
 
 **Remote management** (`src/remote/`, `src/backend/remoteAccess/`): the host and remote gateway both
 use the same signed `ts-connect` helper package resolver and authenticated WIPC supervisor. The

@@ -1,6 +1,6 @@
 // Life tools (Living cast spec §6, §16): schemas and limits for every tool, D11 send permissions and
-// attachments, her files (path rules, limits, the checked reminder and watch files), watch matching
-// and `from` resolution, schedule limits, ReadMessages downloads. Tools run directly against a temp
+// attachments, her files (path rules, limits, the checked special files), ReadMessages downloads
+// (her wakeups are in lifeWakeups.test.ts). Tools run directly against a temp
 // data root and the fake Discord; no live calls.
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,7 +9,6 @@ import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
 import type { ToolContext, ToolOutput } from "../src/life/tools/types.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { readLifeFile } from "../src/life/lifeStore.js";
-import { fireWatches, bindingMatch } from "../src/life/watches.js";
 import { homeStoreFor, refreshPlacesFile } from "../src/life/home/index.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { updateDmLimit } from "../src/orchestration/dm/dmStore.js";
@@ -135,7 +134,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(w.cast.notices.list()).toEqual([expect.stringMatching(/has no Discord bot of her own/u)]);
   });
 
-  it("attaches her files; private ones (MEMORY.md, the notes it links, reminders, watches, places) are never attached, and a script naming one sends nothing", async () => {
+  it("attaches her files; private ones (MEMORY.md, the notes it links, her wakeups, places) are never attached, and a script naming one sends nothing", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
     await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n- [Kevin](people/kevin.md) — likes tea\n" }, ctx);
@@ -288,116 +287,6 @@ describe("ReadMessages downloads (§16.3.1)", () => {
   });
 });
 
-describe("WatchFor and ~/life/watches.json (§16.5)", () => {
-  it("validates bindings and timeout, resolves `from` (ambiguity is an error), caps watches at 10, and saves them in her file", async () => {
-    const w = await lifeWorld(roots);
-    // Two people she knows as Kevin (from her DMs).
-    for (const userId of [KEVIN, MINA_USER]) {
-      const message = w.discord.post(dmOf("ella", userId), "hi", { authorId: userId, authorName: "Kevin" });
-      await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
-    }
-    w.cast.intake.close();
-    const ctx = await ctxFor(w);
-    const watch = (input: Record<string, unknown>) => run("WatchFor", { note: "n", timeout_minutes: 60, ...input }, ctx);
-    expect((await watch({ when: [{}] })).content).toBe("error: when.0: each binding needs a place, from, words or any_message");
-    expect((await watch({ when: [{ any_message: true }], timeout_minutes: 0 })).isError).toBe(true);
-    expect((await watch({ when: [{ any_message: true }], timeout_minutes: 10_081 })).isError).toBe(true);
-    expect((await watch({ when: [{ words: Array.from({ length: 11 }, (_, i) => `w${i}`) }] })).isError).toBe(true);
-    // A check of her file reports as the tool's own error, not as an entry of the file.
-    expect(text(await watch({ when: [{ from: "Kevin" }] }))).toBe("error: WatchFor: more than one person called Kevin; use <@id>");
-    expect(text(await watch({ when: [{ place: "nowhere/#x" }] }))).toBe("error: WatchFor: unknown place nowhere/#x; see places.md");
-    expect(text(await watch({ when: [{ from: `<@${KEVIN}>`, words: ["cake"] }], note: "Kevin's cake news" }))).toMatch(/^watching w1 until Sat 24 Oct 15:0\d \(in ~\/life\/watches\.json\)$/u);
-    // A timer: no bindings, only a timeout.
-    expect(text(await watch({ when: [], note: "tea's ready", timeout_minutes: 5 }))).toMatch(/^watching w2 until /u);
-    const file = JSON.parse((await herFile(w, "ella", "home/life/watches.json"))!) as Array<Record<string, unknown>>;
-    expect(file[0]).toEqual({ id: "w1", timeout: expect.stringMatching(/^2026-10-24 15:0\d$/u), once: true, note: "Kevin's cake news", when: [{ from: `<@${KEVIN}>`, words: ["cake"] }] });
-    expect(file[1]).toMatchObject({ id: "w2", note: "tea's ready", when: [] });
-    // The resolution lives outside her folder.
-    const ids = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/watch-ids.json"), "utf8")) as { watches: Record<string, { bindings: unknown[] }> };
-    expect(ids.watches["w1"]!.bindings).toEqual([{ fromUserId: KEVIN, fromName: "Kevin", words: ["cake"] }]);
-    for (let index = 3; index <= 10; index += 1) expect((await watch({ when: [{ any_message: true }] })).isError).toBeFalsy();
-    expect(await watch({ when: [{ any_message: true }] })).toEqual({ content: "error: you already have 10 watches; remove one from ~/life/watches.json first", isError: true });
-  });
-
-  it("matches place, person, whole words or any message; once-watches go at the first match; spacing and daily cap", async () => {
-    expect(bindingMatch({ words: ["brownie"] }, { placeKey: ROOM_KEY, authorId: KEVIN, text: "Brownies?", own: false })).toBeUndefined();
-    expect(bindingMatch({ words: ["brownie"] }, { placeKey: ROOM_KEY, authorId: KEVIN, text: "one BROWNIE please", own: false })).toBe("brownie");
-    expect(bindingMatch({ fromUserId: KEVIN, fromName: "Kevin" }, { placeKey: "elsewhere", authorId: KEVIN, text: "x", own: false })).toBe("from Kevin");
-    expect(bindingMatch({ placeKey: ROOM_KEY, fromUserId: KEVIN }, { placeKey: ROOM_KEY, authorId: MINA_USER, text: "x", own: false })).toBeUndefined();
-    const w = await lifeWorld(roots);
-    const ctx = await ctxFor(w);
-    const written = await run(
-      "Write",
-      {
-        file_path: "~/life/watches.json",
-        content: JSON.stringify([
-          { timeout: "2026-10-25 14:00", once: true, note: "once", when: [{ place: "bake-club/#general", any_message: true }] },
-          { timeout: "2026-10-25 14:00", once: false, note: "repeat", when: [{ words: ["cake"] }] }
-        ])
-      },
-      ctx
-    );
-    expect(text(written)).toMatch(/^wrote ~\/life\/watches\.json \(.*; new entries got ids\)$/u);
-    const store = homeStoreFor(w.cast.deps, ctx.waifu);
-    const now = w.clock.now();
-    const message = (body: string, own = false) => ({ placeKey: ROOM_KEY, authorId: KEVIN, text: body, own });
-    const fire = (body: string, at: Date, own = false) => fireWatches(store, message(body, own), { now: at, timeZone: "UTC", maxFiresPerDay: 2 });
-    expect(await fire("cake time", now, true)).toEqual([]);
-    expect((await fire("cake time", now)).map((hit) => hit.watch.id)).toEqual(["w1", "w2"]);
-    expect(await fire("more cake", new Date(now.getTime() + 5 * 60_000))).toEqual([]);
-    expect((await fire("more cake", new Date(now.getTime() + 11 * 60_000))).map((hit) => hit.watch.id)).toEqual(["w2"]);
-    expect(await fire("cake again", new Date(now.getTime() + 30 * 60_000))).toEqual([]);
-    const left = JSON.parse((await herFile(w, "ella", "home/life/watches.json"))!) as Array<{ id: string }>;
-    expect(left.map((entry) => entry.id)).toEqual(["w2"]);
-  });
-
-  it("a hand-broken file is refused with its line and column and stays unchanged; an edit that drops an entry is fine", async () => {
-    const w = await lifeWorld(roots);
-    const ctx = await ctxFor(w);
-    await run("WatchFor", { when: [{ words: ["cake"] }], note: "cake", timeout_minutes: 60 }, ctx);
-    await run("WatchFor", { when: [], note: "tea", timeout_minutes: 30 }, ctx);
-    const before = (await herFile(w, "ella", "home/life/watches.json"))!;
-    // Deleting the last entry and leaving its comma behind.
-    const broken = before.replace(/,\n {2}\{"id": "w2".*\n/u, ",\n");
-    // A whole-file Write needs a Read first (the file changes on its own: a watch matches or times out).
-    expect(text(await run("Write", { file_path: "~/life/watches.json", content: broken }, ctx))).toBe("error: watches.json already exists; Read it first (Write replaces the whole file)");
-    await run("Read", { file_path: "~/life/watches.json" }, ctx);
-    const refused = await run("Write", { file_path: "~/life/watches.json", content: broken }, ctx);
-    expect(refused.isError).toBe(true);
-    expect(text(refused)).toMatch(/^error: watches\.json line \d+, column \d+: /u);
-    expect(await herFile(w, "ella", "home/life/watches.json")).toBe(before);
-    const past = await run("Edit", { file_path: "~/life/watches.json", old_string: /"timeout": "[^"]+"/u.exec(before)![0], new_string: '"timeout": "2026-10-20 10:00"' }, ctx);
-    expect(text(past)).toBe("error: watches.json entry w1: timeout is in the past");
-    expect((await run("Edit", { file_path: "~/life/watches.json", old_string: /,\n {2}\{"id": "w2".*\n/u.exec(before)![0], new_string: "\n" }, ctx)).isError).toBeFalsy();
-    expect(JSON.parse((await herFile(w, "ella", "home/life/watches.json"))!)).toHaveLength(1);
-  });
-});
-
-describe("ScheduleWake and ~/life/reminders.json (§16.4)", () => {
-  it("takes exactly one of at / in_minutes, 5 minutes to 30 days ahead, at most 20, saved in her file", async () => {
-    const w = await lifeWorld(roots);
-    const ctx = await ctxFor(w);
-    const schedule = (input: Record<string, unknown>) => run("ScheduleWake", { note: "n", ...input }, ctx);
-    expect((await schedule({})).content).toBe("error: give exactly one of at or in_minutes");
-    expect((await schedule({ at: "2026-10-25 18:00", in_minutes: 10 })).isError).toBe(true);
-    expect(await schedule({ in_minutes: 4 })).toEqual({ content: "error: reminders must be at least 5 minutes ahead", isError: true });
-    expect(await schedule({ at: "2026-12-01 10:00" })).toEqual({ content: "error: reminders can be at most 30 days ahead", isError: true });
-    expect(await schedule({ at: "next tuesday" })).toEqual({ content: "error: use a local time like 2026-10-25 18:00", isError: true });
-    expect(text(await schedule({ at: "2026-10-25 18:00", note: "ask Kevin about the exam", repeat: "weekly" }))).toBe("set r1 for Sun 25 Oct 18:00, then weekly (in ~/life/reminders.json)");
-    for (let index = 2; index <= 20; index += 1) expect((await schedule({ in_minutes: 10 + index })).isError).toBeFalsy();
-    expect(await schedule({ in_minutes: 60 })).toEqual({ content: "error: you already have 20 reminders; remove one from ~/life/reminders.json first", isError: true });
-    const file = JSON.parse((await herFile(w, "ella", "home/life/reminders.json"))!) as Array<Record<string, unknown>>;
-    expect(file[0]).toEqual({ id: "r1", at: "2026-10-25 18:00", repeat: "weekly", note: "ask Kevin about the exam" });
-    expect(file).toHaveLength(20);
-    // A hand-written entry without an id gets the next one; a bad field is refused.
-    const entries = file.slice(1);
-    await run("Read", { file_path: "~/life/reminders.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/life/reminders.json", content: JSON.stringify([...entries, { at: "2026-10-26 09:00", note: "new" }]) }, ctx))).toMatch(/new entries got ids/u);
-    expect((JSON.parse((await herFile(w, "ella", "home/life/reminders.json"))!) as Array<{ id: string }>).pop()!.id).toBe("r21");
-    expect(text(await run("Write", { file_path: "~/life/reminders.json", content: JSON.stringify([{ at: "2026-10-26 09:00", note: "x", repeat: "hourly" }]) }, ctx))).toMatch(/^error: reminders\.json entry 1: /u);
-  });
-});
-
 describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { timeout: 60_000 }, () => {
   it("enforces the path rules on every path form", async () => {
     const w = await lifeWorld(roots);
@@ -494,10 +383,10 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
 describe("tool list (§16.3)", () => {
   it("offers the eleven tools; web tools only while their caps allow; Bash only while enabled", async () => {
     const w = await lifeWorld(roots);
-    expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "WatchFor", "ScheduleWake", "Read", "Write", "Edit", "Bash", "WebSearch", "WebFetch"]);
+    expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "Wakeup", "Read", "Write", "Edit", "Bash", "WebSearch", "WebFetch"]);
     w.setConfig((config) => ({ ...config, search: { ...config.search, maxPerDay: 0 }, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 0 }, bash: { ...config.life.bash, enabled: false } } }));
-    expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "WatchFor", "ScheduleWake", "Read", "Write", "Edit"]);
-    for (const retired of ["list_places", "write_note", "list_watches", "cancel_wake", "send_message"]) expect(lifeTool(retired)).toBeUndefined();
+    expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "Wakeup", "Read", "Write", "Edit"]);
+    for (const retired of ["list_places", "write_note", "list_watches", "cancel_wake", "send_message", "WatchFor", "ScheduleWake"]) expect(lifeTool(retired)).toBeUndefined();
   });
 
   it("~/life/places.md lists her rooms and private chats by handle", async () => {

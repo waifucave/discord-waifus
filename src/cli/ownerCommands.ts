@@ -6,7 +6,7 @@ import { commandSpec, GLOBAL_FLAGS } from "../shared/settings/commands.js";
 import { suggestTopics } from "../shared/settings/topics.js";
 import { CliFailure, defaultIo, EXIT, runCli, usageError, type CliContext, type CliIo, type ExitCode } from "./cliContext.js";
 import { connectHost, type HostTransport } from "./hostClient.js";
-import { filesCommand, forgetCommand, lifeCommand, scheduleCommand, usageCommand, wakeCommand, watchesCommand } from "./lifeCommands.js";
+import { filesCommand, forgetCommand, lifeCommand, usageCommand, wakeCommand, wakeupsCommand } from "./lifeCommands.js";
 import { flagBoolean, flagString, type ParsedCli } from "./parser.js";
 import { getCommand, helpCommand, listCommand, setCommand, unsetCommand } from "./settingsCommands.js";
 import type { ProcessIdentityProbe } from "../storage/instanceLock.js";
@@ -84,10 +84,13 @@ export async function runOwnerCommand(parsed: ParsedCli, dataRoot: string, o: Ow
         const root = flagString(flags, "root");
         return filesCommand(ctx, args, { private: flagBoolean(flags, "private"), ...(root !== undefined ? { root } : {}) });
       }
+      case "wakeups":
+        return wakeupsCommand(ctx, args, { private: flagBoolean(flags, "private") });
+      // Before §30 her reminders and watches had their own files: both are her wakeups now.
       case "schedule":
-        return scheduleCommand(ctx, args);
+        return wakeupsCommand(ctx, args, { private: flagBoolean(flags, "private"), kinds: ["at", "every"], name: "schedule" });
       case "watches":
-        return watchesCommand(ctx, args, { private: flagBoolean(flags, "private") });
+        return wakeupsCommand(ctx, args, { private: flagBoolean(flags, "private"), kinds: ["watch", "page"], name: "watches" });
       case "forget":
         return forgetCommand(ctx, args, { yes: flagBoolean(flags, "yes"), dryRun: flagBoolean(flags, "dryRun") });
       case "usage": {

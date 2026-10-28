@@ -4,7 +4,7 @@
 // rewritten when nothing changed. Scripted winter fakes, temp data root; no live calls.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeState, updateLifeFile } from "../src/life/lifeStore.js";
-import { reminderWakeId } from "../src/life/scheduler.js";
+import { timedWakeId } from "../src/life/scheduler.js";
 import { BotRoles, FAILED_FETCH_RETRY_MS } from "../src/life/botRoles.js";
 import { currentHarness } from "../src/life/compaction.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
@@ -57,7 +57,7 @@ describe("busy work is visible (I7)", () => {
 describe("maintenance in the background (M3)", () => {
   it("never blocks the scheduler tick; stop() aborts it and waits; it is not recorded as done", async () => {
     const w = await lifeWorld(roots, { scripts: [hangingTurn()] });
-    await homeOf(w).write("life/reminders.json", JSON.stringify([{ id: "r1", at: "2026-10-24 13:59", note: "call mom" }]));
+    await homeOf(w).write("life/wakeups.json", JSON.stringify([{ id: "t1", kind: "at", when: "2026-10-24 13:59", note: "call mom" }]));
     // Something to dream about (an empty window calls no model).
     await seedTranscript(w, [{ text: "see you tomorrow" }]);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
@@ -102,23 +102,22 @@ describe("reminders (M4) and quiet writes (M5)", () => {
   it("a reminder is routed before it is removed, under one wake id per occurrence", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    const due = { id: "r1", at: "2026-10-24 13:59", note: "call mom" };
-    await homeOf(w).write("life/reminders.json", JSON.stringify([due]));
+    const due = { id: "t1", kind: "at", when: "2026-10-24 13:59", note: "call mom" };
+    await homeOf(w).write("life/wakeups.json", JSON.stringify([due]));
     await w.cast.scheduler.tick({ waitForMaintenance: false });
-    // A crash before the removal: the reminder is back; the next tick never routes it twice.
-    await homeOf(w).write("life/reminders.json", JSON.stringify([due]));
+    // A crash before the removal: the wakeup is back; the next tick never routes it twice.
+    await homeOf(w).write("life/wakeups.json", JSON.stringify([due]));
     await w.cast.scheduler.tick({ waitForMaintenance: false });
     const wakes = (await readLifeFile(w.storage, "ella", "wakes")).immediate;
-    expect(wakes.map((wake) => wake.id)).toEqual([reminderWakeId(due, "UTC")]);
-    expect(await herEntries(w, "reminders.json")).toEqual([]);
+    expect(wakes.map((wake) => wake.id)).toEqual([timedWakeId("t1", new Date("2026-10-24T13:59:00.000Z"))]);
+    expect(await herEntries(w)).toEqual([]);
   });
 
   it("a tick or a message that changes nothing rewrites nothing (no new revision)", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 15:00", note: "later" }]));
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-24 16:00", once: true, note: "n", when: [{ words: ["cake"] }] }]));
-    const files = ["home/life/reminders.json", "home/life/watches.json", "life/schedule-ids.json", "life/watch-ids.json"];
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "at", when: "2026-10-24 15:00", note: "later" }, { kind: "watch", places: "everywhere", filter: { words: ["cake"] }, options: { until: "2026-10-24 16:00", once: true }, note: "n" }]));
+    const files = ["home/life/wakeups.json", "life/wakeup-ids.json"];
     const mtimes = async () => Promise.all(files.map(async (file) => (await stat(path.join(w.root, "user/waifus/ella", file))).mtimeMs));
     const before = await mtimes();
     await w.cast.scheduler.tick({ waitForMaintenance: false });

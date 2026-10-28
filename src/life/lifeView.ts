@@ -23,6 +23,7 @@
 
 import type { LifeLogLine, LifeState } from "../shared/schemas/life.js";
 import { lifeSystem } from "./request.js";
+import { isDmPlaceKey, isDmPlaceRef } from "./dmPlaces.js";
 import { isRestNotice, selfSummaryOf } from "./rest.js";
 
 export const DM_REDACTED = "[private chat redacted]";
@@ -30,16 +31,7 @@ export const DM_REDACTED = "[private chat redacted]";
 /** A DM place reference anywhere in a text, read like `resolvePlace` does (any case, `<…>` allowed). */
 const DM_REFERENCE = /(?:^|[^a-z0-9_])<?dm[/_][^\s>]/iu;
 
-/** A place argument (or any string input) that names a DM: `dm/kevin`, ` DM/Kevin `, `<dm/kevin>`, `dm_<key>`. */
-export function isDmPlaceRef(value: unknown): boolean {
-  // Up to a SendMessage script's size (§27: 40,000 characters).
-  return typeof value === "string" && value.length <= 40_000 && /dm[/_]/iu.test(value);
-}
-
-/** A placeKey a tool resolved to: a DM conversation (`dm_<user>_<waifu>`). */
-export function isDmPlaceKey(placeKey: string | undefined): boolean {
-  return typeof placeKey === "string" && placeKey.startsWith("dm_");
-}
+export { isDmPlaceKey, isDmPlaceRef };
 
 /** A wake that brings DM content into her turn (D14): one for a DM place, or a morning batch that shows a DM (§23). */
 export function wakeShowsDm(wake: { placeKey?: string | undefined; dm?: boolean | undefined }): boolean {

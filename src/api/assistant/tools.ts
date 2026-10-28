@@ -1012,7 +1012,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "list_files",
     description:
       "List a folder of a waifu's own computer (Living cast §16): her home (`/home/<name>`, `~`: her notes in any " +
-      "layout, MEMORY.md her index; life/ holds schedule.json her day (written each morning), reminders.json, watches.json, profile.json and places.md kept by the app) " +
+      "layout, MEMORY.md her index; life/ holds schedule.json her day (written each morning), wakeups.json (her wakeups), profile.json and places.md kept by the app) " +
       "or /tmp (files people sent, deleted after the number of days its usage.retentionDays says, 7 by default, since the last write), " +
       "or /transcripts (read-only: everything said where she is, one file per place per day, kept forever). Entries have name, path, kind, size and " +
       "modified time. Files and transcripts from private chats are never shown to you: they appear as `[private chat redacted]`.",
@@ -1100,18 +1100,14 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     }
   },
   {
-    name: "list_schedule",
-    description: "A waifu's reminders (her ~/life/reminders.json): id, local time, repeat and her note. She manages them herself; read-only here.",
-    parameters: { type: "object", properties: { waifuId: { type: "string" } }, required: ["waifuId"], additionalProperties: false },
-    execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/schedule` })).body
-  },
-  {
-    name: "list_watches",
+    name: "list_wakeups",
     description:
-      "A waifu's watches (her ~/life/watches.json): what each waits for (place, person, words; none = a timer) and when it " +
-      "times out. A watch bound to a private chat is shown without its words.",
+      "A waifu's wakeups (her ~/life/wakeups.json, set with her Wakeup tool): timed ones (at: once, every: repeating, with the " +
+      "next times), watches (places, a filter object or her own JavaScript function, until when, once) and pages (url, check, " +
+      "every, until), each with its source, state and why it stopped if her code failed. She manages them herself; read-only " +
+      "here. A wakeup watching a private chat is shown without its words.",
     parameters: { type: "object", properties: { waifuId: { type: "string" } }, required: ["waifuId"], additionalProperties: false },
-    execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/watches` })).body
+    execute: async (ctx, args) => (await inject(ctx, { method: "GET", url: `/api/waifus/${encodeURIComponent(String(args.waifuId))}/wakeups` })).body
   },
   {
     name: "get_usage",

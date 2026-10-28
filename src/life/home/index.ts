@@ -51,7 +51,8 @@ export function checkEnvFor(deps: LifeDeps, waifuId: string): CheckEnv {
   return {
     now: deps.now(),
     timeZone: deps.timeZone,
-    resolvePerson: async (name) => resolvePerson(deps, await collectPlaces(deps.storage, waifuId), name)
+    resolvePerson: async (name) => resolvePerson(deps, await collectPlaces(deps.storage, waifuId), name),
+    ...(deps.web?.fetchOffered() === false ? { pagesOff: true } : {})
   };
 }
 

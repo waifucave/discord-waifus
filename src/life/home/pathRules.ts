@@ -39,14 +39,12 @@ export const LIFE_DIR = "life";
 export const PLACES_FILE = "places.md";
 /** `~/life/schedule.json`: her day, which she writes each morning (§21.2). */
 export const DAY_SCHEDULE_FILE = "schedule.json";
-/** `~/life/reminders.json`: her reminders (ScheduleWake, §16.4; `~/schedule.json` before §21). */
-export const REMINDERS_FILE = "reminders.json";
-/** `~/life/watches.json`: her watches (WatchFor, §16.5). */
-export const WATCHES_FILE = "watches.json";
+/** `~/life/wakeups.json`: every wakeup she has (Wakeup, §30.3; `reminders.json` and `watches.json` before). */
+export const WAKEUPS_FILE = "wakeups.json";
 /** `~/life/profile.json`: her Discord profile (§17.1): checked on every write, then becomes her config. */
 export const PROFILE_FILE = "profile.json";
 /** Every file the app keeps in `~/life/`. */
-export const LIFE_FILES = [DAY_SCHEDULE_FILE, REMINDERS_FILE, WATCHES_FILE, PROFILE_FILE, PLACES_FILE] as const;
+export const LIFE_FILES = [DAY_SCHEDULE_FILE, WAKEUPS_FILE, PROFILE_FILE, PLACES_FILE] as const;
 export type LifeFileName = (typeof LIFE_FILES)[number];
 
 /** Names Windows reserves for devices (`con.md` would open the console, not a file). */
@@ -148,7 +146,7 @@ export function lifeFileOf(p: Pick<HerPath, "root" | "segments">): LifeFileName 
   return LIFE_FILES.find((name) => collisionKey(name) === key);
 }
 
-/** The segments of one of her `~/life/` files (`["life", "watches.json"]`). */
+/** The segments of one of her `~/life/` files (`["life", "wakeups.json"]`). */
 export function lifeSegments(name: LifeFileName): string[] {
   return [LIFE_DIR, name];
 }
@@ -183,17 +181,13 @@ export function pathKey(virtual: string): string {
   return collisionKey(virtual);
 }
 
-/** The special file kinds, checked on every write (§16.4, §16.5, §17.1, §21.2). */
-export type SpecialKind = "reminders" | "watches" | "profile" | "schedule";
+/** The special file kinds, checked on every write (§30.3, §17.1, §21.2). */
+export type SpecialKind = "wakeups" | "profile" | "schedule";
 
-/**
- * `~/life/reminders.json`, `watches.json`, `profile.json` or `schedule.json`: checked on every
- * write. `schedule` is her day (§21.2), not her reminders.
- */
+/** `~/life/wakeups.json`, `profile.json` or `schedule.json` (her day, §21.2): checked on every write. */
 export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): SpecialKind | undefined {
   const name = lifeFileOf(p);
-  if (name === REMINDERS_FILE) return "reminders";
-  if (name === WATCHES_FILE) return "watches";
+  if (name === WAKEUPS_FILE) return "wakeups";
   if (name === PROFILE_FILE) return "profile";
   if (name === DAY_SCHEDULE_FILE) return "schedule";
   return undefined;
@@ -201,12 +195,12 @@ export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): SpecialK
 
 /** A special kind's file name in `~/life/`. */
 export function specialFileName(kind: SpecialKind): LifeFileName {
-  return kind === "reminders" ? REMINDERS_FILE : kind === "watches" ? WATCHES_FILE : kind === "profile" ? PROFILE_FILE : DAY_SCHEDULE_FILE;
+  return kind === "wakeups" ? WAKEUPS_FILE : kind === "profile" ? PROFILE_FILE : DAY_SCHEDULE_FILE;
 }
 
 /**
- * Her special files' canonical spelling (a write to `~/Life/Watches.json` lands in
- * `~/life/watches.json`, one to `~/memory.md` in `~/MEMORY.md`): the segments to use, or undefined.
+ * Her special files' canonical spelling (a write to `~/Life/Wakeups.json` lands in
+ * `~/life/wakeups.json`, one to `~/memory.md` in `~/MEMORY.md`): the segments to use, or undefined.
  */
 export function canonicalSpecialSegments(p: Pick<HerPath, "root" | "segments">): string[] | undefined {
   if (p.root !== "home") return undefined;

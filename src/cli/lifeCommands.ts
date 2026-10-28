@@ -1,4 +1,4 @@
-// `waifus wake | life | forget | usage | files | schedule | watches` (Living cast spec §14.2,
+// `waifus wake | life | forget | usage | files | wakeups` (with `schedule` and `watches`) (Living cast spec §14.2,
 // §16.11): a waifu's life from the command line, over the running host's API (usage reads the
 // ledger directly, so it works offline too).
 // Life-log rendering is generic over tool names: a call prints its name and arguments as given.
@@ -11,9 +11,8 @@ import type {
   LifeLogResponseSchema,
   LifeStatusResponseSchema,
   PeopleForgetResponseSchema,
-  ScheduleResponseSchema,
   WakeResponseSchema,
-  WatchesResponseSchema
+  WakeupsResponseSchema
 } from "../shared/schemas/api.js";
 import type { z } from "zod";
 import { localDayKey } from "../life/clock.js";
@@ -27,8 +26,7 @@ type WakeResult = z.output<typeof WakeResponseSchema>;
 type ForgetResult = z.output<typeof PeopleForgetResponseSchema>;
 type FilesList = z.output<typeof HerFilesListResponseSchema>;
 type HerFile = z.output<typeof HerFileResponseSchema>;
-type Schedule = z.output<typeof ScheduleResponseSchema>;
-type Watches = z.output<typeof WatchesResponseSchema>;
+type Wakeups = z.output<typeof WakeupsResponseSchema>;
 
 const SAFE_ID = /^[A-Za-z0-9._:-]+$/u;
 const SNOWFLAKE = /^\d{17,20}$/u;
@@ -255,7 +253,7 @@ export async function usageCommand(
   return EXIT.ok;
 }
 
-// ---- her files, reminders and watches (§16.11) -----------------------------------------------------
+// ---- her files and wakeups (§16.11, §30.3) ---------------------------------------------------------
 
 function sizeLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -314,43 +312,38 @@ export async function filesCommand(ctx: CliContext, args: readonly string[], o: 
   return EXIT.ok;
 }
 
-/** `waifus schedule WAIFU`: her reminders. */
-export async function scheduleCommand(ctx: CliContext, args: readonly string[]): Promise<ExitCode> {
-  const waifuId = waifuIdArg(args[0]);
-  if (args.length > 1) throw usageError("waifus schedule takes one waifu.");
-  const host = await requireHost(ctx);
-  const { body } = await call<Schedule>(host, { method: "GET", path: `/api/waifus/${encodeURIComponent(waifuId)}/schedule` }, `Reading ${waifuId}'s reminders`);
-  if (ctx.json) {
-    ctx.out(JSON.stringify({ ok: true, ...body }, null, 2));
-    return EXIT.ok;
-  }
-  ctx.out(body.entries.length === 0 ? `${waifuId} has no reminders.` : `${waifuId}'s reminders (${body.timeZone}):`);
-  for (const entry of body.entries) ctx.out(`  ${entry.id.padEnd(5)} ${entry.at}${entry.repeat ? ` (${entry.repeat})` : ""}  ${oneLine(entry.note, 200)}`);
-  if (body.unreadable) ctx.out("  ~/life/reminders.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
-  return EXIT.ok;
+/** A wakeup's filter or check as one line (an object as JSON, her function's source on one line). */
+function sourceLine(value: unknown): string {
+  return oneLine(typeof value === "string" ? value : JSON.stringify(value), 160);
 }
 
-/** `waifus watches WAIFU [--private]`: her watches. */
-export async function watchesCommand(ctx: CliContext, args: readonly string[], o: { private?: boolean }): Promise<ExitCode> {
+/** `waifus wakeups WAIFU [--private]` (and `schedule`, `watches` for some kinds): her wakeups. */
+export async function wakeupsCommand(ctx: CliContext, args: readonly string[], o: { private?: boolean; kinds?: ReadonlyArray<"at" | "every" | "watch" | "page">; name?: string }): Promise<ExitCode> {
+  const name = o.name ?? "wakeups";
   const waifuId = waifuIdArg(args[0]);
-  if (args.length > 1) throw usageError("waifus watches takes one waifu.");
+  if (args.length > 1) throw usageError(`waifus ${name} takes one waifu.`);
   const host = await requireHost(ctx);
-  const { body } = await call<Watches>(host, { method: "GET", path: `/api/waifus/${encodeURIComponent(waifuId)}/watches${o.private ? "?includePrivate=1" : ""}` }, `Reading ${waifuId}'s watches`);
+  const { body } = await call<Wakeups>(host, { method: "GET", path: `/api/waifus/${encodeURIComponent(waifuId)}/wakeups${o.private ? "?includePrivate=1" : ""}` }, `Reading ${waifuId}'s wakeups`);
+  const entries = o.kinds ? body.entries.filter((entry) => o.kinds!.includes(entry.kind)) : body.entries;
   if (ctx.json) {
-    ctx.out(JSON.stringify({ ok: true, ...body }, null, 2));
+    ctx.out(JSON.stringify({ ok: true, ...body, entries }, null, 2));
     return EXIT.ok;
   }
-  ctx.out(body.entries.length === 0 ? `${waifuId} has no watches.` : `${waifuId}'s watches (${body.timeZone}):`);
-  for (const entry of body.entries) {
-    const waits = entry.when.length === 0
-      ? "timer"
-      : entry.when
-          .map((binding) => [binding.place && `in ${binding.place}`, binding.from && `from ${binding.from}`, binding.words?.length && `words ${binding.words.join(", ")}`, binding.any_message && "any message"].filter(Boolean).join(" "))
-          .join(" | ");
-    ctx.out(`  ${entry.id.padEnd(5)} until ${entry.timeout}${entry.once ? "" : " (repeats)"}  ${waits}  · ${oneLine(entry.note, 200)}${entry.private ? "  (private chat)" : ""}`);
+  ctx.out(entries.length === 0 ? `${waifuId} has no wakeups.` : `${waifuId}'s wakeups (${body.timeZone}):`);
+  for (const entry of entries) {
+    const what =
+      entry.kind === "at"
+        ? `at ${entry.when}`
+        : entry.kind === "every"
+          ? `every ${entry.when}${entry.next?.length ? ` (next ${entry.next.join(", ")})` : ""}`
+          : entry.kind === "watch"
+            ? `watch ${Array.isArray(entry.places) ? entry.places.join(", ") : entry.places} until ${entry.options?.until}${entry.options?.once === false ? " (repeats)" : ""}  ${Array.isArray(entry.filter) && entry.filter.length === 0 ? "timer" : sourceLine(entry.filter)}`
+            : `page ${entry.url} every ${entry.options?.every} until ${entry.options?.until}  ${sourceLine(entry.check)}`;
+    ctx.out(`  ${entry.id.padEnd(5)} ${what}  · ${oneLine(entry.note, 200)}${entry.disabled ? `  (stopped: ${oneLine(entry.disabled, 120)})` : ""}${entry.private ? "  (private chat)" : ""}`);
+    if (entry.state !== undefined) ctx.out(`        state: ${sourceLine(entry.state)}`);
   }
-  const hidden = body.entries.filter((entry) => entry.private && !body.includePrivate).length;
-  if (hidden > 0) ctx.out(`(${hidden} watch(es) bound to private chats shown without their words; --private shows them on this computer)`);
-  if (body.unreadable) ctx.out("  ~/life/watches.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
+  const hidden = entries.filter((entry) => entry.private && !body.includePrivate).length;
+  if (hidden > 0) ctx.out(`(${hidden} wakeup(s) watching private chats shown without their words; --private shows them on this computer)`);
+  if (body.unreadable) ctx.out("  ~/life/wakeups.json does not read cleanly: only the entries above were understood. Fix it in the dashboard (Life → her files).");
   return EXIT.ok;
 }

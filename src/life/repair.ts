@@ -8,8 +8,10 @@
 //   of hers in the conversation since the intent time, by the digest of the final content recorded
 //   just before the Discord call (else by its text with mentions and emoji set aside): found →
 //   `sent #ref (recovered)`, not found → `[interrupted] not sent`, the conversation unreadable →
-//   "unknown whether this was sent" (never "not sent"); Write, Edit, ScheduleWake and WatchFor are
-//   idempotent by content and re-checked on disk; a Bash call says whether its changes were saved.
+//   "unknown whether this was sent" (never "not sent"); Write and Edit are idempotent by content and
+//   re-checked on disk, a Wakeup by what it added and cancelled (the digest it wrote just before
+//   saving; the old ScheduleWake and WatchFor by their note); a Bash call says whether its changes
+//   were saved.
 //   Then `[system] interrupted by a restart`;
 // - `status: turn` is reset to idle and the turn's wakes go back to the queue.
 // Nothing is ever sent twice by the repair itself.
@@ -24,9 +26,9 @@ import type { LifeDeps } from "./deps.js";
 import { appendLifeLog, compactIntents, lifeLogTorn, readIntents, readLifeFile, readLifeLog, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { homeStoreFor } from "./home/index.js";
 import { availabilityFor } from "./busy.js";
-import { parseStrictJson, readScheduleEntries, readWatchEntries } from "./home/specialFiles.js";
-import { REMINDERS_FILE, specialJsonFile, WATCHES_FILE } from "./home/pathRules.js";
-import { parseLocalDateTime } from "./clock.js";
+import { parseStrictJson } from "./home/specialFiles.js";
+import { specialJsonFile } from "./home/pathRules.js";
+import { wakeupChangeDigest } from "./tools/wakeup.js";
 import { safeJournalName } from "./home/homeStore.js";
 import { stripCopiedHeader } from "./outbound.js";
 import { selfAuthorIds } from "./people.js";
@@ -100,14 +102,6 @@ async function recoverCall(
     const p = await resolvePath(path);
     return p && store ? store.files.readText(p).catch(() => undefined) : undefined;
   };
-  // A reminder or watch entry made by the call: its note, and its time within a minute of what the
-  // call asked for (counted from the intent).
-  const intentAt = Math.min(...[intent.start, ...intent.lines].flatMap((line) => (line ? [Date.parse(line.at)] : [])).filter(Number.isFinite));
-  const near = (local: string, wanted: number | undefined) => {
-    if (wanted === undefined) return true;
-    const at = parseLocalDateTime(local, deps.timeZone)?.getTime();
-    return at !== undefined && Math.abs(at - wanted) <= 90_000;
-  };
   switch (call.name) {
     case "SendMessage":
     case "send_message": {
@@ -121,8 +115,8 @@ async function recoverCall(
       const p = await resolvePath(input["file_path"]);
       const current = await fileText(input["file_path"]);
       const content = input["content"];
-      // A reminder or watch file the app gave new ids to (and rewrote in its own layout) still
-      // holds what she wrote: the same entries, ids aside. Any other file must match exactly.
+      // A wakeups file the app gave new ids to (and rewrote in its own layout) still holds what she
+      // wrote: the same entries, ids aside. Any other file must match exactly.
       const done = current !== undefined && typeof content === "string" && (current === content || (p !== undefined && specialJsonFile(p) !== undefined && sameEntriesIgnoringIds(current, content)));
       return done ? { text: `wrote ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not written", isError: true };
     }
@@ -133,22 +127,30 @@ async function recoverCall(
       const done = current !== undefined && typeof newText === "string" && current.includes(newText) && (typeof oldText !== "string" || !current.includes(oldText) || newText.includes(oldText));
       return done ? { text: `edited ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not edited", isError: true };
     }
-    case "ScheduleWake": {
-      const entries = store ? readScheduleEntries(await fileText(`~/life/${REMINDERS_FILE}`), deps.timeZone) : [];
-      const wanted =
-        typeof input["at"] === "string"
-          ? parseLocalDateTime(input["at"], deps.timeZone)?.getTime()
-          : typeof input["in_minutes"] === "number" && Number.isFinite(intentAt)
-            ? intentAt + input["in_minutes"] * 60_000
-            : undefined;
-      const found = entries.find((reminder) => reminder.note === input["note"] && near(reminder.at, wanted));
-      return found ? { text: `set ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
+    case "Wakeup": {
+      // The digest it wrote just before saving: what it added (kind and note) and cancelled. Nothing
+      // else changes her file before boot repair, so the file shows whether the save went through.
+      const digest = intent.lines.find((line) => line.contentDigest?.startsWith("add:"))?.contentDigest;
+      if (!digest || !store) return { text: "[interrupted] not saved", isError: true };
+      const { entries } = await store.readWakeups();
+      const [addPart = "", cancelPart = ""] = digest.split(";");
+      const wanted = addPart.slice("add:".length).split(",").filter(Boolean);
+      const cancelled = cancelPart.slice("cancel:".length).split(",").filter(Boolean);
+      const have = new Map(entries.map((entry) => [wakeupChangeDigest([entry], []).slice("add:".length, "add:".length + 16), entry.id] as const));
+      const saved = wanted.every((hash) => have.has(hash)) && cancelled.every((id) => !entries.some((entry) => entry.id === id));
+      if (!saved) return { text: "[interrupted] not saved", isError: true };
+      const ids = wanted.map((hash) => have.get(hash)!);
+      return { text: `${[ids.length > 0 ? `set ${ids.join(", ")}` : "", cancelled.length > 0 ? `cancelled ${cancelled.join(", ")}` : ""].filter(Boolean).join("; ")} (recovered)`, isError: false };
     }
+    case "ScheduleWake":
     case "WatchFor": {
-      const entries = store ? readWatchEntries(await fileText(`~/life/${WATCHES_FILE}`), deps.timeZone) : [];
-      const wanted = typeof input["timeout_minutes"] === "number" && Number.isFinite(intentAt) ? intentAt + input["timeout_minutes"] * 60_000 : undefined;
-      const found = entries.find((watch) => watch.note === input["note"] && near(watch.timeout, wanted));
-      return found ? { text: `watching ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
+      // A call from before §30 (its file became ~/life/wakeups.json): found by its note, and a
+      // one-off reminder also by the time it asked for.
+      const entries = store ? (await store.readWakeups()).entries : [];
+      const kinds = call.name === "WatchFor" ? ["watch"] : ["at", "every"];
+      const at = call.name === "ScheduleWake" && typeof input["at"] === "string" && !input["repeat"] ? input["at"] : undefined;
+      const found = entries.find((entry) => kinds.includes(entry.kind) && entry.note === input["note"] && (at === undefined || (entry.kind === "at" && entry.when === at)));
+      return found ? { text: `${call.name === "WatchFor" ? "watching" : "set"} ${found.id} (recovered)`, isError: false } : { text: "[interrupted] not set", isError: true };
     }
     default:
       return { text: "[interrupted]", isError: true };

@@ -1,5 +1,5 @@
 // Local time for lives (Living cast spec §4.5, §5.4, §6.6, §21.6c): her bed time and day, the time lines,
-// local days (budgets, maintenance) and the local "2026-10-25 18:00" times `ScheduleWake` takes.
+// local days (budgets, maintenance) and the local "2026-10-25 18:00" times her wakeups take.
 // Everything is computed in one IANA zone (the host's, injectable for tests) so wall-clock values
 // never depend on the process's TZ.
 

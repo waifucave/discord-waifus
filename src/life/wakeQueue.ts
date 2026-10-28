@@ -12,7 +12,7 @@
 //   "+N more from Kevin" lines that ride along with the next turn without starting one.
 
 import { randomBytes } from "node:crypto";
-import type { DeferredPlace, Wake, WakeMessage, WakeQueue, WakeReason } from "../shared/schemas/life.js";
+import type { DeferredPlace, FiredWakeupRecord, Wake, WakeMessage, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
 import { readLifeFile, updateLifeFile } from "./lifeStore.js";
 import { joinMessages, messagesOf } from "./wakeMessages.js";
@@ -431,6 +431,14 @@ export async function scrubWakeQueue(
   }
 ): Promise<number> {
   let removed = 0;
+  // Her wakeups that fired (§30.4): a match that names them goes, a note becomes `(removed)`.
+  const scrubFired = (list: readonly FiredWakeupRecord[]): FiredWakeupRecord[] =>
+    list.map((fired) => {
+      const kept = { ...fired };
+      if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
+      if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
+      return kept;
+    });
   // Their messages in someone else's wake go; a quote of another message that names them goes (§20).
   const scrubMessages = (list: readonly WakeMessage[]): WakeMessage[] =>
     list.flatMap((message) => {
@@ -440,6 +448,7 @@ export async function scrubWakeQueue(
       else o.review?.(kept.preview);
       if (kept.matched !== undefined && o.mentions(kept.matched)) delete kept.matched;
       if (kept.note !== undefined && o.mentions(kept.note)) kept.note = REMOVED_TEXT;
+      if (kept.wakeups) kept.wakeups = scrubFired(kept.wakeups);
       return [kept];
     });
   await updateLifeFile(storage, waifuId, "wakes", (queue) => {
@@ -470,6 +479,13 @@ export async function scrubWakeQueue(
             else delete next[field];
             changed = true;
           } else o.review?.(text);
+        }
+        if (next.wakeups) {
+          const wakeups = scrubFired(next.wakeups);
+          if (JSON.stringify(wakeups) !== JSON.stringify(next.wakeups)) {
+            next.wakeups = wakeups;
+            changed = true;
+          }
         }
         // Her timed plans (§29) are hers like a reminder's note: they stay and lose the text.
         if (next.plans) {

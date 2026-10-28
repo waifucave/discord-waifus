@@ -62,6 +62,8 @@ import { abortableSleep, KeyedMutex, Semaphore } from "./sync.js";
 import { createWebBackend, LifeWebFetchCache, type WebBackend } from "./web/index.js";
 import { dropDeferredOf, newWakeId, pendingWakeCount } from "./wakeQueue.js";
 import { WakeRouter, type RouteOutcome } from "./wakeRouter.js";
+import { saveWakeupStates } from "./wakeups/schedule.js";
+import { waifusWithPending } from "./wakeups/state.js";
 import type { OcrTextLookup } from "../orchestration/context/images.js";
 
 export type LivingCastOptions = {
@@ -411,10 +413,22 @@ export class LivingCast {
     await Promise.all([...this.lives.values()].map((life) => life.whenIdle()));
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     await this.intake.settle();
+    await this.saveWakeupStates();
     await this.transcripts.close();
     await this.marks.flush();
     this.detector.close();
     await this.webBackend.close().catch(() => undefined);
+  }
+
+  /** Her code's waiting state (§30.2) goes into her wakeups file at shutdown. */
+  private async saveWakeupStates(): Promise<void> {
+    for (const waifuId of waifusWithPending(this.deps.storage.dataRoot)) {
+      const waifu = await readWaifu(this.deps.storage, waifuId).catch(() => undefined);
+      if (!waifu) continue;
+      await saveWakeupStates(homeStoreFor(this.deps, waifu), this.deps.now().getTime(), { force: true }).catch((error: unknown) => {
+        this.deps.logger.warn("Life wakeup state could not be saved", { waifuId, message: error instanceof Error ? error.message : String(error) });
+      });
+    }
   }
 
   /** Explicit pause: abort in-flight calls (maintenance too); queues stay. */

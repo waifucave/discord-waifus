@@ -1,22 +1,22 @@
-// Her machine's writes (Living cast spec §16.2–§16.5, §16.9): every writer — her Write and Edit,
-// a Bash change set, the owner's API PUT/DELETE, the app's own rewrites of her reminder and watch
-// files, ReadMessages downloads — goes through this store, under one lock per waifu
+// Her machine's writes (Living cast spec §16.2, §16.9, §30.3): every writer — her Write and Edit,
+// a Bash change set, the owner's API PUT/DELETE, the Wakeup tool, the app's own rewrites of her
+// wakeups file, ReadMessages downloads — goes through this store, under one lock per waifu
 // (`home:<id>`), so the same path rules, limits and special-file checks hold for all of them:
 //
 // - her app-managed files live in `~/life/` (§21 S1); `~/life/places.md` is the app's: she can
 //   read it, nobody else writes it (§16.6);
-// - `~/life/reminders.json`, `watches.json` (specialFiles.ts), `profile.json` (profileFile.ts) and
-//   `schedule.json`, her day (daySchedule.ts), are checked on every write; a bad write is refused
-//   with the exact problem and nothing is saved;
+// - `~/life/wakeups.json` (../wakeups/file.ts, her functions compiled in the sandbox),
+//   `profile.json` (profileFile.ts) and `schedule.json`, her day (daySchedule.ts), are checked on
+//   every write; a bad write is refused with the exact problem and nothing is saved;
 // - home ≤ `life.home.maxBytes` and `life.home.maxFiles`, `/tmp` ≤ `life.tmp.maxBytes`, a file
 //   written by Write/Edit/PUT ≤ 256 KiB; a name that differs from another in its folder only by case
 //   or Unicode normalisation is refused;
 // - a Bash change set is applied all or nothing, journalled first in
 //   `life/pending-changes/<toolCallId>.json` so a crash mid-apply is finished at boot.
 //
-// Beside her folders (never visible to her): `life/watch-ids.json` (how each watch's place and
-// person resolved, repeat-watch fires, the id counter), `life/schedule-ids.json` and the provenance
-// index `life/files-index.json` (§16.2: which downloads came from whom, and from a DM).
+// Beside her folders (never visible to her): `life/wakeup-ids.json` (id counters, how each watch's
+// places and names resolved, fires, errors, occurrences already routed) and the provenance index
+// `life/files-index.json` (§16.2: which downloads came from whom, and from a DM).
 
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
@@ -24,7 +24,7 @@ import path from "node:path";
 import { z } from "zod";
 import { readWaifu } from "../../orchestration/stores/config.js";
 import type { LifeConfig } from "../../shared/schemas/config.js";
-import { FilesIndexSchema, ScheduleIdsSchema, WatchIdsSchema, type FilesIndex, type ProvenanceEntry, type ScheduleIds, type WatchIds } from "../../shared/schemas/life.js";
+import { FilesIndexSchema, WakeupSideSchema, type FilesIndex, type ProvenanceEntry, type WakeupSide } from "../../shared/schemas/life.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
 import type { StorageService } from "../../storage/storageService.js";
 import { lifeLocks, lifePaths } from "../paths.js";
@@ -44,40 +44,32 @@ import {
   pathKey,
   PLACES_FILE,
   PROFILE_FILE,
-  REMINDERS_FILE,
   resolveHerPath,
   specialFileName,
   specialJsonFile,
-  WATCHES_FILE,
+  WAKEUPS_FILE,
   type HerPath,
   type HerRoot,
   type LifeFileName,
-  type ResolvedHerPath,
-  type SpecialKind
+  type ResolvedHerPath
 } from "./pathRules.js";
 import { checkDayScheduleText, readDayPlan, type DayPlan } from "./daySchedule.js";
-import {
-  checkScheduleText,
-  checkWatchesText,
-  formatEntries,
-  onceKey,
-  parseStrictJson,
-  readScheduleEntries,
-  readWatchEntries,
-  scheduleText,
-  watchesText,
-  type PersonResolution,
-  type ReminderEntry,
-  type ResolvedBinding,
-  type WatchEntry
-} from "./specialFiles.js";
+import type { PersonResolution } from "./specialFiles.js";
+import { sharedSandbox, type Sandbox } from "../sandbox/index.js";
+import { checkWakeupsText, readsWhole, WAKEUPS_FILE_HARD_BYTES, readWakeupEntries, wakeupsText, type WakeupEntry } from "../wakeups/file.js";
+import { reconcileAfterWrite } from "../wakeups/state.js";
 import { checkProfileText, profileFileText, profileServers, sameProfile, saveProfileToConfig, type ProfileFields } from "./profileFile.js";
 
 /** A file written by Write, Edit or the API (§16.2). */
 export const WRITE_MAX_BYTES = 256 * 1024;
 /** Provenance entries kept (oldest dropped first). */
 export const MAX_PROVENANCE_ENTRIES = 10_000;
-const MAX_FIRED = 100;
+const MAX_FIRED = 200;
+
+/** The key of a `once` watch's match in the fired list (a file the app could not rewrite never fires it twice). */
+export function onceKey(entry: Pick<WakeupEntry, "id" | "options">): string {
+  return `once-${entry.id}-${entry.options?.until ?? ""}`;
+}
 
 export type HomeLimits = {
   homeMaxBytes: number;
@@ -110,8 +102,12 @@ const READ_ALL_MAX_BYTES = 64 * 1024 * 1024;
 export type CheckEnv = {
   now: Date;
   timeZone: string;
-  /** A watch's `from` (a name or `<@id>`) → one person, or the reason it can't be used. */
+  /** A watch filter's `from` (a name or `<@id>`) → one person, or the reason it can't be used. */
   resolvePerson(name: string): Promise<PersonResolution>;
+  /** Where her functions are compiled (default: the process's sandbox). */
+  sandbox?: Sandbox;
+  /** Page fetching is off (`life.webFetch` caps at 0): no new pages (§30.2). */
+  pagesOff?: boolean;
 };
 
 export type HomeErrorCode = "limit" | "invalid" | "places" | "special" | "conflict" | "missing" | "binary" | "link" | "collision";
@@ -173,8 +169,8 @@ const JournalSchema = z.object({
   writes: z.array(z.object({ path: z.string(), data: z.string() })),
   deletes: z.array(z.string()),
   dirs: z.array(z.string()),
-  watchIds: WatchIdsSchema.optional(),
-  scheduleIds: ScheduleIdsSchema.optional(),
+  // A journal written before §30 also has watchIds/scheduleIds: dropped when read (their files are gone).
+  wakeupIds: WakeupSideSchema.optional(),
   // Spec 17.1: her checked profile.json, saved to her config with the files.
   profile: z.object({ username: z.string().optional(), bio: z.string().optional(), nicknames: z.record(z.string(), z.string()).optional() }).optional()
 });
@@ -194,9 +190,11 @@ const MARKED = new Set<string>();
 export async function ensureLifeFolderMarker(storage: StorageService, waifuId: string): Promise<void> {
   const id = `${storage.dataRoot}\0${waifuId}`;
   if (MARKED.has(id)) return;
-  const file = storage.dataPath(lifePaths.lifeFolderMarker(waifuId));
-  const exists = await stat(file).then(() => true, () => false);
-  if (!exists) await atomicWriteJson(file, { version: 1, state: "done" });
+  // The wakeups layout too (§30.3, `living-cast-wakeups-v1`): a `reminders.json` she writes later is her own file.
+  for (const file of [storage.dataPath(lifePaths.lifeFolderMarker(waifuId)), storage.dataPath(lifePaths.wakeupsMarker(waifuId))]) {
+    const exists = await stat(file).then(() => true, () => false);
+    if (!exists) await atomicWriteJson(file, { version: 1, state: "done" });
+  }
   MARKED.add(id);
 }
 const HASH_CACHE_MAX = 5_000;
@@ -287,12 +285,8 @@ export class HomeStore {
     }
   }
 
-  readWatchIds(): Promise<WatchIds> {
-    return this.readSide(lifePaths.watchIds(this.waifuId), WatchIdsSchema, { recover: true });
-  }
-
-  readScheduleIds(): Promise<ScheduleIds> {
-    return this.readSide(lifePaths.scheduleIds(this.waifuId), ScheduleIdsSchema, { recover: true });
+  readWakeupSide(): Promise<WakeupSide> {
+    return this.readSide(lifePaths.wakeupIds(this.waifuId), WakeupSideSchema, { recover: true });
   }
 
   async readIndex(): Promise<FilesIndex> {
@@ -303,18 +297,16 @@ export class HomeStore {
     await atomicWriteJson(this.storage.dataPath(relative), value);
   }
 
-  // ---- her reminder and watch files ------------------------------------------------------------------
+  // ---- her wakeups file (§30.3) ---------------------------------------------------------------------
 
-  async readRemindersText(): Promise<string | undefined> {
-    return this.files.readText(this.life(REMINDERS_FILE)).catch(() => undefined);
+  async readWakeupsText(): Promise<string | undefined> {
+    return this.files.readText(this.life(WAKEUPS_FILE)).catch(() => undefined);
   }
 
-  async readWatchesText(): Promise<string | undefined> {
-    return this.files.readText(this.life(WATCHES_FILE)).catch(() => undefined);
-  }
-
-  async readReminders(timeZone: string): Promise<ReminderEntry[]> {
-    return readScheduleEntries(await this.readRemindersText(), timeZone);
+  /** Her wakeups as saved (read leniently) with what the app keeps beside them. */
+  async readWakeups(): Promise<{ entries: WakeupEntry[]; side: WakeupSide; text: string | undefined }> {
+    const [text, side] = await Promise.all([this.readWakeupsText(), this.readWakeupSide()]);
+    return { entries: readWakeupEntries(text), side, text };
   }
 
   /** Her day as saved (`~/life/schedule.json`, §21.2); a file that fails the checks is no plan. */
@@ -322,20 +314,10 @@ export class HomeStore {
     return readDayPlan(await this.files.readText(this.life(DAY_SCHEDULE_FILE)).catch(() => undefined));
   }
 
-  /** Her watches with how they resolved (bindings of a watch the side file lacks resolve to nothing). */
-  async readWatches(timeZone: string): Promise<{ entries: WatchEntry[]; ids: WatchIds }> {
-    const [text, ids] = await Promise.all([this.readWatchesText(), this.readWatchIds()]);
-    return { entries: readWatchEntries(text, timeZone), ids };
-  }
-
   // ---- checks shared by every writer -------------------------------------------------------------------
 
   /** The special-file checks for one write: the (maybe rewritten) bytes and the side files to save. */
-  private async checkSpecial(
-    p: HerPath,
-    data: Buffer | undefined,
-    env: CheckEnv
-  ): Promise<{ data?: Buffer; watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields }> {
+  private async checkSpecial(p: HerPath, data: Buffer | undefined, env: CheckEnv): Promise<SpecialResult> {
     const special = specialJsonFile(p);
     if (!special) return data ? { data } : {};
     if (special === "profile") {
@@ -356,36 +338,31 @@ export class HomeStore {
       return { data };
     }
     const text = data === undefined ? "[]\n" : data.toString("utf8");
-    if (special === "reminders") {
-      const ids = await this.readScheduleIds();
-      const previous = readScheduleEntries(await this.readRemindersText(), env.timeZone);
-      const checked = checkScheduleText(text, { now: env.now, timeZone: env.timeZone, previous, nextId: ids.nextId });
-      if (!checked.ok) throw new HomeError(checked.error, "special");
-      return { ...(data !== undefined ? { data: checked.rewritten ? Buffer.from(checked.text, "utf8") : data } : {}), scheduleIds: { ...ids, nextId: checked.nextId } };
+    const { entries: previous, side } = await this.readWakeups();
+    const checked = await checkWakeupsText(text, this.wakeupContext(env, previous, side));
+    if (!checked.ok) throw new HomeError(checked.error, "special");
+    // A `once` watch that fired is gone for good: a stale copy of the file never brings it back.
+    for (const entry of checked.entries) {
+      if (entry.kind === "watch" && side.fired.includes(onceKey(entry))) throw new HomeError(`error: wakeups.json entry ${entry.id}: it already fired once and was removed; leave it out`, "special");
     }
-    const ids = await this.readWatchIds();
-    const previous = readWatchEntries(await this.readWatchesText(), env.timeZone);
-    const previousResolved = new Map(Object.entries(ids.watches).map(([id, watch]) => [id, watch.bindings as ResolvedBinding[]]));
-    const checked = await checkWatchesText(text, {
+    return {
+      ...(data !== undefined ? { data: checked.rewritten ? Buffer.from(checked.text, "utf8") : data } : {}),
+      wakeupIds: { ...checked.side, fired: side.fired },
+      wakeupsWritten: { before: previous, after: checked.entries }
+    };
+  }
+
+  /** What checking her wakeups file needs: her clock, her places, the people she knows, the sandbox. */
+  private wakeupContext(env: CheckEnv, previous: readonly WakeupEntry[], side: WakeupSide) {
+    return {
       now: env.now,
       timeZone: env.timeZone,
       previous,
-      previousResolved,
-      nextId: ids.nextId,
-      resolvePlace: async (handle) => (await resolvePlace(this.storage, this.waifuId, handle))?.placeKey,
-      resolvePerson: env.resolvePerson
-    });
-    if (!checked.ok) throw new HomeError(checked.error, "special");
-    // A `once` watch that matched is gone for good: a stale copy of the file never brings it back.
-    for (const entry of checked.entries) {
-      if (ids.fired.includes(onceKey(entry))) throw new HomeError(`error: watches.json entry ${entry.id}: it already matched once and was removed; leave it out`, "special");
-    }
-    const finalText = checked.rewritten ? checked.text : text;
-    const watches: WatchIds["watches"] = {};
-    for (const [id, bindings] of checked.resolved) watches[id] = { bindings, fires: ids.watches[id]?.fires ?? [] };
-    return {
-      ...(data !== undefined ? { data: checked.rewritten ? Buffer.from(checked.text, "utf8") : data } : {}),
-      watchIds: { ...ids, nextId: checked.nextId, watches, sourceHash: sha256(finalText) }
+      side,
+      resolvePlace: async (handle: string) => (await resolvePlace(this.storage, this.waifuId, handle))?.placeKey,
+      resolvePerson: env.resolvePerson,
+      compile: (sources: string[]) => (env.sandbox ?? sharedSandbox()).compile(sources, { timeZone: env.timeZone, now: env.now }),
+      ...(env.pagesOff ? { pagesOff: true } : {})
     };
   }
 
@@ -511,35 +488,37 @@ export class HomeStore {
   }
 
   /**
-   * Appends one entry to her reminder or watch file (ScheduleWake, WatchFor), reading and writing
-   * under one hold of her home lock, so nothing the app rewrites in between is lost. Returns the id
-   * it got.
+   * The Wakeup tool's changes (§30.2), all or nothing: `cancel` ids are removed, `add` entries (no
+   * ids) appended, and the result is checked like any write of the file, under one hold of her home
+   * lock (nothing the app rewrites in between is lost). Returns the new entries with their ids, in
+   * order. A cancel of an unknown id is refused.
    */
-  async appendEntry(name: typeof REMINDERS_FILE | typeof WATCHES_FILE, entry: Record<string, unknown>, env: CheckEnv): Promise<string> {
+  async applyWakeups(o: { add: ReadonlyArray<Record<string, unknown>>; cancel: readonly string[] }, env: CheckEnv): Promise<{ added: WakeupEntry[]; cancelled: string[]; entries: WakeupEntry[] }> {
     return this.locked(async () => {
-      const p = this.life(name);
+      const p = this.life(WAKEUPS_FILE);
       const text = await this.files.readText(p).catch(() => undefined);
-      let entries: Array<Record<string, unknown>> = [];
+      let current: Array<Record<string, unknown>> = [];
       if (text?.trim()) {
         let value: unknown;
         try {
-          value = parseStrictJson(text);
+          value = JSON.parse(text);
         } catch {
           value = undefined;
         }
         if (!Array.isArray(value)) throw new HomeError(`error: ${p.display} can't be read as a list right now; fix it first (Read it to see why)`, "special");
-        entries = value as Array<Record<string, unknown>>;
+        current = value as Array<Record<string, unknown>>;
       }
-      const before = new Set(entries.map((existing) => existing["id"]));
-      const raw = Buffer.from(formatEntries([...entries, entry]), "utf8");
+      for (const id of o.cancel) if (!current.some((entry) => entry["id"] === id)) throw new HomeError(`error: there is no wakeup ${id}; see ~/life/wakeups.json`, "invalid");
+      const kept = current.filter((entry) => !o.cancel.includes(entry["id"] as string));
+      const before = new Set(kept.map((entry) => entry["id"]));
+      const raw = Buffer.from(`[\n${[...kept, ...o.add].map((entry) => `  ${JSON.stringify(entry)}`).join(",\n")}\n]\n`, "utf8");
       const special = await this.checkSpecial(p, raw, env);
       const data = special.data ?? raw;
       this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
       await this.files.writeBytes(p, data);
       await this.saveSpecialSide(special);
-      const saved = parseStrictJson(data.toString("utf8")) as Array<Record<string, unknown>>;
-      const id = saved.map((existing) => existing["id"]).find((candidate) => typeof candidate === "string" && !before.has(candidate));
-      return typeof id === "string" ? id : "?";
+      const entries = readWakeupEntries(data.toString("utf8"));
+      return { added: entries.filter((entry) => !before.has(entry.id)), cancelled: [...o.cancel], entries };
     });
   }
 
@@ -594,9 +573,9 @@ export class HomeStore {
   }
 
   /** Saves what a special-file write carries beside the file; returns whether her profile config changed. */
-  private async saveSpecialSide(o: { watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields }): Promise<boolean> {
-    if (o.watchIds) await this.writeSide(lifePaths.watchIds(this.waifuId), o.watchIds);
-    if (o.scheduleIds) await this.writeSide(lifePaths.scheduleIds(this.waifuId), o.scheduleIds);
+  private async saveSpecialSide(o: SpecialResult): Promise<boolean> {
+    if (o.wakeupIds) await this.writeSide(lifePaths.wakeupIds(this.waifuId), o.wakeupIds);
+    if (o.wakeupsWritten) reconcileAfterWrite(this.storage.dataRoot, this.waifuId, o.wakeupsWritten.before, o.wakeupsWritten.after);
     return o.profile ? saveProfileToConfig(this.storage, this.waifuId, o.profile) : false;
   }
 
@@ -659,15 +638,17 @@ export class HomeStore {
         effective.push(step);
       }
       // Her special files: the result of the whole set is checked once.
-      const side: { watchIds?: WatchIds; scheduleIds?: ScheduleIds; profile?: ProfileFields } = {};
-      for (const name of [REMINDERS_FILE, WATCHES_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as const) {
+      const side: { wakeupIds?: WakeupSide; profile?: ProfileFields } = {};
+      let wakeupsWritten: SpecialResult["wakeupsWritten"];
+      for (const name of [WAKEUPS_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as const) {
         const target = this.life(name);
         const write = [...effective].reverse().find((step) => step.kind === "write" && step.path.virtual === target.virtual);
         const removed = effective.some((step) => step.kind === "delete" && (step.path.virtual === target.virtual || target.virtual.startsWith(`${step.path.virtual}/`)));
         if (!write && !removed) continue;
         const checked = await this.checkSpecial(target, write ? write.data : undefined, env);
         if (write && checked.data) write.data = checked.data;
-        Object.assign(side, checked.watchIds ? { watchIds: checked.watchIds } : {}, checked.scheduleIds ? { scheduleIds: checked.scheduleIds } : {}, checked.profile ? { profile: checked.profile } : {});
+        Object.assign(side, checked.wakeupIds ? { wakeupIds: checked.wakeupIds } : {}, checked.profile ? { profile: checked.profile } : {});
+        if (checked.wakeupsWritten) wakeupsWritten = checked.wakeupsWritten;
       }
       this.checkPlan(effective, await this.snapshot());
       inTime();
@@ -679,7 +660,7 @@ export class HomeStore {
       };
       const display = (virtual: string) => parseVirtual(virtual, this.slug)?.display ?? virtual;
       const applied: AppliedChanges & { profileChanged?: boolean } = { changed: journal.writes.map((write) => display(write.path)), deleted: journal.deletes.map(display), created: journal.dirs.map(display) };
-      if (journal.writes.length + journal.deletes.length + journal.dirs.length === 0 && !side.watchIds && !side.scheduleIds) return applied;
+      if (journal.writes.length + journal.deletes.length + journal.dirs.length === 0 && !side.wakeupIds) return applied;
       const profileBefore = side.profile ? await readWaifu(this.storage, this.waifuId).catch(() => undefined) : undefined;
       const journalDir = this.storage.dataPath(lifePaths.pendingChanges(this.waifuId));
       const journalFile = path.join(journalDir, `${safeJournalName(o.journalId)}.json`);
@@ -690,6 +671,7 @@ export class HomeStore {
       // The files are written without a flush each, then flushed together: the journal makes the
       // set complete after a crash either way.
       await this.applyJournal(journal, { durable: false });
+      if (wakeupsWritten) reconcileAfterWrite(this.storage.dataRoot, this.waifuId, wakeupsWritten.before, wakeupsWritten.after);
       if (side.profile) applied.profileChanged = !profileBefore || !sameProfile(profileBefore, side.profile);
       // Kept as a marker until her next change set: a crash before the call's done intent still
       // tells boot repair the changes were saved.
@@ -763,22 +745,6 @@ export class HomeStore {
   // ---- the app's own rewrites ------------------------------------------------------------------------------
 
   /**
-   * Rewrites her reminders (a reminder fired, or moved to its next time). A file that does not read
-   * cleanly is left alone (`false`): the caller's fired list keeps it from firing twice.
-   */
-  async rewriteReminders(timeZone: string, transform: (entries: ReminderEntry[]) => ReminderEntry[]): Promise<boolean> {
-    return this.locked(async () => {
-      const text = await this.readRemindersText();
-      const entries = readScheduleEntries(text, timeZone);
-      if (text?.trim() && !wellFormed(text, entries.length)) return false;
-      const next = transform(entries);
-      if (JSON.stringify(next) === JSON.stringify(entries)) return true;
-      await this.files.writeBytes(this.life(REMINDERS_FILE), Buffer.from(scheduleText(next), "utf8"));
-      return true;
-    });
-  }
-
-  /**
    * Rewrites her day (`~/life/schedule.json`; forget's scrub, §21.6). Only a file that passes its
    * checks is rewritten, and only when something changed. Returns whether it wrote.
    */
@@ -793,35 +759,42 @@ export class HomeStore {
     });
   }
 
-  /** Rewrites her watches (a `once` watch matched, a watch timed out) and their side file together. */
-  async rewriteWatches(timeZone: string, transform: (entries: WatchEntry[], ids: WatchIds) => { entries: WatchEntry[]; ids: WatchIds }): Promise<boolean> {
+  /**
+   * Rewrites her wakeups and their side file together (a timed one fired, a once watch matched, one
+   * ended, her code's state saved, one disabled, the owner removed one, a forget). The side file (fires,
+   * error counts, page checks and fetches) is always written. The file itself is left alone when it
+   * does not read whole (`clean: false`) or, as a backstop, when the rewrite would grow it past
+   * `WAKEUPS_FILE_HARD_BYTES` (her own writes stop at `MAX_WAKEUPS_FILE_BYTES`, so the app's stop
+   * reasons always fit): then `saved` is false, and a caller routes no wake that depends on it.
+   */
+  async rewriteWakeups(transform: (entries: WakeupEntry[], side: WakeupSide) => { entries: WakeupEntry[]; side: WakeupSide }): Promise<{ clean: boolean; saved: boolean }> {
     return this.locked(async () => {
-      const text = await this.readWatchesText();
-      const ids = await this.readWatchIds();
-      const entries = readWatchEntries(text, timeZone);
-      const clean = !text?.trim() || wellFormed(text, entries.length);
-      const next = transform(entries, ids);
-      if (clean && JSON.stringify(next.entries) !== JSON.stringify(entries)) {
-        const written = watchesText(next.entries);
-        await this.files.writeBytes(this.life(WATCHES_FILE), Buffer.from(written, "utf8"));
-        next.ids = { ...next.ids, sourceHash: sha256(written) };
+      const { entries, side, text } = await this.readWakeups();
+      const clean = readsWhole(text, entries.length);
+      const next = transform(entries, side);
+      const changed = JSON.stringify(next.entries) !== JSON.stringify(entries);
+      let saved = !changed;
+      if (clean && changed) {
+        const written = wakeupsText(next.entries);
+        const size = Buffer.byteLength(written, "utf8");
+        if (size <= WAKEUPS_FILE_HARD_BYTES || size <= Buffer.byteLength(text ?? "", "utf8")) {
+          await this.files.writeBytes(this.life(WAKEUPS_FILE), Buffer.from(written, "utf8"));
+          next.side = { ...next.side, sourceHash: sha256(written) };
+          saved = true;
+        }
       }
-      if (JSON.stringify(next.ids) !== JSON.stringify(ids)) await this.writeSide(lifePaths.watchIds(this.waifuId), next.ids);
-      return clean;
+      next.side = { ...next.side, fired: next.side.fired.slice(-MAX_FIRED) };
+      if (JSON.stringify(next.side) !== JSON.stringify(side)) await this.writeSide(lifePaths.wakeupIds(this.waifuId), next.side);
+      return { clean, saved };
     });
   }
 
-  /** Records occurrences routed (reminders, watch timeouts) so they never fire twice. */
-  async markFired(kind: "schedule" | "watches", wakeIds: readonly string[]): Promise<void> {
+  /** Records wake ids routed (timed occurrences, timeouts, once matches) so they never fire twice. */
+  async markWakeupsFired(wakeIds: readonly string[]): Promise<void> {
     if (wakeIds.length === 0) return;
     await this.locked(async () => {
-      if (kind === "schedule") {
-        const ids = await this.readScheduleIds();
-        await this.writeSide(lifePaths.scheduleIds(this.waifuId), { ...ids, fired: [...ids.fired.filter((id) => !wakeIds.includes(id)), ...wakeIds].slice(-MAX_FIRED) });
-      } else {
-        const ids = await this.readWatchIds();
-        await this.writeSide(lifePaths.watchIds(this.waifuId), { ...ids, fired: [...ids.fired.filter((id) => !wakeIds.includes(id)), ...wakeIds].slice(-MAX_FIRED) });
-      }
+      const side = await this.readWakeupSide();
+      await this.writeSide(lifePaths.wakeupIds(this.waifuId), { ...side, fired: [...side.fired.filter((id) => !wakeIds.includes(id)), ...wakeIds].slice(-MAX_FIRED) });
     });
   }
 
@@ -858,21 +831,19 @@ export class HomeStore {
   }
 
   /**
-   * Re-checks her watch file after someone changed it outside the app (the owner, on disk): the side
-   * file follows when the file still passes, otherwise it keeps the last good resolution.
+   * Re-checks her wakeups file after someone changed it outside the app (the owner, on disk): the
+   * side file follows when the file still passes, otherwise it keeps the last good resolution.
    */
-  async resyncWatches(env: CheckEnv): Promise<"same" | "updated" | "invalid"> {
+  async resyncWakeups(env: CheckEnv): Promise<"same" | "updated" | "invalid"> {
     return this.locked(async () => {
-      const text = (await this.readWatchesText()) ?? "";
-      const ids = await this.readWatchIds();
-      if (sha256(text) === ids.sourceHash || (!text.trim() && Object.keys(ids.watches).length === 0)) return "same";
-      try {
-        const checked = await this.checkSpecial(this.life(WATCHES_FILE), Buffer.from(text, "utf8"), { ...env, now: new Date(0) });
-        if (checked.watchIds) await this.writeSide(lifePaths.watchIds(this.waifuId), { ...checked.watchIds, sourceHash: sha256(text), fired: ids.fired });
-        return "updated";
-      } catch {
-        return "invalid";
-      }
+      const text = (await this.readWakeupsText()) ?? "";
+      const side = await this.readWakeupSide();
+      if (sha256(text) === side.sourceHash || (!text.trim() && Object.keys(side.watches).length === 0 && Object.keys(side.every).length === 0)) return "same";
+      // Checked against itself: what is in the file is what is saved (a passed time is kept).
+      const checked = await checkWakeupsText(text, this.wakeupContext(env, readWakeupEntries(text), side)).catch(() => undefined);
+      if (!checked?.ok || checked.rewritten) return "invalid";
+      await this.writeSide(lifePaths.wakeupIds(this.waifuId), { ...checked.side, sourceHash: sha256(text), fired: side.fired });
+      return "updated";
     });
   }
 
@@ -1017,7 +988,7 @@ export class HomeStore {
    * folder). Copies under other names are hers to share.
    */
   async privateFiles(): Promise<Set<string>> {
-    const out = new Set([pathKey(this.home(MEMORY_FILE).virtual), ...([DAY_SCHEDULE_FILE, REMINDERS_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE] as const).map((name) => pathKey(this.life(name).virtual))]);
+    const out = new Set([pathKey(this.home(MEMORY_FILE).virtual), ...([DAY_SCHEDULE_FILE, WAKEUPS_FILE, PLACES_FILE, PROFILE_FILE] as const).map((name) => pathKey(this.life(name).virtual))]);
     const memory = await this.files.canonical(this.home(MEMORY_FILE));
     const index = await this.files.readText(memory).catch(() => undefined);
     for (const target of markdownLinks(index ?? "")) {
@@ -1057,15 +1028,14 @@ export function safeJournalName(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 100) || "change";
 }
 
-/** True when every entry of the array read (the app never rewrites a file it would lose part of). */
-function wellFormed(text: string, readEntries: number): boolean {
-  try {
-    const value = JSON.parse(text) as unknown;
-    return Array.isArray(value) && value.length === readEntries;
-  } catch {
-    return false;
-  }
-}
+/** What a special-file check gives the write: the bytes to save and what goes beside them. */
+type SpecialResult = {
+  data?: Buffer;
+  wakeupIds?: WakeupSide;
+  profile?: ProfileFields;
+  /** Her wakeups before and after (the state waiting in memory follows her write, §30.2). */
+  wakeupsWritten?: { before: readonly WakeupEntry[]; after: readonly WakeupEntry[] };
+};
 
 async function rmdirQuiet(dir: string): Promise<void> {
   const { rmdir } = await import("node:fs/promises");

@@ -55,7 +55,7 @@ describe("bursts are one wake with a line per message (§20)", () => {
     w.cast.intake.flushDms();
     await w.cast.settle();
     await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({ ...queue, immediate: [] }));
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "ask about the poem", when: [{ from: "Kevin", words: ["poem"] }] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: { from: "Kevin", words: ["poem"] }, options: { until: "2026-10-25 14:00", once: true }, note: "ask about the poem" }]));
     await dm(w, "can you write me a poem about rain");
     await dm(w, "and bring the cat pic");
     w.cast.intake.flushDms();

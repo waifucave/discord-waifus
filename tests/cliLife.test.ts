@@ -125,7 +125,7 @@ describe("waifus usage", () => {
   });
 });
 
-describe("waifus files / schedule / watches", () => {
+describe("waifus files / wakeups", () => {
   it("lists her folders, prints a text file, and leaves a DM file unnamed unless --private", async () => {
     const { root, host, storage } = await world();
     const home = new HomeStore(storage, "ella", "ella", () => homeLimitsOf(AppConfigSchema.parse({}).life));
@@ -155,20 +155,35 @@ describe("waifus files / schedule / watches", () => {
     expect((await cli(root, null, ["files", "ella"])).code).toBe(3);
   });
 
-  it("prints her reminders and watches, a DM-bound watch without its words unless --private", async () => {
+  it("prints her wakeups with their sources, a wakeup watching a DM without its words unless --private (§30.3)", async () => {
     const { root, host, storage } = await world();
     const home = new HomeStore(storage, "ella", "ella", () => homeLimitsOf(AppConfigSchema.parse({}).life));
     const soon = localMinuteText(new Date(Date.now() + 2 * 3_600_000), hostTimeZone());
-    expect((await cli(root, host, ["schedule", "ella"])).out).toContain("no reminders");
-    await home.files.writeBytes(home.life("reminders.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, repeat: "daily", note: "water the plants" }])));
-    await home.files.writeBytes(home.life("watches.json"), Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: soon, once: true, note: "his exam", when: [{ place: "dm/kevin", words: ["exam"] }] }])));
+    expect((await cli(root, host, ["wakeups", "ella"])).out).toContain("ella has no wakeups.");
+    await home.files.writeBytes(
+      home.life("wakeups.json"),
+      Buffer.from(
+        JSON.stringify([
+          { id: "t1", kind: "every", when: "day 08:30", note: "water the plants" },
+          { id: "w1", kind: "watch", places: "everywhere", filter: [], options: { until: soon }, note: "tea" },
+          { id: "w2", kind: "watch", places: "dm/kevin", filter: { words: ["exam"] }, options: { until: soon }, note: "his exam" },
+          { id: "w3", kind: "watch", places: "bake-club/#general", filter: "(msg) => msg.text.includes('cake')", options: { until: soon }, note: "cake" }
+        ])
+      )
+    );
+    const all = await cli(root, host, ["wakeups", "ella"]);
+    expect(all.out).toMatch(/t1\s+every day 08:30 \(next .*\)\s+· water the plants/u);
+    expect(all.out).toContain("(msg) => msg.text.includes('cake')");
+    // The old commands are filtered views.
     const schedule = await cli(root, host, ["schedule", "ella"]);
-    expect(schedule.out).toMatch(/r1\s+.*\(daily\)\s+water the plants/u);
+    expect(schedule.out).toContain("water the plants");
+    expect(schedule.out).not.toContain("tea");
     const watches = await cli(root, host, ["watches", "ella"]);
+    expect(watches.out).not.toContain("water the plants");
     expect(watches.out).toContain("timer");
     expect(watches.out).toContain("[private chat redacted]");
     expect(watches.out).not.toContain("exam");
-    expect((await cli(root, host, ["watches", "ella", "--private"])).out).toContain("his exam");
-    expect(JSON.parse((await cli(root, host, ["watches", "ella", "--json"])).out)).toMatchObject({ ok: true, includePrivate: false });
+    expect((await cli(root, host, ["wakeups", "ella", "--private"])).out).toContain("his exam");
+    expect(JSON.parse((await cli(root, host, ["wakeups", "ella", "--json"])).out)).toMatchObject({ ok: true, includePrivate: false });
   });
 });

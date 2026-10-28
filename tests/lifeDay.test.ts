@@ -73,7 +73,7 @@ describe("the morning wake (§21.3)", () => {
     await beginLife(w);
     // Asleep: a watch that times out is deferred to her morning.
     w.clock.ms = at("2026-10-24T02:00:00Z");
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-24 03:00", once: true, note: "water the basil", when: [] }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: [], options: { until: "2026-10-24 03:00", once: true }, note: "water the basil" }]));
     w.clock.ms = at("2026-10-24T03:01:00Z");
     await w.cast.scheduler.tick();
     expect((await queue(w)).immediate).toEqual([]);
@@ -496,18 +496,18 @@ describe("dreaming leaves ~/life/ alone (§21.6)", () => {
   it("Write, Edit and Bash refuse to change anything there; notes and MEMORY.md are fine", async () => {
     const w = await lifeWorld(roots);
     await writeHerFile(w, "life/schedule.json", plan("2026-10-24"));
-    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-24 18:00", note: "flyer" }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "at", when: "2026-10-24 18:00", note: "flyer" }]));
     const dream = await ctxFor(w, { mode: "session", session: "dream" });
     expect(await run("Write", { file_path: "~/life/schedule.json", content: plan("2026-10-25") }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
-    expect(await run("Edit", { file_path: "~/Life/Reminders.json", old_string: "flyer", new_string: "poster" }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
+    expect(await run("Edit", { file_path: "~/Life/Wakeups.json", old_string: "flyer", new_string: "poster" }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
     expect(await run("Write", { file_path: "~/life/new-note.md", content: "x" }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
-    const bash = await run("Bash", { command: "rm ~/life/reminders.json" }, dream);
+    const bash = await run("Bash", { command: "rm ~/life/wakeups.json" }, dream);
     expect(text(bash)).toContain(`error: changes not saved: ${DREAM_LIFE_REFUSED.replace(/^error:\s*/u, "")}`);
-    expect(await homeOf(w).read("life/reminders.json")).toContain("flyer");
+    expect(await homeOf(w).read("life/wakeups.json")).toContain("flyer");
     expect(text(await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n" }, dream))).toMatch(/^wrote ~\/MEMORY\.md/u);
-    // A forget's notes scrub (another session) may still tidy her reminders.
+    // A forget's notes scrub (another session) may still tidy her wakeups.
     const scrub = await ctxFor(w, { mode: "session", session: "scrub" });
-    expect(text(await run("Edit", { file_path: "~/life/reminders.json", old_string: "flyer", new_string: "poster" }, scrub))).toBe("edited ~/life/reminders.json");
+    expect(text(await run("Edit", { file_path: "~/life/wakeups.json", old_string: "flyer", new_string: "poster" }, scrub))).toBe("edited ~/life/wakeups.json");
   });
 });
 

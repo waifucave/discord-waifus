@@ -270,7 +270,7 @@ export const LifeResetResponseSchema = z.object({
   deferred: z.boolean()
 });
 
-// ---- her files, reminders and watches (§16.11) ------------------------------------------------------
+// ---- her files and wakeups (§16.11, §30.3) ----------------------------------------------------------
 
 /**
  * Her two folders: `/home/<slug>` (her home, `~`) and `/tmp` (downloads, deleted 7 days after the last
@@ -339,14 +339,15 @@ export const HerFileResponseSchema = z.object({
   text: z.string().optional(),
   /** A text file too large to show here (fetch it with `?raw=1`). */
   tooLarge: z.literal(true).optional(),
-  /** `~/life/places.md` (kept up to date by the app) or a redacted watches.json: writes are refused. */
+  /** `~/life/places.md` (kept up to date by the app) or a redacted wakeups.json: writes are refused. */
   readOnly: z.literal(true).optional(),
-  /** A file in `~/life/`: every write is checked (§16.4, §16.5, §17.1; `schedule` is her day, §21.2). */
-  special: z.enum(["reminders", "watches", "profile", "schedule"]).optional(),
+  /** A file in `~/life/`: every write is checked (§30.3, §17.1; `schedule` is her day, §21.2). */
+  special: z.enum(["wakeups", "profile", "schedule"]).optional(),
   private: z.literal(true).optional(),
   /**
-   * `~/life/watches.json` with a watch bound to a private chat, read without `includePrivate`: the text
-   * is a redacted copy (read-only here; changing the file needs `includePrivate`).
+   * `~/life/wakeups.json` with a wakeup watching a private chat (or an "everywhere" watch's state),
+   * read without `includePrivate`: the text is a redacted copy (read-only here; changing the file
+   * needs `includePrivate`).
    */
   redacted: z.literal(true).optional(),
   includePrivate: z.boolean()
@@ -366,58 +367,49 @@ export const HerFileWriteResponseSchema = z.object({
   hash: ContentHashSchema,
   size: z.number().int().nonnegative(),
   created: z.boolean(),
-  /** The app rewrote what was sent (new reminder or watch entries got their ids). */
+  /** The app rewrote what was sent (new wakeups got their ids, times written out). */
   rewritten: z.boolean()
 });
 
 /** `DELETE /api/waifus/:id/files/<path>`: no path in the answer (Remote Access keeps mutation answers a day). */
 export const HerFileDeleteResponseSchema = z.object({ waifuId: z.string(), deleted: z.literal(true) });
 
-export const ReminderViewSchema = z.object({
+/**
+ * One of her wakeups as the owner sees it (§30.3): with its source (her filter or check, as text or
+ * an object). A wakeup watching a private chat keeps its id, kind, times and shape; its note,
+ * places, filter and state read `[private chat redacted]` without `includePrivate` (D14), and so
+ * does the state of a watch on "everywhere" (it may remember a private chat).
+ */
+export const WakeupViewSchema = z.object({
   id: z.string(),
-  /** Local time in the host's zone, `2026-10-25 18:00`. */
-  at: z.string(),
-  repeat: z.enum(["daily", "weekly"]).optional(),
-  note: z.string()
-});
-
-export const ScheduleResponseSchema = z.object({
-  waifuId: z.string(),
-  timeZone: z.string(),
-  entries: z.array(ReminderViewSchema),
-  /** `~/life/reminders.json` does not read cleanly (fix it in the file editor); `entries` holds what did. */
-  unreadable: z.literal(true).optional()
-});
-
-export const WatchBindingViewSchema = z.object({
-  place: z.string().optional(),
-  from: z.string().optional(),
-  words: z.array(z.string()).optional(),
-  any_message: z.boolean().optional()
-});
-
-export const WatchViewSchema = z.object({
-  id: z.string(),
-  /** Local time in the host's zone. */
-  timeout: z.string(),
-  once: z.boolean(),
-  /** `[private chat redacted]` for a private watch without `includePrivate`. */
+  kind: z.enum(["at", "every", "watch", "page"]),
+  /** at: the local time (host zone); every: her repeating time as written. */
+  when: z.string().optional(),
+  /** every: the next three times (local `2026-10-30 08:30`). */
+  next: z.array(z.string()).optional(),
+  places: z.union([z.string(), z.array(z.string())]).optional(),
+  filter: z.unknown().optional(),
+  url: z.string().optional(),
+  check: z.unknown().optional(),
+  options: z.object({ until: z.string().optional(), once: z.boolean().optional(), every: z.string().optional() }).optional(),
   note: z.string(),
-  /** Empty: a timer. A private watch's names, words and places read `[private chat redacted]`. */
-  when: z.array(WatchBindingViewSchema),
-  /** Bound to a private chat (D14). */
+  state: z.unknown().optional(),
+  /** Why it stopped (her code failed three times in a row, or she paused it). */
+  disabled: z.string().optional(),
+  /** Watches a private chat (D14). */
   private: z.literal(true).optional()
 });
 
-export const WatchesResponseSchema = z.object({
+export const WakeupsResponseSchema = z.object({
   waifuId: z.string(),
   timeZone: z.string(),
   includePrivate: z.boolean(),
-  entries: z.array(WatchViewSchema),
+  entries: z.array(WakeupViewSchema),
+  /** `~/life/wakeups.json` does not read cleanly (fix it in the file editor); `entries` holds what did. */
   unreadable: z.literal(true).optional()
 });
 
-/** `DELETE …/schedule/:rid` and `…/watches/:wid`: the id removed. */
+/** `DELETE …/wakeups/:id`: the id removed. */
 export const PlanEntryDeleteResponseSchema = z.object({ waifuId: z.string(), removed: z.string() });
 
 // ---- responses: search, usage, detector -------------------------------------------------------------

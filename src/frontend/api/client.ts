@@ -34,13 +34,12 @@ import type {
   NeedsReviewResponse,
   OwnerNotices,
   PlanEntryDeleteResult,
-  ScheduleResponse,
   SearchUsage,
   UpdateAppConfigBody,
   UsageGroupKey,
   UsageResponse,
   WakeResult,
-  WatchesResponse,
+  WakeupsResponse,
   DiscordBotsFile,
   UpdateDiscordBotsBody,
   WaifuBotLink,
@@ -523,7 +522,7 @@ export const api = {
   dismissNeedsReview: (waifuId: string, itemId: string) =>
     request<NeedsReviewDismissResponse>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/life/needs-review/${encodeURIComponent(itemId)}`),
 
-  // Her files, reminders and watches (Living cast §16.11). DM files need `includePrivate` (host only).
+  // Her files and wakeups (Living cast §16.11, §30.3). DM files need `includePrivate` (host only).
   herFiles: (waifuId: string, query: { root: "home" | "tmp" | "transcripts"; dir?: string; includePrivate: boolean }, signal?: AbortSignal) => {
     const params = new URLSearchParams({ root: query.root });
     if (query.dir) params.set("dir", query.dir);
@@ -562,13 +561,10 @@ export const api = {
     const qs = params.toString();
     return request<HerFileDeleteResult>("DELETE", `${herFileUrl(waifuId, path)}${qs ? `?${qs}` : ""}`);
   },
-  schedule: (waifuId: string, signal?: AbortSignal) => request<ScheduleResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/schedule`, { signal }),
-  deleteReminder: (waifuId: string, reminderId: string) =>
-    request<PlanEntryDeleteResult>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/schedule/${encodeURIComponent(reminderId)}`),
-  watches: (waifuId: string, includePrivate: boolean, signal?: AbortSignal) =>
-    request<WatchesResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/watches${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
-  deleteWatch: (waifuId: string, watchId: string) =>
-    request<PlanEntryDeleteResult>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/watches/${encodeURIComponent(watchId)}`),
+  wakeups: (waifuId: string, includePrivate: boolean, signal?: AbortSignal) =>
+    request<WakeupsResponse>("GET", `/api/waifus/${encodeURIComponent(waifuId)}/wakeups${includePrivate ? "?includePrivate=1" : ""}`, { signal }),
+  deleteWakeup: (waifuId: string, wakeupId: string) =>
+    request<PlanEntryDeleteResult>("DELETE", `/api/waifus/${encodeURIComponent(waifuId)}/wakeups/${encodeURIComponent(wakeupId)}`),
 
   // Usage, search, detector
   usage: (query: { from?: string; to?: string; groupBy?: UsageGroupKey[]; waifuId?: string; tz?: string }, signal?: AbortSignal) => {

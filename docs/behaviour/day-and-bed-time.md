@@ -34,7 +34,7 @@ saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
 - Strict JSON with line and column errors. An empty file is "no plan". A file whose `date` is not
   today counts as **no plan today** (no busy blocks); it is never deleted, she overwrites it.
 - A saved file that fails the checks reads as no plan (`readDayPlan`).
-- She may delete it (no plan). Unlike reminders/watches/profile, a `Write` needs no earlier `Read`;
+- She may delete it (no plan). Unlike wakeups.json and profile.json, a `Write` needs no earlier `Read`;
   if she did read it this turn, a stale Write is refused ("changed since you read it (it was changed
   for you)").
 - **Live readers**: the wake router (busy holds), Jev's "around" check and her time line read the
@@ -64,7 +64,7 @@ saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
   or before that never fires. So a plan written in the 15 s before its time still fires; one written
   after its time does not; one the app first sees after a restart counts as written then.
 - **Late**: a plan fires up to 15 minutes late (`PLAN_LATE_MS`: host down, app paused); later it is
-  skipped (logged "Life plan skipped: too late"). Reminders are for what must happen.
+  skipped (logged "Life plan skipped: too late"). Her wakeups (`Wakeup`) are for what must happen.
 - **Bed time**: a plan whose `at` falls inside her bed time never fires (it stays a note). A plan
   just before her bed time that fires late in it gets through like a reminder.
 - **One wake per tick**: all plans that fire at one tick are one wake (`plans: [{at, what}]`, id
@@ -133,8 +133,9 @@ Built when her bed time ends (or a budget pause lifts) from `wakes.json` `deferr
   ref, author and preview. Ordinary chatter, detector picks and chime-ins stay counts. At most
   `life.morningLinesPerPlace` (8) lines per DM or room, the newest, the first saying `+N earlier`.
   In 3.3.0 DMs and rooms were counts only.
-- Then watch matches (with the matching message's time and ref), watch timeouts, reminders and timed
-  plans (only a budget pause defers them), follow-ups and an earlier unread batch.
+- Then watch matches (with the matching message's time and ref; a page's with its URL), watch
+  timeouts, her timed wakeups (`reminder`), stopped-wakeup notices (`wakeup_error`) and timed plans
+  (only a budget pause defers them), follow-ups and an earlier unread batch.
 - Times are `HH:MM`, with the weekday when not on the morning's day.
 - Kept lines per place are the newest 50 (`wakeQueue.ts` `morningLinesOf`). Messages counted come
   from the conversation cache since the pause began (at most 10 minutes earlier, `NIGHT_LEAD_MS`).
@@ -152,7 +153,7 @@ talk to her (`src/life/wakeRouter.ts` guard 4b, `src/life/busy.ts`):
 
 | Gets through at once | Held |
 |---|---|
-| `dm`, `mention` (incl. replies to her), `name`, `owner`, `reminder`, `plan`, `watch`, `watch_timeout`, `morning` | `detector` picks and chime-ins, `@everyone`, `role` mentions, anything else |
+| `dm`, `mention` (incl. replies to her), `name`, `owner`, `reminder`, `plan`, `watch`, `watch_timeout`, `wakeup_error`, `morning` | `detector` picks and chime-ins, `@everyone`, `role` mentions, anything else |
 
 - A merged wake gets through when any of its reasons does (a burst with a mention in it).
 - **Held wakes** go to `wakes.json` `held` with `heldUntil` = her next phone check strictly inside
@@ -177,9 +178,9 @@ send anywhere (`state.lastSentAt`) (`src/life/clock.ts` `bedPhaseAt`):
 
 | Phase | Exactly when | Time line | What reaches her |
 |---|---|---|---|
-| **Up late** | Her last send is under `life.busyEngagedMinutes` (10 min) old | `up late` | The busy set (DMs, mentions, replies, her name, owner, reminders, timed plans, watches, timeouts) and anything in a place she sent to in the last 10 min. The rest is deferred to the morning. |
+| **Up late** | Her last send is under `life.busyEngagedMinutes` (10 min) old | `up late` | The busy set (DMs, mentions, replies, her name, owner, her timed wakeups, timed plans, watches, timeouts, stopped-wakeup notices) and anything in a place she sent to in the last 10 min. The rest is deferred to the morning. |
 | **Dozing** | Not up late, and less than `life.bedDozeMinutes` (60 min) since the later of the bed time's start and her last send | `dozing (bed time)` | Same as up late. |
-| **Asleep** | 60 min or more since the later of the start and her last send | `asleep` | Only her own **reminders** (and timed plans that fire late into it) and the **owner's** wakes. Everything else is deferred to the morning. |
+| **Asleep** | 60 min or more since the later of the start and her last send | `asleep` | Only her own **timed wakeups** and stopped-wakeup notices (and timed plans that fire late into it) and the **owner's** wakes. Everything else is deferred to the morning. |
 
 - A send of hers starts the clock again (up late, then dozing for another hour). A turn she has
   while asleep (a reminder) does not count unless she sends.

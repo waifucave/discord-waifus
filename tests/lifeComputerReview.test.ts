@@ -1,6 +1,6 @@
 // Her own computer, after the L4 reviews (Living cast spec §16): every confirmed repro as a test.
 // Names compare as a case-insensitive disk does (special files, private files, DM folders); a
-// whole-file Write of her reminders or watches needs a current Read; Read's output is capped and
+// whole-file Write of her wakeups needs a current Read; Read's output is capped and
 // never touches her life's image state outside her life; Bash's memory watchdog, entry limits and
 // change summaries; her DM files touched by Bash or Write make the call a DM call; a lost fired
 // list never fires twice. Temp data roots, fake Discord and models; no live calls.
@@ -103,7 +103,7 @@ describe("names as the disk compares them (review S1, S2)", () => {
       "~/Life/Schedule.json",
       "~/LIFE/WATCHES.json",
       "~/life/Places.MD",
-      "~/life/Reminders.json"
+      "~/life/Wakeups.json"
     ];
     for (const file of tries) {
       const sent = await run("SendMessage", { place: "bake-club/#general", script: `m: try ${file}\nattach ${file}` }, { ...ctx, turn: { id: "t", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
@@ -114,13 +114,14 @@ describe("names as the disk compares them (review S1, S2)", () => {
     const shared = await run("SendMessage", { place: "bake-club/#general", script: "m: my note\nattach ~/people/shared.md" }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
     expect(text(shared)).toMatch(/^sent #[0-9a-z]+$/u);
 
-    // A broken reminder file written as ~/Life/Reminders.json by Bash, or ~/LIFE/WATCHES.json by Write, is checked.
-    expect(text(await run("ScheduleWake", { in_minutes: 60, note: "legit" }, ctx))).toMatch(/^set r1 /u);
-    const bash = await run("Bash", { command: `rm ~/life/reminders.json; printf '%s' '[{"at":"1999-01-01 00:00","note":"old"}]' > ~/Life/Reminders.json` }, ctx);
-    expect(text(bash)).toContain("error: changes not saved: reminders.json entry 1: at is in the past");
-    expect(await readdir(path.join(w.root, "user/waifus/ella/home/life"))).toContain("reminders.json");
-    expect((await herEntries(w, "reminders.json")).map((entry) => entry["note"])).toEqual(["legit"]);
-    expect(text(await run("Write", { file_path: "~/LIFE/WATCHES.json", content: '[{"timeout": "1990-01-01 00:00", "note": "x", "when": []}]' }, ctx))).toBe("error: watches.json entry 1: timeout is in the past");
+    // A broken wakeups file written as ~/Life/Wakeups.json by Bash, or ~/LIFE/WAKEUPS.json by Write, is checked.
+    expect(text(await run("Wakeup", { script: 'at("in 1h", "legit")' }, ctx))).toMatch(/^set t1 /u);
+    const bash = await run("Bash", { command: `rm ~/life/wakeups.json; printf '%s' '[{"kind":"at","when":"1999-01-01 00:00","note":"old"}]' > ~/Life/Wakeups.json` }, ctx);
+    expect(text(bash)).toContain("error: changes not saved: wakeups.json entry 1: 1999-01-01 00:00 is in the past");
+    expect(await readdir(path.join(w.root, "user/waifus/ella/home/life"))).toContain("wakeups.json");
+    expect((await herEntries(w)).map((entry) => entry["note"])).toEqual(["legit"]);
+    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
+    expect(text(await run("Write", { file_path: "~/LIFE/WAKEUPS.json", content: '[{"kind": "watch", "places": "everywhere", "filter": [], "options": {"until": "1990-01-01 00:00"}, "note": "x"}]' }, ctx))).toBe("error: wakeups.json entry 1: options.until is in the past");
     expect(text(await run("Write", { file_path: "~/life/Places.md", content: "x" }, ctx))).toMatch(/^error: places\.md /u);
   });
 
@@ -247,61 +248,60 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const ctx = await ctxFor(w);
-    expect(text(await run("WatchFor", { when: [{ place: "bake-club/#general", words: ["exam"] }], note: "Kevin's answer", timeout_minutes: 120 }, ctx))).toMatch(/^watching w1 /u);
-    const read = text(await run("Read", { file_path: "~/life/watches.json" }, ctx));
+    expect(text(await run("Wakeup", { script: 'watch("bake-club/#general", {words: ["exam"]}, {for: "2h"}, "Kevin\'s answer")' }, ctx))).toMatch(/^set w1 /u);
+    const read = text(await run("Read", { file_path: "~/life/wakeups.json" }, ctx));
     expect(read).toContain("Kevin's answer");
-    const stale = (await herFile(w, "ella", "home/life/watches.json"))!;
+    const stale = (await herFile(w, "ella", "home/life/wakeups.json"))!;
     const m = w.discord.post(ROOM, "the exam went fine");
     await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: m.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: m });
     await w.cast.settle();
     // Her wake waits for the burst's quiet time (§4.2): fire it now.
     w.cast.intake.flushDetector();
     await w.cast.settle();
-    expect(await herEntries(w, "watches.json")).toEqual([]);
+    expect(await herEntries(w)).toEqual([]);
     // She writes back what she read, plus a timer: refused, the file changed since her Read.
     const entries = JSON.parse(stale) as unknown[];
-    const content = JSON.stringify([...entries, { timeout: later(w, 30), note: "tea", when: [] }]);
-    expect(text(await run("Write", { file_path: "~/life/watches.json", content }, ctx))).toBe("error: watches.json changed since you read it (a watch matched or timed out); Read it again");
-    // A fresh Read does not make the stale entry acceptable: it matched once and is gone for good.
-    await run("Read", { file_path: "~/life/watches.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/life/watches.json", content }, ctx))).toBe("error: watches.json entry w1: it already matched once and was removed; leave it out");
+    const content = JSON.stringify([...entries, { kind: "at", when: later(w, 30), note: "tea" }]);
+    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content }, ctx))).toBe("error: wakeups.json changed since you read it (a wakeup fired, ran or ended); Read it again");
+    // A fresh Read does not make the stale entry acceptable: it fired once and is gone for good.
+    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
+    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content }, ctx))).toBe("error: wakeups.json entry w1: it already fired once and was removed; leave it out");
     // And a timeout of a once-watch that already matched never wakes her.
     w.clock.ms += 3 * 3_600_000;
     await w.cast.scheduler.tick();
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout")).toEqual([]);
   });
 
-  it("an owner's DELETE of a reminder sticks against her stale Write", async () => {
+  it("an owner's DELETE of a wakeup sticks against her stale Write", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
-    await run("ScheduleWake", { in_minutes: 60, note: "one" }, ctx);
-    await run("ScheduleWake", { in_minutes: 90, note: "two" }, ctx);
-    await run("Read", { file_path: "~/life/reminders.json" }, ctx);
-    const stale = (await herFile(w, "ella", "home/life/reminders.json"))!;
+    await run("Wakeup", { script: 'at("in 60m", "one")\nat("in 90m", "two")' }, ctx);
+    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
+    const stale = (await herFile(w, "ella", "home/life/wakeups.json"))!;
     const store = homeStoreFor(w.cast.deps, ctx.waifu);
-    await store.rewriteReminders("UTC", (entries) => entries.filter((entry) => entry.id !== "r1"));
-    const result = await run("Write", { file_path: "~/life/reminders.json", content: stale.replace('"two"', '"two!"') }, ctx);
-    expect(text(result)).toBe("error: reminders.json changed since you read it (a reminder fired); Read it again");
-    expect((await herEntries(w, "reminders.json")).map((entry) => entry["id"])).toEqual(["r2"]);
+    await store.rewriteWakeups((entries, side) => ({ entries: entries.filter((entry) => entry.id !== "t1"), side }));
+    const result = await run("Write", { file_path: "~/life/wakeups.json", content: stale.replace('"two"', '"two!"') }, ctx);
+    expect(text(result)).toBe("error: wakeups.json changed since you read it (a wakeup fired, ran or ended); Read it again");
+    expect((await herEntries(w)).map((entry) => entry["id"])).toEqual(["t2"]);
   });
 
-  it("a corrupt fired list is kept aside, the owner is told, and a reminder due before the loss is dropped without a wake", async () => {
+  it("a corrupt fired list is kept aside, the owner is told, and a wakeup due before the loss is dropped without a wake", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const due = later(w, -1);
-    await put(w, "life/reminders.json", `[{"id": "r1", "at": "${due}", "note": "maybe fired already"}]\n`);
-    const side = path.join(w.root, "user/waifus/ella/life/schedule-ids.json");
+    await put(w, "life/wakeups.json", `[{"id": "t1", "kind": "at", "when": "${due}", "note": "maybe fired already"}]\n`);
+    const side = path.join(w.root, "user/waifus/ella/life/wakeup-ids.json");
     await mkdir(path.dirname(side), { recursive: true });
     await writeFile(side, "{ torn");
     await w.cast.scheduler.tick();
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "reminder")).toEqual([]);
-    expect(await herEntries(w, "reminders.json")).toEqual([]);
+    expect(await herEntries(w)).toEqual([]);
     const names = await readdir(path.dirname(side));
-    expect(names.some((name) => name.startsWith("schedule-ids.json.corrupt-"))).toBe(true);
+    expect(names.some((name) => name.startsWith("wakeup-ids.json.corrupt-"))).toBe(true);
     expect(JSON.parse(await readFile(side, "utf8"))).toMatchObject({ recoveredAt: expect.any(String) });
-    expect(w.cast.notices.list().some((notice) => notice.includes("schedule-ids.json"))).toBe(true);
-    // A reminder due after the loss fires as usual.
-    await put(w, "life/reminders.json", `[{"id": "r2", "at": "${later(w, 10)}", "note": "fires"}]\n`);
+    expect(w.cast.notices.list().some((notice) => notice.includes("wakeup-ids.json"))).toBe(true);
+    // A wakeup due after the loss fires as usual.
+    await put(w, "life/wakeups.json", `[{"id": "t2", "kind": "at", "when": "${later(w, 10)}", "note": "fires"}]\n`);
     w.clock.ms += 11 * 60_000;
     await w.cast.scheduler.tick();
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.map((wake) => wake.note)).toEqual(["fires"]);
@@ -419,11 +419,13 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
   it("a watch matches a message posted before its timeout even when catch-up handles it later", async () => {
     const w = await lifeWorld(roots);
     const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: later(w, 30), note: "his answer", when: [{ words: ["exam"] }] }]));
-    const { fireWatches } = await import("../src/life/watches.js");
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: { words: ["exam"] }, options: { until: later(w, 30) }, note: "his answer" }]));
+    const { fireWakeupWatches } = await import("../src/life/wakeups/run.js");
+    const { sharedSandbox } = await import("../src/life/sandbox/index.js");
     const posted = new Date(w.clock.now().getTime() + 20 * 60_000).toISOString();
     const handledLate = new Date(w.clock.now().getTime() + 60 * 60_000);
-    const fired = await fireWatches(store, { placeKey: "x", authorId: KEVIN, text: "the exam", own: false, createdAt: posted }, { now: handledLate, timeZone: "UTC", maxFiresPerDay: 5 });
-    expect(fired.map((hit) => hit.watch.id)).toEqual(["w1"]);
+    const message = { placeKey: "x", handle: async () => "x", authorId: KEVIN, fromName: "Kevin", isWaifu: false, text: "the exam", mentionsMe: false, repliesToMe: false, own: false, createdAt: posted };
+    const { fired } = await fireWakeupWatches({ store, sandbox: sharedSandbox(), now: handledLate, timeZone: "UTC" }, message, { maxFiresPerDay: 5 });
+    expect(fired.map((hit) => hit.id)).toEqual(["w1"]);
   });
 });

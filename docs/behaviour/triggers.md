@@ -1,7 +1,7 @@
 # What wakes her
 
 Every wake has a reason (`WakeReasonSchema` in `src/shared/schemas/life.ts`): `mention`, `name`,
-`role`, `everyone`, `watch`, `watch_timeout`, `dm`, `detector`, `reminder`, `plan`, `morning`,
+`role`, `everyone`, `watch`, `watch_timeout`, `dm`, `detector`, `reminder`, `plan`, `wakeup_error`, `morning`,
 `owner`, `followup`. Wakes are produced by intake (Discord messages), the scheduler (her files, her day) and
 the owner, then pass the wake router's guards and land in her queue
 ([life-and-turns.md](life-and-turns.md)).
@@ -29,9 +29,10 @@ the owner, then pass the wake router's guards and land in her queue
 | `everyone` | `@everyone`/`@here` in a person's message in a channel where she is cast. Never from a waifu's message. | With the burst | `routeGuildMessage` |
 | `name` | Her name, display name or server nickname (each ≥ 3 characters) appears as a whole word in a **person's** message, and `wakeOnName` is on (default). Not counted when the same message already mentions her. Never for waifu-written messages. | With the burst | `namesOf`, `wordBoundaryIncludes` |
 | `dm` | A person's DM to her bot (she must be DM-eligible: [dms.md](dms.md)). | When the DM burst fires | `Intake.onDirectMessage`, `fireDm` |
-| `watch` | A binding of one of her watches matches a message ([her-computer.md](her-computer.md)). In a room: at once. In a DM: rides on the `dm` wake after the DM hold. | See left | `src/life/watches.ts` `fireWatches` |
-| `watch_timeout` | A watch's `timeout` passed (scheduler tick, every 15 s). A `once` watch that already matched never times out. | Scheduler | `Scheduler.watchTimeouts` |
-| `reminder` | A reminder in `~/life/reminders.json` came due (scheduler tick). Routed under a fixed id per occurrence, then removed or moved to its next daily/weekly occurrence. Late reminders after downtime fire once at the first tick. | Scheduler | `Scheduler.reminders` |
+| `watch` | One of her watches (in `~/life/wakeups.json`, set with `Wakeup`) passes its filter for a message: an object filter, or her own function returning `true` or a line to show ([her-computer.md](her-computer.md#wakeupscript)). In a room: at once. In a DM: rides on the `dm` wake after the DM hold. Several of her wakeups on one message are one wake, a line each. Also a page wakeup whose check fired (the line names the page's URL). | See left | `src/life/wakeups/run.ts` `fireWakeupWatches`, `checkPages` |
+| `watch_timeout` | A watch's or page's `until` passed (scheduler tick, every 15 s). A `once` watch that already fired never times out. | Scheduler | `Scheduler.wakeups` |
+| `reminder` | A timed wakeup (`at` or `every` in `~/life/wakeups.json`) came due (scheduler tick). Routed under a fixed id per occurrence, then an `at` is removed (an `every` stays). A late `at` after downtime fires once at the first tick; an `every` fires its latest occurrence since it started counting. | Scheduler | `Scheduler.wakeups` |
+| `wakeup_error` | Her code (a watch's filter or a page's check) failed three times in a row: the wakeup is stopped (`disabled` in her file) and she is told `- wakeup w4 stopped: TypeError: … (line 2)`. | At once | `src/life/wakeups/run.ts` `applyRuns` |
 | `plan` | A plan with `at` in today's `~/life/schedule.json` reached its time (scheduler tick). Fires once per plan (time + hash of its text), up to 15 minutes late; not when written after its time or when its time is in her bed time. All plans due at one tick are one wake, one line each: `- plan · 17:30 · "<what>"`. See [day-and-bed-time.md](day-and-bed-time.md#timed-plans). | Scheduler | `Scheduler.plans` |
 | `detector` | Jev picked her for a burst nobody was addressed in (`waifu_<i>`, the `anyone` draw, `all`), or picked her to chime in. See [detector.md](detector.md). | After the burst and the detector call | `Intake.runDetector` |
 | `morning` | Her day starts (bed time end, or `life.dayStartHourLocal`), or deferred wakes are released. Enqueued directly, not through the router. See [day-and-bed-time.md](day-and-bed-time.md). | Scheduler | `Scheduler.morning` |
@@ -39,7 +40,7 @@ the owner, then pass the wake router's guards and land in her queue
 | follow-up | Not a queued wake: a turn that failed with a model error gets one follow-up turn 60 s later. | Life loop | `Life.failTurn` |
 
 There are no proactive wakes besides these: she starts conversations only from inside a turn she
-already has (her reminders, timed plans, watches and morning are how she plans ahead).
+already has (her wakeups, timed plans and morning are how she plans ahead).
 
 ### Staggering
 
@@ -82,10 +83,10 @@ Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
   gave her; the preview and ref point at the newest message by the person who woke her
   (`Intake.mergeHeld`, `src/life/wakeMessages.ts`). So "@Lumi" then "what do you think about…" is
   one notification whose last line is the question.
-- **A DM burst** is one `dm` wake with one line per message. The first watch matching a message
-  rides on that message's line (`dm, watch · … · "match" · … · your note: …`); further watches on
-  the same burst route as `watch` wakes and join their message's line. If the DM wake is dropped
-  (rate limit), each match still reaches her as a plain `watch` wake (`Intake.fireDm`).
+- **A DM burst** is one `dm` wake with one line per message. Her wakeups that fire for a message
+  ride on that message's line (`dm, watch · … · "match" · … · your note: …`; a second one on the same
+  message gets its own `- watch · …` line under it). If the DM wake is dropped (rate limit), each
+  message's wakeups still reach her as a plain `watch` wake (`Intake.fireDm`).
 - **One wake per message (D-c)**: a waifu whose watch fired for a message in a burst is skipped by
   the detector for that burst. A burst whose whole candidate cast was woken by watches never reaches
   the detector.
@@ -105,8 +106,8 @@ Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
 | 1 | **Paused** app, or the room wake's server `paused`, or she is disabled / has no bot | `dropped` | Yes |
 | 2 | **DM rate limit** (`dm` wakes): `dm.rateLimit` per person per waifu (default 30 replies per 60 min) | `dropped`; the limit notice is sent once per limited period when `dm.notifyWhenLimited` (no model call) | n/a |
 | 3 | **Per-user wake limit** (rooms; reasons `mention`, `name`, `role`, `everyone`, `detector`): more than `life.maxWakesPerUserPerHour` (20) wakes from one person to one waifu in the last hour | `quiet`: becomes a `- +N more from <name> (<place>)` line that rides on her next turn and never starts one (`admitUserWake`) | Skipped |
-| 4 | **Bed time, asleep**: only `reminder`, `plan` and `owner` get through | Everything else `deferred` (reason `sleep`) to the morning; a `dm` wake also triggers the sleep notice once per bed time per person | Skipped |
-| 4a | **Bed time, up late or dozing**: gets through if any reason is in the busy set (`mention`, `name`, `dm`, `owner`, `reminder`, `plan`, `watch`, `watch_timeout`, `morning`) or she sent in that place in the last `life.busyEngagedMinutes` (10 min) | Else `deferred` (reason `sleep`); no sleep notice | Skipped |
+| 4 | **Bed time, asleep**: only `reminder`, `plan`, `wakeup_error` and `owner` get through | Everything else `deferred` (reason `sleep`) to the morning; a `dm` wake also triggers the sleep notice once per bed time per person | Skipped |
+| 4a | **Bed time, up late or dozing**: gets through if any reason is in the busy set (`mention`, `name`, `dm`, `owner`, `reminder`, `plan`, `watch`, `watch_timeout`, `wakeup_error`, `morning`) or she sent in that place in the last `life.busyEngagedMinutes` (10 min) | Else `deferred` (reason `sleep`); no sleep notice | Skipped |
 | 4b | **Busy block** of today's `~/life/schedule.json` (only outside bed time): gets through if any reason is in the busy set, or the place is open for her in this block (`busyOpen`) | Else `held` until her next phone check in the block, else the block's end | Skipped |
 | 5 | **Daily budget** `life.dailyBudgetUsd` (default none) reached for the local day | `deferred` (reason `budget`) to the next local day | Skipped |
 | 6 | **Room loop guard** `life.maxWaifuTriggeredTurns` (default 0 = off): waifu-authored wakes in a place after that many waifu messages have woken someone since the last person's message there; each message counts once however many it wakes | `dropped` (it never blocks a send) | Skipped |
@@ -146,7 +147,7 @@ Details:
 ## Spec differs
 
 - §4.5/D10 said sleep defers every wake including reminders; the code (§21.6c, §29) lets
-  `reminder`, `plan` and `owner` through while asleep and lets the busy set through while up late or dozing.
+  `reminder`, `plan`, `wakeup_error` and `owner` through while asleep and lets the busy set through while up late or dozing.
 - §4.4 lists guard 1 as "paused server or app"; the code also drops every wake (owner included) for
   a disabled waifu or one without her own bot.
 - §4.1 calls the follow-up a wake reason; as built a failed turn's follow-up is a turn with no wakes

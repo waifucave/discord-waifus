@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { appendIntent, appendLifeLog, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { RESTART_NOTE, UNCERTAIN_SEND } from "../src/life/repair.js";
 import { contentDigest } from "../src/life/tools/messages.js";
+import { wakeupChangeDigest } from "../src/life/tools/wakeup.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
 import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
@@ -225,12 +226,12 @@ describe("crash repair of her file tools (review minors)", () => {
     return ((await tail(w)).message as { content: Array<{ content?: string; is_error?: boolean }> }).content[0]!;
   }
 
-  it("a Write of watches.json counts as done when the file holds the same entries with ids; another file only when equal", async () => {
+  it("a Write of wakeups.json counts as done when the file holds the same entries with ids; another file only when equal", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
-    const content = '[{"timeout": "2026-10-25 14:00", "once": true, "note": "tea", "when": []}]';
-    await crashAfter(w, { id: "call_w", name: "Write", input: { file_path: "~/life/watches.json", content } }, { intent: true });
-    await writeHerFile(w, "life/watches.json", content);
-    expect(await repaired(w)).toMatchObject({ content: "wrote ~/life/watches.json (recovered)" });
+    const content = '[{"kind": "watch", "places": "everywhere", "filter": [], "options": {"until": "2026-10-25 14:00", "once": true}, "note": "tea"}]';
+    await crashAfter(w, { id: "call_w", name: "Write", input: { file_path: "~/life/wakeups.json", content } }, { intent: true });
+    await writeHerFile(w, "life/wakeups.json", content);
+    expect(await repaired(w)).toMatchObject({ content: "wrote ~/life/wakeups.json (recovered)" });
 
     const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     await crashAfter(v, { id: "call_n", name: "Write", input: { file_path: "~/notes.md", content: "short" } }, { intent: true });
@@ -239,17 +240,36 @@ describe("crash repair of her file tools (review minors)", () => {
     expect(await repaired(v)).toMatchObject({ content: "[interrupted] not written", is_error: true });
   }, 30_000);
 
-  it("a ScheduleWake counts as done only for an entry with its note at the time it asked for", async () => {
+  it("a Wakeup counts as saved only when her file has what it added (kind, time, note) and lacks what it cancelled (§30)", async () => {
+    const crashedWakeup = async (cancel: string[]) => {
+      const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+      const input = { script: 'at("2026-10-25 18:00", "call mum")' };
+      await crashAfter(v, { id: "call_k", name: "Wakeup", input }, { intent: true });
+      // The digest the tool writes just before saving.
+      await appendIntent(v.storage, "ella", { turnId: "t-crash", toolCallId: "call_k", tool: "Wakeup", argsDigest: digest(input), at: v.clock.now().toISOString(), contentDigest: wakeupChangeDigest([{ kind: "at", when: "2026-10-25 18:00", note: "call mum" }], cancel) });
+      return v;
+    };
+    // An older one with the same note at another time is not this one.
+    const w = await crashedWakeup([]);
+    await writeHerFile(w, "life/wakeups.json", '[{"kind": "at", "when": "2026-10-26 09:00", "note": "call mum"}]');
+    expect(await repaired(w)).toMatchObject({ content: "[interrupted] not saved", is_error: true });
+
+    const v = await crashedWakeup(["t1"]);
+    await writeHerFile(v, "life/wakeups.json", '[{"id": "t2", "kind": "at", "when": "2026-10-25 18:00", "note": "call mum"}]');
+    expect(await repaired(v)).toMatchObject({ content: "set t2; cancelled t1 (recovered)" });
+  }, 30_000);
+
+  it("a pre-§30 ScheduleWake counts as done only for an entry with its note at the time it asked for", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     await crashAfter(w, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
     // An older reminder with the same note at another time is not this one.
-    await writeHerFile(w, "life/reminders.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}]');
+    await writeHerFile(w, "life/wakeups.json", '[{"kind": "at", "when": "2026-10-26 09:00", "note": "call mum"}]');
     expect(await repaired(w)).toMatchObject({ content: "[interrupted] not set", is_error: true });
 
     const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
     await crashAfter(v, { id: "call_s", name: "ScheduleWake", input: { at: "2026-10-25 18:00", note: "call mum" } }, { intent: true });
-    await writeHerFile(v, "life/reminders.json", '[{"at": "2026-10-26 09:00", "note": "call mum"}, {"at": "2026-10-25 18:00", "note": "call mum"}]');
-    expect(await repaired(v)).toMatchObject({ content: "set r2 (recovered)" });
+    await writeHerFile(v, "life/wakeups.json", '[{"kind": "at", "when": "2026-10-26 09:00", "note": "call mum"}, {"kind": "at", "when": "2026-10-25 18:00", "note": "call mum"}]');
+    expect(await repaired(v)).toMatchObject({ content: "set t2 (recovered)" });
   }, 30_000);
 
   it("a Bash change set saved just before the crash (its done line not written yet) is reported as saved", async () => {

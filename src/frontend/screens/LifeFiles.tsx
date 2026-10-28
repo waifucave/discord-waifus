@@ -8,10 +8,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useApi } from "../api/useApi";
-import type { HerFile, HerFileEntry, HerFilesList, ScheduleResponse, WatchesResponse } from "../api/types";
+import type { HerFile, HerFileEntry, HerFilesList, WakeupsResponse } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Notice } from "../components/Notice";
-import { breadcrumbs, entryDetail, fileSize, matchingReveal, PRIVATE_HIDDEN, watchWhenText, when } from "./lifeView";
+import { breadcrumbs, entryDetail, fileSize, matchingReveal, PRIVATE_HIDDEN, wakeupSource, wakeupWhatText, when } from "./lifeView";
 
 type Message = { tone: "ok" | "err" | "warn"; text: string };
 
@@ -271,8 +271,8 @@ function FileViewer({
         </div>
       )}
       {shown?.readOnly && !shown.redacted && <span className="t-small t-mute">Kept up to date by the app: she can read it, nobody changes it.</span>}
-      {shown?.redacted && shown.special === "watches" && <span className="t-small t-mute">A watch here is bound to a private chat, so its words are hidden and the file can't be changed here; reveal private chats on the host to edit it.</span>}
-      {shown?.redacted && shown.special !== "watches" && <span className="t-small t-mute">Lines from private chats are hidden, so the file can't be changed here; reveal private chats on the host to edit it.</span>}
+      {shown?.redacted && shown.special === "wakeups" && <span className="t-small t-mute">A wakeup here watches a private chat (or remembers what it saw everywhere), so its words are hidden and the file can't be changed here; reveal private chats on the host to edit it.</span>}
+      {shown?.redacted && shown.special !== "wakeups" && <span className="t-small t-mute">Lines from private chats are hidden, so the file can't be changed here; reveal private chats on the host to edit it.</span>}
       {shown?.special && <span className="t-small t-mute">Every save is checked; a problem is shown with its line and column and nothing is saved.</span>}
       {shown?.tooLarge && <span className="t-small t-mute">Too large to edit here.</span>}
       {(editable || shown?.text !== undefined) && draft !== undefined && (
@@ -311,112 +311,79 @@ function FileViewer({
   );
 }
 
-/** Her reminders (`~/life/reminders.json`) and watches (`~/life/watches.json`), each with a delete button. */
+/** Her wakeups (`~/life/wakeups.json`, §30.3), each with its source and a delete button. */
 export function PlansPanel({ waifuId, includePrivate }: { waifuId: string; includePrivate: boolean }) {
-  const schedule = useApi<ScheduleResponse>((s) => api.schedule(waifuId, s), [waifuId]);
-  const watches = useApi<WatchesResponse>((s) => api.watches(waifuId, includePrivate, s), [waifuId, includePrivate]);
-  const watchData = watches.error ? undefined : matchingReveal(watches.data, includePrivate);
+  const wakeups = useApi<WakeupsResponse>((s) => api.wakeups(waifuId, includePrivate, s), [waifuId, includePrivate]);
+  const data = wakeups.error ? undefined : matchingReveal(wakeups.data, includePrivate);
   const [message, setMessage] = useState<Message | undefined>(undefined);
-  const [pending, setPending] = useState<{ kind: "reminder" | "watch"; id: string } | undefined>(undefined);
+  const [pending, setPending] = useState<string | undefined>(undefined);
   const returnTo = useRef<HTMLElement | null>(null);
 
-  const drop = async (work: () => Promise<unknown>, reload: () => void) => {
+  const ask = (id: string) => {
+    returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setPending(id);
+  };
+  const confirm = async () => {
+    const id = pending;
+    setPending(undefined);
+    if (!id) return;
     setMessage(undefined);
     try {
-      await work();
+      await api.deleteWakeup(waifuId, id);
     } catch (err) {
       setMessage({ tone: "err", text: (err as Error).message });
     } finally {
-      reload();
+      wakeups.reload();
     }
-  };
-  const ask = (kind: "reminder" | "watch", id: string) => {
-    returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setPending({ kind, id });
-  };
-  const confirm = () => {
-    const target = pending;
-    setPending(undefined);
-    if (!target) return;
-    if (target.kind === "reminder") void drop(() => api.deleteReminder(waifuId, target.id), schedule.reload);
-    else void drop(() => api.deleteWatch(waifuId, target.id), watches.reload);
   };
   const refresh = () => {
     setMessage(undefined);
-    schedule.reload();
-    watches.reload();
+    wakeups.reload();
   };
 
   return (
     <div className="cell cell-pad">
       <div className="cell-head">
-        <span className="t-title">Reminders and watches</span>
+        <span className="t-title">Wakeups</span>
         <button className="btn quiet sm" onClick={refresh}>
           Refresh
         </button>
       </div>
       {message && <Notice tone={message.tone}>{message.text}</Notice>}
-      <ReminderList data={schedule.error ? undefined : schedule.data} error={schedule.error?.message} onDelete={(id) => ask("reminder", id)} />
-      <WatchList data={watchData} includePrivate={includePrivate} error={watches.error?.message} onDelete={(id) => ask("watch", id)} />
+      <WakeupList data={data} includePrivate={includePrivate} error={wakeups.error?.message} onDelete={ask} />
       {pending && (
-        <ConfirmDialog
-          title={`Delete ${pending.kind} ${pending.id}?`}
-          cancelLabel="Keep"
-          confirmLabel="Delete"
-          returnFocus={() => returnTo.current}
-          onCancel={() => setPending(undefined)}
-          onConfirm={confirm}
-        >
-          <p className="t-small">{pending.kind === "reminder" ? "It is removed from her life/reminders.json and won't wake her." : "It is removed from her life/watches.json; she is not told."}</p>
+        <ConfirmDialog title={`Delete wakeup ${pending}?`} cancelLabel="Keep" confirmLabel="Delete" returnFocus={() => returnTo.current} onCancel={() => setPending(undefined)} onConfirm={() => void confirm()}>
+          <p className="t-small">It is removed from her life/wakeups.json and won't wake her; she is not told.</p>
         </ConfirmDialog>
       )}
     </div>
   );
 }
 
-export function ReminderList({ data, error, onDelete }: { data: ScheduleResponse | undefined; error?: string; onDelete: (id: string) => void }) {
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div className="t-micro" style={{ marginBottom: 4 }}>Reminders{data ? ` (${data.timeZone})` : ""}</div>
-      {error && <Notice tone="err">Reminders: {error}</Notice>}
-      {data?.unreadable && <Notice tone="warn">Her life/reminders.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
-      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with ScheduleWake, or by editing life/reminders.json.</span>}
-      {data?.entries.map((entry) => (
-        <div key={entry.id} className="soft-row">
-          <span className="t-micro" style={{ flex: "none" }}>{entry.id}</span>
-          <span className="mono t-small" style={{ flex: "none" }}>{entry.at}</span>
-          {entry.repeat && <span className="chip lavender">{entry.repeat}</span>}
-          <span className="t-small" style={{ flex: "1 1 200px", overflowWrap: "anywhere" }}>{entry.note}</span>
-          <button className="btn quiet sm" aria-label={`Delete reminder ${entry.id}`} onClick={() => onDelete(entry.id)}>
-            Delete
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-export function WatchList({ data, includePrivate, error, onDelete }: { data: WatchesResponse | undefined; includePrivate: boolean; error?: string; onDelete: (id: string) => void }) {
+export function WakeupList({ data, includePrivate, error, onDelete }: { data: WakeupsResponse | undefined; includePrivate: boolean; error?: string; onDelete: (id: string) => void }) {
   return (
     <div>
-      <div className="t-micro" style={{ marginBottom: 4 }}>Watches{data ? ` (${data.timeZone})` : ""}</div>
-      {error && <Notice tone="err">Watches: {error}</Notice>}
-      {data?.unreadable && <Notice tone="warn">Her life/watches.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
-      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with WatchFor, or by editing life/watches.json.</span>}
+      <div className="t-micro" style={{ marginBottom: 4 }}>Timed, watches and pages{data ? ` (${data.timeZone})` : ""}</div>
+      {error && <Notice tone="err">Wakeups: {error}</Notice>}
+      {data?.unreadable && <Notice tone="warn">Her life/wakeups.json does not read cleanly; fix it in her files (only the entries below were understood).</Notice>}
+      {data && data.entries.length === 0 && <span className="t-small t-mute">None. She sets them with her Wakeup tool, or by editing life/wakeups.json.</span>}
       {data?.entries.map((entry) => {
         const hidden = entry.private === true && !includePrivate;
+        const source = hidden ? undefined : wakeupSource(entry);
         return (
-          <div key={entry.id} className="soft-row">
+          <div key={entry.id} className="soft-row" style={{ flexWrap: "wrap" }}>
             <span className="t-micro" style={{ flex: "none" }}>{entry.id}</span>
-            <span className="mono t-small" style={{ flex: "none" }}>until {entry.timeout}</span>
-            {!entry.once && <span className="chip lavender">repeats</span>}
-            <span className="t-small" style={{ flex: "1 1 200px", overflowWrap: "anywhere" }}>
-              {hidden ? <span className="t-mute">{PRIVATE_HIDDEN}</span> : `${watchWhenText(entry)} · ${entry.note}`}
+            <span className="t-small" style={{ flex: "1 1 240px", overflowWrap: "anywhere" }}>
+              {hidden ? <span className="t-mute">{PRIVATE_HIDDEN}</span> : `${wakeupWhatText(entry)} · ${entry.note}`}
             </span>
+            {entry.disabled && <span className="chip peach" title={entry.disabled}>stopped</span>}
             {entry.private && <span className="chip sky">private chat</span>}
-            <button className="btn quiet sm" aria-label={`Delete watch ${entry.id}`} onClick={() => onDelete(entry.id)}>
+            <button className="btn quiet sm" aria-label={`Delete wakeup ${entry.id}`} onClick={() => onDelete(entry.id)}>
               Delete
             </button>
+            {source && <pre className="mono t-small" style={{ flex: "1 1 100%", margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{source}</pre>}
+            {entry.disabled && !hidden && <span className="t-small t-mute" style={{ flex: "1 1 100%" }}>stopped: {entry.disabled}</span>}
+            {entry.state !== undefined && <span className="mono t-small t-mute" style={{ flex: "1 1 100%", overflowWrap: "anywhere" }}>state: {typeof entry.state === "string" ? entry.state : JSON.stringify(entry.state)}</span>}
           </div>
         );
       })}

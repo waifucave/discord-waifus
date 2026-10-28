@@ -29,7 +29,7 @@ function touchesLifeDir(virtual: string, slug: string): boolean {
 }
 import { appendIntent } from "../lifeStore.js";
 import { notePlace } from "../placeRecorder.js";
-import { DREAM_LIFE_REFUSED, noteDmFile, planWakeNote, promptCopyNote, storeOf, transcriptViewOf } from "./files.js";
+import { DREAM_LIFE_REFUSED, noteDmFile, planWakeNote, promptCopyNote, storeOf, transcriptViewOf, wakeupsOrigin } from "./files.js";
 import { parseInput, toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 10_000;
@@ -66,6 +66,13 @@ async function noteDmTouches(store: HomeStore, paths: readonly string[], text: s
   for (const virtual of paths) {
     const p = parseVirtual(virtual, store.slug);
     if (!p || p.segments.length === 0) continue;
+    // Her wakeups file with a private wakeup in it (§30.3).
+    const wakeups = await wakeupsOrigin(store, p);
+    if (wakeups) {
+      if (!noted.has(wakeups)) notePlace(wakeups);
+      noted.add(wakeups);
+      continue;
+    }
     const byPath = dmPaths.get(pathKey(p.virtual));
     if (byPath) {
       if (!noted.has(byPath)) notePlace(byPath);

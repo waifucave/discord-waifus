@@ -14,8 +14,8 @@ Common failures, what they look like, and where to look.
 ## Nothing replies in Discord
 
 Each waifu decides for herself whether to answer: she is woken by mentions, replies, her name,
-DMs, reminders, watches, or the addressee detector, reads the conversation and may choose to stay
-quiet. She also does not wake while asleep in her bed time (only her reminders and your wakes do; while
+DMs, her wakeups, or the addressee detector, reads the conversation and may choose to stay
+quiet. She also does not wake while asleep in her bed time (only her timed wakeups and your wakes do; while
 she dozes or is busy only people talking to her get through), over her daily budget, or while the
 server is paused, and a message first waits a moment of quiet (1.5 seconds in a room, 2.5 in a
 DM; longer while the person is still typing, at most 10 seconds in a room and a minute in a DM).
