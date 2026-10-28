@@ -2098,7 +2098,15 @@ export class ProtectedHelperProcessFactory implements HelperProcessFactory {
         error instanceof Error ? error.message : "Protected helper spawn failed."
       );
     }
-    child.stderr?.resume();
+    const stderrSink = request.stderrSink;
+    if (stderrSink && child.stderr) {
+      // The helper debug log (opt-in): the helper redacts its own lines; the sink only stores them.
+      child.stderr.on("data", (chunk: Buffer) => {
+        try { stderrSink.write(chunk); } catch { /* never affects the helper */ }
+      });
+    } else {
+      child.stderr?.resume();
+    }
     const capabilityPipe = child.stdio[3];
     if (!capabilityPipe || typeof (capabilityPipe as NodeJS.WritableStream).write !== "function") {
       child.kill("SIGKILL");

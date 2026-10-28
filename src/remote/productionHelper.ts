@@ -7,6 +7,7 @@ import {
   type ResolveTsConnectBinaryOptions
 } from "./helperBinary.js";
 import { ProtectedHelperProcessFactory } from "./helperClient.js";
+import { helperDebugLogEnabled } from "./helperDebugLog.js";
 import { HelperSupervisor } from "./helperSupervisor.js";
 import {
   HelperSupervisorError,
@@ -71,6 +72,8 @@ export type CreateProductionHelperSupervisorOptions = Readonly<{
   appVersion: string;
   buildId: string;
   logger: Logger;
+  /** Defaults to `remoteAccess.helperDebugLog` in this data root's config.toml, read at each launch. */
+  helperDebugLog?: () => boolean | Promise<boolean>;
   packageResolver?: HelperPackageResolver;
   processFactory?: HelperProcessFactory;
   trustRoots?: readonly HelperReleaseTrustEntryV1[];
@@ -103,6 +106,7 @@ export async function createProductionHelperSupervisor(
     runtimePurpose: "normal",
     packageResolver,
     processFactory: options.processFactory ?? new ProtectedHelperProcessFactory(),
-    logger: options.logger
+    logger: options.logger,
+    helperDebugLog: options.helperDebugLog ?? (() => helperDebugLogEnabled(options.dataRoot))
   });
 }

@@ -28,7 +28,7 @@ from argv (`--from-env`, `--stdin`, `--file`, or a hidden prompt).
 
 | Command | Behaviour |
 |---|---|
-| `help [topic]` (e.g. `help dreaming`), `list [group]`, `get`, `set`, `unset` | Settings; `app` keys work with the host stopped (written under the host lock; exit 3 while a host holds it); `updates.enabled` only via `waifus update --auto` |
+| `help [topic]` (e.g. `help dreaming`), `list [group]`, `get`, `set`, `unset` | Settings; `app` keys work with the host stopped (written under the host lock; exit 3 while a host holds it); `updates.enabled` only via `waifus update --auto`; `set app remoteAccess.helperDebugLog true` turns on the local helper debug log for this data root's host and `waifus remote` helpers from their next start ([remote-access.md](remote-access.md#diagnostics)) |
 | `wake <waifu> [note…]` | Owner wake (note ≤ 500); prints the outcome (`queued`, `deferred`, `quiet`, `dropped`, `queued_offline`) |
 | `life <waifu> [--log] [--limit N] [--private]` | Status, or the log (default 20, ≤ 200 lines) |
 | `files <waifu> [path] [--root home\|tmp\|transcripts] [--private]` | List a folder or print a text file |
@@ -76,7 +76,8 @@ routes, so every rule above applies to it, plus:
 - **Confirmation cards** (server-held; only the owner's click applies them; expire after 5 minutes):
   `write_file` (the exact `PUT` with the current hash, ≤ 16 KB), `forget_person` and `forget_dm` (dry
   run first, the counts and the limits), `update_app_config` for `http.host`, `frontend.staticDir`,
-  `updates.*` (other keys apply directly; from a paired remote device these are refused), Remote
+  `updates.*`, `remoteAccess.*` (the helper debug log; other keys apply directly; from a paired remote
+  device these are refused), Remote
   Access enable/disable, invitations, pairing approval and device revocation.
 - It never sees DM content: a request with `includePrivate` from it answers 403.
 

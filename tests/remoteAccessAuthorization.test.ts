@@ -218,6 +218,23 @@ describe("remote-access route authorization", () => {
     expect(unrelated.statusCode).toBe(200);
     expect(unrelated.json().updates.enabled).toBe(false);
   });
+  it("forbids turning the helper debug log on or off from a paired remote device", async () => {
+    const app = await makeApp();
+    const context = await dispatchInternal(app, principal(), undefined, { method: "GET", url: "/api/config" });
+    expect(context.json().remoteAccess).toEqual({ helperDebugLog: false });
+    const forbidden = await dispatchInternal(app, principal(), undefined, {
+      method: "PUT", url: "/api/config", headers: { "idempotency-key": bytes32(0x59) }, payload: { remoteAccess: { helperDebugLog: true } }
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(forbidden.json().error).toBe("RemoteConfigFieldForbidden");
+    // Sending the unchanged value alongside an ordinary change is fine.
+    const unchanged = await dispatchInternal(app, principal(), undefined, {
+      method: "PUT", url: "/api/config", headers: { "idempotency-key": bytes32(0x5a) },
+      payload: { remoteAccess: { helperDebugLog: false }, ocr: { enabled: false } }
+    });
+    expect(unchanged.statusCode).toBe(200);
+    expect(unchanged.json().remoteAccess.helperDebugLog).toBe(false);
+  });
   it.each([
     ["/api/remote-access", "GET"],
     ["/api/remote-access/diagnostics", "GET"]

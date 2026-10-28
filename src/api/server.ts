@@ -485,11 +485,13 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       hasOwn(patch.http, "host")
       || hasOwn(patch.frontend, "staticDir")
       || (patch.updates !== undefined && Object.entries(patch.updates).some(([key, value]) =>
-        value !== currentConfig.updates[key as keyof typeof currentConfig.updates]));
+        value !== currentConfig.updates[key as keyof typeof currentConfig.updates]))
+      || (patch.remoteAccess !== undefined && Object.entries(patch.remoteAccess).some(([key, value]) =>
+        value !== currentConfig.remoteAccess[key as keyof typeof currentConfig.remoteAccess]));
     if (request.principal.kind === "remote_device" && guarded) {
       throw new ApiError(
         403,
-        "Host bind, filesystem-serving and automatic-update controls are local-only.",
+        "Host bind, filesystem-serving, automatic-update and helper debug log controls are local-only.",
         undefined,
         "RemoteConfigFieldForbidden"
       );
@@ -499,7 +501,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     if (guarded && request.assistantDelegation && !request.assistantDelegation.pendingActionId) {
       throw new ApiError(
         403,
-        "The dashboard assistant only proposes host bind, served-folder and automatic-update changes; the owner confirms them on a dashboard card.",
+        "The dashboard assistant only proposes host bind, served-folder, automatic-update and helper debug log changes; the owner confirms them on a dashboard card.",
         undefined,
         "AssistantConfirmationRequired"
       );
@@ -513,12 +515,16 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     }
     const saved = await storage.withLocks([APP_CONFIG_LOCK], () => updateAppConfig(options.dataRoot, patch));
     options.runtime.paused = saved.runtime.paused;
-    const { updates: _beforeUpdates, ...beforeRuntimeConfig } = currentConfig;
-    const { updates: _afterUpdates, ...afterRuntimeConfig } = saved;
-    // Enabling idle updates must not itself abort a live conversation via runtime reload.
-    const onlyUpdatesPatch = Object.keys(patch).every(key => key === "updates" || key === "schemaVersion");
-    const updatesChanged = patch.updates && JSON.stringify(currentConfig.updates) !== JSON.stringify(saved.updates);
-    const updaterOnlyChange = patch.updates && (onlyUpdatesPatch || (updatesChanged
+    const { updates: _beforeUpdates, remoteAccess: _beforeRemote, ...beforeRuntimeConfig } = currentConfig;
+    const { updates: _afterUpdates, remoteAccess: _afterRemote, ...afterRuntimeConfig } = saved;
+    // Enabling idle updates or the helper debug log (read at the next helper start) must not itself
+    // abort a live conversation via runtime reload.
+    const outsideRuntime = (key: string) => key === "updates" || key === "remoteAccess" || key === "schemaVersion";
+    const touchesOutside = patch.updates !== undefined || patch.remoteAccess !== undefined;
+    const onlyOutsidePatch = Object.keys(patch).every(outsideRuntime);
+    const outsideChanged = JSON.stringify(currentConfig.updates) !== JSON.stringify(saved.updates)
+      || JSON.stringify(currentConfig.remoteAccess) !== JSON.stringify(saved.remoteAccess);
+    const updaterOnlyChange = touchesOutside && (onlyOutsidePatch || (outsideChanged
       && JSON.stringify(beforeRuntimeConfig) === JSON.stringify(afterRuntimeConfig)));
     if (!updaterOnlyChange) {
       await options.runtimeControl?.reload("config-updated");
@@ -1231,7 +1237,8 @@ function remoteAppConfig(config: AppConfig) {
     life: config.life,
     search: config.search,
     detector: config.detector,
-    updates: config.updates
+    updates: config.updates,
+    remoteAccess: config.remoteAccess
   };
 }
 

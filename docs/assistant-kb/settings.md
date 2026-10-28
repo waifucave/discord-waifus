@@ -6,7 +6,7 @@ Targets: `app`, `assistant`, `remote-access`, `waifu:<id>`, `server:<guildId>`, 
 
 ## App (`app`)
 
-The host's config.toml. GET /api/config reads it and PUT /api/config takes a partial patch (omitted keys keep their values); the host then reloads its Discord runtime unless only `updates` changed. With the host stopped, `waifus set app …` writes config.toml directly.
+The host's config.toml. GET /api/config reads it and PUT /api/config takes a partial patch (omitted keys keep their values); the host then reloads its Discord runtime unless only `updates` or `remoteAccess` changed. With the host stopped, `waifus set app …` writes config.toml directly.
 
 Target `app` · stored in `config.toml` · writes: revision none.
 
@@ -103,6 +103,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `updates.enabled` | boolean | `false` | Install newer patch releases automatically when every managed process is idle (global npm installs only). (local-only write) |
 | `updates.checkIntervalMinutes` | integer 15–1440 [minutes] | `60` | How often npm is checked for a newer patch release. (local-only write) |
 | `updates.idleMinutes` | integer 1–120 [minutes] | `5` | How long everything must be quiet before an update installs. (local-only write) |
+| `remoteAccess.helperDebugLog` | boolean | `false` | Write the Remote Access helper's network log (direct UDP port, NAT, STUN and path changes; secrets redacted by the helper) to app/logs/remote-diagnostics/helper-host.log or helper-remote.log on this computer: 1 MiB plus one older copy, never uploaded or included in diagnostics. Used by this host's helper and by `waifus remote` on this data root, from the next time each helper starts (helper 0.1.18 or later). Off by default. (local-only write; next start) |
 
 CLI: `waifus get app [KEY]`, `waifus set app KEY VALUE`, `waifus unset app KEY`.
 

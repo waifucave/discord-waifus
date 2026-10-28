@@ -4,6 +4,7 @@ import type { Logger } from "../backend/logger.js";
 import type { RemoteRequestBridge } from "../backend/remoteAccess/requestBridge.js";
 import { remoteRolePaths } from "./paths.js";
 import { RemoteDiagnosticLog, remoteDiagnosticCode, type RemoteDiagnosticOperation } from "./diagnosticLog.js";
+import { HELPER_DEBUG_LOG_ENV, HelperDebugLog, helperSupportsDebugLog } from "./helperDebugLog.js";
 import {
   INITIAL_REQUIRED_CAPABILITIES,
   SemVerSchema,
@@ -78,6 +79,12 @@ export type HelperSupervisorOptions = {
   packageResolver: HelperPackageResolver;
   processFactory: HelperProcessFactory;
   logger: Logger;
+  /**
+   * Read before every helper launch: true starts the helper with its opt-in redacted network log
+   * (`remoteAccess.helperDebugLog`) and stores its stderr in a private capped file. Absent or false:
+   * the helper's environment is unchanged and its stderr is drained and discarded.
+   */
+  helperDebugLog?: () => boolean | Promise<boolean>;
   randomBytes?: (size: number) => Uint8Array;
   now?: () => number;
   jitter?: () => number;
@@ -253,6 +260,7 @@ export class HelperSupervisor {
   readonly #clearTimeout: typeof clearTimeout;
   readonly #listeners = new Set<(snapshot: HelperSupervisorSnapshot) => void>();
   readonly #diagnostics: RemoteDiagnosticLog;
+  #debugLog: HelperDebugLog | undefined;
   #snapshot = initialSnapshot();
   #launch: HelperLaunch | undefined;
   #client: AuthenticatedHelperClient | undefined;
@@ -547,6 +555,20 @@ export class HelperSupervisor {
       consecutiveFailures: this.#snapshot.consecutiveFailures
     });
     await this.#diagnostics.flush();
+    await this.#debugLog?.close();
+  }
+
+  /** The debug log for this launch, or null when the setting is off or its writer has failed. */
+  async #debugLogForLaunch(): Promise<HelperDebugLog | null> {
+    const setting = this.#options.helperDebugLog;
+    if (!setting) return null;
+    let enabled = false;
+    try { enabled = (await setting()) === true; } catch { enabled = false; }
+    if (!enabled) return null;
+    try {
+      this.#debugLog ??= new HelperDebugLog({ dataRoot: this.#options.dataRoot, role: this.#options.role });
+    } catch { return null; }
+    return this.#debugLog.failed ? null : this.#debugLog;
   }
 
   async #runAttempt(): Promise<void> {
@@ -573,6 +595,10 @@ export class HelperSupervisor {
         dataRoot: this.#options.dataRoot,
         appVersion: this.#options.appVersion
       }));
+      // No await at all without the option, so launch timing is exactly as before.
+      const debugLog = this.#options.helperDebugLog && helperSupportsDebugLog(selection.helperVersion)
+        ? await this.#debugLogForLaunch()
+        : null;
       const capability = Buffer.from(this.#randomBytes(32));
       if (capability.byteLength !== 32) {
         capability.fill(0);
@@ -609,12 +635,16 @@ export class HelperSupervisor {
         endpoint = unixEndpoint(this.#options.dataRoot, this.#options.role);
       }
       try {
+        debugLog?.write(`${new Date(this.#now()).toISOString()} discord-waifus: ${this.#options.role} helper launch, debug log on\n`);
         launch = await this.#options.processFactory.launch({
           role: this.#options.role,
           dataRoot: this.#options.dataRoot,
           binaryPath: selection.binaryPath,
           argv: Object.freeze(["supervised", "--parent-endpoint", endpoint]),
-          environment: protectedHelperEnvironment(),
+          environment: debugLog
+            ? Object.freeze({ ...protectedHelperEnvironment(), [HELPER_DEBUG_LOG_ENV]: "1" })
+            : protectedHelperEnvironment(),
+          ...(debugLog ? { stderrSink: debugLog } : {}),
           parentEndpoint: endpoint,
           parentCapability: capability,
           parentHello

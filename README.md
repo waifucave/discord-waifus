@@ -222,6 +222,16 @@ contain only timestamps and allowlisted state/error categories, not keys, pairin
 addresses, request contents or device identifiers. Nothing is uploaded automatically. Repeated
 events are coalesced and logging is best-effort; these files cannot prove every failure was caught.
 
+When a direct connection does not form, you can turn on the helper's own network log on that
+computer with `waifus set app remoteAccess.helperDebugLog true` (it can only be changed locally,
+never from a paired device). It applies from the next time the helper starts there (restart the host
+or `waifus remote`), for both roles on that data root, with helper 0.1.18 or later. The helper then
+writes timestamped, redacted network lines (its UDP port, NAT and STUN results, path changes) to
+`app/logs/remote-diagnostics/helper-host.log` or `helper-remote.log`: a private 1 MiB file plus one
+rotated copy, never uploaded and never included in diagnostics or API responses. It can contain
+your public and local IP addresses and ports, so review it before sharing it with anyone. Turn it off
+again with `waifus set app remoteAccess.helperDebugLog false`.
+
 <details>
 <summary>🔁 Migrating from the old <code>@starlight-ai</code> package?</summary>
 

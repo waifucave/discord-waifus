@@ -437,12 +437,16 @@ export type HelperProcessExit = {
   readonly signal: NodeJS.Signals | string | null;
 };
 
+export type HelperStderrSink = { write: (chunk: Buffer) => void };
+
 export type HelperLaunchRequest = {
   readonly role: HelperRole;
   readonly dataRoot: string;
   readonly binaryPath: string;
   readonly argv: readonly string[];
   readonly environment: Readonly<Record<string, string>>;
+  /** Only with the helper debug log on: receives the helper's stderr. Absent: stderr is discarded. */
+  readonly stderrSink?: HelperStderrSink;
   readonly parentEndpoint: string;
   readonly parentCapability: Buffer;
   readonly parentHello: ComponentHello;

@@ -97,7 +97,7 @@ SameSite=Strict, without expiry.
 |---|---|
 | DM content (`includePrivate`) | 403 `PrivateContentLocalOnly`; the Life reveal toggle is disabled |
 | Activation, identity reset, the host's root page | Local only (403 `RemoteRouteForbidden`) |
-| `http.host`, `frontend.staticDir`, `updates.*` changes | 403 `RemoteConfigFieldForbidden`; `http.host`/`frontend.staticDir` hidden in config reads |
+| `http.host`, `frontend.staticDir`, `updates.*`, `remoteAccess.*` changes | 403 `RemoteConfigFieldForbidden`; `http.host`/`frontend.staticDir` hidden in config reads |
 | Host OS stop/restart | Not possible (no such route) |
 | Status/runtime | `httpUrl`, `dataRoot`, `pid`, `port` removed |
 | Mutations | Need an `Idempotency-Key` (else 428) |
@@ -120,6 +120,25 @@ The remote dashboard's CSP allows scripts and styles from itself, images from it
 - Local logs: `app/logs/remote-diagnostics/{host,remote}.jsonl`, closed enum fields and timestamps
   only, 64 KiB plus one rotated copy, repeats within 30 s suppressed; uploads nothing; a write failure
   disables it until the next start (`src/remote/diagnosticLog.ts`).
+- **Helper debug log** (`remoteAccess.helperDebugLog` in config.toml, default off;
+  `src/remote/helperDebugLog.ts`): when on, each helper launch gets `TS_CONNECT_DEBUG_LOG=1` added to
+  its otherwise minimal environment (on Linux only the session bus address), and its stderr is
+  appended to `app/logs/remote-diagnostics/helper-host.log` (the host's helper) or
+  `helper-remote.log` (`waifus remote`'s helper) on that data root, after a `discord-waifus: <role>
+  helper launch` line. The helper itself writes the lines: timestamped, redacted (private keys, auth
+  keys, tokens, secrets, long hex/base64 runs, home directory account names), at most 1024 bytes each
+  and rate limited; public key short forms, addresses and ports stay readable. The file is
+  owner-private (private metadata writer, Windows DACL included; an existing file is reused only if
+  already private and never through a link), 1 MiB plus one rotated `.1` copy, rotated at a line
+  boundary. It is never uploaded, never read back by the app, and never part of
+  `/api/remote-access/diagnostics`, the diagnostics bundle or any other API response. A write failure
+  disables it until the process restarts. Read at every helper launch, so a change applies the next
+  time each helper starts (a restart of the host or `waifus remote`, turning Remote Access off and on,
+  or a helper restart). Helpers before 0.1.18 do not redact their stderr, so with them the variable is
+  not set and nothing is stored. Off: the environment is unchanged and stderr is drained and
+  discarded, as before. Changing it is local-only: a paired remote device gets 403
+  `RemoteConfigFieldForbidden`, and the dashboard assistant can only propose it on a confirmation
+  card.
 
 ## Docs differ
 

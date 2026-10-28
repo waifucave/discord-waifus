@@ -31,9 +31,9 @@ export const ChannelEntrySchema = ServerConfigSchema.shape.channels.unwrap().val
 const APP: SettingGroup = {
   id: "app",
   title: "App",
-  summary: "Host-wide settings in config.toml: HTTP, Discord, OCR, compaction, models, life limits, web search, the detector, updates.",
+  summary: "Host-wide settings in config.toml: HTTP, Discord, OCR, compaction, models, life limits, web search, the detector, updates, the Remote Access helper's debug log.",
   description:
-    "The host's config.toml. GET /api/config reads it and PUT /api/config takes a partial patch (omitted keys keep their values); the host then reloads its Discord runtime unless only `updates` changed. With the host stopped, `waifus set app …` writes config.toml directly.",
+    "The host's config.toml. GET /api/config reads it and PUT /api/config takes a partial patch (omitted keys keep their values); the host then reloads its Discord runtime unless only `updates` or `remoteAccess` changed. With the host stopped, `waifus set app …` writes config.toml directly.",
   target: { kind: "singleton" },
   storage: "config.toml",
   read: { method: "GET", path: "/api/config" },
@@ -139,7 +139,8 @@ const APP: SettingGroup = {
     "detector.target": { label: "Addressee detector", help: "The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:typesafe/jev-1.14, openai:gpt-6-luna or laya:english; \"\" turns it off (then a first message in 10 minutes or a question wakes one waifu who is around, by a weighted draw that favours whoever spoke there least recently). Also GET/PUT /api/detector/config.", ...reload, example: "openrouter:typesafe/jev-1.14" },
     "updates.enabled": { label: "Automatic updates", help: "Install newer patch releases automatically when every managed process is idle (global npm installs only).", localOnlyWrite: true, ...live, example: "false" },
     "updates.checkIntervalMinutes": { label: "Check for updates every", help: "How often npm is checked for a newer patch release.", unit: "minutes", localOnlyWrite: true, ...live, example: "60" },
-    "updates.idleMinutes": { label: "Quiet time before installing", help: "How long everything must be quiet before an update installs.", unit: "minutes", localOnlyWrite: true, ...live, example: "5" }
+    "updates.idleMinutes": { label: "Quiet time before installing", help: "How long everything must be quiet before an update installs.", unit: "minutes", localOnlyWrite: true, ...live, example: "5" },
+    "remoteAccess.helperDebugLog": { label: "Helper debug log", help: "Write the Remote Access helper's network log (direct UDP port, NAT, STUN and path changes; secrets redacted by the helper) to app/logs/remote-diagnostics/helper-host.log or helper-remote.log on this computer: 1 MiB plus one older copy, never uploaded or included in diagnostics. Used by this host's helper and by `waifus remote` on this data root, from the next time each helper starts (helper 0.1.18 or later). Off by default.", localOnlyWrite: true, ...restart, example: "false" }
   }
 };
 

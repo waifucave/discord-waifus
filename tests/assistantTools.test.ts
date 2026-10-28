@@ -192,6 +192,33 @@ describe("assistant tools", () => {
     }
   });
 
+  it("update_app_config only proposes the helper debug log (remoteAccess.*) on a confirmation card", async () => {
+    const { app } = await makeApp();
+    try {
+      const proposals: AssistantActionProposal[] = [];
+      const ctx = {
+        ...localToolContext(app),
+        delegation: { conversationId: "conversation-1", toolCallId: "call-1" },
+        actions: {
+          propose: async (proposal: AssistantActionProposal) => {
+            proposals.push(proposal);
+            return { version: 1 as const, actionId: "action-1", category: proposal.category, summary: proposal.summary, expiresAt: "2026-10-25T12:00:00.000Z" };
+          },
+          cancelOwnedInvitation: async () => undefined
+        }
+      };
+      const result = JSON.parse(
+        await executeAssistantTool(ctx, "update_app_config", JSON.stringify({ changes: { remoteAccess: { helperDebugLog: true } } }))
+      );
+      expect(result).toMatchObject({ status: "confirmation_required", proposed: ["remoteAccess.helperDebugLog"] });
+      expect(proposals[0]!.operation).toEqual({ kind: "exact_http", method: "PUT", canonicalTarget: "/api/config", payload: { remoteAccess: { helperDebugLog: true } } });
+      const after = (await app.inject({ method: "GET", url: "/api/config" })).json() as { remoteAccess: { helperDebugLog: boolean } };
+      expect(after.remoteAccess.helperDebugLog).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("her files: list_files and read_file never show a DM file; write_file only proposes a card with the exact PUT", async () => {
     const { app, storage } = await makeApp();
     try {
@@ -254,7 +281,7 @@ describe("assistant tools", () => {
     }
   });
 
-  it("an assistant delegation cannot set http.host, frontend.staticDir or updates.* without the card", async () => {
+  it("an assistant delegation cannot set http.host, frontend.staticDir, updates.* or remoteAccess.* without the card", async () => {
     const { app } = await makeApp();
     try {
       const before = (await app.inject({ method: "GET", url: "/api/config" })).json() as { updates: { enabled: boolean } };
@@ -265,7 +292,7 @@ describe("assistant tools", () => {
           headers: { "idempotency-key": randomBytes(32).toString("base64url") },
           payload
         });
-      for (const payload of [{ http: { host: "0.0.0.0" } }, { frontend: { staticDir: "somewhere" } }, { updates: { enabled: !before.updates.enabled } }, { updates: { idleMinutes: 99 } }]) {
+      for (const payload of [{ http: { host: "0.0.0.0" } }, { frontend: { staticDir: "somewhere" } }, { updates: { enabled: !before.updates.enabled } }, { updates: { idleMinutes: 99 } }, { remoteAccess: { helperDebugLog: true } }]) {
         const refused = await put(payload);
         expect(refused.statusCode, JSON.stringify(payload)).toBe(403);
         expect(refused.json(), JSON.stringify(payload)).toMatchObject({ error: "AssistantConfirmationRequired" });

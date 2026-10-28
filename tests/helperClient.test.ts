@@ -148,6 +148,30 @@ describe("protected helper process client", () => {
     await expect(launch.exited).resolves.toMatchObject({ code: 0 });
   });
 
+  unixIt("hands helper stderr to the debug sink only when one is given", async () => {
+    const chunks: Buffer[] = [];
+    const request = { ...(await launchRequest({ FAKE_HELPER_STDERR: "1", TS_CONNECT_DEBUG_LOG: "1" })), stderrSink: { write: (chunk: Buffer) => { chunks.push(chunk); } } };
+    const launch = await new ProtectedHelperProcessFactory().launch(request);
+    const client = await launch.authenticated;
+    const deadline = performance.now() + 5_000;
+    while (!Buffer.concat(chunks).toString("utf8").includes("\n") && performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("fake helper stderr: debug=1\n");
+    await client.close();
+    await launch.requestDrain();
+    await launch.closeParentChannel();
+    await expect(launch.exited).resolves.toMatchObject({ code: 0 });
+
+    // Without a sink the same output is drained and discarded; the helper still runs normally.
+    const quiet = await new ProtectedHelperProcessFactory().launch(await launchRequest({ FAKE_HELPER_STDERR: "1" }));
+    const quietClient = await quiet.authenticated;
+    await quietClient.close();
+    await quiet.requestDrain();
+    await quiet.closeParentChannel();
+    await expect(quiet.exited).resolves.toMatchObject({ code: 0 });
+  }, 30_000);
+
   unixIt("rejects a wrong helper proof", async () => {
     const request = await launchRequest({ FAKE_HELPER_WRONG_PROOF: "1" });
     const launch = await new ProtectedHelperProcessFactory().launch(request);

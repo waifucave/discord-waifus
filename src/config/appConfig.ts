@@ -77,7 +77,8 @@ export function mergeAppConfigPatch(
     },
     search: { ...current.search, ...patch.search },
     detector: { ...current.detector, ...patch.detector },
-    updates: { ...current.updates, ...patch.updates }
+    updates: { ...current.updates, ...patch.updates },
+    remoteAccess: { ...current.remoteAccess, ...patch.remoteAccess }
   });
   // An update never leaves the emergency at or below the rest point (§26): a ZodError, so a 400.
   CompactionRatiosSchema.parse(merged.compaction);

@@ -29,7 +29,8 @@ does goes through these endpoints, so any agent can drive the app with plain HTT
   a new key.
 - `PUT /api/config` is a partial merge. Omitted fields are preserved; use
   `{"frontend":{"staticDir":null}}` to clear that optional path. Remote callers cannot read or
-  write the host bind address or frontend filesystem path.
+  write the host bind address or frontend filesystem path, and cannot change `updates.*` or
+  `remoteAccess.helperDebugLog`.
 
 ## Endpoints
 

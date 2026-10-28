@@ -56,6 +56,17 @@ They contain allowlisted lifecycle, operation and failed-response categories onl
 these sanitized entries for remote troubleshooting, never pairing tokens or other runtime files.
 Logging is best-effort, may drop bursts, and cannot establish that no failures occurred.
 
+For network problems (no direct path although both devices are online) the owner can turn on the
+helper debug log on that computer: `waifus set app remoteAccess.helperDebugLog true` (local only; a
+paired remote device cannot change it, and you can only propose it on a confirmation card). It
+applies from the next helper start on that data root, for both the host's helper and `waifus
+remote`'s helper, and needs helper 0.1.18 or later. The helper then writes its redacted network log
+(direct UDP port, NAT/STUN results, path changes) to
+`app/logs/remote-diagnostics/helper-host.log` or `helper-remote.log`: private, 1 MiB plus one `.1`
+copy, never uploaded and never returned by any API. Ask the owner to look at it or share what they
+choose themselves; you cannot read it. Turn it off again with
+`waifus set app remoteAccess.helperDebugLog false`.
+
 - `direct_unavailable` or `reconnecting`: use the reconnect action after checking that both devices
   have working UDP connectivity. Network/interface changes are rediscovered automatically.
 - `activation_required`: complete activation from the host's local dashboard first.

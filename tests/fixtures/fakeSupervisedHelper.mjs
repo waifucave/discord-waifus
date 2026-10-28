@@ -359,6 +359,10 @@ async function main(capability) {
   const endpointIndex = process.argv.indexOf("--parent-endpoint");
   const endpoint = process.argv[endpointIndex + 1];
   if (!endpoint) process.exit(64);
+  if (process.env.FAKE_HELPER_STDERR === "1") {
+    // Like the real helper's debug log: what it saw in its environment, on stderr.
+    process.stderr.write(`fake helper stderr: debug=${process.env.TS_CONNECT_DEBUG_LOG ?? "unset"}\n`);
+  }
   const connectDelay = Number(process.env.FAKE_HELPER_CONNECT_DELAY_MS ?? 0);
   if (connectDelay > 0) await new Promise((resolve) => setTimeout(resolve, connectDelay));
   const socket = net.connect(endpoint);
