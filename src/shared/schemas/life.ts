@@ -284,7 +284,21 @@ export const LifeIntentSchema = z.object({
    * id as `resultRef`) right after, so boot repair knows each message on its own.
    */
   line: z.number().int().min(1).optional(),
-  lineDone: z.literal(true).optional()
+  lineDone: z.literal(true).optional(),
+  /**
+   * SendMessage scripts since §32: one `tools.send_message` call's sends, written once every check
+   * passed and before its first Discord call (`line` numbers its messages across the whole script),
+   * so boot repair knows what each call meant to send; `callDone` (the call's number) after it ran,
+   * with what it sent as `resultRef`.
+   */
+  plan: z
+    .object({
+      call: z.number().int().min(1),
+      place: z.string(),
+      sends: z.array(z.object({ line: z.number().int().min(1), text: z.string(), files: z.array(z.string()).default([]) }))
+    })
+    .optional(),
+  callDone: z.number().int().min(1).optional()
 });
 export type LifeIntent = z.infer<typeof LifeIntentSchema>;
 

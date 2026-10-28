@@ -966,15 +966,17 @@ export class Life {
           });
         }
       }
-      // A script that sent anything (even one stopped part way, §27.1) counts as a send.
+      // A script that sent anything (even one stopped part way, §27.1) counts as a send, in each
+      // place it sent to (§32: one script may send to several).
       const sent = tool !== undefined && call.name === "SendMessage" && (run.scratch.sends ?? 0) > sendsBefore;
+      const sentPlaces = sent ? (output.sentPlaces ?? []) : [];
       if (run.typing && sent) {
-        for (const place of places) run.typing.keeper.sent(place);
+        for (const place of sentPlaces) run.typing.keeper.sent(place);
       }
       // Her last send starts her bed time clock again (§21.6c); while she is busy, a place she answers
       // in after a wake that got through stays open (§21.4).
       if (sent) {
-        for (const place of places) {
+        for (const place of sentPlaces) {
           await noteSend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
             deps.logger.warn("Could not note a send", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
           });

@@ -2,7 +2,7 @@
 
 Each waifu has one continuous life: one wake queue, one life log split into epochs, one system
 prompt per epoch, one home folder. What she learns in rooms and DMs shares one memory. Her text
-output is private thought; only `SendMessage` and `React` reach people.
+output is private thought; only `SendMessage` reaches people (its messages and reactions).
 
 ## From wake to turn
 
@@ -75,22 +75,29 @@ Source: `Life.turn`, `Life.rounds`, `Life.runTools` in `src/life/lifeLoop.ts`.
 ## Tool-call order and side effects
 
 Tools run one after another in the order she called them. Before a side-effecting tool
-(`SendMessage`, `React`, `Write`, `Edit`, `Wakeup`) an intent line goes to
+(`SendMessage`, `Edit`, `Wakeup`; the retired `React` and `Write` in old logs) an intent line goes to
 `life/intents.jsonl`, and a `done` line after it. A `SendMessage` script also writes, for each
-message, the digest of its final outgoing text with its script `line` just before the Discord call,
-and a `lineDone` line with the message id right after (§27.1). `Bash` journals its own change set
-(`life/pending-changes/<toolCallId>.json`). Boot repair uses these to close an interrupted turn
-and never sends anything itself: in a script cut off by a crash, a message with its `lineDone` line
-was sent; the first message after those is looked for among her messages since the intent (by its
-digest, else by its text with mentions and emoji set aside); nothing after it was tried. All sent:
-`sent #k9 #ka (recovered)`; part: `sent #k9 (recovered)` then a `not sent: <text>` line per message
-left (also when the call had finished, stopped part way, and only its result was lost); none: `[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether
-this was sent; read the place before sending it again` (or, after messages that were sent, `it is
-unknown whether line 3 was sent; …`); then `[system] interrupted by a restart`
-(`src/life/repair.ts`). A pre-§27 call (`text`) is one message, its digest line without `line`.
-A `Wakeup` writes, just before saving, a digest of what it adds (kind, time and note of each) and
-cancels; repair finds those in `~/life/wakeups.json` (`set t2; cancelled t1 (recovered)`) or says
-`[interrupted] not saved`. A `ScheduleWake`/`WatchFor` call from before §30 is found by its note (and
+`tools.send_message` call, its `plan` (place and messages, numbered across the script) once it is
+checked and before its first Discord call, then for each message the digest of its final outgoing
+text with its `line` just before the Discord call and a `lineDone` line with the message id right
+after, and `callDone` when the call ends (§27.1, §32.4). `Bash` journals its own change set
+(`life/pending-changes/<toolCallId>.json`), and so does each `apply_patch` of an `Edit` script
+(`<toolCallId>-patch<n>`, with `patch:<n>` and its `lineDone` intent lines). Boot repair uses these
+to close an interrupted turn and never sends anything itself: in a script cut off by a crash, a
+finished call sent the messages with a `lineDone` line and nothing else; in the call that was running,
+the first message after those is looked for among her messages since the intent (by its digest, else
+by its text with mentions and emoji set aside); nothing after it was tried (calls run one at a time).
+All sent: `sent #k9 #ka (recovered)`; part: `sent #k9 (recovered)` then a `not sent: <text>` line per
+message left (also when the call had finished, stopped part way, and only its result was lost); none:
+`[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether this was
+sent; read the place before sending it again` (or, after messages that were sent, `it is unknown
+whether line 3 was sent; …`); then `[system] interrupted by a restart` (`src/life/repair.ts`). A
+pre-§32 call (a §27 script with `place`, or a pre-§27 `text`) is recovered from its own lines as
+before. An `Edit` script: `patches 1, 2 saved (recovered)`, `[interrupted] patch 3 was not saved`, or
+`[interrupted] nothing was changed`. Each `tools.wakeup` call writes, just before saving, a digest of
+what it adds (kind, time and note of each) and cancels; repair finds those in `~/life/wakeups.json`
+(`set t2; cancelled t1 (recovered)`), stopping at the first call not saved, or says `[interrupted]
+not saved`. A `ScheduleWake`/`WatchFor` call from before §30 is found by its note (and
 a one-off reminder's time) in the migrated file.
 
 ## Mid-turn notifications (folding)
@@ -169,14 +176,15 @@ Nothing already sent is ever rewritten, so each request is a prefix of the next 
 
 Her bot shows "typing…" only where a message is on its way (`src/life/typing.ts`):
 
-- while a `SendMessage` call streams, its `place` is read from the arguments as soon as that string
-  is complete and typing starts there, before the text has finished; the call waits for that lookup
-  before it runs, so typing never starts after the send;
+- while a `SendMessage` call streams, its place is read as soon as the first `place: "…"` after
+  `send_message` in her script is complete (a pre-§32 call's `place` argument too) and typing starts
+  there, before the text has finished; the call waits for that lookup before it runs, so typing never
+  starts after the send;
 - refreshed every 8 s (`TYPING_REFRESH_MS`), one place at a time, until the call runs: a script
   shows typing itself, so it never types during a `wait` (§27.1);
-- before every `m:` the script shows typing for `30 ms × characters`, clamped to 0.6–4.5 s, before
-  it posts (`src/life/outbound.ts` `typingDelayMs`), and a `typing <seconds>` line shows it without
-  sending;
+- before every message the script shows typing for `30 ms × characters`, clamped to 0.6–4.5 s,
+  before it posts (`src/life/outbound.ts` `typingDelayMs`), and a `{ typing: seconds }` item shows it
+  without sending;
 - reading, notes, Bash, searches and her thoughts show nothing; maintenance, dreaming and
   compaction never type; it stops at turn end, abort and before a mid-turn compaction;
 - only her own bot types (a room needs her `botId`; a DM must be hers). Failures are warnings at
@@ -224,7 +232,7 @@ calendar day never force this; the `day` compaction after her morning turn refre
 ([day-and-bed-time.md](day-and-bed-time.md)). A model change compacts with the **old** model, then
 the new epoch runs on the new one.
 
-**Stale-copy note**: when a `Write`, `Edit` or Bash change set in her life actually changes
+**Stale-copy note**: when an `Edit` patch or a Bash change set in her life actually changes
 `~/MEMORY.md`, or `~/life/schedule.json` while `scheduleInPrompt` is on, the result adds once per
 file per turn: "The copy of <file> in your system prompt still shows the old version; it updates at
 your next summary. The file itself is current." Never in maintenance, scrub or dream sessions
@@ -307,7 +315,7 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   recognised by the notice's first 60 characters (`isRestNotice`), in this wording or the earlier
   one ("…When this turn ends, your context will be reset…"), so rest turns in older logs stay private
   and are never kept by compaction.
-- `SendMessage`, `React`, `Web` answer `error: finish your summary first; you can
+- `SendMessage`, `Web` (and the retired `React`) answer `error: finish your summary first; you can
   do this after the reset`. File tools, Bash, `Wakeup` work. No wake is taken or
   folded in.
 - **Accepted**: the turn ended normally and her final text is at least `life.restSummaryMinChars`

@@ -80,7 +80,7 @@ export const ROUTE_HELP: Readonly<Record<string, RouteHelpEntry>> = Object.freez
   "DELETE /api/waifus/:waifuId/life/needs-review/:itemId": { summary: "Dismiss a review line.", topic: "forget" },
   "GET /api/waifus/:waifuId/files": { summary: "List a folder of her home, /tmp or her read-only /transcripts (?root=home|tmp|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1).", topic: "life" },
   "GET /api/waifus/:waifuId/files/*": { summary: "One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1).", topic: "life" },
-  "PUT /api/waifus/:waifuId/files/*": { summary: "Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; life/places.md and /transcripts refused).", topic: "life" },
+  "PUT /api/waifus/:waifuId/files/*": { summary: "Write a text file in her folders ({text, expectedHash?}; her Edit tool's checks; life/places.md and /transcripts refused).", topic: "life" },
   "DELETE /api/waifus/:waifuId/files/*": { summary: "Delete one of her files (?expectedHash).", topic: "life" },
   "GET /api/waifus/:waifuId/wakeups": { summary: "Her wakeups (~/life/wakeups.json) with their sources, parsed; a wakeup watching a DM (and an everywhere watch's state) is redacted unless a local includePrivate=1.", topic: "life" },
   "DELETE /api/waifus/:waifuId/wakeups/:wakeupId": { summary: "Remove one wakeup from her life/wakeups.json (she is not told).", topic: "life" },

@@ -1,7 +1,7 @@
-// A page her `Web` script opened (Living cast spec §31.1), as the script sees it: line windows of
-// about 3,000 characters, `find` over the lines, and the page's numbered links placed on the lines
-// they appear in. Pure and without imports: the web script worker loads it by a computed dynamic
-// import (worker files import only npm packages and `node:` builtins), the tests directly.
+// A page her `Web` calls opened (Living cast spec §31.1, §32.2), as she sees it: line windows of
+// about 3,000 characters (`response_length` makes them 1,500 or 6,000), `find` over the lines, and
+// the page's numbered links placed on the lines they appear in. Pure and without imports (the tool
+// runs it in the host: `find` is plain text, never her RegExp).
 
 /** A window holds about this many characters of the page (at least one line). */
 export const WINDOW_CHARS = 3_000;
@@ -97,7 +97,7 @@ export function storePage(opened: OpenedPage): StoredPage {
 const blank = (line: string) => line.trim() === "";
 
 /** The window starting at `start` (0-based; blank lines are skipped but keep their numbers). */
-export function windowAt(page: StoredPage, start: number): PageWindow {
+export function windowAt(page: StoredPage, start: number, windowChars: number = WINDOW_CHARS): PageWindow {
   const total = page.lines.length;
   if (!Number.isInteger(start) || start < 0 || start >= Math.max(total, 1)) {
     throw new RangeError(`the page has lines 0 to ${Math.max(total - 1, 0)}`);
@@ -110,7 +110,7 @@ export function windowAt(page: StoredPage, start: number): PageWindow {
     const raw = page.lines[index]!;
     if (blank(raw)) continue;
     const text = cutText(raw, MAX_WINDOW_LINE_CHARS);
-    if (shown.length > 0 && chars + text.length > WINDOW_CHARS) break;
+    if (shown.length > 0 && chars + text.length > windowChars) break;
     shown.push(`${index}: ${text}`);
     chars += text.length + 1;
     for (const n of page.lineLinks.get(index) ?? []) if (!linkNs.includes(n)) linkNs.push(n);

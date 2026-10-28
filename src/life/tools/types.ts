@@ -19,6 +19,8 @@ export type ToolOutput = {
   messageIds?: string[];
   /** What a side effect produced (SendMessage: the Discord message id), for the intent's done line. */
   resultRef?: string;
+  /** SendMessage: the places it sent to (her bed-time clock and busy holds, §21; typing stops there). */
+  sentPlaces?: string[];
 };
 
 /** Per-turn bookkeeping the tools share (§5.2, §6.3, §6.9). */
@@ -30,7 +32,7 @@ export type TurnScratch = {
   sends?: number;
   /** DM users she already sent to this turn: they may keep getting messages past the rate limit. */
   dmUsersSent: Set<string>;
-  /** Pages her Web scripts opened this turn (`life.webFetch.maxPerTurn`). */
+  /** Pages her Web calls opened this turn (`life.webFetch.maxPerTurn`). */
   fetches: number;
   /**
    * A DM turn (D14, spec §14.4): its wakes include a DM, or a call resolved to a DM place. Its web

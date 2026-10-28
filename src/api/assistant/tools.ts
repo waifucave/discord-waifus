@@ -1062,7 +1062,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Propose creating or replacing a text file in a waifu's folders (the whole new text). It runs only if the user " +
       "accepts the separate secure dashboard confirmation card, which shows the file and the whole text; the " +
-      "same checks as her own Write tool apply when it runs (life/places.md is refused; the JSON files in life/ " +
+      "same checks as her own Edit tool apply when it runs (life/places.md is refused; the JSON files in life/ " +
       "must stay valid JSON in her format). At most 16 KB; larger edits are for the dashboard's editor.",
     parameters: {
       type: "object",

@@ -1,6 +1,6 @@
 // Sessions outside her life (Living cast spec §7.3, §16.8, §18.4): nightly dreaming (`dream.ts`) and
 // the notes-scrub session of a forget (§7.5 step 4). Each is a separate short session, never her life
-// log: an instruction, only her file tools (Read, Write, Edit, Bash with /transcripts read-only; no
+// log: an instruction, only her file tools (Read, Edit, Bash with /transcripts read-only; no
 // messaging, no web), purpose `maintenance`. The scrub session keeps her identity and persona; the
 // dream is a memory keeper with neither (T3).
 
@@ -76,7 +76,7 @@ export async function runSession(
   const toolNames = maintenanceToolNames(deps.config());
   const messages: ProviderMessageLike[] = [{ role: "user", content: o.opening.map((text) => ({ type: "text" as const, text })) }];
   const tools = modelTools(toolNames, deps.config());
-  // One scratch for the whole session (a Read earlier in it lets a later Write replace a special file).
+  // One scratch for the whole session (what she read of her special files stays known across it).
   const turn = { id: `${o.kind}-${deps.now().getTime()}`, sentPlaces: new Set<string>(), dmUsersSent: new Set<string>(), fetches: 0 };
   let rounds = 0;
   let summary = "";
