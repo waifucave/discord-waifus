@@ -2,8 +2,8 @@ import type { HelperReleaseTrustEntryV1 } from "../shared/helperManifestTrust.js
 
 /**
  * Reviewed production Ed25519 keys that may sign immutable ts-connect release
- * manifests. Trust is limited to reviewed immutable 0.1.12 to 0.1.17 releases,
- * sequences 13–18 and their bounded signed timestamps. A future helper requires a
+ * manifests. Trust is limited to reviewed immutable 0.1.12 to 0.1.18 releases,
+ * sequences 13–19 and their bounded signed timestamps. A future helper requires a
  * separately reviewed window update before it can be signed and distributed.
  */
 export const HELPER_RELEASE_TRUST_ROOTS: readonly HelperReleaseTrustEntryV1[] = Object.freeze([
@@ -12,8 +12,8 @@ export const HELPER_RELEASE_TRUST_ROOTS: readonly HelperReleaseTrustEntryV1[] = 
     publicKeyB64: "B4vOrn-ZZe9GdtOoiqbm1GG9ES2FJlFbEVMAhZqUePo",
     fingerprint: "6a0fdc6a96cb180a5e823a3e43cdcafe9cd2b65b22298965b42aa965fb82a381",
     sequenceFrom: "13",
-    sequenceThrough: "18",
+    sequenceThrough: "19",
     releasedAtFrom: "2026-10-10T22:07:21Z",
-    releasedAtThrough: "2026-10-27T14:53:06Z"
+    releasedAtThrough: "2026-10-28T12:52:02Z"
   })
 ]);
