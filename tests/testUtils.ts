@@ -8,5 +8,6 @@ export async function makeTempRoot(prefix = "dc-waifus-test-", base = os.tmpdir(
 }
 
 export async function removeTempRoot(root: string): Promise<void> {
-  await rm(root, { recursive: true, force: true });
+  // A best-effort background writer (the remote diagnostics log) may still be finishing in there.
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }
