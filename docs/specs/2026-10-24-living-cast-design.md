@@ -3448,3 +3448,60 @@ only when that failed or there is no room left:
   not below it, auto at 0.9 without a rest turn, the off switch's ratio, `emergencyRatio` validation
   and default, the labels), `tests/livingCastRestNoticeRatioMigration.test.ts`, the rest golden's
   request size (its text is unchanged), `tests/phase4Schemas.test.ts` defaults.
+
+## 27. SendMessage takes a script; shorter messages (owner request, 2026-10-28)
+
+The waifus write long messages (Beta, 2026-10-26 to 28: their median 76–131 characters against
+the people's 23). The prompt already asks for short messages, but every response carried exactly one
+`SendMessage`, so each extra message cost a whole request and they cram. A script sends many lines in
+one call, so splitting is free.
+
+### 27.1 The tool
+
+`SendMessage(place, script)` replaces `SendMessage(place, text?, reply_to?, files?)`. `React` stays as
+its own tool. The script is lines, each one a command:
+
+| Line | Meaning |
+|---|---|
+| `m: <text>` | Send one message. A following line that starts with whitespace continues it (a newline inside the message), for the rare poem or list. |
+| `reply #k3` | The next `m:` is a Discord reply to `#k3`. |
+| `attach <path>` | Attach a file (her folders, the `files` rules as today) to the next `m:`. Several `attach` lines may precede one `m:` (at most `life.send.maxFiles`). An `attach` with no `m:` after it (followed by another command or the end) is sent as a message of its own with only the file. |
+| `react #k3 <emoji>` | React, with `React`'s rules. |
+| `wait <seconds>` | Pause 1–60 s. If anyone else writes in that place during the wait (a person or another waifu; typing does not count), the rest of the script is not sent. |
+| `typing <seconds>` | Show typing there for 1–10 s without sending. |
+
+- Blank lines are ignored; a line that is none of these is a parse error. The whole script is parsed and
+  checked first (places, refs, files, emoji, caps); any error refuses it with the line number and
+  nothing is sent.
+- The existing typing pacing runs before every `m:` (30 ms × chars, 0.6–4.5 s). Between lines without
+  a `wait`, new messages do not stop the script (a person bursting doesn't stop mid-burst either).
+- Caps: each `m:` (and each file-only send) counts one against `life.maxSendsPerTurn`, whose default
+  rises from 8 to 15; a script's waits total at most 120 s; one place per call (the per-turn place cap
+  is unchanged). A script over a cap is refused before anything is sent.
+- The turn keeps running during a wait. Wakes that arrive fold into the next tool results as today. A
+  wait cut short adds to the result what stopped it, as notification lines (with refs), so she sees it
+  even when it would not wake her.
+- Result: `sent #k9 #ka, reacted to #k2` or, when stopped, `sent #k9; stopped at line 4 (wait 5):` then
+  the lines that came in, then `not sent: Anyone here?`. A Discord error on one line stops the rest and
+  says which line failed and what was not sent.
+- Each `m:` keeps its own intent and done line, so boot repair never sends a line twice; an
+  interrupted script (stop, pause, abort) sends nothing more and its result says what went out.
+- A rest turn still refuses `SendMessage`. DM rules, mentions, the copied-header strip and the
+  tool-call-text refusal apply per line.
+
+### 27.2 Shorter messages
+
+- The prompt's chat guidance becomes: write like people in a chat, one short line per message, several
+  `m:` lines instead of one long one, with the script shown once as an example.
+- **Room-aware nudge**: after a send, when an `m:` line is longer than max(3 × the place's typical
+  length, 120) characters, the result adds one line: `that line was 180 characters; people here usually
+  write about 25`. The typical length is the median of the last 50 messages from people (not waifus, not
+  bots) in that place, from the cache or the transcripts, used only with at least 10 of them. Nothing is
+  refused for length.
+
+### 27.3 Tests and docs
+
+Parser (every command, continuation, errors with line numbers, caps), wait stopped by a message and
+not by typing, attach-only sends, reply/attach binding to the next `m:`, intents per line and boot
+repair, the nudge (threshold, median, too few samples, DMs use the other person), the new prompt text
+(golden), the settings default, `docs/behaviour/messages-and-refs.md` and `her-computer.md`.
