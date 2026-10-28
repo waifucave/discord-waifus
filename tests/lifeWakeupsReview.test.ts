@@ -3,7 +3,8 @@
 // for an edit, a forgotten person's id never reaches her code, D14 covers why a wakeup stopped, its
 // error wake and her own reads of the file, forget looks at a page's URL and the stop reason, and the
 // app never grows her file past its cap.
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { scrubOtherState } from "../src/life/forget.js";
@@ -14,7 +15,7 @@ import { withPlaceRecord } from "../src/life/placeRecorder.js";
 import { sharedSandbox } from "../src/life/sandbox/index.js";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
 import type { ToolContext, ToolOutput } from "../src/life/tools/types.js";
-import { MAX_WAKEUPS_FILE_BYTES } from "../src/life/wakeups/file.js";
+import { MAX_WAKEUPS_FILE_BYTES, WAKEUPS_FILE_HARD_BYTES } from "../src/life/wakeups/file.js";
 import { checkPages, fireWakeupWatches, PAGE_FETCHES_PER_DAY, type WakeupMessage } from "../src/life/wakeups/run.js";
 import { saveWakeupStates, STATE_TOO_BIG } from "../src/life/wakeups/schedule.js";
 import { setState } from "../src/life/wakeups/state.js";
@@ -219,7 +220,7 @@ describe("forget looks at a page's URL and why a wakeup stopped (review 8)", () 
 });
 
 describe("the app never grows her file past its cap (review 10)", () => {
-  it("a waiting state that would push wakeups.json over 64 KiB is not written, counts, and stops the wakeup at three", async () => {
+  it("a waiting state that would push wakeups.json past her cap is not written, counts, and stops the wakeup at three", async () => {
     const w = await lifeWorld(roots);
     const filler = `/* ${"x".repeat(5_000)} */`;
     await writeHerFile(w, "life/wakeups.json", JSON.stringify(Array.from({ length: 10 }, (_, i) => ({ kind: "watch", places: "bake-club/#general", filter: `(m, s) => { ${filler} return false }`, options: { for: "1d" }, note: `w${i}` }))));
@@ -232,7 +233,7 @@ describe("the app never grows her file past its cap (review 10)", () => {
       const saved = await saveWakeupStates(store, NOW.getTime(), { force: true });
       wakes.push(...saved.errorWakes);
       const written = (await readFile(path.join(w.root, "user/waifus/ella/home/life/wakeups.json"), "utf8"));
-      expect(Buffer.byteLength(written, "utf8")).toBeLessThanOrEqual(MAX_WAKEUPS_FILE_BYTES);
+      expect(Buffer.byteLength(written, "utf8")).toBeLessThanOrEqual(WAKEUPS_FILE_HARD_BYTES);
     }
     expect(wakes.length).toBeGreaterThan(0);
     expect(wakes[0]!.note).toBe(`wakeup ${wakes[0]!.watchId} stopped: ${STATE_TOO_BIG}`);
@@ -247,6 +248,148 @@ describe("the app never grows her file past its cap (review 10)", () => {
     for (let i = 0; i < 3; i += 1) await fireWakeupWatches(ctx, message(`m${i}`), { maxFiresPerDay: 24 });
     const [entry] = await herEntries(w);
     expect([...(entry!["disabled"] as string)].length).toBeLessThanOrEqual(300);
+  });
+});
+
+describe("a nearly full file still takes a stop, and its side file is always saved (re-review 1)", () => {
+  /** Her wakeups.json as full as her own writes may make it, with long code in every entry. */
+  async function nearlyFull(w: LifeWorld, entries: Array<Record<string, unknown>>) {
+    const base = JSON.stringify(entries.map((entry) => ({ ...entry, code: "" })));
+    const room = MAX_WAKEUPS_FILE_BYTES - Buffer.byteLength(base, "utf8") - 1_500;
+    const filler = Math.floor(room / entries.length);
+    const withCode = entries.map(({ code, ...entry }) => {
+      const body = `(${entry["kind"] === "page" ? "p" : "m"}, s) => { /* ${"x".repeat(filler - 60)} */ ${String(code)} }`;
+      return entry["kind"] === "page" ? { ...entry, check: body } : { ...entry, filter: body };
+    });
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify(withCode));
+    const size = await fileSize(w);
+    expect(size).toBeGreaterThan(MAX_WAKEUPS_FILE_BYTES - 2_000);
+    expect(size).toBeLessThanOrEqual(MAX_WAKEUPS_FILE_BYTES);
+  }
+  const fileSize = async (w: LifeWorld) => Buffer.byteLength(await readFile(path.join(w.root, "user/waifus/ella/home/life/wakeups.json"), "utf8"), "utf8");
+
+  it("ten throwing watches with long errors are all stopped at the third message, each with one wake, never again", async () => {
+    const w = await lifeWorld(roots);
+    await nearlyFull(
+      w,
+      Array.from({ length: 10 }, (_, i) => ({ kind: "watch", places: "bake-club/#general", options: { for: "1d", once: false }, note: `w${i}`, code: 'throw new Error("é\\u0001" + "e".repeat(5000))' }))
+    );
+    const ctx = { store: await storeOf(w), sandbox: sharedSandbox(), now: NOW, timeZone: TZ };
+    const perMessage: number[] = [];
+    for (let i = 0; i < 5; i += 1) perMessage.push((await fireWakeupWatches(ctx, message(`m${i}`), { maxFiresPerDay: 24 })).errorWakes.length);
+    expect(perMessage).toEqual([0, 0, 10, 0, 0]);
+    expect((await herEntries(w)).every((entry) => typeof entry["disabled"] === "string")).toBe(true);
+    expect(await fileSize(w)).toBeLessThanOrEqual(WAKEUPS_FILE_HARD_BYTES);
+    const side = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), "utf8")) as { errors: Record<string, number> };
+    expect(side.errors).toEqual({});
+  }, 60_000);
+
+  it("a throwing hourly page check is fetched once an hour (never every tick) and stopped at its third failure", async () => {
+    const w = await lifeWorld(roots);
+    await nearlyFull(w, [
+      ...Array.from({ length: 9 }, (_, i) => ({ kind: "watch", places: "bake-club/#general", options: { for: "1d" }, note: `w${i}`, code: "return false" })),
+      { kind: "page", url: "https://example.com/shop", options: { every: "1h", for: "2d" }, note: "shop", code: 'throw new Error("x".repeat(5000))' }
+    ]);
+    const store = await storeOf(w);
+    const fetches: string[] = [];
+    const fetch = async (url: string) => {
+      fetches.push(url);
+      return { ok: true as const, page: { url, status: 200, title: "Shop", text: "v1" } };
+    };
+    const wakes = [];
+    // A tick every 15 s for three hours and a bit.
+    for (let tick = 0; tick <= (3 * 3_600) / 15 + 4; tick += 1) {
+      const now = new Date(NOW.getTime() + tick * 15_000);
+      wakes.push(...(await checkPages({ store, sandbox: sharedSandbox(), now, timeZone: TZ, fetch, everyMs: () => 3_600_000 })));
+    }
+    expect(fetches).toHaveLength(3);
+    expect(wakes.map((wake) => wake.reason)).toEqual(["wakeup_error"]);
+    expect((await herEntries(w)).find((entry) => entry["id"] === "p1")!["disabled"]).toMatch(/^Error: x+…$/u);
+  }, 120_000);
+});
+
+describe("a file over the app's own cap (written on disk) is never grown, yet its side file is kept (re-review 1)", () => {
+  it("a stop it can't take sends no wake; a throwing page check still keeps its hourly pace and the day's cap", async () => {
+    const w = await lifeWorld(roots);
+    const until = "2026-10-26 14:00";
+    const big = (i: number) => `(m, s) => { /* ${i} ${"x".repeat(8_100)} */ return false }`;
+    const entries = [
+      ...Array.from({ length: 8 }, (_, i) => ({ id: `w${i + 2}`, kind: "watch", places: "bake-club/#general", filter: big(i), options: { until, once: false }, note: `w${i}` })),
+      { id: "w1", kind: "watch", places: "bake-club/#general", filter: '(m) => { throw new Error("no") }', options: { until, once: false }, note: "broken" },
+      { id: "p1", kind: "page", url: "https://example.com/shop", check: '(p) => { throw new Error("no") }', options: { every: "1h", until }, note: "shop" }
+    ];
+    const file = path.join(w.root, "user/waifus/ella/home/life/wakeups.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    const text = `[\n${entries.map((entry) => `  ${JSON.stringify(entry)}`).join(",\n")}\n]\n`;
+    await writeFile(file, text);
+    expect(Buffer.byteLength(text, "utf8")).toBeGreaterThan(WAKEUPS_FILE_HARD_BYTES);
+    // Its side file as the app had it (the places resolved).
+    const watches = Object.fromEntries(entries.filter((entry) => entry.kind === "watch").map((entry) => [entry.id, { placeKeys: [ROOM_KEY], fires: [] }]));
+    await mkdir(path.join(w.root, "user/waifus/ella/life"), { recursive: true });
+    await writeFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), JSON.stringify({ nextId: { t: 1, w: 10, p: 2 }, sourceHash: createHash("sha256").update(text, "utf8").digest("hex"), watches }));
+    const store = await storeOf(w);
+    const ctx = { store, sandbox: sharedSandbox(), now: NOW, timeZone: TZ };
+    const errorWakes = [];
+    for (let i = 0; i < 5; i += 1) errorWakes.push(...(await fireWakeupWatches(ctx, message(`m${i}`), { maxFiresPerDay: 24 })).errorWakes);
+    // No wake for a stop that never reached her file.
+    expect(errorWakes).toEqual([]);
+    const fetches: string[] = [];
+    const fetch = async (url: string) => {
+      fetches.push(url);
+      return { ok: true as const, page: { url, status: 200, title: "Shop", text: "v1" } };
+    };
+    const wakes = [];
+    for (let tick = 0; tick < 20; tick += 1) wakes.push(...(await checkPages({ ...ctx, now: new Date(NOW.getTime() + tick * 15_000), fetch, everyMs: () => 3_600_000 })));
+    expect(fetches).toHaveLength(1);
+    expect(wakes).toEqual([]);
+    const side = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), "utf8")) as { pageFetches: string[]; errors: Record<string, number> };
+    expect(side.pageFetches).toHaveLength(1);
+    expect(side.errors["p1"]).toBe(1);
+  }, 60_000);
+});
+
+describe("pages and watch ends (re-review 2 and 3)", () => {
+  it("a URL fragment is the same page: no fetch sooner after a cancel; another query is another page", async () => {
+    const w = await lifeWorld(roots);
+    await wakeup(w, 'page("https://example.com/shop#top", "changes", {every: "1h", for: "2d"}, "shop")');
+    const store = await storeOf(w);
+    const fetches: string[] = [];
+    const fetch = async (url: string) => {
+      fetches.push(url);
+      return { ok: true as const, page: { url, status: 200, title: "Shop", text: "v1" } };
+    };
+    const check = (minutes: number) => checkPages({ store, sandbox: sharedSandbox(), now: new Date(NOW.getTime() + minutes * 60_000), timeZone: TZ, fetch, everyMs: () => 3_600_000 });
+    await check(0);
+    await wakeup(w, 'cancel("p1")\npage("https://example.com/shop#bottom", "changes", {every: "1h", for: "2d"}, "again")');
+    await check(5);
+    expect(fetches).toEqual(["https://example.com/shop#top"]);
+    await wakeup(w, 'page("https://example.com/shop?a=1", "changes", {every: "1h", for: "2d"}, "other")');
+    await check(6);
+    expect(fetches).toEqual(["https://example.com/shop#top", "https://example.com/shop?a=1"]);
+  });
+
+  it("the end of a watch on a DM or on everywhere is a DM wake; a room watch's and a timer's are not", async () => {
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await kevinDm(w);
+    await wakeup(
+      w,
+      [
+        'watch("dm/kevin", {any: true}, {for: "30m"}, "his reply")',
+        'watch("everywhere", {words: ["cake"]}, {for: "30m"}, "cake")',
+        'watch("bake-club/#general", {any: true}, {for: "30m"}, "room")',
+        'watch("everywhere", [], {for: "30m"}, "tea")'
+      ].join("\n")
+    );
+    w.clock.advance(31 * 60_000);
+    await w.cast.scheduler.tick();
+    const ends = (await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout");
+    expect(ends.map((wake) => [wake.note, wake.dm ?? false])).toEqual([
+      ["his reply", true],
+      ["cake", true],
+      ["room", false],
+      ["tea", false]
+    ]);
   });
 });
 

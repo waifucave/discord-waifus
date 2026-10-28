@@ -56,7 +56,7 @@ import {
 import { checkDayScheduleText, readDayPlan, type DayPlan } from "./daySchedule.js";
 import type { PersonResolution } from "./specialFiles.js";
 import { sharedSandbox, type Sandbox } from "../sandbox/index.js";
-import { checkWakeupsText, MAX_WAKEUPS_FILE_BYTES, readsWhole, readWakeupEntries, wakeupsText, type WakeupEntry } from "../wakeups/file.js";
+import { checkWakeupsText, readsWhole, WAKEUPS_FILE_HARD_BYTES, readWakeupEntries, wakeupsText, type WakeupEntry } from "../wakeups/file.js";
 import { reconcileAfterWrite } from "../wakeups/state.js";
 import { checkProfileText, profileFileText, profileServers, sameProfile, saveProfileToConfig, type ProfileFields } from "./profileFile.js";
 
@@ -761,26 +761,31 @@ export class HomeStore {
 
   /**
    * Rewrites her wakeups and their side file together (a timed one fired, a once watch matched, one
-   * ended, her code's state saved, one disabled, the owner removed one, a forget). A file that does
-   * not read whole is left alone (`false`): only the side file is written, and its fired list keeps
-   * anything from firing twice.
+   * ended, her code's state saved, one disabled, the owner removed one, a forget). The side file (fires,
+   * error counts, page checks and fetches) is always written. The file itself is left alone when it
+   * does not read whole (`clean: false`) or, as a backstop, when the rewrite would grow it past
+   * `WAKEUPS_FILE_HARD_BYTES` (her own writes stop at `MAX_WAKEUPS_FILE_BYTES`, so the app's stop
+   * reasons always fit): then `saved` is false, and a caller routes no wake that depends on it.
    */
-  async rewriteWakeups(transform: (entries: WakeupEntry[], side: WakeupSide) => { entries: WakeupEntry[]; side: WakeupSide }): Promise<boolean> {
+  async rewriteWakeups(transform: (entries: WakeupEntry[], side: WakeupSide) => { entries: WakeupEntry[]; side: WakeupSide }): Promise<{ clean: boolean; saved: boolean }> {
     return this.locked(async () => {
       const { entries, side, text } = await this.readWakeups();
       const clean = readsWhole(text, entries.length);
       const next = transform(entries, side);
-      if (clean && JSON.stringify(next.entries) !== JSON.stringify(entries)) {
+      const changed = JSON.stringify(next.entries) !== JSON.stringify(entries);
+      let saved = !changed;
+      if (clean && changed) {
         const written = wakeupsText(next.entries);
-        // The app never grows her file past its cap (its callers keep under it; this is the backstop).
         const size = Buffer.byteLength(written, "utf8");
-        if (size > MAX_WAKEUPS_FILE_BYTES && size > Buffer.byteLength(text ?? "", "utf8")) return false;
-        await this.files.writeBytes(this.life(WAKEUPS_FILE), Buffer.from(written, "utf8"));
-        next.side = { ...next.side, sourceHash: sha256(written) };
+        if (size <= WAKEUPS_FILE_HARD_BYTES || size <= Buffer.byteLength(text ?? "", "utf8")) {
+          await this.files.writeBytes(this.life(WAKEUPS_FILE), Buffer.from(written, "utf8"));
+          next.side = { ...next.side, sourceHash: sha256(written) };
+          saved = true;
+        }
       }
       next.side = { ...next.side, fired: next.side.fired.slice(-MAX_FIRED) };
       if (JSON.stringify(next.side) !== JSON.stringify(side)) await this.writeSide(lifePaths.wakeupIds(this.waifuId), next.side);
-      return clean;
+      return { clean, saved };
     });
   }
 

@@ -17,9 +17,9 @@ export function isPrivateWakeup(entry: WakeupEntry, side: WakeupSide): boolean {
   return [...handles, ...filterPlaces].some((handle) => isDmPlaceRef(handle));
 }
 
-/** A watch on "everywhere" sees her DMs too: what its code kept or failed on may quote one. */
+/** A watch on "everywhere" sees her DMs too: what its code kept or failed on may quote one (a plain timer, `[]`, sees nothing). */
 export function watchesEverywhere(entry: WakeupEntry): boolean {
-  return entry.kind === "watch" && (entry.places === "everywhere" || entry.places === undefined);
+  return entry.kind === "watch" && (entry.places === "everywhere" || entry.places === undefined) && !(Array.isArray(entry.filter) && entry.filter.length === 0);
 }
 
 /** A watch whose state may hold a private chat's words: on "everywhere" (her DMs included). */

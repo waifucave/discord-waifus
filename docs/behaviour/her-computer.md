@@ -44,7 +44,7 @@ something first"); nothing is written.
 | `~/` (anything else) | Her notes, any layout | Text or any file | Her (and the dream) | Yes | Yes | Path/size rules | — |
 | `~/life/` | Her daily machinery (all files here are private: never attached) | folder | App + her | Its files as below | The folder can't be removed while it holds `places.md` | — | — |
 | `~/life/schedule.json` | Her day ([day-and-bed-time.md](day-and-bed-time.md)) | JSON object | Her (each morning) | Yes; Write needs no prior Read | Yes (= no plan) | Strict JSON + field rules, busy not in bed time | Live for routing, Jev and the time line; prompt copy at next compaction |
-| `~/life/wakeups.json` | Her wakeups (`Wakeup` adds and cancels; see below) | JSON array, one entry per line: `{id?, kind: at\|every\|watch\|page, when?, places?, filter?, url?, check?, options?, note, state?, disabled?}` | Her + app (fires, removes an `at` and a once watch, ends watches and pages, saves her code's `state`, disables after errors) | Yes; whole-file Write needs a current Read this turn | Yes (= no wakeups) | Strict JSON ≤ 64 KiB; each entry as `Wakeup` checks it (times, places, names, her functions compiled in the sandbox); ≤ 20 timed, 10 watches, 3 pages; note ≤ 200, state ≤ 4 KiB; ids `t<n>`/`w<n>`/`p<n>` matching the kind; a once watch that already fired can't come back | New entries get the next id, `for` becomes `until`, `at`'s time becomes a local time, and the file is rewritten one entry per line; places and `from` names resolved in `life/wakeup-ids.json`; changing a stopped wakeup's code turns it back on |
+| `~/life/wakeups.json` | Her wakeups (`Wakeup` adds and cancels; see below) | JSON array, one entry per line: `{id?, kind: at\|every\|watch\|page, when?, places?, filter?, url?, check?, options?, note, state?, disabled?}` | Her + app (fires, removes an `at` and a once watch, ends watches and pages, saves her code's `state`, disables after errors) | Yes; whole-file Write needs a current Read this turn | Yes (= no wakeups) | Strict JSON ≤ 60 KiB as saved (the app's stop reasons may take it to 64 KiB); each entry as `Wakeup` checks it (times, places, names, her functions compiled in the sandbox); ≤ 20 timed, 10 watches, 3 pages; note ≤ 200, state ≤ 4 KiB; ids `t<n>`/`w<n>`/`p<n>` matching the kind; a once watch that already fired can't come back | New entries get the next id, `for` becomes `until`, `at`'s time becomes a local time, and the file is rewritten one entry per line; places and `from` names resolved in `life/wakeup-ids.json`; changing a stopped wakeup's code turns it back on |
 | `~/life/profile.json` | Her Discord profile: `name` (read-only), `username`, `bio`, `nicknames` keyed by server slug | JSON object | Her + app (rewritten from her config) | Yes, outside sessions; whole-file Write needs a current Read | **No** | Discord username rules, bio ≤ 400, nickname 1–32, known servers, `name` unchanged | Saved to her config, then profile sync runs; the result says when Discord will show it |
 | `~/life/places.md` | Her rooms, her servers' emojis and her DMs | Markdown | App only (≤ 1/min, every turn start, when a new place folds in) | **No** (`places.md is kept up to date for you and can't be changed`) | **No** | — | — |
 | `/tmp/<place>/<ref>-<name>` | Attachments `ReadMessages` downloaded | the file | App | Yes | Yes | `/tmp` limits | Expire after 7 days |
@@ -147,9 +147,9 @@ or cancels one. Up to 40 calls per script.
   `from` filter matches it); `page` is `{url, status, title, text}` (text ≤ 200 KB). `state` is an
   object she may change; it persists between runs (≤ 4 KiB as plain JSON: a state that can't be
   JSON, through `toJSON` or anything else, is her error `your filter's state must be plain JSON`), is
-  written into her file at most once a minute and at shutdown, never past the file's 64 KiB (a state
+  written into her file at most once a minute and at shutdown, never past the file's 60 KiB (a state
   that won't fit is not written and counts as an error: `its state would make ~/life/wakeups.json
-  bigger than 64 KiB; keep less in it`). Returning `true` fires, a string fires and is the wake's
+  bigger than 60 KiB; keep less in it`). Returning `true` fires, a string fires and is the wake's
   line (≤ 200 characters), anything else doesn't.
 - **Watch matching** (`src/life/wakeups/run.ts`): only messages in the watch's places (or anywhere she
   can read); her own never. An object filter costs nothing; her functions run in the sandbox once per
@@ -160,20 +160,22 @@ or cancels one. Up to 40 calls per script.
   a line each.
 - **Pages** are fetched by the scheduler through the same SSRF-checked fetcher as `WebFetch`
   (`privateAddressPolicy: "deny"`, no cache, no model call), first at the next tick after she sets
-  it, then every `every`; a URL fetched for any of her pages is not fetched again sooner, so editing a
-  page or cancelling it and setting it again never fetches early, and she has at most 72 page fetches
-  a day. With page fetching off (`life.webFetch.maxPerWaifuPerDay` or `maxPerTurn` 0) a new or changed
+  it, then every `every`; a URL fetched for any of her pages (its `#fragment` aside) is not fetched
+  again sooner, so editing a page or cancelling it and setting it again never fetches early, and she
+  has at most 72 page fetches a day; a check that fails still counts as checked. With page fetching off (`life.webFetch.maxPerWaifuPerDay` or `maxPerTurn` 0) a new or changed
   `page()` is refused (`web pages can't be checked: the owner turned page fetching off`) and nothing
   is fetched. A fire is a `watch` wake with the page's URL.
 - **Ends**: a watch or page whose `until` passes is removed and she gets `watch timed out · your
-  note: …` (`watch_timeout`), so a watch with `[]` works as a timer.
+  note: …` (`watch_timeout`; a DM wake for a watch on a DM or on "everywhere", not for a `[]` timer),
+  so a watch with `[]` works as a timer.
 - **Timed ones**: a due `at` or `every` is routed as a `reminder` wake under a fixed id per occurrence
   (`w-reminder-<id>-<time>`), recorded, then the `at` is removed (an `every` stays); a late `at` fires
   once at the first tick, an `every` counts from when it was first seen (a new one never fires a past
   time). A file the app can't parse is never rewritten and the routed list stops it firing twice.
 - **Errors are never silent**: a run that throws, hits a limit or leaves a state over 4 KiB counts
   one, a good run resets the count; three in a row stop the wakeup (`disabled` in her file, with the
-  reason, at most 300 characters) and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError:
+  reason, at most 300 characters and 290 bytes as JSON; the 4 KiB the app keeps above her own 60 KiB
+  is for these, so a stop is always written) and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError:
   … (line 2)`), which gets through busy and bed time like a reminder; for a watch on a DM or on
   "everywhere" it is a DM wake (its error may quote a DM). Changing its code (in her file) turns it
   back on. Her wakeups are hers alone: whatever fails in them never stops a message reaching another

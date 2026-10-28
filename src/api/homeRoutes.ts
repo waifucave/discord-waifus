@@ -478,7 +478,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const { entries, text } = await home.readWakeups();
     if (!readsWhole(text, entries.length)) throw unreadable();
     let found = false;
-    const clean = await home.rewriteWakeups((current, side) => {
+    const { clean } = await home.rewriteWakeups((current, side) => {
       found = current.some((entry) => entry.id === wakeupId);
       if (!found) return { entries: current, side };
       const watches = { ...side.watches };

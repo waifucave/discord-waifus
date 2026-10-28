@@ -8,8 +8,8 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 **What counts as DM content**
 
 - A **DM turn**: a turn whose wakes include a DM place (`dmWakes`, also a morning batch that shows
-  anything from a DM: `wake.dm`, and a `wakeup_error` wake of a watch on a DM or on "everywhere",
-  whose error may quote one), or in which any tool call resolved to a DM place (`dmCalls`,
+  anything from a DM: `wake.dm`, and a `wakeup_error` or `watch_timeout` wake of a watch on a DM or
+  on "everywhere" (not a plain `[]` timer), whose error or note may quote one), or in which any tool call resolved to a DM place (`dmCalls`,
   recorded while the tools ran). Outside DM turns, a single call that touched a DM stays hidden with
   its result. Older lines without the records fall back to matching any string argument that names
   `dm/…` or `dm_…`.

@@ -9,6 +9,7 @@ import { parseLocalDateTime } from "../clock.js";
 import { onceKey, type HomeStore } from "../home/homeStore.js";
 import { functionSourceOf, MAX_WAKEUPS_FILE_BYTES, untilOf, wakeupsText, type WakeupEntry } from "./file.js";
 import { applyRuns, type CodeRun } from "./run.js";
+import { mayHaveSeenDm } from "./privacy.js";
 import { dropState, markSaved, pendingStates } from "./state.js";
 import { latestOccurrence, nextOccurrences, parseEvery } from "./when.js";
 
@@ -77,9 +78,12 @@ export function timedWake(item: DueTimed): Wake {
   return { id: item.wakeId, reason: "reminder", watchId: item.entry.id, note: item.entry.note, at: item.due.toISOString() };
 }
 
-/** The wake of an ended watch or page (`watch timed out`, as watches always did). */
-export function endWake(item: { entry: WakeupEntry; ends: Date; wakeId: string }): Wake {
-  return { id: item.wakeId, reason: "watch_timeout", watchId: item.entry.id, note: item.entry.note, at: item.ends.toISOString() };
+/**
+ * The wake of an ended watch or page (`watch timed out`, as watches always did). A watch on a DM (or
+ * on "everywhere") is about a private chat: a DM wake (D14), like its error wake.
+ */
+export function endWake(item: { entry: WakeupEntry; ends: Date; wakeId: string }, side: WakeupSide): Wake {
+  return { id: item.wakeId, reason: "watch_timeout", watchId: item.entry.id, note: item.entry.note, ...(mayHaveSeenDm(item.entry, side) ? { dm: true } : {}), at: item.ends.toISOString() };
 }
 
 /** The next `count` times of an `every` (her result shows three). */
@@ -94,7 +98,7 @@ export const STATE_TOO_BIG = `its state would make ~/life/wakeups.json bigger th
 /**
  * Writes her code's waiting state into her file: at most once a minute (`nowMs`), or now
  * (`force`, shutdown and forget). Only into the same wakeup with the same code. The file never
- * grows past its 64 KiB cap this way: a state that would push it over is not written (the biggest
+ * grows past her 60 KiB cap this way: a state that would push it over is not written (the biggest
  * first), counts as that wakeup's error, and a third in a row stops it (the wakes to route come back).
  */
 export async function saveWakeupStates(store: HomeStore, nowMs: number, o: { force?: boolean } = {}): Promise<{ saved: boolean; errorWakes: Wake[] }> {
@@ -103,7 +107,7 @@ export async function saveWakeupStates(store: HomeStore, nowMs: number, o: { for
   if (!pending) return { saved: false, errorWakes: [] };
   const errorWakes: Wake[] = [];
   const now = new Date(nowMs);
-  const saved = await store.rewriteWakeups((entries, side) => {
+  const { saved } = await store.rewriteWakeups((entries, side) => {
     const changed = new Set<string>();
     let next = entries.map((entry) => {
       const waiting = pending.get(entry.id);
@@ -126,5 +130,6 @@ export async function saveWakeupStates(store: HomeStore, nowMs: number, o: { for
     return { entries: applied.entries, side: applied.side };
   });
   if (saved) markSaved(dataRoot, store.waifuId, pending, nowMs);
-  return { saved, errorWakes };
+  // A stop the file didn't take is no stop: no wake for it.
+  return { saved, errorWakes: saved ? errorWakes : [] };
 }

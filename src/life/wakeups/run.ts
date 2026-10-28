@@ -19,7 +19,7 @@ import type { ResolvedWatchBinding, Wake, WakeupSide } from "../../shared/schema
 import { onceKey, type HomeStore } from "../home/homeStore.js";
 import { EVENT_LIMITS, sandboxErrorText, type Sandbox, type SandboxCallResult } from "../sandbox/index.js";
 import { wordBoundaryIncludes } from "../text.js";
-import { functionSourceOf, MAX_STATE_BYTES, untilOf, type WakeupEntry } from "./file.js";
+import { functionSourceOf, MAX_REASON_JSON_BYTES, MAX_STATE_BYTES, untilOf, type WakeupEntry } from "./file.js";
 import { currentState, dropState, setState } from "./state.js";
 import { mayHaveSeenDm } from "./privacy.js";
 
@@ -28,6 +28,30 @@ export const WATCH_MIN_SPACING_MS = 10 * 60_000;
 export const MAX_ERRORS_IN_A_ROW = 3;
 /** Why a wakeup stopped, as kept in her file and her wake. */
 export const MAX_REASON_CHARS = 300;
+
+/** A stop reason cut to `MAX_REASON_CHARS` and to `MAX_REASON_JSON_BYTES` as JSON in her file. */
+export function boundedReason(error: string): string {
+  let chars = [...error];
+  let cut = chars.length > MAX_REASON_CHARS;
+  if (cut) chars = chars.slice(0, MAX_REASON_CHARS - 1);
+  const fits = () => Buffer.byteLength(JSON.stringify(chars.join("") + (cut ? "…" : "")), "utf8") <= MAX_REASON_JSON_BYTES;
+  while (!fits()) {
+    chars = chars.slice(0, -1);
+    cut = true;
+  }
+  return chars.join("") + (cut ? "…" : "");
+}
+
+/** A page URL as its last fetch is remembered: without its fragment (`#…` never reaches the server). */
+export function pageUrlKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return url.split("#")[0]!;
+  }
+}
 /** A function's string return, as shown in her wake (§30.2). */
 export const MAX_RETURN_CHARS = 200;
 /** A message's text as her filter sees it. */
@@ -162,8 +186,8 @@ export function applyRuns(
       return entry;
     }
     delete errors[entry.id];
-    // Bounded: the reason lives in her file (and her wake).
-    const reason = [...run.error].length > MAX_REASON_CHARS ? `${[...run.error].slice(0, MAX_REASON_CHARS - 1).join("")}…` : run.error;
+    // Bounded: the reason lives in her file (and her wake), in the room kept above her own writes.
+    const reason = boundedReason(run.error);
     errorWakes.push(wakeupErrorWake(entry.id, reason, o.now, { dm: mayHaveSeenDm(entry, side) }));
     return { ...entry, disabled: reason };
   });
@@ -251,7 +275,7 @@ export async function fireWakeupWatches(
   const fired: FiredWakeup[] = [];
   let errorWakes: Wake[] = [];
   const dataRoot = ctx.store.storage.dataRoot;
-  await ctx.store.rewriteWakeups((current, currentSide) => {
+  const { saved } = await ctx.store.rewriteWakeups((current, currentSide) => {
     const applied = applyRuns(current, currentSide, runs, { dataRoot, waifuId: ctx.store.waifuId, now: ctx.now });
     errorWakes = applied.errorWakes;
     const watches = { ...applied.side.watches };
@@ -286,7 +310,8 @@ export async function fireWakeupWatches(
     }
     return { entries: kept, side: { ...applied.side, watches, fired: firedKeys } };
   });
-  return { fired, errorWakes };
+  // A stop the file didn't take is no stop: no wake for it.
+  return { fired, errorWakes: saved ? errorWakes : [] };
 }
 
 // ---- pages ---------------------------------------------------------------------------------------
@@ -329,7 +354,7 @@ export async function checkPages(ctx: WakeupRunContext & { fetch: PageFetch; eve
       const every = ctx.everyMs(entry);
       if (every === undefined) return false;
       // Its own last check, or this URL's last fetch for any page (an edit or a new id is no new fetch).
-      const last = Math.max(...[side.pages[entry.id]?.checkedAt, side.pageUrls[entry.url!]].map((at) => (at ? Date.parse(at) : Number.NEGATIVE_INFINITY)));
+      const last = Math.max(...[side.pages[entry.id]?.checkedAt, side.pageUrls[pageUrlKey(entry.url!)]].map((at) => (at ? Date.parse(at) : Number.NEGATIVE_INFINITY)));
       return nowMs - last >= every;
     })
     .slice(0, Math.max(0, PAGE_FETCHES_PER_DAY - fetchedToday.length));
@@ -354,16 +379,17 @@ export async function checkPages(ctx: WakeupRunContext & { fetch: PageFetch; eve
     results.set(entry.id, record);
   }
   const wakes: Wake[] = [];
-  await ctx.store.rewriteWakeups((current, currentSide) => {
+  let errorWakes: Wake[] = [];
+  const { saved } = await ctx.store.rewriteWakeups((current, currentSide) => {
     const runs = new Map([...results].flatMap(([id, record]) => (record.run ? [[id, { source: record.source, run: record.run }] as const] : [])));
     const applied = applyRuns(current, currentSide, runs, { dataRoot, waifuId: ctx.store.waifuId, now: ctx.now });
-    wakes.push(...applied.errorWakes);
+    errorWakes = applied.errorWakes;
     const pages = { ...applied.side.pages };
     // Every fetch counts, whatever became of its page meanwhile.
     const at = ctx.now.toISOString();
     const pageFetches = [...applied.side.pageFetches.filter((when) => nowMs - Date.parse(when) < DAY_MS), ...due.map(() => at)].slice(-PAGE_FETCHES_PER_DAY);
     const pageUrls = Object.fromEntries(Object.entries(applied.side.pageUrls).filter(([, when]) => nowMs - Date.parse(when) < WEEK_MS));
-    for (const entry of due) pageUrls[entry.url!] = at;
+    for (const entry of due) pageUrls[pageUrlKey(entry.url!)] = at;
     for (const entry of applied.entries) {
       const record = results.get(entry.id);
       // Only the page it checked (an edit in between starts over).
@@ -396,5 +422,6 @@ export async function checkPages(ctx: WakeupRunContext & { fetch: PageFetch; eve
     }
     return { entries: applied.entries, side: { ...applied.side, pages, pageFetches, pageUrls } };
   });
-  return wakes;
+  // Page fires stand on the side file (always written); a stop needs the file to take it.
+  return [...(saved ? errorWakes : []), ...wakes];
 }

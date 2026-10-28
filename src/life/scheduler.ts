@@ -232,7 +232,7 @@ export class Scheduler {
       const timed = dueTimed(entries, side, now, deps.timeZone);
       const ended = endedWakeups(entries, side, now, deps.timeZone);
       for (const item of timed.fresh) await this.o.router.route(waifu.id, timedWake(item));
-      for (const item of ended) if (item.route) await this.o.router.route(waifu.id, endWake(item));
+      for (const item of ended) if (item.route) await this.o.router.route(waifu.id, endWake(item, side));
       const routed = [...timed.fresh.map((item) => item.wakeId), ...ended.filter((item) => item.route).map((item) => item.wakeId)];
       await store.markWakeupsFired(routed);
       const gone = new Set([...timed.done, ...ended.map((item) => item.entry.id)]);

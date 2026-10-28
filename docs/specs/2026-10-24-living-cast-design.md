@@ -3835,7 +3835,8 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   after she sets one, through `WebTools.fetchForWakeup`: winter-web's fetcher with
   `privateAddressPolicy: "deny"`, the `life.webFetch` time/size/redirect settings and no cache. They
   have their own bound instead of the WebFetch caps: a URL is not fetched again for any of her pages
-  sooner than the page's `every` (side `pageUrls`, kept a week), so an edit or a cancel and a new
+  sooner than the page's `every` (side `pageUrls`, keyed by the URL without its `#fragment`, kept a
+  week), so an edit or a cancel and a new
   `page()` for it never fetches early, and at most `PAGE_FETCHES_PER_DAY` (72: 3 pages hourly) a day
   (side `pageFetches`). With page fetching off (`fetchOffered()` false: a `life.webFetch` cap at 0)
   nothing is fetched and a new or changed page is refused (`web pages can't be checked: the owner
@@ -3848,16 +3849,23 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
 - **Wakes**: a timed one is `reason: "reminder"` (id `w-reminder-<id>-<due>`), an end
   `watch_timeout` (`w-timeout-<id>-<end>`), a page fire `watch` (`w-page-<id>-<now>`), a stop
   `wakeup_error` (`w-wakeup-error-<id>-<now>`, line `- wakeup w4 stopped: …`, the reason at most 300
-  characters; `dm: true` for a watch on a DM or on "everywhere", so its turn is a DM turn), which
+  characters; `dm: true` for a watch on a DM or on "everywhere" (not a `[]` timer), so its turn is a
+  DM turn; the same for its `watch_timeout`), which
   joins `reminder`, `plan` and `owner` through busy blocks and sleep. Several wakeups on one message are one wake
   (`wakeups` on the wake and its message): the first on the message's line, each other on its own
   `- watch · …` line; in a DM they ride on the `dm` wake, and a DM wake the rate limit dropped
   becomes a plain `watch` wake per message. A function's string return is the wake's `matched`.
 - **State** lives in memory per waifu and wakeup (`wakeups/state.ts`), written into her file by the
   scheduler at most once a minute, at stop and before a forget, only into the same entry with the same
-  code; her own write of the entry drops what was waiting. The app never writes the file past 64 KiB:
-  a state that won't fit is dropped (the biggest first) and counts as that wakeup's error
-  (`STATE_TOO_BIG`), and `rewriteWakeups` refuses a rewrite that would grow it past the cap.
+  code; her own write of the entry drops what was waiting.
+- **Size**: her writes (her tools, the owner's, the Wakeup tool), checked as saved (ids added, `for`
+  rewritten), and the app's state saves stop at `MAX_WAKEUPS_FILE_BYTES` (60 KiB, not §30.3's 64): a
+  state that won't fit is dropped (the biggest first) and counts as that wakeup's error
+  (`STATE_TOO_BIG`). The 4 KiB above, up to `WAKEUPS_FILE_HARD_BYTES` (64 KiB), is for the app's stop
+  reasons (each at most 300 characters and `MAX_REASON_JSON_BYTES`, 290 bytes as JSON; at most 13
+  watches and pages), so a disable is always written. `rewriteWakeups` refuses (as a backstop) a
+  rewrite that would grow the file past 64 KiB, yet always writes the side file (error counts, page
+  checks and fetches, fires); it reports `saved`, and a stop it did not save sends no wake.
 - **Isolation**: her wakeups are hers alone. Intake's check of her wakeups for a message is caught
   for her (logged), so the message still reaches every other waifu; the scheduler runs each step
   (wakeups, plans, held wakes, morning, maintenance, cache rest, housekeeping) on its own, and her

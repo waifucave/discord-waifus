@@ -30,7 +30,14 @@ export const WAKEUPS_FILE_NAME = "wakeups.json";
 export const MAX_TIMED = 20;
 export const MAX_WAKEUP_WATCHES = 10;
 export const MAX_PAGES = 3;
-export const MAX_WAKEUPS_FILE_BYTES = 64 * 1024;
+/** Her wakeups file as she (or the owner) writes it, and as the app saves her code's state into it. */
+export const MAX_WAKEUPS_FILE_BYTES = 60 * 1024;
+/**
+ * What the app may make of it: the 4 KiB above hers is for stop reasons (`disabled`, each at most
+ * `MAX_REASON_JSON_BYTES` as JSON, at most 13 watches and pages), so a disable is always written.
+ */
+export const WAKEUPS_FILE_HARD_BYTES = 64 * 1024;
+export const MAX_REASON_JSON_BYTES = 290;
 export const MAX_NOTE_CHARS = 200;
 export const MAX_STATE_BYTES = 4 * 1024;
 export const MAX_FILTER_OBJECTS = 5;
@@ -451,6 +458,8 @@ export async function checkWakeupsText(text: string, ctx: WakeupCheckContext): P
   const entries = checked.map((item) => item.entry);
   const resolvedById = new Map(checked.map((item) => [item.entry.id, item.resolved]));
   const finalText = rewritten ? wakeupsText(entries) : text;
+  // As saved (ids added, `for` written as `until`): her file stays within her cap.
+  if (Buffer.byteLength(finalText, "utf8") > MAX_WAKEUPS_FILE_BYTES) return { ok: false, error: `error: ${file} can be at most ${MAX_WAKEUPS_FILE_BYTES / 1024} KiB` };
   const side = sideFor(entries, resolvedById, { ...ctx, side: { ...ctx.side, nextId: counters } });
   return { ok: true, entries, side: { ...side, sourceHash: sha256Text(finalText) }, text: finalText, rewritten };
 }
