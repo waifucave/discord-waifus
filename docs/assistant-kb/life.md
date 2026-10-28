@@ -210,7 +210,9 @@ Her functions run in a sandbox (QuickJS in a worker thread, no network or host a
 and may not use anything from outside themselves; `state` lets them remember things between runs (it
 is saved in her file at most once a minute). One that fails three times in a row is stopped
 (`disabled` in her file, with the reason) and she is told; changing its code turns it back on.
-Pages are fetched by the app with the same private-address protection as WebFetch and no model call.
+Pages are fetched by the app with the same private-address protection as WebFetch and no model call,
+at most 72 a day, and not at all while page fetching is off (a `life.webFetch` cap at 0: then she
+can't set a new page).
 
 The owner sees them on Dashboard → Life (each with its code, state and why it stopped, a Delete
 button), with `waifus wakeups <id> [--private]` (`schedule` and `watches` show only some kinds),

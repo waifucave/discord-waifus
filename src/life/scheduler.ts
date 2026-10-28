@@ -196,16 +196,22 @@ export class Scheduler {
     if (deps.isPaused()) return;
     const waifus = (await listWaifus(deps.storage).catch(() => [])).filter((waifu) => waifu.enabled);
     for (const waifu of waifus) {
-      try {
-        await this.wakeups(waifu);
-        await this.plans(waifu);
-        await this.releaseHeld(waifu);
-        await this.morning(waifu);
-        await this.maintenance(waifu);
-        await this.cacheRest(waifu);
-        await this.housekeeping(waifu);
-      } catch (error) {
-        deps.logger.warn("Life scheduler tick failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+      // Each step on its own: one that fails (her wakeups' code, a file) never skips the others.
+      const steps: Array<[string, () => Promise<void>]> = [
+        ["wakeups", () => this.wakeups(waifu)],
+        ["plans", () => this.plans(waifu)],
+        ["held", () => this.releaseHeld(waifu)],
+        ["morning", () => this.morning(waifu)],
+        ["maintenance", () => this.maintenance(waifu)],
+        ["cacheRest", () => this.cacheRest(waifu)],
+        ["housekeeping", () => this.housekeeping(waifu)]
+      ];
+      for (const [step, runStep] of steps) {
+        try {
+          await runStep();
+        } catch (error) {
+          deps.logger.warn("Life scheduler tick failed", { waifuId: waifu.id, step, message: error instanceof Error ? error.message : String(error) });
+        }
       }
     }
   }
@@ -258,27 +264,34 @@ export class Scheduler {
       }
       const fetchPage = this.pageFetch();
       if (fetchPage && entries.some((entry) => entry.kind === "page")) {
-        const wakes = await checkPages({
-          store,
-          sandbox: sharedSandbox(),
-          now,
-          timeZone: deps.timeZone,
-          fetch: fetchPage,
-          everyMs: (entry) => {
-            const every = parseDuration(entry.options?.every);
-            return every.ok ? every.value : undefined;
-          }
-        });
-        for (const wake of wakes) await this.o.router.route(waifu.id, wake);
+        // Her pages on their own: one that fails never stops her timed wakeups or her saved state.
+        try {
+          const wakes = await checkPages({
+            store,
+            sandbox: sharedSandbox(),
+            now,
+            timeZone: deps.timeZone,
+            fetch: fetchPage,
+            everyMs: (entry) => {
+              const every = parseDuration(entry.options?.every);
+              return every.ok ? every.value : undefined;
+            }
+          });
+          for (const wake of wakes) await this.o.router.route(waifu.id, wake);
+        } catch (error) {
+          deps.logger.warn("Life page check failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+        }
       }
     }
-    await saveWakeupStates(store, now.getTime());
+    const { errorWakes } = await saveWakeupStates(store, now.getTime());
+    for (const wake of errorWakes) await this.o.router.route(waifu.id, wake);
   }
 
   /** Her pages' fetch (§30.2): the SSRF-checked fetcher, no model call; none without the web tools. */
   private pageFetch(): PageFetch | undefined {
     const web = this.o.deps.web;
-    return web ? (url) => web.fetchForWakeup(url) : undefined;
+    // The owner's "no page fetching" (a 0 cap) holds for her pages too.
+    return web && web.fetchOffered() ? (url) => web.fetchForWakeup(url) : undefined;
   }
 
   /**

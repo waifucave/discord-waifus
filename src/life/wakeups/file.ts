@@ -123,6 +123,8 @@ export type WakeupCheckContext = {
   resolvePerson(name: string): Promise<PersonResolution>;
   /** Compiles function sources in the sandbox. */
   compile(sources: string[]): Promise<SandboxCompileResult[]>;
+  /** The owner turned web fetching off: no new or changed page (an unchanged one may stay, unchecked). */
+  pagesOff?: boolean;
 };
 
 /** What a checked entry needs beside the file: how its places and names resolved. */
@@ -330,6 +332,8 @@ export async function checkEntry(raw: unknown, ctx: WakeupCheckContext, old: Wak
     if (!until.ok) return until;
     entry.options = { every: String(options["every"]).trim(), until: until.until };
     if (until.rewritten) rewritten = true;
+    const unchanged = sameKind !== undefined && sameKind.url === entry.url && JSON.stringify(sameKind.check) === JSON.stringify(entry.check) && JSON.stringify(sameKind.options) === JSON.stringify(entry.options);
+    if (ctx.pagesOff && !unchanged) return { ok: false, problem: "web pages can't be checked: the owner turned page fetching off" };
   }
   if (kind === "watch" || kind === "page") {
     const state = checkState(raw["state"]);

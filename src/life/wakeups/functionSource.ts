@@ -30,89 +30,203 @@ type AnyNode = Node & Record<string, unknown>;
 
 const isNode = (value: unknown): value is AnyNode => typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
 
-/** Names a binding pattern declares; its default values and computed keys are walked as expressions. */
-function bindPattern(node: AnyNode | null | undefined, bound: Set<string>, walk: (node: unknown) => void): void {
+type Scope = { names: Set<string>; parent: Scope | undefined };
+
+const scopeOf = (parent: Scope | undefined, names: Iterable<string> = []): Scope => ({ names: new Set(names), parent });
+
+/** The names a binding pattern declares (its default values are not names). */
+function patternNames(node: AnyNode | null | undefined, out: Set<string>): void {
   if (!node) return;
   switch (node.type) {
     case "Identifier":
-      bound.add(node["name"] as string);
+      out.add(node["name"] as string);
       return;
     case "ObjectPattern":
-      for (const property of node["properties"] as AnyNode[]) {
-        if (property.type === "RestElement") bindPattern(property["argument"] as AnyNode, bound, walk);
-        else {
-          if (property["computed"]) walk(property["key"]);
-          bindPattern(property["value"] as AnyNode, bound, walk);
-        }
-      }
+      for (const property of node["properties"] as AnyNode[]) patternNames((property.type === "RestElement" ? property["argument"] : property["value"]) as AnyNode, out);
       return;
     case "ArrayPattern":
-      for (const element of node["elements"] as Array<AnyNode | null>) bindPattern(element, bound, walk);
+      for (const element of node["elements"] as Array<AnyNode | null>) patternNames(element, out);
       return;
     case "RestElement":
-      bindPattern(node["argument"] as AnyNode, bound, walk);
+      patternNames(node["argument"] as AnyNode, out);
       return;
     case "AssignmentPattern":
-      bindPattern(node["left"] as AnyNode, bound, walk);
-      walk(node["right"]);
+      patternNames(node["left"] as AnyNode, out);
       return;
     default:
-      // A member expression as a target (only in assignments): walked as an expression.
-      walk(node);
+      return;
   }
 }
 
+/** `var` names anywhere in a function's body (hoisted to it), never inside an inner function. */
+function varNames(value: unknown, out: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) varNames(item, out);
+    return;
+  }
+  if (!isNode(value)) return;
+  if (value.type === "FunctionDeclaration" || value.type === "FunctionExpression" || value.type === "ArrowFunctionExpression" || value.type === "ClassDeclaration" || value.type === "ClassExpression") return;
+  if (value.type === "VariableDeclaration" && value["kind"] === "var") {
+    for (const declarator of value["declarations"] as AnyNode[]) patternNames(declarator["id"] as AnyNode, out);
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "range") continue;
+    varNames(child, out);
+  }
+}
+
+/** The names a statement list declares for its own block: `let`, `const`, classes and functions. */
+function lexicalNames(statements: readonly AnyNode[]): Set<string> {
+  const out = new Set<string>();
+  for (const statement of statements) {
+    if (statement.type === "VariableDeclaration" && statement["kind"] !== "var") for (const declarator of statement["declarations"] as AnyNode[]) patternNames(declarator["id"] as AnyNode, out);
+    else if ((statement.type === "ClassDeclaration" || statement.type === "FunctionDeclaration") && statement["id"]) out.add((statement["id"] as AnyNode)["name"] as string);
+  }
+  return out;
+}
+
 /**
- * The names a function uses that it does not declare anywhere inside itself. (A name declared in an
- * inner block and used outside it is not caught here; it fails when it runs, as an error.)
+ * The names a function uses that no scope inside it declares, resolved scope by scope (a name bound
+ * in an inner function, block or `catch` is not visible outside it).
  */
 export function freeNames(fn: AnyNode): Set<string> {
-  const bound = new Set<string>();
-  const used = new Set<string>();
-  const walk = (value: unknown): void => {
+  const free = new Set<string>();
+  const use = (name: string, scope: Scope) => {
+    for (let at: Scope | undefined = scope; at; at = at.parent) if (at.names.has(name)) return;
+    free.add(name);
+  };
+  // A pattern's default values and computed keys are expressions; a member target is one too.
+  const pattern = (node: AnyNode | null | undefined, scope: Scope): void => {
+    if (!node) return;
+    switch (node.type) {
+      case "Identifier":
+        return;
+      case "ObjectPattern":
+        for (const property of node["properties"] as AnyNode[]) {
+          if (property.type === "RestElement") pattern(property["argument"] as AnyNode, scope);
+          else {
+            if (property["computed"]) walk(property["key"], scope);
+            pattern(property["value"] as AnyNode, scope);
+          }
+        }
+        return;
+      case "ArrayPattern":
+        for (const element of node["elements"] as Array<AnyNode | null>) pattern(element, scope);
+        return;
+      case "RestElement":
+        pattern(node["argument"] as AnyNode, scope);
+        return;
+      case "AssignmentPattern":
+        pattern(node["left"] as AnyNode, scope);
+        walk(node["right"], scope);
+        return;
+      default:
+        walk(node, scope);
+    }
+  };
+  const visitFunction = (node: AnyNode, outer: Scope): void => {
+    const own = new Set<string>();
+    if (node.type !== "ArrowFunctionExpression") own.add("arguments");
+    // A function expression's own name is visible inside it only.
+    if (node.type === "FunctionExpression" && node["id"]) own.add((node["id"] as AnyNode)["name"] as string);
+    for (const param of node["params"] as AnyNode[]) patternNames(param, own);
+    const params = scopeOf(outer, own);
+    for (const param of node["params"] as AnyNode[]) pattern(param, params);
+    const body = node["body"] as AnyNode;
+    if (body.type !== "BlockStatement") {
+      walk(body, params);
+      return;
+    }
+    const names = new Set<string>();
+    varNames(body["body"], names);
+    for (const name of lexicalNames(body["body"] as AnyNode[])) names.add(name);
+    const inside = scopeOf(params, names);
+    for (const statement of body["body"] as AnyNode[]) walk(statement, inside);
+  };
+  const walk = (value: unknown, scope: Scope): void => {
     if (Array.isArray(value)) {
-      for (const item of value) walk(item);
+      for (const item of value) walk(item, scope);
       return;
     }
     if (!isNode(value)) return;
     const node = value;
     switch (node.type) {
       case "Identifier":
-        used.add(node["name"] as string);
+        use(node["name"] as string, scope);
         return;
       case "FunctionDeclaration":
       case "FunctionExpression":
       case "ArrowFunctionExpression":
-        if (node["id"]) bound.add((node["id"] as AnyNode)["name"] as string);
-        for (const param of node["params"] as AnyNode[]) bindPattern(param, bound, walk);
-        walk(node["body"]);
+        // A declaration's name was declared in its block already.
+        visitFunction(node, scope);
         return;
       case "ClassDeclaration":
-      case "ClassExpression":
-        if (node["id"]) bound.add((node["id"] as AnyNode)["name"] as string);
-        walk(node["superClass"]);
-        walk(node["body"]);
+      case "ClassExpression": {
+        const inner = scopeOf(scope, node["id"] ? [(node["id"] as AnyNode)["name"] as string] : []);
+        walk(node["superClass"], scope);
+        walk(node["body"], inner);
         return;
-      case "VariableDeclarator":
-        bindPattern(node["id"] as AnyNode, bound, walk);
-        walk(node["init"]);
+      }
+      case "BlockStatement": {
+        const inner = scopeOf(scope, lexicalNames(node["body"] as AnyNode[]));
+        for (const statement of node["body"] as AnyNode[]) walk(statement, inner);
         return;
-      case "CatchClause":
-        bindPattern(node["param"] as AnyNode | null, bound, walk);
-        walk(node["body"]);
+      }
+      case "VariableDeclaration":
+        for (const declarator of node["declarations"] as AnyNode[]) {
+          pattern(declarator["id"] as AnyNode, scope);
+          walk(declarator["init"], scope);
+        }
         return;
+      case "ForStatement": {
+        const init = node["init"] as AnyNode | null;
+        const inner = scopeOf(scope, init && init.type === "VariableDeclaration" && init["kind"] !== "var" ? lexicalNames([init]) : []);
+        walk(init, inner);
+        walk(node["test"], inner);
+        walk(node["update"], inner);
+        walk(node["body"], inner);
+        return;
+      }
+      case "ForInStatement":
+      case "ForOfStatement": {
+        const left = node["left"] as AnyNode;
+        const inner = scopeOf(scope, left.type === "VariableDeclaration" && left["kind"] !== "var" ? lexicalNames([left]) : []);
+        if (left.type === "VariableDeclaration") walk(left, inner);
+        else pattern(left, inner);
+        walk(node["right"], inner);
+        walk(node["body"], inner);
+        return;
+      }
+      case "CatchClause": {
+        const names = new Set<string>();
+        patternNames(node["param"] as AnyNode | null, names);
+        const inner = scopeOf(scope, names);
+        pattern(node["param"] as AnyNode | null, inner);
+        walk(node["body"], inner);
+        return;
+      }
+      case "SwitchStatement": {
+        walk(node["discriminant"], scope);
+        const cases = node["cases"] as AnyNode[];
+        const inner = scopeOf(scope, lexicalNames(cases.flatMap((item) => item["consequent"] as AnyNode[])));
+        for (const item of cases) {
+          walk(item["test"], inner);
+          walk(item["consequent"], inner);
+        }
+        return;
+      }
       case "MemberExpression":
-        walk(node["object"]);
-        if (node["computed"]) walk(node["property"]);
+        walk(node["object"], scope);
+        if (node["computed"]) walk(node["property"], scope);
         return;
       case "Property":
       case "PropertyDefinition":
       case "MethodDefinition":
-        if (node["computed"]) walk(node["key"]);
-        walk(node["value"]);
+        if (node["computed"]) walk(node["key"], scope);
+        walk(node["value"], scope);
         return;
       case "LabeledStatement":
-        walk(node["body"]);
+        walk(node["body"], scope);
         return;
       case "BreakStatement":
       case "ContinueStatement":
@@ -121,12 +235,12 @@ export function freeNames(fn: AnyNode): Set<string> {
       default:
         for (const [key, child] of Object.entries(node)) {
           if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "range") continue;
-          walk(child);
+          walk(child, scope);
         }
     }
   };
-  walk(fn);
-  return new Set([...used].filter((name) => !bound.has(name)));
+  walk(fn, scopeOf(undefined));
+  return free;
 }
 
 /** Checks one function source (her filter or check): shape, size and self-containment. */

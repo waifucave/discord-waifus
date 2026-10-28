@@ -383,6 +383,7 @@ export class Intake {
         own,
         createdAt: raw.createdAt,
         messageId: raw.id,
+        removed,
         files: removed ? [] : raw.attachments.map((file) => ({ name: file.filename, size: file.size })),
         ref: () => this.refOf(placeKey, raw)
       });
@@ -923,6 +924,7 @@ export class Intake {
         own: false,
         createdAt: raw.createdAt,
         messageId: raw.id,
+        removed,
         files: removed ? [] : raw.attachments.map((file) => ({ name: file.filename, size: file.size })),
         ref: () => this.refOf(placeKey, raw)
       }).catch((error: unknown) => {
@@ -941,13 +943,20 @@ export class Intake {
    */
   private async firedWakeups(waifu: WaifuConfig, message: WakeupMessage): Promise<FiredWakeup[]> {
     const deps = this.deps;
-    const { fired, errorWakes } = await fireWakeupWatches(
-      { store: homeStoreFor(deps, waifu), sandbox: sharedSandbox(), now: deps.now(), timeZone: deps.timeZone },
-      message,
-      { maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }
-    );
-    for (const wake of errorWakes) await this.o.router.route(waifu.id, wake, {});
-    return fired;
+    // Her wakeups are hers alone: whatever goes wrong in them never stops this message reaching
+    // anyone else (or her other wakes).
+    try {
+      const { fired, errorWakes } = await fireWakeupWatches(
+        { store: homeStoreFor(deps, waifu), sandbox: sharedSandbox(), now: deps.now(), timeZone: deps.timeZone },
+        message,
+        { maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }
+      );
+      for (const wake of errorWakes) await this.o.router.route(waifu.id, wake, {}).catch(() => undefined);
+      return fired;
+    } catch (error) {
+      deps.logger.warn("Life wakeup check failed", { waifuId: waifu.id, message: error instanceof Error ? error.message : String(error) });
+      return [];
+    }
   }
 
   /** A message's ref (`k3`) for her function filters. */

@@ -22,6 +22,7 @@ import { PLAN_WAKE_TEXT } from "../home/daySchedule.js";
 import { herSlug, isLifeDirPath, isMemoryFile, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
+import { wakeupsDmOrigin } from "../wakeups/privacy.js";
 import { imageSize } from "../bash/imageCommand.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 import { parseInput, toolError, type LifeResultBlock, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
@@ -101,9 +102,16 @@ export function capReadOutput(text: string, more: string): string {
  * Returns the DM it came from (its place key, or `dm_file` when only its folder says so).
  */
 export async function noteDmFile(store: HomeStore, p: HerPath): Promise<string | undefined> {
-  const origin = await store.dmOrigin(p).catch(() => undefined);
+  const origin = (await store.dmOrigin(p).catch(() => undefined)) ?? (await wakeupsOrigin(store, p));
   if (origin) notePlace(origin);
   return origin;
+}
+
+/** Her wakeups file holding a private wakeup (or what an everywhere watch kept) shows a DM (D14). */
+export async function wakeupsOrigin(store: HomeStore, p: HerPath): Promise<string | undefined> {
+  if (p.root !== "home" || specialJsonFile(p) !== "wakeups") return undefined;
+  const { entries, side } = await store.readWakeups().catch(() => ({ entries: [], side: undefined }));
+  return side ? wakeupsDmOrigin(entries, side) : undefined;
 }
 
 function failure(error: unknown): ToolOutput {

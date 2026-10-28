@@ -56,7 +56,7 @@ import {
 import { checkDayScheduleText, readDayPlan, type DayPlan } from "./daySchedule.js";
 import type { PersonResolution } from "./specialFiles.js";
 import { sharedSandbox, type Sandbox } from "../sandbox/index.js";
-import { checkWakeupsText, readsWhole, readWakeupEntries, wakeupsText, type WakeupEntry } from "../wakeups/file.js";
+import { checkWakeupsText, MAX_WAKEUPS_FILE_BYTES, readsWhole, readWakeupEntries, wakeupsText, type WakeupEntry } from "../wakeups/file.js";
 import { reconcileAfterWrite } from "../wakeups/state.js";
 import { checkProfileText, profileFileText, profileServers, sameProfile, saveProfileToConfig, type ProfileFields } from "./profileFile.js";
 
@@ -106,6 +106,8 @@ export type CheckEnv = {
   resolvePerson(name: string): Promise<PersonResolution>;
   /** Where her functions are compiled (default: the process's sandbox). */
   sandbox?: Sandbox;
+  /** Page fetching is off (`life.webFetch` caps at 0): no new pages (§30.2). */
+  pagesOff?: boolean;
 };
 
 export type HomeErrorCode = "limit" | "invalid" | "places" | "special" | "conflict" | "missing" | "binary" | "link" | "collision";
@@ -359,7 +361,8 @@ export class HomeStore {
       side,
       resolvePlace: async (handle: string) => (await resolvePlace(this.storage, this.waifuId, handle))?.placeKey,
       resolvePerson: env.resolvePerson,
-      compile: (sources: string[]) => (env.sandbox ?? sharedSandbox()).compile(sources, { timeZone: env.timeZone, now: env.now })
+      compile: (sources: string[]) => (env.sandbox ?? sharedSandbox()).compile(sources, { timeZone: env.timeZone, now: env.now }),
+      ...(env.pagesOff ? { pagesOff: true } : {})
     };
   }
 
@@ -769,6 +772,9 @@ export class HomeStore {
       const next = transform(entries, side);
       if (clean && JSON.stringify(next.entries) !== JSON.stringify(entries)) {
         const written = wakeupsText(next.entries);
+        // The app never grows her file past its cap (its callers keep under it; this is the backstop).
+        const size = Buffer.byteLength(written, "utf8");
+        if (size > MAX_WAKEUPS_FILE_BYTES && size > Buffer.byteLength(text ?? "", "utf8")) return false;
         await this.files.writeBytes(this.life(WAKEUPS_FILE), Buffer.from(written, "utf8"));
         next.side = { ...next.side, sourceHash: sha256(written) };
       }

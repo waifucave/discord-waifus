@@ -114,6 +114,26 @@ describe("her functions (§30.1)", () => {
     expect(checkFunctionSource("(m) => {\n  return m.text ===\n}")).toMatchObject({ ok: false, error: expect.stringMatching(/^SyntaxError/u), line: 3 });
     expect(checkFunctionSource("x".repeat(9000))).toMatchObject({ ok: false, error: expect.stringMatching(/over 8 KiB/u) });
   });
+
+  it("resolves names scope by scope: an inner function's parameter, a catch or a block binding never covers a use outside it (review 9)", () => {
+    const refused = (source: string, name: string) => expect(checkFunctionSource(source)).toEqual({ ok: false, error: `${CLOSURE_REFUSED} (it uses ${name})` });
+    refused("(msg) => { const f = (kevin) => kevin; return msg.text.includes(kevin) }", "kevin");
+    refused("(msg) => { try { JSON.parse(msg.text) } catch (kevin) {} return kevin }", "kevin");
+    refused("(msg) => { if (msg.text) { let k = 1 } return k }", "k");
+    refused("(msg) => { function inner() { var hidden = 1 } return hidden }", "hidden");
+    refused("(msg) => { for (let i = 0; i < 1; i++) {} return i }", "i");
+    refused("(msg, kevinDefault = mina) => true", "mina");
+    const fine = [
+      "(msg) => { var n = 0; for (const w of ['a']) { if (msg.text === w) n++ } return n > 0 }",
+      "function f(m) { return f.length > 0 && helper(m); function helper(x) { return !!x } }",
+      "(m) => { const C = class K { a() { return K } }; return new C().a() !== null }",
+      "(m) => { switch (m.text) { case 'a': const z = 1; return z === 1; default: return false } }",
+      "(m) => { if (true) { var later = 1 } return later === 1 }",
+      "(m, { a = 1, ...rest } = {}) => a === 1 && Object.keys(rest).length === 0",
+      "function (m) { return arguments.length > 0 }"
+    ];
+    for (const source of fine) expect(checkFunctionSource(source), source).toEqual({ ok: true });
+  });
 });
 
 describe("Wakeup(script) (§30.2)", () => {

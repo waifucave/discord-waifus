@@ -33,7 +33,9 @@ const MAX_CALLS_JSON_BYTES = 256 * 1024;
 
 /** The functions her script sees: each records its call (with the line it came from). */
 export const WAKEUP_PRELUDE = `
-var __calls = [];
+const __calls = [];
+// Read out with JSON.stringify as it was before her script (she may replace it).
+const __finish = (function (stringify) { return function () { return stringify(__calls); }; })(JSON.stringify);
 function __line() {
   var match = /\\(script:(\\d+)/.exec(new Error().stack || "");
   return match ? Number(match[1]) : 0;
@@ -102,6 +104,24 @@ function plain(value: unknown, where: string): { ok: true; value: unknown } | { 
   return { ok: true, value };
 }
 
+/** Her script's recorded calls, checked: what comes out of the sandbox is never trusted as it is. */
+function callsOf(text: string): Call[] | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length > MAX_SCRIPT_CALLS) return undefined;
+  const calls: Call[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item["fn"] !== "string" || !Object.hasOwn(SIGNATURES, item["fn"]) || !Array.isArray(item["args"])) return undefined;
+    const line = typeof item["line"] === "number" && Number.isInteger(item["line"]) && item["line"] > 0 ? item["line"] : 0;
+    calls.push({ fn: item["fn"] as Call["fn"], line, args: item["args"] as unknown[] });
+  }
+  return calls;
+}
+
 /** One call as the entry it adds (no id), or the id it cancels. */
 function recordOf(call: Call): { ok: true; add?: Record<string, unknown>; cancel?: string } | { ok: false; error: string } {
   const sig = SIGNATURES[call.fn];
@@ -168,7 +188,7 @@ async function wakeup(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     [
       { code: WAKEUP_PRELUDE, file: "prelude" },
       { code: parsed.value.script, file: "script" },
-      { code: "JSON.stringify(__calls)", file: "calls" }
+      { code: "__finish()", file: "calls" }
     ],
     { limits: REGISTRATION_LIMITS, timeZone: deps.timeZone, now }
   );
@@ -179,7 +199,8 @@ async function wakeup(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     return refused(line, problem);
   }
   if (Buffer.byteLength(run.value, "utf8") > MAX_CALLS_JSON_BYTES) return refused(undefined, "the script's calls are too large");
-  const calls = JSON.parse(run.value) as Call[];
+  const calls = callsOf(run.value);
+  if (!calls) return refused(undefined, "your script's calls couldn't be read (leave at(), every(), watch(), page(), cancel() and JSON as they are)");
   if (calls.length === 0) return toolError("the script made no calls; use at(), every(), watch(), page() or cancel()");
   const store = storeOf(ctx);
   const env = checkEnvFor(deps, ctx.waifu.id);
@@ -191,7 +212,8 @@ async function wakeup(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
     side,
     resolvePlace: async (handle) => (await resolvePlace(deps.storage, ctx.waifu.id, handle))?.placeKey,
     resolvePerson: env.resolvePerson,
-    compile: (sources) => sandbox.compile(sources, { timeZone: deps.timeZone, now })
+    compile: (sources) => sandbox.compile(sources, { timeZone: deps.timeZone, now }),
+    ...(env.pagesOff ? { pagesOff: true } : {})
   };
   const adds: Array<{ line: number; entry: WakeupEntry }> = [];
   const cancels: string[] = [];

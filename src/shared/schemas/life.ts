@@ -391,6 +391,12 @@ export const WakeupSideSchema = z.object({
   every: z.record(z.string(), z.object({ when: z.string(), since: IsoDateStringSchema })).default({}),
   /** `page`: the last check, the text's hash ("changes") and whether `contains` held. */
   pages: z.record(z.string(), z.object({ checkedAt: IsoDateStringSchema.optional(), hash: z.string().optional(), matched: z.boolean().optional() })).default({}),
+  /**
+   * Her page fetches of the last day (at most `PAGE_FETCHES_PER_DAY`) and the last fetch per URL:
+   * an edit, a cancel and a new `page()` for the same URL never fetch it sooner (§30.6).
+   */
+  pageFetches: z.array(IsoDateStringSchema).default([]),
+  pageUrls: z.record(z.string(), IsoDateStringSchema).default({}),
   /** Errors in a row per wakeup (3 disable it). */
   errors: z.record(z.string(), z.number().int().nonnegative()).default({}),
   /** Wake ids already routed: timed occurrences, timeouts, once-watch matches (newest 200). */

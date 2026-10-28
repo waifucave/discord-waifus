@@ -135,20 +135,25 @@ three times), `watch(places, filter, options, note)` (an object filter `{from, w
 list of them (`[]` a timer), or her function `(msg, state) => true | "line" | false`; ≤ 7 days),
 `page(url, check, options, note)` (`{contains}`, `"changes"` or a function; every ≥ 1h, ≤ 7 days,
 fetched by the scheduler through `WebTools.fetchForWakeup`: the SSRF-denying winter-web fetcher, no
-cache, no model call) and `cancel(id)`; the calls are recorded in a 500 ms run, then checked
+cache, no model call, nothing while page fetching is off, a URL never sooner than its `every` across
+edits, at most 72 a day) and `cancel(id)`; the calls are recorded in a 500 ms run, then checked
 (`file.ts` `checkEntry`; her functions must not use names from outside them: acorn 8.19.0 free-name
 analysis in `functionSource.ts`) and compiled, and saved all or nothing through `HomeStore.applyWakeups`
 (any error: `error: line N: …; nothing was saved`). Caps 20 timed / 10 watches / 3 pages. Her code runs in
 `src/life/sandbox/` (quickjs-emscripten 0.32.0, exact pin, the sync build; the asyncify build is in the
 same package for §31): one long-lived worker thread, a fresh QuickJS runtime per run with no host
-functions (JSON in, JSON out; `Date` on the app clock in her zone), 50 ms CPU / 16 MiB / 64 KiB stack
-per event run, a watchdog and a worker restart after a crash or limit hit;
+functions (JSON in, JSON out, read with built-ins captured before her code and cut in the worker;
+`Date` on the app clock in her zone), 50 ms CPU / 16 MiB / 64 KiB stack per event run, each run also
+timed whole (a native call over its budget is a time hit), a per-run watchdog (budget + 250 ms) and a
+worker restart after a crash or limit hit; the host checks every answer (`codeRunOf`) and her
+wakeups are caught per waifu in intake and per step in the scheduler;
 `tests/sandboxIsolation.test.ts` is the escape suite. `wakeups/run.ts` matches watches (every function
 of hers for one message in one sandbox request), checks pages, counts errors (three in a row:
 `disabled` and a `wakeup_error` wake); `state.ts` keeps her code's state in memory, written into her
 file at most once a minute (`saveWakeupStates`, also at stop and before a forget); `view.ts` is the
 owner views' D14 redaction (a wakeup watching a DM is a private entry; an "everywhere" watch's state
-is redacted).
+and stop reason are redacted; her Read/Bash read of a file holding one is a DM call; their error
+wakes are DM wakes).
 `ReadMessages(place, query?)` (spec §22): up to 5 places or `everywhere`; the freeform query
 (`tools/readQuery.ts`: `before|after|around <#ref | date time | date | HH:MM | yesterday HH:MM>`, a
 #ref anchor included, before + after a range, `max:N`, `people:`, `search:`) pages a conversation

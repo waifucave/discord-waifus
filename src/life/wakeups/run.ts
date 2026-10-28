@@ -21,15 +21,21 @@ import { EVENT_LIMITS, sandboxErrorText, type Sandbox, type SandboxCallResult } 
 import { wordBoundaryIncludes } from "../text.js";
 import { functionSourceOf, MAX_STATE_BYTES, untilOf, type WakeupEntry } from "./file.js";
 import { currentState, dropState, setState } from "./state.js";
+import { mayHaveSeenDm } from "./privacy.js";
 
 export const WATCH_MIN_SPACING_MS = 10 * 60_000;
 /** Errors in a row that disable a wakeup (§30.2). */
 export const MAX_ERRORS_IN_A_ROW = 3;
+/** Why a wakeup stopped, as kept in her file and her wake. */
+export const MAX_REASON_CHARS = 300;
 /** A function's string return, as shown in her wake (§30.2). */
 export const MAX_RETURN_CHARS = 200;
 /** A message's text as her filter sees it. */
 export const MAX_FILTER_TEXT_CHARS = 4_000;
 const DAY_MS = 24 * 3_600_000;
+const WEEK_MS = 7 * DAY_MS;
+/** Page fetches per waifu per day: her 3 pages checked every hour (§30.6). */
+export const PAGE_FETCHES_PER_DAY = 72;
 
 /** One message as intake hands it to her watches. */
 export type WakeupMessage = {
@@ -45,6 +51,8 @@ export type WakeupMessage = {
   repliesToMe: boolean;
   /** The message is hers (never matches). */
   own: boolean;
+  /** A forgotten person's (or unreadable forget records): no id, name, files or `from` match reach her. */
+  removed?: boolean;
   createdAt?: string;
   messageId?: string;
   files?: Array<{ name: string; size?: number }>;
@@ -62,9 +70,9 @@ export type WakeupRunContext = {
 };
 
 /** What matched for an object filter: the word, "any message", or the person's name. */
-export function bindingMatch(binding: ResolvedWatchBinding, message: Pick<WakeupMessage, "placeKey" | "authorId" | "text">): string | undefined {
+export function bindingMatch(binding: ResolvedWatchBinding, message: Pick<WakeupMessage, "placeKey" | "authorId" | "text" | "removed">): string | undefined {
   if (binding.placeKey && binding.placeKey !== message.placeKey) return undefined;
-  if (binding.fromUserId && binding.fromUserId !== message.authorId) return undefined;
+  if (binding.fromUserId && (message.removed === true || binding.fromUserId !== message.authorId)) return undefined;
   if (binding.words && binding.words.length > 0) {
     const word = binding.words.find((candidate) => wordBoundaryIncludes(message.text, candidate));
     if (!word) return undefined;
@@ -90,22 +98,40 @@ export type CodeRun = { ok: true; fires: boolean; matched?: string; state?: Reco
 
 /** A sandbox call's result for a filter or check whose second argument is her state. */
 export function codeRunOf(result: SandboxCallResult | undefined, what: "filter" | "check", stateBefore: Record<string, unknown>): CodeRun {
-  if (!result) return { ok: false, error: `your ${what} gave no answer` };
-  if (!result.ok) return { ok: false, error: sandboxErrorText(result.error, { what: `your ${what}` }) };
-  const stateText = result.args[1];
+  if (!result || typeof result !== "object") return { ok: false, error: `your ${what} gave no answer` };
+  if (!result.ok) return { ok: false, error: result.error && typeof result.error === "object" ? sandboxErrorText(result.error, { what: `your ${what}` }) : `your ${what} failed` };
+  // Nothing from the sandbox is trusted as it is: an answer is true, a string or null; her state comes
+  // back as JSON text of a plain object of at most 4 KiB, or the run is an error that counts.
+  const answer = result.result;
+  if (answer !== true && answer !== null && typeof answer !== "string") return { ok: false, error: `your ${what} gave an answer that couldn't be read` };
+  const notJson = { ok: false as const, error: `your ${what}'s state must be plain JSON` };
+  if (!Array.isArray(result.args)) return notJson;
+  const stateText: unknown = result.args[1];
   let state: Record<string, unknown> | undefined;
-  if (stateText !== undefined && stateText !== JSON.stringify(stateBefore)) {
-    if (Buffer.byteLength(stateText, "utf8") > MAX_STATE_BYTES) return { ok: false, error: `your ${what}'s state is over ${MAX_STATE_BYTES / 1024} KiB; keep less in it` };
-    const parsed = JSON.parse(stateText) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false, error: `your ${what}'s state must stay an object` };
-    state = parsed as Record<string, unknown>;
+  if (stateText !== undefined) {
+    if (typeof stateText === "object" && stateText !== null && (stateText as { problem?: unknown }).problem === "too-large") return { ok: false, error: `your ${what}'s state is over ${MAX_STATE_BYTES / 1024} KiB; keep less in it` };
+    if (typeof stateText !== "string") return notJson;
+    if (stateText !== JSON.stringify(stateBefore)) {
+      if (Buffer.byteLength(stateText, "utf8") > MAX_STATE_BYTES) return { ok: false, error: `your ${what}'s state is over ${MAX_STATE_BYTES / 1024} KiB; keep less in it` };
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(stateText);
+      } catch {
+        return notJson;
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false, error: `your ${what}'s state must stay an object` };
+      state = parsed as Record<string, unknown>;
+    }
   }
-  return { ok: true, ...answerOf(result.result), ...(state ? { state } : {}) };
+  return { ok: true, ...answerOf(answer), ...(state ? { state } : {}) };
 }
 
-/** The wake for a wakeup her errors stopped: `- wakeup w4 stopped: TypeError: … (line 2)`. */
-export function wakeupErrorWake(id: string, error: string, now: Date): Wake {
-  return { id: `w-wakeup-error-${id}-${now.getTime().toString(36)}`, reason: "wakeup_error", watchId: id, note: `wakeup ${id} stopped: ${error}`, at: now.toISOString() };
+/**
+ * The wake for a wakeup her errors stopped: `- wakeup w4 stopped: TypeError: … (line 2)`. The error
+ * of code that may have seen a DM (a private or an everywhere watch) may quote it: a DM wake (D14).
+ */
+export function wakeupErrorWake(id: string, error: string, now: Date, o: { dm?: boolean } = {}): Wake {
+  return { id: `w-wakeup-error-${id}-${now.getTime().toString(36)}`, reason: "wakeup_error", watchId: id, note: `wakeup ${id} stopped: ${error}`, ...(o.dm ? { dm: true } : {}), at: now.toISOString() };
 }
 
 /**
@@ -136,8 +162,10 @@ export function applyRuns(
       return entry;
     }
     delete errors[entry.id];
-    errorWakes.push(wakeupErrorWake(entry.id, run.error, o.now));
-    return { ...entry, disabled: run.error };
+    // Bounded: the reason lives in her file (and her wake).
+    const reason = [...run.error].length > MAX_REASON_CHARS ? `${[...run.error].slice(0, MAX_REASON_CHARS - 1).join("")}…` : run.error;
+    errorWakes.push(wakeupErrorWake(entry.id, reason, o.now, { dm: mayHaveSeenDm(entry, side) }));
+    return { ...entry, disabled: reason };
   });
   return { entries: next, side: { ...side, errors }, errorWakes };
 }
@@ -148,14 +176,14 @@ async function messageObject(message: WakeupMessage): Promise<Record<string, unk
   return {
     place: await message.handle(),
     from: message.fromName,
-    fromId: message.authorId,
+    fromId: message.removed ? null : message.authorId,
     isWaifu: message.isWaifu,
     text: text.length > MAX_FILTER_TEXT_CHARS ? text.slice(0, MAX_FILTER_TEXT_CHARS).join("") : message.text,
     mentionsMe: message.mentionsMe,
     repliesToMe: message.repliesToMe,
     ref: (await message.ref?.().catch(() => undefined)) ?? null,
     at: message.createdAt ?? null,
-    files: (message.files ?? []).map((file) => ({ name: file.name, ...(file.size !== undefined ? { size: file.size } : {}) }))
+    files: (message.removed ? [] : (message.files ?? [])).map((file) => ({ name: file.name, ...(file.size !== undefined ? { size: file.size } : {}) }))
   };
 }
 
@@ -293,13 +321,18 @@ export const textHash = (text: string) => createHash("sha256").update(text.repla
 export async function checkPages(ctx: WakeupRunContext & { fetch: PageFetch; everyMs: (entry: WakeupEntry) => number | undefined }): Promise<Wake[]> {
   const nowMs = ctx.now.getTime();
   const { entries, side } = await ctx.store.readWakeups();
-  const due = entries.filter((entry) => {
-    if (entry.kind !== "page" || entry.disabled !== undefined) return false;
-    if ((untilOf(entry, ctx.timeZone)?.getTime() ?? 0) <= nowMs) return false;
-    const last = side.pages[entry.id]?.checkedAt;
-    const every = ctx.everyMs(entry);
-    return every !== undefined && (last === undefined || nowMs - Date.parse(last) >= every);
-  });
+  const fetchedToday = side.pageFetches.filter((at) => nowMs - Date.parse(at) < DAY_MS);
+  const due = entries
+    .filter((entry) => {
+      if (entry.kind !== "page" || entry.disabled !== undefined) return false;
+      if ((untilOf(entry, ctx.timeZone)?.getTime() ?? 0) <= nowMs) return false;
+      const every = ctx.everyMs(entry);
+      if (every === undefined) return false;
+      // Its own last check, or this URL's last fetch for any page (an edit or a new id is no new fetch).
+      const last = Math.max(...[side.pages[entry.id]?.checkedAt, side.pageUrls[entry.url!]].map((at) => (at ? Date.parse(at) : Number.NEGATIVE_INFINITY)));
+      return nowMs - last >= every;
+    })
+    .slice(0, Math.max(0, PAGE_FETCHES_PER_DAY - fetchedToday.length));
   if (due.length === 0) return [];
   const dataRoot = ctx.store.storage.dataRoot;
   const results = new Map<string, { source: string | undefined; check: WakeupEntry["check"]; url: string | undefined; page?: PageObject; run?: CodeRun; hash?: string; contains?: boolean }>();
@@ -326,6 +359,11 @@ export async function checkPages(ctx: WakeupRunContext & { fetch: PageFetch; eve
     const applied = applyRuns(current, currentSide, runs, { dataRoot, waifuId: ctx.store.waifuId, now: ctx.now });
     wakes.push(...applied.errorWakes);
     const pages = { ...applied.side.pages };
+    // Every fetch counts, whatever became of its page meanwhile.
+    const at = ctx.now.toISOString();
+    const pageFetches = [...applied.side.pageFetches.filter((when) => nowMs - Date.parse(when) < DAY_MS), ...due.map(() => at)].slice(-PAGE_FETCHES_PER_DAY);
+    const pageUrls = Object.fromEntries(Object.entries(applied.side.pageUrls).filter(([, when]) => nowMs - Date.parse(when) < WEEK_MS));
+    for (const entry of due) pageUrls[entry.url!] = at;
     for (const entry of applied.entries) {
       const record = results.get(entry.id);
       // Only the page it checked (an edit in between starts over).
@@ -356,7 +394,7 @@ export async function checkPages(ctx: WakeupRunContext & { fetch: PageFetch; eve
         });
       }
     }
-    return { entries: applied.entries, side: { ...applied.side, pages } };
+    return { entries: applied.entries, side: { ...applied.side, pages, pageFetches, pageUrls } };
   });
   return wakes;
 }

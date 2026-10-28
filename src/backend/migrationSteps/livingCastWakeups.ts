@@ -27,7 +27,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { parseLocalDateTime } from "../../life/clock.js";
-import { readWakeupEntries, wakeupsText, type ObjectFilter, type WakeupEntry } from "../../life/wakeups/file.js";
+import { wakeupsText, type ObjectFilter, type WakeupEntry } from "../../life/wakeups/file.js";
 import type { WakeupSide } from "../../shared/schemas/life.js";
 import { atomicWriteJson } from "../../storage/atomic.js";
 import type { MigrationStepOutcome } from "../migrations.js";
@@ -110,7 +110,7 @@ export function convertLegacy(o: {
     taken.add(id);
     return id;
   };
-  const side: WakeupSide = { nextId: next, sourceHash: "", watches: {}, every: {}, pages: {}, errors: {}, fired: [] };
+  const side: WakeupSide = { nextId: next, sourceHash: "", watches: {}, every: {}, pages: {}, pageFetches: [], pageUrls: {}, errors: {}, fired: [] };
   const renamed = new Map<string, string>();
   let unresolved = false;
   for (const reminder of readLegacyReminders(o.remindersText, o.timeZone)) {
@@ -219,7 +219,8 @@ async function archiveFile(dataRoot: string, waifuId: string, source: string, na
 }
 
 /** Test hook: stop (throw) right after a part, as a crash there would. */
-export type WakeupsCrash = "start" | Part;
+/** `written`: right after her new file is written, before the marker records `convert`. */
+export type WakeupsCrash = "start" | "written" | Part;
 
 export async function migrateLivingCastWakeups(dataRoot: string, o: { now?: () => Date; timeZone?: string; crashAfter?: WakeupsCrash } = {}): Promise<MigrationStepOutcome> {
   const now = (o.now ?? (() => new Date()))();
@@ -268,7 +269,10 @@ export async function migrateLivingCastWakeups(dataRoot: string, o: { now?: () =
         const scheduleIds = LegacyScheduleIdsSchema.safeParse(await sideRead("schedule-ids.json"));
         const watchIds = LegacyWatchIdsSchema.safeParse(await sideRead("watch-ids.json"));
         const wakeupsFile = path.join(homeLife, "wakeups.json");
-        const existing = readWakeupEntries(await readFile(wakeupsFile, "utf8").catch(() => undefined));
+        // Until the marker records `convert`, a wakeups.json there is this step's own unfinished
+        // write (the app writes the marker as done before it ever writes one): converted again from
+        // the old files, never added to.
+        const existing: WakeupEntry[] = [];
         const converted = convertLegacy({
           remindersText,
           watchesText,
@@ -284,6 +288,7 @@ export async function migrateLivingCastWakeups(dataRoot: string, o: { now?: () =
         const sourceHash = converted.unresolved ? "" : createHash("sha256").update(text, "utf8").digest("hex");
         await atomicWriteJson(path.join(lifeDir, "wakeup-ids.json"), { ...converted.side, sourceHash });
         await writeText(wakeupsFile, text);
+        if (o.crashAfter === "written") throw new Error("crash after written");
         counts.converted += 1;
       }
       await finish("convert");

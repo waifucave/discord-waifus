@@ -6,6 +6,7 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { afterAll, describe, expect, it } from "vitest";
 import { EVENT_LIMITS, REGISTRATION_LIMITS, Sandbox, sandboxErrorText } from "../src/life/sandbox/index.js";
+import { codeRunOf } from "../src/life/wakeups/run.js";
 
 const sandbox = new Sandbox({ timeZone: "Europe/Berlin", now: () => new Date("2026-10-28T12:00:00.000Z") });
 afterAll(() => sandbox.close({ forGood: true }));
@@ -121,13 +122,109 @@ describe("sandbox: limits", () => {
     expect(results[2]).toEqual({ ok: true });
   });
 
-  it("a state that can't be JSON (a cycle) is an error, not a host problem", async () => {
+  it("a state that can't be JSON (a cycle) comes back as a problem, never as text the host must parse", async () => {
     const [result] = await sandbox.call([{ source: "(m, s) => { s.self = s; return true }", file: "filter", args: ["{}", "{}"] }]);
-    expect(result).toMatchObject({ ok: false });
+    expect(result).toEqual({ ok: true, result: true, args: ["{}", { problem: "not-json" }] });
+    expect(codeRunOf(result, "filter", {})).toEqual({ ok: false, error: "your filter's state must be plain JSON" });
+  });
+});
+
+describe("sandbox: what comes back is read with built-ins she can't change (review 1)", () => {
+  const hostile = [
+    "(m, s) => { s.toJSON = function () { return undefined }; return true }",
+    "(m, s) => { JSON.stringify = function () { return 42 }; s.a = 1; return true }",
+    "(m, s) => { JSON.stringify = function () { return '[true, 7]' }; return 'x' }",
+    "(m, s) => { Array.prototype.map = function () { return 5 }; s.a = 1; return true }",
+    "(m, s) => { Object.prototype.toJSON = function () { return 'not an object' }; return true }",
+    "(m, s) => { String.prototype.slice = function () { return { evil: 1 } }; return 'line' }",
+    "(m, s) => { Object.defineProperty(s, 'x', { enumerable: true, get: function () { throw new Error('no') } }); return true }"
+  ];
+
+  it("her overrides of JSON, prototypes or toJSON never reach the host as anything but true, text, null, JSON text or a problem", async () => {
+    const results = await sandbox.call(hostile.map((source) => ({ source, file: "filter", args: ["{}", "{}"] })));
+    for (const result of results) {
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.result === true || result.result === null || typeof result.result === "string").toBe(true);
+      for (const arg of result.args) expect(typeof arg === "string" || (typeof arg === "object" && (arg.problem === "not-json" || arg.problem === "too-large"))).toBe(true);
+    }
+    // Each one is a counted error of hers or a plain answer: never a throw on the host.
+    const runs = results.map((result) => codeRunOf(result, "filter", {}));
+    expect(runs[0]).toEqual({ ok: false, error: "your filter's state must be plain JSON" });
+    expect(runs[1]).toMatchObject({ ok: true, state: { a: 1 } });
+    expect(runs[2]).toMatchObject({ ok: true, fires: true, matched: "x" });
+    expect(runs[3]).toMatchObject({ ok: true, state: { a: 1 } });
+    expect(runs[4]).toEqual({ ok: false, error: "your filter's state must stay an object" });
+    expect(runs[5]).toMatchObject({ ok: true, matched: "line" });
+    expect(runs[6]).toEqual({ ok: false, error: "your filter's state must be plain JSON" });
+  });
+
+  it("codeRunOf counts anything malformed as her error instead of throwing", () => {
+    const bad = [
+      { ok: true, result: 5, args: ["{}", "{}"] },
+      { ok: true, result: true, args: "nope" },
+      { ok: true, result: true, args: ["{}", null] },
+      { ok: true, result: true, args: ["{}", "{not json"] },
+      { ok: true, result: true, args: ["{}", "[1]"] },
+      { ok: false, error: null }
+    ];
+    for (const result of bad) expect(codeRunOf(result as never, "filter", {}).ok).toBe(false);
   });
 
   it("a crashed worker is replaced", async () => {
     await sandbox.close();
     expect(await value("return 'back'")).toBe("back");
   });
+});
+
+describe("sandbox: native calls QuickJS can't interrupt (review 2)", () => {
+  it("a long string search is a time limit hit even when it finishes, stopped per run; the next run is unharmed", async () => {
+    const before = sandbox.starts;
+    const started = performance.now();
+    const results = await sandbox.call(
+      [
+        "() => 'a'.repeat(2e5).includes('a'.repeat(1e5) + 'b')",
+        "() => 'a'.repeat(2e5).indexOf('a'.repeat(1e5) + 'b') >= 0",
+        "() => 'a'.repeat(2e5).lastIndexOf('a'.repeat(1e5) + 'b') >= 0",
+        "(m) => m.text === 'hi'"
+      ].map((source) => ({ source, file: "filter", args: [JSON.stringify({ text: "hi" })] })),
+      { limits: EVENT_LIMITS }
+    );
+    const elapsed = performance.now() - started;
+    expect(results.slice(0, 3)).toEqual([0, 1, 2].map(() => expect.objectContaining({ ok: false, error: expect.objectContaining({ kind: "time" }) })));
+    expect(results[3]).toEqual({ ok: true, result: true, args: [JSON.stringify({ text: "hi" })] });
+    // Each stopped within its budget and the watchdog's grace (plus a fresh worker), never seconds each.
+    expect(elapsed).toBeLessThan(4_000);
+    expect(sandbox.starts).toBeGreaterThan(before);
+  }, 30_000);
+
+  it("a run that finished but took longer than its budget counts as too long", async () => {
+    const [result] = await sandbox.call([{ source: "() => { const t = Date.now(); while (Date.now() - t < 5) {} ; return 'a'.repeat(1e5).includes('a'.repeat(4e4) + 'b') }", file: "filter", args: [] }], { limits: { ...EVENT_LIMITS, timeMs: 1 } });
+    expect(result).toMatchObject({ ok: false, error: { kind: "time" } });
+  });
+});
+
+describe("sandbox: only short text leaves it (review 3)", () => {
+  it("errors, string answers and state are cut inside the worker", async () => {
+    const [thrown, answer, wide, state] = await sandbox.call(
+      [
+        "() => { throw new Error('x'.repeat(3e6)) }",
+        "() => 'y'.repeat(3e6)",
+        "() => '一 '.repeat(2.5e6)",
+        "(m, s) => { s.big = 'z'.repeat(1e6); return true }"
+      ].map((source) => ({ source, file: "filter", args: ["{}", "{}"] })),
+      { limits: EVENT_LIMITS }
+    );
+    expect(thrown).toMatchObject({ ok: false, error: { kind: "error" } });
+    expect((thrown as { error: { message: string } }).error.message.length).toBeLessThanOrEqual(300);
+    expect(answer!.ok && typeof answer.result === "string" && answer.result.length).toBe(402);
+    expect(wide!.ok && typeof wide.result === "string" && wide.result.length).toBeLessThanOrEqual(402);
+    expect(codeRunOf(wide, "filter", {})).toMatchObject({ ok: true, fires: true, matched: expect.stringMatching(/^(一 ){99}一…$/u) });
+    expect(state).toMatchObject({ ok: true, args: ["{}", { problem: "too-large" }] });
+    expect(codeRunOf(state, "filter", {})).toEqual({ ok: false, error: "your filter's state is over 4 KiB; keep less in it" });
+    const run = await sandbox.run([{ code: "throw new Error('w'.repeat(3e6))", file: "script" }]);
+    expect(run.ok === false && run.error.message.length).toBeLessThanOrEqual(300);
+    const big = await sandbox.run([{ code: "'v'.repeat(1e6)", file: "script" }]);
+    expect(big).toMatchObject({ ok: false, error: { message: "what the run gave back is too large" } });
+  }, 30_000);
 });

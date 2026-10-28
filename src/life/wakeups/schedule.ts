@@ -7,8 +7,9 @@
 import type { Wake, WakeupSide } from "../../shared/schemas/life.js";
 import { parseLocalDateTime } from "../clock.js";
 import { onceKey, type HomeStore } from "../home/homeStore.js";
-import { functionSourceOf, untilOf, type WakeupEntry } from "./file.js";
-import { markSaved, pendingStates } from "./state.js";
+import { functionSourceOf, MAX_WAKEUPS_FILE_BYTES, untilOf, wakeupsText, type WakeupEntry } from "./file.js";
+import { applyRuns, type CodeRun } from "./run.js";
+import { dropState, markSaved, pendingStates } from "./state.js";
 import { latestOccurrence, nextOccurrences, parseEvery } from "./when.js";
 
 /** One wake id per timed occurrence (its id and due time; the `reminder` reason, §30.2). */
@@ -87,20 +88,43 @@ export function nextTimes(entry: WakeupEntry, after: Date, timeZone: string, cou
   return spec?.ok ? nextOccurrences(spec.value, after, timeZone, count) : [];
 }
 
+/** Why a state that won't fit stops counting (§30.6). */
+export const STATE_TOO_BIG = `its state would make ~/life/wakeups.json bigger than ${MAX_WAKEUPS_FILE_BYTES / 1024} KiB; keep less in it`;
+
 /**
  * Writes her code's waiting state into her file: at most once a minute (`nowMs`), or now
- * (`force`, shutdown and forget). Only into the same wakeup with the same code.
+ * (`force`, shutdown and forget). Only into the same wakeup with the same code. The file never
+ * grows past its 64 KiB cap this way: a state that would push it over is not written (the biggest
+ * first), counts as that wakeup's error, and a third in a row stops it (the wakes to route come back).
  */
-export async function saveWakeupStates(store: HomeStore, nowMs: number, o: { force?: boolean } = {}): Promise<boolean> {
-  const pending = pendingStates(store.storage.dataRoot, store.waifuId, o.force ? undefined : nowMs);
-  if (!pending) return false;
-  const clean = await store.rewriteWakeups((entries, side) => ({
-    entries: entries.map((entry) => {
+export async function saveWakeupStates(store: HomeStore, nowMs: number, o: { force?: boolean } = {}): Promise<{ saved: boolean; errorWakes: Wake[] }> {
+  const dataRoot = store.storage.dataRoot;
+  const pending = pendingStates(dataRoot, store.waifuId, o.force ? undefined : nowMs);
+  if (!pending) return { saved: false, errorWakes: [] };
+  const errorWakes: Wake[] = [];
+  const now = new Date(nowMs);
+  const saved = await store.rewriteWakeups((entries, side) => {
+    const changed = new Set<string>();
+    let next = entries.map((entry) => {
       const waiting = pending.get(entry.id);
-      return waiting && waiting.source === functionSourceOf(entry) && JSON.stringify(waiting.state) !== JSON.stringify(entry.state ?? {}) ? { ...entry, state: waiting.state } : entry;
-    }),
-    side
-  }));
-  if (clean) markSaved(store.storage.dataRoot, store.waifuId, pending, nowMs);
-  return clean;
+      if (!waiting || waiting.source !== functionSourceOf(entry) || JSON.stringify(waiting.state) === JSON.stringify(entry.state ?? {})) return entry;
+      changed.add(entry.id);
+      return { ...entry, state: waiting.state };
+    });
+    const runs = new Map<string, { source: string | undefined; run: CodeRun }>();
+    while (Buffer.byteLength(wakeupsText(next), "utf8") > MAX_WAKEUPS_FILE_BYTES && changed.size > 0) {
+      const biggest = [...changed].sort((a, b) => JSON.stringify(pending.get(b)!.state).length - JSON.stringify(pending.get(a)!.state).length)[0]!;
+      changed.delete(biggest);
+      const before = entries.find((entry) => entry.id === biggest)!;
+      next = next.map((entry) => (entry.id === biggest ? before : entry));
+      dropState(dataRoot, store.waifuId, biggest);
+      runs.set(biggest, { source: functionSourceOf(before), run: { ok: false, error: STATE_TOO_BIG } });
+    }
+    if (runs.size === 0) return { entries: next, side };
+    const applied = applyRuns(next, side, runs, { dataRoot, waifuId: store.waifuId, now });
+    errorWakes.push(...applied.errorWakes);
+    return { entries: applied.entries, side: applied.side };
+  });
+  if (saved) markSaved(dataRoot, store.waifuId, pending, nowMs);
+  return { saved, errorWakes };
 }

@@ -3785,17 +3785,31 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   worker thread (`sandboxWorker.ts`, `unref`'d). Each run gets a fresh QuickJS runtime and context with
   `setMemoryLimit` 16 MiB, `setMaxStackSize` 64 KiB and an interrupt deadline (50 ms; 500 ms for her
   script); there are no host functions at all, only JSON text goes in (her source, `msg`/`page`,
-  `state`) and comes out (`true`, a string or `null`, and the arguments after the call). `Date` in the
-  worker isolate reads the app's clock and her zone (`getTimezoneOffset` patched per run). The host
-  side (`index.ts` `Sandbox`) batches every function for one event into one request, has a watchdog
-  (the time budget × runs + 2 s, +10 s for a cold worker) and restarts the worker after a crash or a
-  limit hit (`limitHit`). Errors read `your filter took too long`, `used too much memory`, `recursed
+  `state`) and comes out (`true`, a string or `null`, and each argument's JSON or a problem
+  `not-json`/`too-large`), read out by functions built before her code runs from the built-ins as
+  they were (`READERS`: her `JSON.stringify`, `toJSON` or prototype overrides change nothing), and
+  cut in the worker: errors 300 characters, string answers 402 UTF-16 units, arguments 4,096
+  characters, a run's value 256 KiB. The host still checks every answer strictly (`codeRunOf`,
+  `callsOf`): anything malformed is her counted error, never a host throw. Every run is also timed
+  whole: QuickJS checks its interrupt handler only between JavaScript steps, so a native call (a
+  string search over long strings) can overrun and still finish; one over its budget + 25 ms
+  (`TIME_SLACK_MS`) is a time limit hit. `Date` in the worker isolate reads the app's clock (from each
+  run's start) and her zone (`getTimezoneOffset` patched per run). The host side (`index.ts`
+  `Sandbox`) batches every function for one event into one request; the worker reports each run's
+  start and result, so the watchdog is per run (its budget + 250 ms, `RUN_GRACE_MS`; 10 s for a cold
+  worker to start): a run still going then ends the worker, is that run's time limit hit, and the
+  runs after it go to a fresh worker. A limit hit or a crash restarts the worker. No per-waifu CPU
+  budget per minute: a run costs at most ~300 ms and three in a row stop the wakeup. Errors read `your filter took too long`, `used too much memory`, `recursed
   too deeply`, or her error with its line (`TypeError: … (line 2)`). Installed size about 9.1 MB
   (2.4 MB package + the `@jitl` wasm variants, debug builds included).
 - **The closure check** uses `acorn` 8.19.0 (exact pin, new dependency, ~0.6 MB): her function must be
   one arrow or function expression (≤ 8 KiB, not async or a generator) whose free names are all
-  JavaScript built-ins (`functionSource.ts` `SANDBOX_GLOBALS`); else `filters can't use variables from
-  outside them; put what they need inside (it uses kevin)`.
+  JavaScript built-ins (`functionSource.ts` `SANDBOX_GLOBALS`), resolved scope by scope (function
+  parameters and `var`s, block `let`/`const`/classes/functions, `catch` and `for` bindings, a
+  function expression's own name; a block function counts in its block only); else `filters can't
+  use variables from outside them; put what they need inside (it uses kevin)`. The prelude's
+  `__calls` and `__finish` are `const`s, the calls read out with the `JSON.stringify` of before her
+  script.
 - **The tool** (`tools/wakeup.ts`): a prelude defines the five functions, which only record the call
   and its line (from the `script:N` stack frame); at most 40 calls, a script ≤ 20,000 characters, a
   script with no call is an error. Then each call is checked (`wakeups/file.ts` `checkEntry`), her
@@ -3819,8 +3833,13 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   matches; `[]` is a plain timer); `from` resolves as `WatchFor` did (ambiguity is an error).
 - **Pages** run from the scheduler tick (`Scheduler.wakeups` → `checkPages`), first at the next tick
   after she sets one, through `WebTools.fetchForWakeup`: winter-web's fetcher with
-  `privateAddressPolicy: "deny"`, the `life.webFetch` time/size/redirect settings, no cache, and not
-  counted against the daily fetch caps (≤ 3 pages × ≥ 1h keeps it small). `title` is the page's first
+  `privateAddressPolicy: "deny"`, the `life.webFetch` time/size/redirect settings and no cache. They
+  have their own bound instead of the WebFetch caps: a URL is not fetched again for any of her pages
+  sooner than the page's `every` (side `pageUrls`, kept a week), so an edit or a cancel and a new
+  `page()` for it never fetches early, and at most `PAGE_FETCHES_PER_DAY` (72: 3 pages hourly) a day
+  (side `pageFetches`). With page fetching off (`fetchOffered()` false: a `life.webFetch` cap at 0)
+  nothing is fetched and a new or changed page is refused (`web pages can't be checked: the owner
+  turned page fetching off`); an unchanged one stays in her file. `title` is the page's first
   heading (else its first line). `contains` is case-insensitive and fires when the text appears (once
   per appearance, not at every check while it stays); `"changes"` takes a first look as its baseline;
   `contains`/`"changes"` skip a non-2xx answer, her function sees `status`. A failed fetch waits for
@@ -3828,14 +3847,21 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   watch's.
 - **Wakes**: a timed one is `reason: "reminder"` (id `w-reminder-<id>-<due>`), an end
   `watch_timeout` (`w-timeout-<id>-<end>`), a page fire `watch` (`w-page-<id>-<now>`), a stop
-  `wakeup_error` (`w-wakeup-error-<id>-<now>`, line `- wakeup w4 stopped: …`), which joins `reminder`,
-  `plan` and `owner` through busy blocks and sleep. Several wakeups on one message are one wake
+  `wakeup_error` (`w-wakeup-error-<id>-<now>`, line `- wakeup w4 stopped: …`, the reason at most 300
+  characters; `dm: true` for a watch on a DM or on "everywhere", so its turn is a DM turn), which
+  joins `reminder`, `plan` and `owner` through busy blocks and sleep. Several wakeups on one message are one wake
   (`wakeups` on the wake and its message): the first on the message's line, each other on its own
   `- watch · …` line; in a DM they ride on the `dm` wake, and a DM wake the rate limit dropped
   becomes a plain `watch` wake per message. A function's string return is the wake's `matched`.
 - **State** lives in memory per waifu and wakeup (`wakeups/state.ts`), written into her file by the
   scheduler at most once a minute, at stop and before a forget, only into the same entry with the same
-  code; her own write of the entry drops what was waiting.
+  code; her own write of the entry drops what was waiting. The app never writes the file past 64 KiB:
+  a state that won't fit is dropped (the biggest first) and counts as that wakeup's error
+  (`STATE_TOO_BIG`), and `rewriteWakeups` refuses a rewrite that would grow it past the cap.
+- **Isolation**: her wakeups are hers alone. Intake's check of her wakeups for a message is caught
+  for her (logged), so the message still reaches every other waifu; the scheduler runs each step
+  (wakeups, plans, held wakes, morning, maintenance, cache rest, housekeeping) on its own, and her
+  page checks apart from her timed wakeups and state saving.
 - **Retired tools**: `ScheduleWake`/`WatchFor` (and `tools/planning.ts`,
   `src/life/watches.ts`) are gone; the tool list is in the harness hash, so each life's next turn
   compacts (`config`). A life whose epoch snapshot still offers them gets a pending epoch start
@@ -3853,20 +3879,26 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   the first tick resolves the file again. The marker `life/wakeups-v1.json` records `convert`,
   `archive`, `epoch`; `HomeStore` writes it as done whenever it touches her home (like the
   life-folder marker), so a lost ledger never converts a `reminders.json` she writes later. A Bash
-  journal from before §30 keeps its file writes; its old side-file parts are ignored.
+  journal from before §30 keeps its file writes; its old side-file parts are ignored. Until the marker
+  records `convert` a `wakeups.json` there is the step's own unfinished write: it is converted again
+  from the old files, never added to (a crash between the write and the marker leaves no copies).
 - **Forget** removes a wakeup watching their DM, with a filter resolved to them, or whose note, code,
-  object filter, page check or state names them (her waiting state is saved first); a watch word that
+  object filter, page check, page URL, state or stop reason names them (her waiting state is saved first); a watch word that
   is only part of one of their names is listed for review. A DM `/forget conversation` removes only
-  the wakeups watching that DM.
+  the wakeups watching that DM. A forgotten person's message reaches her code as `(removed)` from
+  "someone" with `fromId: null` and no files, and matches no `from` filter.
 - **Owner views (D14)**: `GET /api/waifus/:id/wakeups` (`DELETE …/wakeups/:wakeupId`; the
   `/schedule` and `/watches` routes are gone), the dashboard's Life panel (each wakeup with its code,
   state, why it stopped, Delete), `waifus wakeups` (`schedule` and `watches` stay as filtered views)
   and the assistant's `list_wakeups` (replacing `list_schedule`/`list_watches`). A wakeup watching a
   DM (a DM among its resolved places, its filters' places or its handles) is `private` and its note,
-  places, filter and state are redacted without a local reveal; an "everywhere" watch's state is
-  redacted too (it may hold a DM's words). `wakeups.json` through the files routes reads as a
+  places, filter, state and stop reason (`disabled`) are redacted without a local reveal; an
+  "everywhere" watch's state and stop reason are redacted too (her code saw her DMs; an error may
+  quote one). `wakeups.json` through the files routes reads as a
   redacted read-only copy then; a file that does not parse and may name a DM is refused (403). A
-  `Wakeup` call that resolved a DM place is a DM call in the life log. `/print` has no wakeups view.
+  `Wakeup` call that resolved a DM place is a DM call in the life log, and so is her `Read` or a Bash
+  read of `~/life/wakeups.json` while it holds such an entry (`wakeupsDmOrigin`). `/print` has no
+  wakeups view.
 
 ## 31. `Web(script)`: one web tool, a small program (owner request, 2026-10-28)
 

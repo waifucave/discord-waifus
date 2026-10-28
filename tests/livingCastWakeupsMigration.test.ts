@@ -190,7 +190,7 @@ describe("living-cast-wakeups-v1 (§30.3)", () => {
     const clean = await oldRoot();
     await migrate(clean);
     const expected = new Map([...(await snapshot(clean))].map(([name, text]) => [name, text] as const));
-    for (const crash of ["start", "convert", "archive", "epoch"] as const) {
+    for (const crash of ["start", "written", "convert", "archive", "epoch"] as const) {
       const root = await oldRoot();
       await expect(migrate(root, crash)).rejects.toThrow(`crash after ${crash}`);
       await migrate(root);

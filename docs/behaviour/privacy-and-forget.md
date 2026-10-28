@@ -8,13 +8,16 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 **What counts as DM content**
 
 - A **DM turn**: a turn whose wakes include a DM place (`dmWakes`, also a morning batch that shows
-  anything from a DM: `wake.dm`), or in which any tool call resolved to a DM place (`dmCalls`,
+  anything from a DM: `wake.dm`, and a `wakeup_error` wake of a watch on a DM or on "everywhere",
+  whose error may quote one), or in which any tool call resolved to a DM place (`dmCalls`,
   recorded while the tools ran). Outside DM turns, a single call that touched a DM stays hidden with
   its result. Older lines without the records fall back to matching any string argument that names
   `dm/…` or `dm_…`.
 - "Touched a DM" includes reading/sending/reacting in a DM, reading/writing/attaching a DM-origin file,
   a Bash command that listed, read, moved or named anything under `/tmp/dm/` or `/transcripts/dm/` or
-  a DM file's path, and an `everywhere` search whose result includes a DM.
+  a DM file's path, an `everywhere` search whose result includes a DM, a `Wakeup` that watches a DM,
+  and a `Read` or Bash read of `~/life/wakeups.json` while it holds a wakeup watching a DM (or an
+  "everywhere" watch's state or stop reason).
 - Hidden in a DM turn: her text, every tool call and result, images. Hidden anywhere: the quoted
   part of a DM notification line (it keeps reason, place and sender up to the first `"`), her
   `<life_so_far>` summary, the text of a rest turn and any lone `<summary>` text.
@@ -31,7 +34,7 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 | `/print notes` | `MEMORY.md` with every line that links to a DM-origin file (files-index provenance, or under `/tmp/dm/`) or names a DM (`dm/…`, `dm_…`, `/tmp/dm/…`, `/transcripts/dm/…`, a migrated "(from a private chat…)" suffix) shown as `[private chat redacted]` (indent and list marker kept) and a footer counting them; a `MEMORY.md` whose own bytes came from a DM is not shown ("…Run /print notes private:true to see it, or open Life → Files on the host."); ephemeral, owner only | `private:true` |
 | Files API / Life → Files | A DM-origin file is listed as `[private chat redacted]` with no path; reading, writing, deleting it or listing a DM folder → 403; `/transcripts/dm/…` likewise; `wakeups.json` with a wakeup watching a DM (or an "everywhere" watch with a `state`) reads as a redacted, read-only copy (that entry's note, places and filter, and the state, `[private chat redacted]`), and can't be replaced or deleted without the reveal; one that does not parse and may hold a DM → 403; a notes file (`.md`) whose lines link to a DM-origin file or name a DM reads as a read-only copy with those lines `[private chat redacted]` (`hash` is the real file's; PUT/DELETE → 403) | `includePrivate=1` |
 | Web searches (`GET /api/search/usage`, Life "Web searches today") | A DM turn's queries (`dm: true`, also marked later by turn id) shown as `[private chat redacted]` | `includePrivate=1` |
-| Wakeups API (`GET /api/waifus/:id/wakeups`), Life → Plans, `waifus wakeups`, the assistant's `list_wakeups` | Each wakeup with its source (her filter or check code); one watching a DM (a DM among its places or its filters' places) is a private entry: `private: true`, note, places, filter and state `[private chat redacted]`; an "everywhere" watch's state likewise (it may hold a DM's words) | `includePrivate=1` |
+| Wakeups API (`GET /api/waifus/:id/wakeups`), Life → Plans, `waifus wakeups`, the assistant's `list_wakeups` | Each wakeup with its source (her filter or check code); one watching a DM (a DM among its places or its filters' places) is a private entry: `private: true`, note, places, filter, state and why it stopped `[private chat redacted]`; an "everywhere" watch's state and stop reason likewise (they may hold a DM's words) | `includePrivate=1` |
 | Needs-review lines | A line from her summary or queue, a wakeup watching a DM, or naming a DM place reads redacted (same id); the forget response always redacts them | `includePrivate=1` |
 | Dashboard assistant | Never; its tools say DM content stays redacted | Refused: 403 `PrivateContentLocalOnly` ("DM content never goes to the dashboard assistant.") |
 | Remote Access | Never | Refused: 403 `PrivateContentLocalOnly` |
@@ -107,7 +110,8 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    person queues the whole scrub again.
 3. **Other state**: their wakes (and their DM's), their lines in someone else's wake (a quote naming
    them becomes `(removed)`), pending notices, every wakeup in `~/life/wakeups.json` watching their DM,
-   with a filter resolved to them, or whose note, code or state names them → removed whole (her
+   with a filter resolved to them, or whose note, code, state, page URL or stop reason names them →
+   removed whole (her
    code's waiting state is saved first so it is checked too; a watch word that is only part of one of
    their names is listed for review), a
    queued or deferred `plan` wake's plan texts naming them → `(removed)`, her day file texts, open places, her DM read cursor and handle, `maintenance.jsonl` lines, earlier review

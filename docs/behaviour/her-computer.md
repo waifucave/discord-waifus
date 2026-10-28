@@ -142,11 +142,15 @@ or cancels one. Up to 40 calls per script.
   that uses only its arguments and JavaScript's built-ins: a name from outside it is refused
   (`filters can't use variables from outside them; put what they need inside (it uses kevin)`). Each
   is compiled in the sandbox before saving; a syntax error is refused with its line.
-- `msg` is `{place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files}`; `page` is
-  `{url, status, title, text}` (text ≤ 200 KB). `state` is an object she may change; it persists
-  between runs (≤ 4 KiB as JSON), is written into her file at most once a minute and at shutdown.
-  Returning `true` fires, a string fires and is the wake's line (≤ 200 characters), anything else
-  doesn't.
+- `msg` is `{place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files}` (a
+  forgotten person's message: text `(removed)`, `from` "someone", `fromId` null, no files, and no
+  `from` filter matches it); `page` is `{url, status, title, text}` (text ≤ 200 KB). `state` is an
+  object she may change; it persists between runs (≤ 4 KiB as plain JSON: a state that can't be
+  JSON, through `toJSON` or anything else, is her error `your filter's state must be plain JSON`), is
+  written into her file at most once a minute and at shutdown, never past the file's 64 KiB (a state
+  that won't fit is not written and counts as an error: `its state would make ~/life/wakeups.json
+  bigger than 64 KiB; keep less in it`). Returning `true` fires, a string fires and is the wake's
+  line (≤ 200 characters), anything else doesn't.
 - **Watch matching** (`src/life/wakeups/run.ts`): only messages in the watch's places (or anywhere she
   can read); her own never. An object filter costs nothing; her functions run in the sandbox once per
   such message (50 ms CPU, 16 MiB, 64 KiB stack each). `once` (default) removes the watch at its first
@@ -155,8 +159,12 @@ or cancels one. Up to 40 calls per script.
   still counts when handled later (catch-up). Several of her wakeups firing on one message are one wake,
   a line each.
 - **Pages** are fetched by the scheduler through the same SSRF-checked fetcher as `WebFetch`
-  (`privateAddressPolicy: "deny"`, no cache, no daily fetch cap, no model call), first at the next tick
-  after she sets it, then every `every`. A fire is a `watch` wake with the page's URL.
+  (`privateAddressPolicy: "deny"`, no cache, no model call), first at the next tick after she sets
+  it, then every `every`; a URL fetched for any of her pages is not fetched again sooner, so editing a
+  page or cancelling it and setting it again never fetches early, and she has at most 72 page fetches
+  a day. With page fetching off (`life.webFetch.maxPerWaifuPerDay` or `maxPerTurn` 0) a new or changed
+  `page()` is refused (`web pages can't be checked: the owner turned page fetching off`) and nothing
+  is fetched. A fire is a `watch` wake with the page's URL.
 - **Ends**: a watch or page whose `until` passes is removed and she gets `watch timed out · your
   note: …` (`watch_timeout`), so a watch with `[]` works as a timer.
 - **Timed ones**: a due `at` or `every` is routed as a `reminder` wake under a fixed id per occurrence
@@ -165,16 +173,24 @@ or cancels one. Up to 40 calls per script.
   time). A file the app can't parse is never rewritten and the routed list stops it firing twice.
 - **Errors are never silent**: a run that throws, hits a limit or leaves a state over 4 KiB counts
   one, a good run resets the count; three in a row stop the wakeup (`disabled` in her file, with the
-  reason) and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError: … (line 2)`), which
-  gets through busy and bed time like a reminder. Changing its code (in her file) turns it back on.
+  reason, at most 300 characters) and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError:
+  … (line 2)`), which gets through busy and bed time like a reminder; for a watch on a DM or on
+  "everywhere" it is a DM wake (its error may quote a DM). Changing its code (in her file) turns it
+  back on. Her wakeups are hers alone: whatever fails in them never stops a message reaching another
+  waifu, nor her other scheduler steps (each step runs on its own).
 
 ## The sandbox
 
 Her code runs in QuickJS (`quickjs-emscripten` 0.32.0, exact pin; `src/life/sandbox/`) in one worker
 thread: a fresh runtime per run with no host functions, modules, timers, `console` or network; only
-JSON crosses in and out. `Date` reads the app's clock in her time zone. Limits: 50 ms CPU, 16 MiB,
-64 KiB stack per run (her script: 500 ms). A limit hit or a crash restarts the worker; nothing of the
-host is reachable (`tests/sandboxIsolation.test.ts`).
+JSON crosses in and out, read with built-ins captured before her code runs (replacing
+`JSON.stringify` or a prototype changes nothing), and only short text leaves it: errors ≤ 300
+characters, string answers ≤ 402, state ≤ 4 KiB, her script's calls ≤ 256 KiB. `Date` reads the
+app's clock in her time zone. Limits: 50 ms CPU, 16 MiB, 64 KiB stack per run (her script: 500 ms);
+each run is also timed whole, so a native call QuickJS can't interrupt (a long string search) that
+finishes over its budget (+25 ms) is a time limit hit too, and the host's watchdog stops a run still
+going 250 ms past its budget (the runs after it go to a fresh worker). A limit hit or a crash
+restarts the worker; nothing of the host is reachable (`tests/sandboxIsolation.test.ts`).
 
 **Read** (`src/life/tools/files.ts`):
 

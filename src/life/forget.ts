@@ -450,9 +450,9 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   return removed;
 }
 
-/** Everything of a wakeup a forget looks at: its note, filter or check (source or object) and state. */
+/** Everything of a wakeup a forget looks at: its note, filter or check (source or object), state, page URL and why it stopped. */
 export function wakeupText(entry: WakeupEntry): string {
-  return [entry.note, functionSourceOf(entry) ?? "", typeof entry.filter === "object" ? JSON.stringify(entry.filter) : "", typeof entry.check === "object" ? JSON.stringify(entry.check) : "", entry.state ? JSON.stringify(entry.state) : ""].join("\n");
+  return [entry.note, functionSourceOf(entry) ?? "", typeof entry.filter === "object" ? JSON.stringify(entry.filter) : "", typeof entry.check === "object" ? JSON.stringify(entry.check) : "", entry.state ? JSON.stringify(entry.state) : "", entry.url ?? "", entry.disabled ?? ""].join("\n");
 }
 
 /** A watch that looks at this place (its places, or an object filter's place). */
