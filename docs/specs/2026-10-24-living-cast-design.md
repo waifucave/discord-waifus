@@ -3778,6 +3778,96 @@ checks (contains/changes/function, SSRF deny, `every` ≥ 1h), errors disabling 
 the migration (every reminder/watch shape, markers, archive), forget, D14 views, the prompt and tool
 description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-time, privacy-and-forget).
 
+### 30.6 As built
+
+- **Sandbox** (`src/life/sandbox/`): `quickjs-emscripten` 0.32.0 (exact pin; the sync release build
+  runs, the asyncify build ships in the same package for §31's awaited host calls) in one long-lived
+  worker thread (`sandboxWorker.ts`, `unref`'d). Each run gets a fresh QuickJS runtime and context with
+  `setMemoryLimit` 16 MiB, `setMaxStackSize` 64 KiB and an interrupt deadline (50 ms; 500 ms for her
+  script); there are no host functions at all, only JSON text goes in (her source, `msg`/`page`,
+  `state`) and comes out (`true`, a string or `null`, and the arguments after the call). `Date` in the
+  worker isolate reads the app's clock and her zone (`getTimezoneOffset` patched per run). The host
+  side (`index.ts` `Sandbox`) batches every function for one event into one request, has a watchdog
+  (the time budget × runs + 2 s, +10 s for a cold worker) and restarts the worker after a crash or a
+  limit hit (`limitHit`). Errors read `your filter took too long`, `used too much memory`, `recursed
+  too deeply`, or her error with its line (`TypeError: … (line 2)`). Installed size about 9.1 MB
+  (2.4 MB package + the `@jitl` wasm variants, debug builds included).
+- **The closure check** uses `acorn` 8.19.0 (exact pin, new dependency, ~0.6 MB): her function must be
+  one arrow or function expression (≤ 8 KiB, not async or a generator) whose free names are all
+  JavaScript built-ins (`functionSource.ts` `SANDBOX_GLOBALS`); else `filters can't use variables from
+  outside them; put what they need inside (it uses kevin)`.
+- **The tool** (`tools/wakeup.ts`): a prelude defines the five functions, which only record the call
+  and its line (from the `script:N` stack frame); at most 40 calls, a script ≤ 20,000 characters, a
+  script with no call is an error. Then each call is checked (`wakeups/file.ts` `checkEntry`), her
+  functions compiled, and `HomeStore.applyWakeups` saves under her home lock; any problem is
+  `error: line N: …; nothing was saved` (a limit hit has no line). Refused in dream sessions. Result:
+  `set w1 (bake-club/#general, until Sat 24 Oct 16:00), t1 (Fri 30 Oct 18:00) (in
+  ~/life/wakeups.json)`; a `[]` watch shows `timer`; an `every` adds `t2 next: …` with three times.
+- **Times** (`wakeups/when.ts`): `at` also takes `tomorrow 09:00`, full weekday names and `in 1h30m`;
+  a weekday time already past today means next week. `every` takes `day`, `weekday`, `weekend`, day
+  lists and a 5-field cron (`*`, lists, ranges, steps); any two occurrences closer than 15 minutes
+  refuse it. An `every` counts from when the app first sees it (side `every[id].since`; editing `when`
+  restarts the count), so a new or edited one never fires a past time; after downtime it fires its
+  latest missed occurrence once. A late `at` fires once at the first tick.
+- **The file**: entries are one per line; ids `t`/`w`/`p` must match the kind and are never reused
+  (per-kind counters in the side file); `for` is rewritten to `until`, an `at` time to a local minute
+  (`rewritten`). Changing a stopped wakeup's code clears `disabled`. The side file is
+  `life/wakeup-ids.json` (counters, resolved places and names, fires, `every` starts, page checks,
+  errors in a row, routed wake ids, newest 200); a corrupt one is kept as `.corrupt-<ms>` with an owner
+  notice and what was due before the loss is dropped without a wake.
+- **Filters**: an object filter may also be a list of up to 5 objects, each with its own `place` (any
+  matches; `[]` is a plain timer); `from` resolves as `WatchFor` did (ambiguity is an error).
+- **Pages** run from the scheduler tick (`Scheduler.wakeups` → `checkPages`), first at the next tick
+  after she sets one, through `WebTools.fetchForWakeup`: winter-web's fetcher with
+  `privateAddressPolicy: "deny"`, the `life.webFetch` time/size/redirect settings, no cache, and not
+  counted against the daily fetch caps (≤ 3 pages × ≥ 1h keeps it small). `title` is the page's first
+  heading (else its first line). `contains` is case-insensitive and fires when the text appears (once
+  per appearance, not at every check while it stays); `"changes"` takes a first look as its baseline;
+  `contains`/`"changes"` skip a non-2xx answer, her function sees `status`. A failed fetch waits for
+  the next `every`. A fire is a `watch` wake with the page's `url`; an end is `watch_timeout` like a
+  watch's.
+- **Wakes**: a timed one is `reason: "reminder"` (id `w-reminder-<id>-<due>`), an end
+  `watch_timeout` (`w-timeout-<id>-<end>`), a page fire `watch` (`w-page-<id>-<now>`), a stop
+  `wakeup_error` (`w-wakeup-error-<id>-<now>`, line `- wakeup w4 stopped: …`), which joins `reminder`,
+  `plan` and `owner` through busy blocks and sleep. Several wakeups on one message are one wake
+  (`wakeups` on the wake and its message): the first on the message's line, each other on its own
+  `- watch · …` line; in a DM they ride on the `dm` wake, and a DM wake the rate limit dropped
+  becomes a plain `watch` wake per message. A function's string return is the wake's `matched`.
+- **State** lives in memory per waifu and wakeup (`wakeups/state.ts`), written into her file by the
+  scheduler at most once a minute, at stop and before a forget, only into the same entry with the same
+  code; her own write of the entry drops what was waiting.
+- **Retired tools**: `ScheduleWake`/`WatchFor` (and `tools/planning.ts`,
+  `src/life/watches.ts`) are gone; the tool list is in the harness hash, so each life's next turn
+  compacts (`config`). A life whose epoch snapshot still offers them gets a pending epoch start
+  (reason `tools`) from the migration, so a kept turn never calls a tool the request lacks. Boot repair
+  recovers a `Wakeup` from the digest it writes just before saving (kind, time and note of each add,
+  the cancels): `set t2; cancelled t1 (recovered)` or `[interrupted] not saved`; an old
+  `ScheduleWake`/`WatchFor` call by its note (and a one-off reminder's time) in the migrated file.
+- **Migration** `living-cast-wakeups-v1` (registered after `living-cast-send-cap-15-v1`, before the
+  stamp): a weekly reminder becomes `every "<weekday of its at> HH:MM"`, a daily one `every "day
+  HH:MM"`, counting from a minute before its saved time (so one due while the host was down still
+  fires); an entry without an id gets a new one; a watch's bindings become one filter (one binding:
+  `places` = its place) or a list (several), `any_message` → `any`, `timeout` → `options.until`; the
+  side files' resolutions, fires and routed wake ids follow under the new ids (`w-reminder-r4-…` →
+  `w-reminder-t4-…`); a watch without a saved resolution leaves the side file's `sourceHash` empty so
+  the first tick resolves the file again. The marker `life/wakeups-v1.json` records `convert`,
+  `archive`, `epoch`; `HomeStore` writes it as done whenever it touches her home (like the
+  life-folder marker), so a lost ledger never converts a `reminders.json` she writes later. A Bash
+  journal from before §30 keeps its file writes; its old side-file parts are ignored.
+- **Forget** removes a wakeup watching their DM, with a filter resolved to them, or whose note, code,
+  object filter, page check or state names them (her waiting state is saved first); a watch word that
+  is only part of one of their names is listed for review. A DM `/forget conversation` removes only
+  the wakeups watching that DM.
+- **Owner views (D14)**: `GET /api/waifus/:id/wakeups` (`DELETE …/wakeups/:wakeupId`; the
+  `/schedule` and `/watches` routes are gone), the dashboard's Life panel (each wakeup with its code,
+  state, why it stopped, Delete), `waifus wakeups` (`schedule` and `watches` stay as filtered views)
+  and the assistant's `list_wakeups` (replacing `list_schedule`/`list_watches`). A wakeup watching a
+  DM (a DM among its resolved places, its filters' places or its handles) is `private` and its note,
+  places, filter and state are redacted without a local reveal; an "everywhere" watch's state is
+  redacted too (it may hold a DM's words). `wakeups.json` through the files routes reads as a
+  redacted read-only copy then; a file that does not parse and may name a DM is refused (403). A
+  `Wakeup` call that resolved a DM place is a DM call in the life log. `/print` has no wakeups view.
+
 ## 31. `Web(script)`: one web tool, a small program (owner request, 2026-10-28)
 
 `WebSearch` and `WebFetch` merge into `Web(script)`, modelled on the owner's Codex session: there the
