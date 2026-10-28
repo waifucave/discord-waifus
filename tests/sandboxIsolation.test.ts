@@ -213,7 +213,8 @@ describe("sandbox: only short text leaves it (review 3)", () => {
         "() => '一 '.repeat(2.5e6)",
         "(m, s) => { s.big = 'z'.repeat(1e6); return true }"
       ].map((source) => ({ source, file: "filter", args: ["{}", "{}"] })),
-      { limits: EVENT_LIMITS }
+      // The size caps are the point here; a slow runner may need more than 50 ms to build 3 MB.
+      { limits: { ...EVENT_LIMITS, timeMs: 2_000 } }
     );
     expect(thrown).toMatchObject({ ok: false, error: { kind: "error" } });
     expect((thrown as { error: { message: string } }).error.message.length).toBeLessThanOrEqual(300);
