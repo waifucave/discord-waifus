@@ -6,12 +6,9 @@ describes the code, not the plans. Where the living-cast spec
 (`docs/specs/2026-10-24-living-cast-design.md`) and the code differ, the code is what is written here
 and the difference is noted ("Spec differs: …").
 
-**Describes:** the code on `main` at `8895610` (package version 3.3.0; the commits after `a3304a9`
-change only the spec). Behaviour merged after the 3.3.0 release commit (`2b10731`) is marked
-**unreleased (on main)**: the richer morning summary (§23), "Jev only sees who is around" (§24) and
-the rest before the prompt cache goes cold (§25) and the rest notice at the trigger with
-auto-compaction only as the emergency (§26), with the owner's less prescriptive rest notice and
-compaction wording, and Remote Access helper 0.1.17 (NAT public address pool).
+**Describes:** the code on `main` as released in 3.5.0: everything through the script
+`SendMessage` (§27), server emojis in `places.md` (§28) and timed plans that wake her (§29). Later
+behaviour merged to `main` before its release is marked **unreleased (on main)** where it is described.
 
 **Rule:** any change to waifu behaviour (triggers, routing, prompts, tools, files and folders,
 schedules, dreaming, privacy, remote behaviour) updates these files in the same commit. When these

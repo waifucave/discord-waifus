@@ -28,7 +28,7 @@ Code: `src/life/intake.ts` `Intake.runDetector`; question, answer and draw in
   fallback is used; it never retries in a loop (`AddresseeDetector.decide`).
 - Its calls are captured with content in Activity (unlike life calls).
 
-## Who it is offered (§24) — unreleased (on main)
+## Who it is offered (§24)
 
 Only cast members who are **around in that place** (`src/life/busy.ts` `aroundIn`, plus
 `Intake.notAroundWhy`):
