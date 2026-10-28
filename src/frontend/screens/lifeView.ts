@@ -3,7 +3,7 @@
 // tools need no change here. Content from private chats arrives already left out by the server
 // (D14); a redacted block only says so.
 
-import type { HerFileEntry, HerFilesList, LifeLogBlock, LifeLogLineView, LifeStatus, LogsResponse, WatchView } from "../api/types";
+import type { HerFileEntry, HerFilesList, LifeLogBlock, LifeLogLineView, LifeStatus, LogsResponse, WakeupView } from "../api/types";
 
 export const PRIVATE_HIDDEN = "From a private chat: hidden";
 
@@ -189,7 +189,7 @@ export function wakeOutcomeText(outcome: string): string {
   }
 }
 
-/* ---- her files, reminders and watches (§16.11) ---- */
+/* ---- her files and wakeups (§16.11, §30.3) ---- */
 
 /** "1.2 KB" — sizes as her own tools show them. */
 export function fileSize(bytes: number): string {
@@ -241,14 +241,41 @@ export function entryDetail(entry: Pick<HerFileEntry, "kind" | "size">): string 
   return entry.kind === "dir" ? "folder" : fileSize(entry.size);
 }
 
-/** What a watch waits for, in words: a timer, or each binding's place, person and words. */
-export function watchWhenText(watch: Pick<WatchView, "when">): string {
-  if (watch.when.length === 0) return "timer";
-  return watch.when
-    .map((binding) =>
-      [binding.place && `in ${binding.place}`, binding.from && `from ${binding.from}`, binding.words?.length ? `words: ${binding.words.join(", ")}` : "", binding.any_message ? "any message" : ""]
-        .filter(Boolean)
-        .join(" · ")
-    )
-    .join(" or ");
+/** An object filter of a watch in words: its place, person and words, or "any message". */
+function filterText(filter: Record<string, unknown>): string {
+  const words = Array.isArray(filter["words"]) ? (filter["words"] as unknown[]).filter((word) => typeof word === "string") : [];
+  return [
+    typeof filter["place"] === "string" && `in ${filter["place"]}`,
+    typeof filter["from"] === "string" && `from ${filter["from"]}`,
+    words.length > 0 ? `words: ${words.join(", ")}` : "",
+    filter["any"] === true ? "any message" : ""
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/**
+ * What a wakeup does, in words (§30.3): `at 2026-10-30 18:00`, `every weekday 08:30 (next …)`,
+ * `watch bake-club/#general until … · from Mina`, `page https://… every 6h until …`. Her own code is
+ * shown separately, as its source.
+ */
+export function wakeupWhatText(entry: Pick<WakeupView, "kind" | "when" | "next" | "places" | "filter" | "url" | "check" | "options">): string {
+  if (entry.kind === "at") return `at ${entry.when ?? "?"}`;
+  if (entry.kind === "every") return `every ${entry.when ?? "?"}${entry.next?.length ? ` (next ${entry.next.join(", ")})` : ""}`;
+  const until = entry.options?.until ? ` until ${entry.options.until}` : "";
+  if (entry.kind === "page") {
+    const check = typeof entry.check === "object" && entry.check !== null && typeof (entry.check as { contains?: unknown }).contains === "string" ? `has "${(entry.check as { contains: string }).contains}"` : entry.check === "changes" ? "changes" : "her check";
+    return `page ${entry.url ?? "?"} every ${entry.options?.every ?? "?"}${until} · ${check}`;
+  }
+  const places = Array.isArray(entry.places) ? entry.places.join(", ") : String(entry.places ?? "everywhere");
+  const filters = Array.isArray(entry.filter) ? entry.filter : typeof entry.filter === "object" && entry.filter !== null ? [entry.filter] : [];
+  const filter = typeof entry.filter === "string" ? "her filter" : filters.length === 0 ? "timer" : filters.map((item) => filterText(item as Record<string, unknown>)).join(" or ");
+  return `watch ${places}${until}${entry.options?.once === false ? " (repeats)" : ""} · ${filter}`;
+}
+
+/** A wakeup's own code (a filter or check function), when it has one. */
+export function wakeupSource(entry: Pick<WakeupView, "kind" | "filter" | "check">): string | undefined {
+  if (entry.kind === "watch" && typeof entry.filter === "string") return entry.filter;
+  if (entry.kind === "page" && typeof entry.check === "string" && entry.check !== "changes") return entry.check;
+  return undefined;
 }

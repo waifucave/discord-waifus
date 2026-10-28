@@ -91,8 +91,7 @@ describe("assistant tools", () => {
       "list_files",
       "read_file",
       "write_file",
-      "list_schedule",
-      "list_watches",
+      "list_wakeups",
       "get_usage",
       "get_setting_help",
       "update_app_config",
@@ -222,8 +221,7 @@ describe("assistant tools", () => {
       const secret = await executeAssistantTool(ctx, "read_file", JSON.stringify({ waifuId: "momo", path: "/tmp/dm/kevin/a7-menu.txt" }));
       expect(secret).toContain("PrivateContentLocalOnly");
       expect(secret).not.toContain("brownies");
-      expect(JSON.parse(await executeAssistantTool(ctx, "list_schedule", JSON.stringify({ waifuId: "momo" })))).toMatchObject({ entries: [] });
-      expect(JSON.parse(await executeAssistantTool(ctx, "list_watches", JSON.stringify({ waifuId: "momo" })))).toMatchObject({ entries: [], includePrivate: false });
+      expect(JSON.parse(await executeAssistantTool(ctx, "list_wakeups", JSON.stringify({ waifuId: "momo" })))).toMatchObject({ entries: [], includePrivate: false });
 
       const proposed = JSON.parse(await executeAssistantTool(ctx, "write_file", JSON.stringify({ waifuId: "momo", path: "~/people/kevin.md", text: "# Kevin\nlikes lemon cake and tea\n" })));
       expect(proposed).toMatchObject({ status: "confirmation_required", category: "waifu_file_write" });

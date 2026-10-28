@@ -153,6 +153,6 @@ home, the transcripts and her dream cursor's DM entry. See [privacy-and-forget.m
 
 ## Spec differs
 
-- §16.8's maintenance also tidied reminders and watches; the dream leaves `~/life/` alone entirely.
+- §16.8's maintenance also tidied reminders and watches (now her wakeups); the dream leaves `~/life/` alone entirely.
 - §18.2 says writes are "atomic per day file"; appends are plain appends (a torn last line is skipped
   by readers and dropped at the next rewrite).

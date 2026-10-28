@@ -115,13 +115,13 @@ describe("forget (§7.5)", () => {
     await notes.write("MEMORY.md", "# Memory\n- [Kevin](people/kevin.md) — studies chemistry\n- [Me](me.md) — about me\n");
     await notes.write("me.md", `# Me\n- I love lemon tarts. Kevin taught me piping.\n- Sam is funny.\n- <@${KEVIN}> owes me a cake\n`);
     const now = w.clock.now().toISOString();
-    await writeHerFile(w, "life/watches.json", JSON.stringify([{ timeout: "2026-10-25 14:00", once: true, note: "his results", when: [{ from: "Kevin" }] }]));
     await writeHerFile(
       w,
-      "life/reminders.json",
+      "life/wakeups.json",
       JSON.stringify([
-        { at: "2026-10-24 16:00", note: "ask Kevin how the party went" },
-        { at: "2026-10-24 16:00", note: "buy lemons" }
+        { kind: "watch", places: "everywhere", filter: { from: "Kevin" }, options: { until: "2026-10-25 14:00", once: true }, note: "his results" },
+        { kind: "at", when: "2026-10-24 16:00", note: "ask Kevin how the party went" },
+        { kind: "at", when: "2026-10-24 16:00", note: "buy lemons" }
       ])
     );
     await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", preview: "hey", at: now });
@@ -150,15 +150,10 @@ describe("forget (§7.5)", () => {
     expect(await notes.read("people/kevin.md")).toBeUndefined();
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Me](me.md) — about me\n");
     expect(await notes.read("me.md")).toBe("# Me\n- Sam is funny.\n");
-    // Step 3: his wakes, notices and watches are gone; her reminder about him stays and loses the
-    // text (review F3: her own entry is not his); others stay.
+    // Step 3: his wakes, notices and every wakeup naming him are gone (§30.3); others stay.
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toEqual([]);
     expect(state.pendingNotices).toEqual([]);
-    expect(await herEntries(w, "watches.json")).toEqual([]);
-    expect((await herEntries(w, "reminders.json")).map((reminder) => [reminder["id"], reminder["note"]])).toEqual([
-      ["r1", "(removed)"],
-      ["r2", "buy lemons"]
-    ]);
+    expect((await herEntries(w)).map((entry) => [entry["id"], entry["note"]])).toEqual([["t2", "buy lemons"]]);
     // The report keeps counts only.
     const report = (await readMaintenanceReports(w.storage, "ella")).find((line) => line.kind === "forget")!;
     expect(report).toMatchObject({ source: "owner", removedLines: 4, removedSentences: 0, needsReview: 1 });
@@ -331,11 +326,7 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
     const now = w.clock.now().toISOString();
     await writeHerFile(
       w,
-      "life/watches.json",
-      JSON.stringify([
-        { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["kevin's exam"] }] },
-        { timeout: "2026-10-25 14:00", once: false, note: "", when: [{ place: "bake-club/#general", words: ["brownies"] }] }
-      ])
+      "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "bake-club/#general", filter: { words: ["kevin's exam"] }, options: { until: "2026-10-25 14:00", once: false }, note: "" }, { kind: "watch", places: "bake-club/#general", filter: { words: ["brownies"] }, options: { until: "2026-10-25 14:00", once: false }, note: "" }])
     );
     await updateLifeFile(w.storage, "ella", "reads", (file) => ({ ...file, cursors: { [`dm_${KEVIN}_ella`]: { lastReadMessageId: "900000000000000001", at: now }, [ROOM_KEY]: { lastReadMessageId: "900000000000000002", at: now } } }));
     await updateLifeState(w.storage, "ella", (state) => ({ ...state, scrubbedAt: { "300000000000000111": new Date(w.clock.ms - 7 * 3_600_000).toISOString() } }));
@@ -347,7 +338,7 @@ describe("forget: person notes, failures and the archive (§7.5, D-b)", () => {
       ]
     }));
     await w.cast.forgetPerson(KEVIN);
-    expect((await herEntries(w, "watches.json")).map((watch) => watch["id"])).toEqual(["w2"]);
+    expect((await herEntries(w)).map((watch) => watch["id"])).toEqual(["w2"]);
     expect(Object.keys((await readLifeFile(w.storage, "ella", "reads")).cursors)).toEqual([ROOM_KEY]);
     const usage = JSON.parse(await readFile(path.join(w.root, "user/search/usage.json"), "utf8")) as { recent: Array<{ query: string }> };
     expect(usage.recent.map((entry) => entry.query)).toEqual(["lemon tart recipe"]);

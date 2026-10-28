@@ -148,11 +148,7 @@ describe("Living cast goldens", () => {
     // Asleep (§21.6c) her reminders would get through; a watch timing out waits for the morning.
     await writeHerFile(
       w,
-      "life/watches.json",
-      JSON.stringify([
-        { timeout: "2026-10-24 14:20", once: true, note: "check if the bake sale flyer is up", when: [] },
-        { timeout: "2026-10-25 14:00", once: true, note: "Mina wanted brownie tips", when: [{ place: "bake-club/#general", words: ["brownie"] }] }
-      ])
+      "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: [], options: { until: "2026-10-24 14:20", once: true }, note: "check if the bake sale flyer is up" }, { kind: "watch", places: "bake-club/#general", filter: { words: ["brownie"] }, options: { until: "2026-10-25 14:00", once: true }, note: "Mina wanted brownie tips" }])
     );
     await mention(w, "you awake?");
     const brownie = w.discord.post(ROOM, "anyone have a good brownie rec?", { authorId: MINA_USER, authorName: "Mina" });
@@ -201,7 +197,7 @@ describe("Living cast goldens", () => {
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     w.clock.ms = Date.parse("2026-10-23T20:00:00.000Z");
     await w.cast.scheduler.tick();
-    await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-23 20:10", note: "say goodnight to Bake Club" }]));
+    await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "at", when: "2026-10-23 20:10", note: "say goodnight to Bake Club" }]));
     w.clock.ms = Date.parse("2026-10-23T20:10:00.000Z");
     await w.cast.scheduler.tick();
     await w.cast.life("ella").runNow();
@@ -375,7 +371,7 @@ describe("Living cast goldens", () => {
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
       scripts: script(
-        toolTurn([{ name: "WatchFor", input: { when: [], note: "the tarts come out of the oven", timeout_minutes: 12 } }]),
+        toolTurn([{ name: "Wakeup", input: { script: "watch(\"everywhere\", [], {for: \"12m\"}, \"the tarts come out of the oven\")" } }]),
         toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: on it, timer set" } }]),
         textTurn("(sent)"),
         toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: tarts are out!!" } }]),

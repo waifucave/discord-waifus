@@ -79,18 +79,28 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
     topic: "life"
   },
   {
+    name: "wakeups",
+    summary: "Her wakeups (~/life/wakeups.json): timed ones, watches and pages, each with its source, in the host's time zone.",
+    usage: ["waifus wakeups WAIFU [--private]"],
+    description:
+      "A wakeup watching a private chat is shown without its note, places, filter and state unless --private is given (on the host itself only); so is the state of a watch on \"everywhere\". To change or remove one, edit her life/wakeups.json (dashboard → Life) or use DELETE /api/waifus/:id/wakeups/:wid.",
+    flags: [{ name: "--private", help: "Include wakeups watching private chats (local only)." }],
+    topic: "life"
+  },
+  {
     name: "schedule",
-    summary: "Her reminders (~/life/reminders.json), in the host's time zone.",
+    summary: "Her timed wakeups (at and every): waifus wakeups, the timed ones only.",
     usage: ["waifus schedule WAIFU"],
-    description: "To change or remove one, edit her life/reminders.json (dashboard → Life) or use DELETE /api/waifus/:id/schedule/:rid.",
+    description: "Kept from before her reminders became wakeups; see waifus wakeups.",
+    flags: [{ name: "--private", help: "Include wakeups watching private chats (local only)." }],
     topic: "life"
   },
   {
     name: "watches",
-    summary: "Her watches (~/life/watches.json): what each waits for and when it times out.",
+    summary: "Her watches and pages: waifus wakeups, without the timed ones.",
     usage: ["waifus watches WAIFU [--private]"],
-    description: "A watch bound to a private chat is shown without its words unless --private is given (on the host itself only).",
-    flags: [{ name: "--private", help: "Include watches bound to private chats (local only)." }],
+    description: "Kept from before her watches became wakeups; see waifus wakeups.",
+    flags: [{ name: "--private", help: "Include wakeups watching private chats (local only)." }],
     topic: "life"
   },
   {

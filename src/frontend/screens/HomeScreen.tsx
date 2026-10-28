@@ -49,7 +49,7 @@ export type MenuEntry = { id: string; index: string; title: string; line: string
 /** Home is a menu: one tile per section, each with one line of what is inside. */
 export const HOME_MENU: readonly MenuEntry[] = Object.freeze([
   { id: "cast", index: "01", title: "Cast", line: "Who each waifu is: persona, her Discord bot, model, schedule and DMs.", hue: "mint", target: { view: "cast" }, wide: true },
-  { id: "life", index: "02", title: "Life", line: "What each waifu is doing: her timeline, files, reminders and wakes.", hue: "lavender", target: { view: "life" } },
+  { id: "life", index: "02", title: "Life", line: "What each waifu is doing: her timeline, files, wakeups and wakes.", hue: "lavender", target: { view: "life" } },
   { id: "rooms", index: "03", title: "Rooms", line: "Servers and channels, and who may speak where.", hue: "sky", target: { view: "rooms" } },
   { id: "activity", index: "04", title: "Activity", line: "Host logs, model calls and replies, usage and cost.", hue: "peach", target: { view: "activity" } },
   { id: "settings", index: "05", title: "Settings", line: "Provider keys, models, search, the detector, limits and the app.", hue: "mint", target: { view: "settings" } },

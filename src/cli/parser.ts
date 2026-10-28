@@ -18,6 +18,7 @@ export type CliCommand =
   | "forget"
   | "usage"
   | "files"
+  | "wakeups"
   | "schedule"
   | "watches";
 
@@ -52,12 +53,13 @@ const COMMANDS = new Set<CliCommand>([
   "forget",
   "usage",
   "files",
+  "wakeups",
   "schedule",
   "watches"
 ]);
 
 /** The settings and life commands (they talk to the host through `hostClient.ts`). */
-export const SETTINGS_AND_LIFE_COMMANDS: ReadonlySet<CliCommand> = new Set<CliCommand>(["list", "get", "set", "unset", "wake", "life", "forget", "usage", "files", "schedule", "watches"]);
+export const SETTINGS_AND_LIFE_COMMANDS: ReadonlySet<CliCommand> = new Set<CliCommand>(["list", "get", "set", "unset", "wake", "life", "forget", "usage", "files", "wakeups", "schedule", "watches"]);
 
 // Switches that never take a value, so `waifus wake aria --json hello` keeps "hello" as an argument.
 const BOOLEAN_FLAGS = new Set([

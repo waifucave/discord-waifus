@@ -33,7 +33,16 @@ export const SystemSnapshotSchema = z.object({
 });
 export type SystemSnapshot = z.infer<typeof SystemSnapshotSchema>;
 
-export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "plan", "morning", "owner", "followup"]);
+export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "plan", "morning", "owner", "followup", "wakeup_error"]);
+
+/** One of her wakeups that fired (§30.4: several on one message are one wake, one line each). */
+export const FiredWakeupSchema = z.object({
+  id: z.string().min(1),
+  /** What matched (a word, "any message", her function's string), when anything is shown. */
+  matched: z.string().optional(),
+  note: z.string().optional()
+});
+export type FiredWakeupRecord = z.infer<typeof FiredWakeupSchema>;
 export type WakeReason = z.infer<typeof WakeReasonSchema>;
 
 /**
@@ -49,7 +58,9 @@ export const WakeMessageSchema = z.object({
   reasons: z.array(WakeReasonSchema).optional(),
   /** watch: what matched in this message, and her note. */
   matched: z.string().optional(),
-  note: z.string().optional()
+  note: z.string().optional(),
+  /** watch: every wakeup that fired for this message (the first is also `matched`/`note`). */
+  wakeups: z.array(FiredWakeupSchema).optional()
 });
 export type WakeMessage = z.infer<typeof WakeMessageSchema>;
 
@@ -68,9 +79,13 @@ export const WakeSchema = z.object({
   preview: z.string().optional(),
   /** Her own note (reminder, watch) or the owner's (`owner`). */
   note: z.string().optional(),
-  /** watch: the watch id and what matched. reminder: when she set it. */
+  /** watch, watch_timeout, wakeup_error: the wakeup id and what matched. reminder: when she set it. */
   watchId: z.string().optional(),
   matched: z.string().optional(),
+  /** watch: every wakeup that fired (§30.4; the first is also `watchId`/`matched`/`note`). */
+  wakeups: z.array(FiredWakeupSchema).optional(),
+  /** watch from a page wakeup (§30.2 `page`): the page polled. */
+  url: z.string().optional(),
   setAt: IsoDateStringSchema.optional(),
   /** Every message of the burst or the merged wakes, oldest first (the newest `MAX_WAKE_MESSAGES`). */
   messages: z.array(WakeMessageSchema).optional(),
@@ -334,13 +349,12 @@ export const WakeQueueSchema = RevisionedRecordSchema.extend({
 });
 export type WakeQueue = z.infer<typeof WakeQueueSchema>;
 
-// ---- her reminder and watch files: what the app keeps beside them (§16.4, §16.5) -------------------
+// ---- her wakeups: what the app keeps beside them (§30.3) ---------------------------------------------
 //
-// The files themselves are hers (`home/schedule.json`, `home/watches.json`, plain JSON arrays she
-// edits; src/life/home/specialFiles.ts checks them). These side files, outside her folder, keep what
-// she must not edit: id counters, how each watch's `place` and `from` resolved, repeat-watch fire
-// times, and the occurrences already fired (so a file the app cannot rewrite never fires twice).
+// The file itself is hers (`home/life/wakeups.json`, a JSON array she edits; src/life/wakeups/file.ts
+// checks it). The side file below, outside her folder, keeps what she must not edit.
 
+/** One object filter of a watch with its place and `from` resolved. */
 export const ResolvedWatchBindingSchema = z.object({
   placeKey: z.string().min(1).optional(),
   fromUserId: z.string().min(1).optional(),
@@ -350,35 +364,40 @@ export const ResolvedWatchBindingSchema = z.object({
 });
 export type ResolvedWatchBinding = z.infer<typeof ResolvedWatchBindingSchema>;
 
-export const WatchIdsSchema = z.object({
-  nextId: z.number().int().positive().default(1),
-  /** sha256 of the watches.json text these resolutions belong to. */
+/**
+ * `life/wakeup-ids.json` (§30.3): what the app keeps beside her `~/life/wakeups.json`, outside her
+ * folder: the id counters per kind, how each watch's places and names resolved and when it fired,
+ * when each `every` started counting, each page's last check, her code's errors in a row, and the
+ * occurrences already routed (so a file the app cannot rewrite never fires twice).
+ */
+export const WakeupSideSchema = z.object({
+  nextId: z.object({ t: z.number().int().positive().default(1), w: z.number().int().positive().default(1), p: z.number().int().positive().default(1) }).default({ t: 1, w: 1, p: 1 }),
+  /** sha256 of the wakeups.json text these resolutions belong to. */
   sourceHash: z.string().default(""),
   watches: z
     .record(
       z.string(),
       z.object({
-        bindings: z.array(ResolvedWatchBindingSchema).default([]),
+        /** The places' conversation keys; absent: everywhere (her places). */
+        placeKeys: z.array(z.string()).optional(),
+        /** Object filters with their names resolved; absent: a function filter. */
+        filters: z.array(ResolvedWatchBindingSchema).optional(),
         /** Fire times in the last day (the daily cap) and the last fire (the 10-minute spacing). */
         fires: z.array(IsoDateStringSchema).default([])
       })
     )
     .default({}),
-  /** Wake ids of timeouts already routed (newest 100). */
+  /** `every`: occurrences after `since` count (a new or changed one never fires a past time). */
+  every: z.record(z.string(), z.object({ when: z.string(), since: IsoDateStringSchema })).default({}),
+  /** `page`: the last check, the text's hash ("changes") and whether `contains` held. */
+  pages: z.record(z.string(), z.object({ checkedAt: IsoDateStringSchema.optional(), hash: z.string().optional(), matched: z.boolean().optional() })).default({}),
+  /** Errors in a row per wakeup (3 disable it). */
+  errors: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  /** Wake ids already routed: timed occurrences, timeouts, once-watch matches (newest 200). */
   fired: z.array(z.string()).default([]),
-  /** Set when an unreadable side file was replaced: what was due before then is ambiguous. */
   recoveredAt: IsoDateStringSchema.optional()
 });
-export type WatchIds = z.infer<typeof WatchIdsSchema>;
-
-export const ScheduleIdsSchema = z.object({
-  nextId: z.number().int().positive().default(1),
-  /** Wake ids of occurrences already routed (newest 100). */
-  fired: z.array(z.string()).default([]),
-  /** Set when an unreadable side file was replaced: what was due before then is ambiguous. */
-  recoveredAt: IsoDateStringSchema.optional()
-});
-export type ScheduleIds = z.infer<typeof ScheduleIdsSchema>;
+export type WakeupSide = z.infer<typeof WakeupSideSchema>;
 
 /**
  * `life/plans-fired.json` (§29): today's timed plans of her day as the scheduler saw them, by key

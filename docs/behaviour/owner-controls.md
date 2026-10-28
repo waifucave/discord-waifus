@@ -13,7 +13,7 @@ Navigation (`src/frontend/nav.ts`): Home, Cast, Life, Rooms, Activity, Settings.
 |---|---|---|
 | **Home** (`HomeScreen.tsx`) | Status (connecting / paused / live / Discord offline), a menu, and a Needs-you bar only when something needs the owner: owner notices, incomplete migrations, unfinished forget parts, unreadable forget-record copies, queued forget scrubs, model warnings | Dismiss dismissible model warnings |
 | **Cast** (`CastScreen.tsx`) | Every waifu: avatar, model, own bot or not, ready / no model / no bot / disabled | Edit: name, display name, enabled, persona, custom instructions (≤ 4,000), bot and Discord profile (username, bio, nicknames, avatar, banner), model + effort, daily budget, `scheduleInPrompt`, `wakeOnName`, bed time, DM settings (allow DMs, rate limit, notify when limited, limit notice, sleep notice); delete |
-| **Life** (`LifeScreen.tsx`, `LifeFiles.tsx`) | Mosaic of every waifu (state, waiting wakes, today's cost vs budget, last turn, review chip) and recent sends/wakes; per waifu: now (awake / busy / up late / dozing / asleep, idle or mid-turn), queue (now/deferred/quiet), today's cost, epoch, last compaction/rest/dream, live timeline, summary, needs review, web searches today, reminders and watches, her files (home, `/tmp`, `/transcripts`) | **Wake** with a note (≤ 500); **Compact** and **Reset…** (disabled while Discord is offline); "Show private chats" (local only); dismiss review lines; delete a reminder or watch; edit/create/delete her files (same checks as her Write tool, conflict on a stale hash); forget a person (dry run, then a confirm dialog with the limits) |
+| **Life** (`LifeScreen.tsx`, `LifeFiles.tsx`) | Mosaic of every waifu (state, waiting wakes, today's cost vs budget, last turn, review chip) and recent sends/wakes; per waifu: now (awake / busy / up late / dozing / asleep, idle or mid-turn), queue (now/deferred/quiet), today's cost, epoch, last compaction/rest/dream, live timeline, summary, needs review, web searches today, her wakeups (timed, watches and pages, each with its code, state and why it stopped; delete one), her files (home, `/tmp`, `/transcripts`) | **Wake** with a note (≤ 500); **Compact** and **Reset…** (disabled while Discord is offline); "Show private chats" (local only); dismiss review lines; delete a reminder or watch; edit/create/delete her files (same checks as her Write tool, conflict on a stale hash); forget a person (dry run, then a confirm dialog with the limits) |
 | **Rooms** (`RoomsScreen.tsx`) | Servers, channels, cast per channel, time of the last detector decision | Server on/off (`paused`), detector override (inherit / off / another target), threads share the cast or stay silent, cast toggles per waifu |
 | **Activity** (`ActivityScreen.tsx`) | Logs, model calls and replies (life/maintenance/compaction/web calls metadata only), usage by day/waifu/purpose/model/provider | — |
 | **Settings** (`SettingsScreen.tsx`) | Providers, Models, Search, Detector, Life limits (Turns, Sending, Wakes, Her day, Context and images, Rest, Home folder, /tmp, Simulated Bash, Dreaming limits, Dream model, Compaction, Waiting before a wake, After a restart), Assistant, App, Remote Access | Edit; App → Controls: Pause, Resume, Reload Discord, Clear OCR cache, Run setup wizard |
@@ -32,7 +32,7 @@ from argv (`--from-env`, `--stdin`, `--file`, or a hidden prompt).
 | `wake <waifu> [note…]` | Owner wake (note ≤ 500); prints the outcome (`queued`, `deferred`, `quiet`, `dropped`, `queued_offline`) |
 | `life <waifu> [--log] [--limit N] [--private]` | Status, or the log (default 20, ≤ 200 lines) |
 | `files <waifu> [path] [--root home\|tmp\|transcripts] [--private]` | List a folder or print a text file |
-| `schedule <waifu>`, `watches <waifu> [--private]` | Her reminders / watches |
+| `wakeups <waifu> [--private]` (`schedule`: only timed ones, `watches`: only watches and pages) | Her wakeups with their sources |
 | `forget <userId> [--yes] [--dry-run]` | Prints the limits and asks for the word `forget` unless `--yes` |
 | `usage [--from --to --by --waifu --tz]` | Reads the ledger directly; works with the host stopped |
 | `start`, `dev`, `restart`, `stop`, `status`, `doctor`, `clean`, `update`, `remote` | Lifecycle |
@@ -50,10 +50,10 @@ Every route is in `ROUTE_POLICY_MANIFEST`; summaries at `GET /api/help`. The lif
 | `GET /api/waifus/:id/life/log?epoch&before&limit` | Default 50, ≤ 200 lines; old epochs 7 days; D14 redaction |
 | `POST /api/waifus/:id/wake {note?}` | Owner wake through the router; with the cast offline or reloading it is queued in `wakes.json` (`queued_offline`) and runs when the cast connects |
 | `POST …/life/compact` | Needs the live cast (409 `RuntimeOffline`) and a model (409 `Conflict`, `details.code`); waits up to 10 s, then 202 `{state: "running"}`; a pause/shutdown → `{state: "aborted"}`; a pending epoch start is applied instead of a second summary |
-| `POST …/life/reset {confirm: true}` | Aborts her turn; a fresh epoch with no summary and no kept turns; her files, reminders, watches, queue and intake cursors stay; old log kept 7 days. Without a model (or before her life began) the summary is cleared and the epoch starts at her next turn (`deferred: true`) |
+| `POST …/life/reset {confirm: true}` | Aborts her turn; a fresh epoch with no summary and no kept turns; her files, wakeups, queue and intake cursors stay; old log kept 7 days. Without a model (or before her life began) the summary is cleared and the epoch starts at her next turn (`deferred: true`) |
 | `GET …/life/needs-review`, `DELETE …/life/needs-review/:itemId` | Forget review lines (id = 16 hex chars) |
 | `GET /api/waifus/:id/files?root=home\|tmp\|transcripts&dir=`, `GET\|PUT\|DELETE …/files/<path>` | Through her `HomeStore`, held to her Write tool's checks; `PUT {text, expectedHash?}` (`null` = must not exist); `?raw=1` bytes; errors `ReadOnlyFile`, `InvalidFile` (with line/column), `NotTextFile`, `HomeLimit` (413), `NameCollision`, `LinkRefused`, `IsFolder`, 409 on a stale hash; DM files need a local `includePrivate=1` |
-| `GET /api/waifus/:id/schedule`, `DELETE …/schedule/:rid`; `GET …/watches`, `DELETE …/watches/:wid` | Her reminders and watches; delete rewrites the file (409 when it does not parse) |
+| `GET /api/waifus/:id/wakeups`, `DELETE …/wakeups/:wakeupId` | Her wakeups with their sources (D14: one watching a DM redacted without a local `includePrivate=1`); delete rewrites the file (409 when it does not parse); she is not told |
 | `GET /api/usage`, `GET /api/search/usage` | Ledger by local day; DM queries redacted |
 | `GET\|PUT /api/detector/config`, `GET /api/detector/history?guildId` | Global target (`""` = off), last 300 decisions |
 | `POST /api/people/:userId/forget`, `GET /api/people/forget-jobs`, `POST /api/dms/:waifuId/:userId/forget` | See [privacy-and-forget.md](privacy-and-forget.md) |
@@ -70,7 +70,7 @@ routes, so every rule above applies to it, plus:
 - **Model**: its own (Settings → Assistant), else an enabled waifu's model that is offered, keyed
   and not a contributor (training) variant; otherwise it does not run and says why.
 - **Life tools**: `get_life` (never DM content), `wake_waifu`, `list_files`, `read_file` (text cut at
-  20,000 chars), `list_schedule`, `list_watches` (never DM files), `write_file`, `get_usage`,
+  20,000 chars), `list_wakeups` (never DM content), `write_file`, `get_usage`,
   `get_setting_help`, `update_app_config`, `forget_person`, `forget_dm`, plus waifu, server, bot,
   provider, runtime, logs, docs and Remote Access tools.
 - **Confirmation cards** (server-held; only the owner's click applies them; expire after 5 minutes):

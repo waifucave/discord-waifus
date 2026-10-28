@@ -477,8 +477,8 @@ export async function writeHerFile(w: Pick<LifeWorld, "cast" | "storage">, relat
   await store.writeText(target.path, content, checkEnvFor(w.cast.deps, waifuId));
 }
 
-/** Her reminder or watch file (in `~/life/`), parsed. */
-export async function herEntries(w: Pick<LifeWorld, "root">, name: "reminders.json" | "watches.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
+/** Her wakeups file (`~/life/wakeups.json`, §30.3), parsed. */
+export async function herEntries(w: Pick<LifeWorld, "root">, name: "wakeups.json" = "wakeups.json", waifuId = "ella"): Promise<Array<Record<string, unknown>>> {
   const text = await homeOf(w, waifuId).read(`life/${name}`);
   return text?.trim() ? (JSON.parse(text) as Array<Record<string, unknown>>) : [];
 }

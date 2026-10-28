@@ -385,7 +385,7 @@ async function sleeperWorld(...morningTurns: Parameters<typeof script>): Promise
   vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
   w.clock.ms = at("2026-10-23T20:00:00Z");
   await w.cast.scheduler.tick();
-  await writeHerFile(w, "life/reminders.json", JSON.stringify([{ at: "2026-10-23 20:10", note: "say goodnight" }]));
+  await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "at", when: "2026-10-23 20:10", note: "say goodnight" }]));
   w.clock.ms = at("2026-10-23T20:10:00Z");
   await w.cast.scheduler.tick();
   await w.cast.life("ella").runNow();

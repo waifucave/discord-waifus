@@ -48,12 +48,10 @@ export const lifePaths = {
   reads: (waifuId: string) => path.join(lifeDir(waifuId), "reads.json"),
   handles: (waifuId: string) => path.join(lifeDir(waifuId), "handles.json"),
   wakes: (waifuId: string) => path.join(lifeDir(waifuId), "wakes.json"),
-  /** How her watches resolved, their fires, and the id counter (§16.5; not in her folder). */
-  watchIds: (waifuId: string) => path.join(lifeDir(waifuId), "watch-ids.json"),
+  /** Her wakeups' side file: id counters, resolutions, fires, errors, routed occurrences (§30.3; not in her folder). */
+  wakeupIds: (waifuId: string) => path.join(lifeDir(waifuId), "wakeup-ids.json"),
   /** Today's timed plans of her day: first seen, fired, skipped (§29; hashes, no plan text). */
   plansFired: (waifuId: string) => path.join(lifeDir(waifuId), "plans-fired.json"),
-  /** Her reminder id counter and the occurrences already fired (§16.4). */
-  scheduleIds: (waifuId: string) => path.join(lifeDir(waifuId), "schedule-ids.json"),
   /** Where her downloads came from (§16.2 provenance). */
   filesIndex: (waifuId: string) => path.join(lifeDir(waifuId), "files-index.json"),
   /** Bash change sets being applied (§16.9): `<toolCallId>.json`. */
@@ -64,7 +62,9 @@ export const lifePaths = {
   pendingScrubs: (waifuId: string) => path.join(lifeDir(waifuId), "pending-scrubs.json"),
   usage: (waifuId: string) => path.join(lifeDir(waifuId), "usage.json"),
   /** `living-cast-life-folder-v1` is done for her (§21.6): a re-run never moves her files again. */
-  lifeFolderMarker: (waifuId: string) => path.join(lifeDir(waifuId), "life-folder-v1.json")
+  lifeFolderMarker: (waifuId: string) => path.join(lifeDir(waifuId), "life-folder-v1.json"),
+  /** `living-cast-wakeups-v1` is done for her (§30.3): a re-run never converts her files again. */
+  wakeupsMarker: (waifuId: string) => path.join(lifeDir(waifuId), "wakeups-v1.json")
 };
 
 /** Storage lock names. `life:<id>` serialises turns, compaction, maintenance and forget scrubs (§5.1). */
@@ -78,7 +78,7 @@ export const lifeLocks = {
   wakes: (waifuId: string) => `life-wakes:${waifuId}`,
   plans: (waifuId: string) => `life-plans:${waifuId}`,
   maintenance: (waifuId: string) => `life-maintenance:${waifuId}`,
-  /** Every write to her two folders and their side files (watch-ids, schedule-ids, files-index). */
+  /** Every write to her two folders and their side files (wakeup-ids, files-index). */
   home: (waifuId: string) => `home:${waifuId}`,
   usage: (waifuId: string) => `life-usage:${waifuId}`
 };

@@ -24,6 +24,7 @@ import { SearchUsageSchema, type SearchUsage } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
 import { abortableSleep } from "./sync.js";
 import { localDayKey } from "./clock.js";
+import { pageTitle } from "./wakeups/run.js";
 import { updateLifeFile } from "./lifeStore.js";
 import { buildWebFetchDigestRequest, webFetchFailureText, type FetchWebPageOptions, type LifeWebFetchCache, type WebBackend } from "./web/index.js";
 import type { ToolOutput, TurnScratch } from "./tools/types.js";
@@ -209,6 +210,25 @@ export class WebTools {
     });
     this.o.logger.info("Life web search", { category: "life", waifuId, results: outcome.results.length, tier: outcome.tier });
     return { content: lines.join("\n") };
+  }
+
+  /**
+   * A page for one of her `page` wakeups (§30.2): the same SSRF-checked fetcher (always
+   * `privateAddressPolicy: "deny"`, the https upgrade and redirect rules), never the cache, no model
+   * call and no daily fetch cap (at most 3 pages, each at most hourly). Text pages only.
+   */
+  async fetchForWakeup(url: string, signal?: AbortSignal): Promise<{ ok: true; page: { url: string; status: number; title: string; text: string } } | { ok: false }> {
+    const config = this.o.config().life.webFetch;
+    const page = await this.o.backend.fetchPage(url, {
+      ...this.o.fetchOptions,
+      privateAddressPolicy: "deny",
+      timeoutMs: config.timeoutMs,
+      maxBytes: config.maxBytes,
+      maxRedirects: config.maxRedirects,
+      ...(signal ? { signal } : {})
+    });
+    if (!page.ok || page.kind === "binary") return { ok: false };
+    return { ok: true, page: { url: page.finalUrl, status: page.status, title: pageTitle(page.text), text: page.text } };
   }
 
   async fetch(

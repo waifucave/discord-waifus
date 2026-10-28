@@ -1,5 +1,5 @@
-// Her own computer over HTTP (Living cast spec §16.11): her files in `/home/<slug>` and `/tmp`, her
-// reminders (`~/life/reminders.json`) and her watches (`~/life/watches.json`). Every write goes through her
+// Her own computer over HTTP (Living cast spec §16.11, §30.3): her files in `/home/<slug>` and `/tmp`,
+// and her wakeups (`~/life/wakeups.json`, with their sources). Every write goes through her
 // HomeStore, so the API's PUT and DELETE are held to the same path rules, limits and checks as her
 // Write tool (`~/life/places.md` refused, the JSON files in `~/life/` checked with line and column).
 //
@@ -9,13 +9,13 @@
 // (images and PDFs by their magic bytes, never by name; anything else as an attachment).
 //
 // DM content (D14): a file from a private chat (a download from a DM, a copy of one by hash, or
-// anything under `/tmp/dm/<handle>/`) and a watch bound to a DM are private. Listings keep a private
+// anything under `/tmp/dm/<handle>/`) and a wakeup watching a DM are private. Listings keep a private
 // entry but leave out its name and path (`[private chat redacted]`); reading, writing or deleting a
 // private file, or listing a private folder, needs `includePrivate=1`, which only a local request
 // may send (403 `PrivateContentLocalOnly` otherwise, and always for the dashboard assistant).
-// `watches.json` with a DM-bound watch reads, without `includePrivate`, as a redacted copy (that
-// watch's note and bindings `[private chat redacted]`, read-only); writing or deleting it then needs
-// `includePrivate`. A notes file (`.md`) with lines from private chats (a link to a DM-origin file,
+// `wakeups.json` with a wakeup watching a DM (or an "everywhere" watch's state) reads, without
+// `includePrivate`, as a redacted copy (that wakeup's note, places, filter and state `[private chat
+// redacted]`, read-only); writing or deleting it then needs `includePrivate`. A notes file (`.md`) with lines from private chats (a link to a DM-origin file,
 // a DM place or path named, `src/life/notesPrivacy.ts`) reads the same way: a copy with those lines
 // `[private chat redacted]`, read-only, whose `hash` is still the file's own; writing or deleting it
 // then needs `includePrivate`. Paths compare as her disk does (`/tmp/DM/…` is `/tmp/dm/…`).
@@ -31,15 +31,15 @@ import { HerFilesError, type HerEntry } from "../life/home/herFiles.js";
 import { HomeError, isTextBytes, sha256, type CheckEnv, type HomeStore } from "../life/home/homeStore.js";
 import { checkEnvFor, homeStoreFor, offlineCheckEnv } from "../life/home/index.js";
 import { isDmFolderPath, isPlacesFile, specialJsonFile, type HerPath, type HerRoot } from "../life/home/pathRules.js";
-import { formatEntries, parseStrictJson, type WatchEntry } from "../life/home/specialFiles.js";
-import { isDmPlaceKey, isDmPlaceRef } from "../life/lifeView.js";
+import { readsWhole } from "../life/wakeups/file.js";
+import { redactedWakeupsText, wakeupView } from "../life/wakeups/view.js";
 import type { LivingCast } from "../life/livingCast.js";
 import { isNotesFile, redactedNotesText } from "../life/notesPrivacy.js";
 import { hostTimeZone } from "../orchestration/context/timeFormat.js";
 import { readWaifu } from "../orchestration/stores/config.js";
 import { PRIVATE_FILE_NAME } from "../shared/constants/files.js";
 import { HER_ROOTS, HerFileWriteBodySchema } from "../shared/schemas/api.js";
-import type { FilesIndex, WatchIds } from "../shared/schemas/life.js";
+import type { FilesIndex } from "../shared/schemas/life.js";
 import type { StorageService } from "../storage/storageService.js";
 import { ApiError, badRequest, conflict, notFound } from "./errors.js";
 import { assertSafeId } from "./ids.js";
@@ -59,7 +59,7 @@ export const TEXT_INLINE_MAX_BYTES = 1024 * 1024;
 /** The largest file `?raw=1` answers (downloads are ≤ 10 MiB, her home ≤ 50 MiB). */
 export const RAW_MAX_BYTES = 64 * 1024 * 1024;
 
-const ID = /^[a-z][a-z0-9_-]{0,19}$/u;
+const WAKEUP_ID = /^[twp]\d{1,6}$/u;
 
 function waifuIdOf(params: unknown): string {
   const { waifuId } = z.object({ waifuId: z.string().min(1) }).parse(params);
@@ -129,25 +129,10 @@ function privateFolder(p: Pick<HerPath, "root" | "segments">): boolean {
   return isDmFolderPath(p) && p.segments.length >= 2;
 }
 
-/**
- * Her watches.json as the owner may see it without `includePrivate`: undefined when nothing in it
- * is private, the redacted copy when a watch is bound to a DM, or "refuse" when the file does not
- * read whole and might hold one.
- */
-export async function redactedWatchesText(home: HomeStore, timeZone: string, text: string): Promise<string | "refuse" | undefined> {
-  const { entries, ids } = await home.readWatches(timeZone);
-  const anyPrivate = entries.some((entry) => isPrivateWatch(entry, ids));
-  if (!readsWhole(text, entries.length)) {
-    const mayHoldDm = anyPrivate || isDmPlaceRef(text) || Object.values(ids.watches).some((watch) => watch.bindings.some((binding) => isDmPlaceKey(binding.placeKey)));
-    return mayHoldDm ? "refuse" : undefined;
-  }
-  if (!anyPrivate) return undefined;
-  return formatEntries(
-    entries.map((entry) => {
-      const { private: _private, ...view } = watchView(entry, ids, false);
-      return view;
-    })
-  );
+/** Her wakeups.json as the owner may see it without `includePrivate` (undefined: nothing private in it). */
+export async function redactedWakeups(home: HomeStore, text: string): Promise<string | "refuse" | undefined> {
+  const { entries, side } = await home.readWakeups();
+  return redactedWakeupsText(text, entries, side);
 }
 
 /** The file's type by its first bytes (never by its name). */
@@ -164,46 +149,6 @@ export function sniffKind(data: Uint8Array): { kind: "text" | "image" | "pdf" | 
 
 function iso(mtimeMs: number): string {
   return new Date(Math.max(0, Math.round(mtimeMs))).toISOString();
-}
-
-/** A watch bound to a private chat (D14): a binding resolved to a DM place, or one that names one. */
-export function isPrivateWatch(entry: WatchEntry, ids: WatchIds): boolean {
-  const resolved = ids.watches[entry.id]?.bindings ?? [];
-  return resolved.some((binding) => isDmPlaceKey(binding.placeKey)) || entry.when.some((binding) => isDmPlaceRef(binding.place));
-}
-
-/** A watch as the owner sees it: a private one keeps its id, times and shape, never its words. */
-export function watchView(entry: WatchEntry, ids: WatchIds, includePrivate: boolean) {
-  const isPrivate = isPrivateWatch(entry, ids);
-  const hide = isPrivate && !includePrivate;
-  return {
-    id: entry.id,
-    timeout: entry.timeout,
-    once: entry.once,
-    note: hide ? PRIVATE_FILE_NAME : entry.note,
-    when: entry.when.map((binding) =>
-      hide
-        ? {
-            ...(binding.place !== undefined ? { place: PRIVATE_FILE_NAME } : {}),
-            ...(binding.from !== undefined ? { from: PRIVATE_FILE_NAME } : {}),
-            ...(binding.words !== undefined ? { words: [PRIVATE_FILE_NAME] } : {}),
-            ...(binding.any_message !== undefined ? { any_message: binding.any_message } : {})
-          }
-        : { ...binding }
-    ),
-    ...(isPrivate ? { private: true as const } : {})
-  };
-}
-
-/** True when the text is an array the lenient reader read whole (the app's own rewrite rule). */
-function readsWhole(text: string | undefined, read: number): boolean {
-  if (!text?.trim()) return true;
-  try {
-    const value = parseStrictJson(text);
-    return Array.isArray(value) && value.length === read;
-  } catch {
-    return false;
-  }
 }
 
 export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): void {
@@ -238,11 +183,11 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
   const isPrivateFile = async (home: HomeStore, p: HerPath, index?: FilesIndex): Promise<boolean> =>
     isDmFolderPath(p) || (await home.dmOrigin(p, index)) !== undefined;
 
-  /** watches.json holding a DM-bound watch can't be replaced or deleted without includePrivate. */
-  const refusePrivateWatches = async (home: HomeStore, p: HerPath, includePrivate: boolean) => {
-    if (includePrivate || specialJsonFile(p) !== "watches") return;
-    const text = await home.readWatchesText();
-    if (text !== undefined && (await redactedWatchesText(home, timeZone(), text)) !== undefined) throw privateRefused();
+  /** wakeups.json holding a private wakeup can't be replaced or deleted without includePrivate. */
+  const refusePrivateWakeups = async (home: HomeStore, p: HerPath, includePrivate: boolean) => {
+    if (includePrivate || specialJsonFile(p) !== "wakeups") return;
+    const text = await home.readWakeupsText();
+    if (text !== undefined && (await redactedWakeups(home, text)) !== undefined) throw privateRefused();
   };
 
   /** A notes file with lines from private chats can't be replaced or deleted without includePrivate. */
@@ -424,10 +369,10 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const onDisk = await mapped(() => home.files.readBytes(p, { maxBytes: RAW_MAX_BYTES }));
     let data = onDisk;
     let sniffed = sniffKind(data);
-    // A DM-bound watch's words never leave the host without includePrivate.
+    // A private wakeup's words never leave the host without includePrivate.
     let redactedFile = false;
-    if (!includePrivate && specialJsonFile(p) === "watches") {
-      const redacted = await redactedWatchesText(home, timeZone(), data.toString("utf8"));
+    if (!includePrivate && specialJsonFile(p) === "wakeups") {
+      const redacted = await redactedWakeups(home, data.toString("utf8"));
       if (redacted === "refuse") throw privateRefused();
       if (redacted !== undefined) {
         data = Buffer.from(redacted, "utf8");
@@ -485,7 +430,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const { home, env } = await homeOf(waifuId);
     const p = await filePath(home, request);
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
-    await refusePrivateWatches(home, p, includePrivate);
+    await refusePrivateWakeups(home, p, includePrivate);
     await refusePrivateNotes(home, p, includePrivate);
     const written = await mapped(() => home.writeText(p, body.text, env(), body.expectedHash !== undefined ? { expectedHash: body.expectedHash } : {}));
     // Her profile.json is her config (§17.1): her bot follows it.
@@ -502,7 +447,7 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     const { home, env } = await homeOf(waifuId);
     const p = await filePath(home, request);
     if (!includePrivate && (await isPrivateFile(home, p))) throw privateRefused();
-    await refusePrivateWatches(home, p, includePrivate);
+    await refusePrivateWakeups(home, p, includePrivate);
     await refusePrivateNotes(home, p, includePrivate);
     const deleted = await mapped(() => home.deleteFile(p, env(), query.expectedHash !== undefined ? { expectedHash: query.expectedHash } : {}));
     if (!deleted) throw notFound(`${p.display} doesn't exist`);
@@ -510,65 +455,43 @@ export function registerHomeRoutes(app: FastifyInstance, o: HomeRouteOptions): v
     return { waifuId, deleted: true as const };
   });
 
-  app.get("/api/waifus/:waifuId/schedule", async (request) => {
-    const waifuId = waifuIdOf(request.params);
-    const { home } = await homeOf(waifuId);
-    const zone = timeZone();
-    const [entries, text] = await Promise.all([home.readReminders(zone), home.readRemindersText()]);
-    return { waifuId, timeZone: zone, entries, ...(readsWhole(text, entries.length) ? {} : { unreadable: true as const }) };
-  });
-
-  app.delete("/api/waifus/:waifuId/schedule/:reminderId", async (request) => {
-    const waifuId = waifuIdOf(request.params);
-    const { reminderId } = z.object({ reminderId: z.string().regex(ID) }).parse(request.params);
-    const { home } = await homeOf(waifuId);
-    const zone = timeZone();
-    if (!readsWhole(await home.readRemindersText(), (await home.readReminders(zone)).length)) {
-      throw conflict("Her life/reminders.json does not read cleanly; fix it in the file editor first.");
-    }
-    let found = false;
-    const clean = await home.rewriteReminders(zone, (entries) => {
-      found = entries.some((entry) => entry.id === reminderId);
-      return found ? entries.filter((entry) => entry.id !== reminderId) : entries;
-    });
-    if (!clean) throw conflict("Her life/reminders.json does not read cleanly; fix it in the file editor first.");
-    if (!found) throw notFound(`Reminder ${reminderId} is not in her life/reminders.json.`);
-    return { waifuId, removed: reminderId };
-  });
-
-  app.get("/api/waifus/:waifuId/watches", async (request) => {
+  app.get("/api/waifus/:waifuId/wakeups", async (request) => {
     const waifuId = waifuIdOf(request.params);
     const includePrivate = includePrivateOf(request);
     const { home } = await homeOf(waifuId);
     const zone = timeZone();
-    const [{ entries, ids }, text] = await Promise.all([home.readWatches(zone), home.readWatchesText()]);
+    const { entries, side, text } = await home.readWakeups();
     return {
       waifuId,
       timeZone: zone,
       includePrivate,
-      entries: entries.map((entry) => watchView(entry, ids, includePrivate)),
+      entries: entries.map((entry) => wakeupView(entry, side, { includePrivate, timeZone: zone, now: now() })),
       ...(readsWhole(text, entries.length) ? {} : { unreadable: true as const })
     };
   });
 
-  app.delete("/api/waifus/:waifuId/watches/:watchId", async (request) => {
+  app.delete("/api/waifus/:waifuId/wakeups/:wakeupId", async (request) => {
     const waifuId = waifuIdOf(request.params);
-    const { watchId } = z.object({ watchId: z.string().regex(ID) }).parse(request.params);
+    const { wakeupId } = z.object({ wakeupId: z.string().regex(WAKEUP_ID) }).parse(request.params);
     const { home } = await homeOf(waifuId);
-    const zone = timeZone();
-    const unreadable = () => conflict("Her watches.json does not read cleanly; fix it in the file editor first.");
-    if (!readsWhole(await home.readWatchesText(), (await home.readWatches(zone)).entries.length)) throw unreadable();
+    const unreadable = () => conflict("Her life/wakeups.json does not read cleanly; fix it in the file editor first.");
+    const { entries, text } = await home.readWakeups();
+    if (!readsWhole(text, entries.length)) throw unreadable();
     let found = false;
-    const clean = await home.rewriteWatches(zone, (entries, ids) => {
-      found = entries.some((entry) => entry.id === watchId);
-      if (!found) return { entries, ids };
-      const watches = { ...ids.watches };
-      delete watches[watchId];
-      return { entries: entries.filter((entry) => entry.id !== watchId), ids: { ...ids, watches } };
+    const clean = await home.rewriteWakeups((current, side) => {
+      found = current.some((entry) => entry.id === wakeupId);
+      if (!found) return { entries: current, side };
+      const watches = { ...side.watches };
+      const every = { ...side.every };
+      const pages = { ...side.pages };
+      delete watches[wakeupId];
+      delete every[wakeupId];
+      delete pages[wakeupId];
+      return { entries: current.filter((entry) => entry.id !== wakeupId), side: { ...side, watches, every, pages } };
     });
     if (!clean) throw unreadable();
-    if (!found) throw notFound(`Watch ${watchId} is not in her watches.json.`);
-    // Only the id: a DM watch's words stay out of the mutation ledger.
-    return { waifuId, removed: watchId };
+    if (!found) throw notFound(`Wakeup ${wakeupId} is not in her life/wakeups.json.`);
+    // Only the id: a private wakeup's words stay out of the mutation ledger.
+    return { waifuId, removed: wakeupId };
   });
 }

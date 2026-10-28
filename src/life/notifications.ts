@@ -7,7 +7,7 @@
 import { renderDiscordMessage } from "../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../orchestration/context/types.js";
 import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
-import type { Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
+import type { FiredWakeupRecord, Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import { compareIds } from "../discord/rawMessage.js";
 import { snowflakeTime } from "../discord/refStore.js";
 import { clockText, dayText, localDayKey, weekdayTimeText } from "./clock.js";
@@ -37,7 +37,8 @@ export const REASON_LABELS: Record<WakeReason, string> = {
   plan: "plan",
   morning: "morning",
   owner: "nudge",
-  followup: "follow-up"
+  followup: "follow-up",
+  wakeup_error: "wakeup stopped"
 };
 
 /** A `detector` wake for the whole cast (`all`, §4.3) reads differently from a single pick. */
@@ -89,7 +90,7 @@ function labeller(group: readonly Wake[]): (reason: WakeReason) => string {
   return (reason) => (reason === "detector" && forAll ? DETECTOR_ALL_LABEL : reason === "detector" && chimeIn ? DETECTOR_CHIME_IN_LABEL : REASON_LABELS[reason]);
 }
 
-type MessageLine = { id: string; fromName?: string; preview: string; reasons: WakeReason[]; matched: string[]; notes: string[] };
+type MessageLine = { id: string; fromName?: string; preview: string; reasons: WakeReason[]; matched: string[]; notes: string[]; wakeups: FiredWakeupRecord[] };
 
 const addUnique = <T,>(list: T[], items: readonly T[]) => {
   for (const item of items) if (!list.includes(item)) list.push(item);
@@ -116,12 +117,13 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
       continue;
     }
     for (const message of messages) {
-      const line = byId.get(message.id) ?? { id: message.id, preview: message.preview, reasons: [], matched: [], notes: [] };
+      const line = byId.get(message.id) ?? { id: message.id, preview: message.preview, reasons: [], matched: [], notes: [], wakeups: [] };
       if (message.fromName && !line.fromName) line.fromName = message.fromName;
       if (!line.preview && message.preview) line.preview = message.preview;
       addUnique(line.reasons, message.reasons);
       if (message.matched !== undefined) addUnique(line.matched, [message.matched]);
       if (message.note) addUnique(line.notes, [message.note]);
+      for (const fired of message.wakeups ?? []) if (!line.wakeups.some((known) => known.id === fired.id)) line.wakeups.push(fired);
       byId.set(message.id, line);
     }
   }
@@ -131,7 +133,7 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
   const shown = ordered.slice(-Math.max(1, view.linesPerPlace ?? NOTIFICATION_LINES_PER_PLACE));
   const hidden = earlier + ordered.length - shown.length;
   const unread = view.unread(placeKey);
-  return shown.map((line, index) => {
+  return shown.flatMap((line, index) => {
     const first = index === 0;
     const reasons = first ? [...loose.reasons] : [];
     addUnique(reasons, line.reasons);
@@ -146,7 +148,9 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
     if (line.preview) parts.push(ref ? `#${ref} ${quote(line.preview)}` : quote(line.preview));
     else if (ref) parts.push(`#${ref}`);
     for (const note of first ? [...new Set([...loose.notes, ...line.notes])] : line.notes) parts.push(`your note: ${quote(note)}`);
-    return `- ${parts.join(" · ")}`;
+    // Several wakeups fired on this message (§30.4): the first is on its line, each other on its own.
+    const more = line.wakeups.slice(1).map((fired) => `- ${[REASON_LABELS.watch, view.handle(placeKey), ref ? `#${ref}` : undefined, fired.matched !== undefined ? quote(fired.matched) : undefined, fired.note ? `your note: ${quote(fired.note)}` : undefined].filter(Boolean).join(" · ")}`);
+    return [`- ${parts.join(" · ")}`, ...more];
   });
 }
 
@@ -190,7 +194,11 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
     case "morning":
       return wake.batch && wake.batch.length > 0 ? wake.batch : [];
     case "watch":
-      return [`- watch${wake.matched ? ` · ${quote(wake.matched)}` : ""}${wake.note ? ` · your note: ${quote(wake.note)}` : ""}`];
+      // A page wakeup (§30.2) names its page.
+      return [`- watch${wake.url ? ` · ${wake.url}` : ""}${wake.matched ? ` · ${quote(wake.matched)}` : ""}${wake.note ? ` · your note: ${quote(wake.note)}` : ""}`];
+    case "wakeup_error":
+      // §30.2: `- wakeup w4 stopped: TypeError: … (line 2)`.
+      return [`- ${wake.note ?? `wakeup ${wake.watchId ?? ""} stopped`}`];
     default:
       return [`- ${REASON_LABELS[wake.reason]}${wake.note ? ` · ${quote(wake.note)}` : ""}`];
   }
@@ -358,10 +366,15 @@ export function morningBatch(
     // A DM wake that carried a watch match (§16.5) shows the match here; its DM lines are above. One
     // line per matching message (§20), with the message's time and ref (§23).
     const matches = messagesOf(item).filter((message) => message.matched !== undefined || (message.reasons.includes("watch") && message.note !== undefined));
-    const entries = matches.length > 0 ? matches : [{ id: item.messageId, matched: item.matched, fromName: item.fromName, note: item.note }];
+    const found = matches.length > 0 ? matches : [{ id: item.messageId, matched: item.matched, fromName: item.fromName, note: item.note, wakeups: item.wakeups }];
+    // Several wakeups on one message (§30.4): a line each.
+    const entries = found.flatMap((entry) =>
+      entry.wakeups && entry.wakeups.length > 1 ? entry.wakeups.map((fired, index) => ({ ...entry, matched: fired.matched, note: fired.note, ...(index > 0 ? { fromName: undefined } : {}) })) : [entry]
+    );
     for (const entry of entries) {
       const parts = ["watch matched"];
       if (item.placeKey) parts.push(view.handle(item.placeKey));
+      if (item.url) parts.push(item.url);
       if (entry.matched) parts.push(quote(entry.matched));
       if (entry.fromName) parts.push(`from ${plainName(entry.fromName)}`);
       if (item.placeKey && entry.id) {
@@ -380,13 +393,16 @@ export function morningBatch(
     if (item.reason === "reminder") lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
   }
   for (const item of o.items) {
+    if (item.reason === "wakeup_error") lines.push(`  · ${item.note ?? "a wakeup stopped"}`);
+  }
+  for (const item of o.items) {
     // A timed plan deferred for her budget (§29): one line per plan, with the weekday of its day.
     if (item.reason !== "plan") continue;
     const weekday = weekdayTimeText(new Date(item.at), view.timeZone).split(" ")[0];
     for (const plan of item.plans ?? []) lines.push(`  · plan (${weekday} ${plan.at}): ${quote(plan.what)}`);
   }
   for (const item of o.items) {
-    if (isWatch(item) || item.reason === "watch_timeout" || item.reason === "reminder" || item.reason === "plan") continue;
+    if (isWatch(item) || item.reason === "watch_timeout" || item.reason === "reminder" || item.reason === "plan" || item.reason === "wakeup_error") continue;
     if (item.reason === "followup") {
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
     } else if (item.reason === "morning" && item.batch) {

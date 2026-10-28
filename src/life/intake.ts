@@ -5,7 +5,7 @@
 //      (a role her bot member holds), `everyone` (@everyone/@here, humans only), `name` (her name,
 //      display name or server nickname, ≥ 3 characters, as a whole word; humans only; off with
 //      `wakeOnName: false`);
-//   2. watches: every waifu with a matching `WatchFor` binding;
+//   2. watches: every waifu with a wakeup watch whose filter passes (§30.2);
 //   3. detector: when no message in the current burst produced a direct reason for anyone, the burst
 //      goes to the addressee detector (a person's burst, or a cast member's: then she is left out).
 // Every human message joins its place's burst, which is held by a typing-aware timer (`intakeHold.ts`):
@@ -59,7 +59,9 @@ import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
 import type { ForgottenPerson } from "../orchestration/dm/forgotten.js";
 import { handleOf } from "./places.js";
 import { wordBoundaryIncludes } from "./text.js";
-import { fireWatches, type FiredWatch } from "./watches.js";
+import { fireWakeupWatches, type FiredWakeup, type WakeupMessage } from "./wakeups/run.js";
+import { sharedSandbox } from "./sandbox/index.js";
+import { refsForMessages } from "./messageRefs.js";
 import { homeStoreFor } from "./home/index.js";
 import { aroundIn, type NotAroundReason } from "./busy.js";
 import { TypingHolds, type HoldTiming } from "./intakeHold.js";
@@ -369,11 +371,26 @@ export class Intake {
           directWakes.push({ waifu, wake: { id: newWakeId(), reason: ordered[0]!, ...(ordered.length > 1 ? { reasons: ordered } : {}), ...base } });
         }
       }
-      const fired = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own, createdAt: raw.createdAt }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay });
-      for (const { watch, matched } of fired) {
-        await this.o.router.route(waifu.id, { id: newWakeId(), reason: "watch", watchId: watch.id, matched, note: watch.note, ...base }, { guildId: input.guildId });
+      const fired = await this.firedWakeups(waifu, {
+        placeKey,
+        handle: () => handleOf(deps.storage, waifu.id, placeKey),
+        authorId: raw.authorId,
+        fromName,
+        isWaifu: input.authorIsWaifu === true,
+        text,
+        mentionsMe: selfIds.some((id) => mentionedUsers.has(id)),
+        repliesToMe: referenced !== undefined && selfIds.includes(referenced.authorId),
+        own,
+        createdAt: raw.createdAt,
+        messageId: raw.id,
+        files: removed ? [] : raw.attachments.map((file) => ({ name: file.filename, size: file.size })),
+        ref: () => this.refOf(placeKey, raw)
+      });
+      // Several wakeups on one message are one wake, a line each (§30.4).
+      if (fired.length > 0) {
+        await this.o.router.route(waifu.id, { id: newWakeId(), reason: "watch", ...watchFields(fired), ...base }, { guildId: input.guildId });
+        watched.add(waifu.id);
       }
-      if (fired.length > 0) watched.add(waifu.id);
     }
     // A waifu's direct wakes are routed at once (typing never holds a waifu); several waifus woken by
     // one @everyone / shared role ping are staggered by 0–20 s (§4.1). Her message also joins her burst
@@ -810,28 +827,27 @@ export class Intake {
       // Her watches on these messages ride on the DM wake (§16.5, one wake per message): one line
       // `dm, watch · …` and one turn, matched after the DM's own hold, not at once.
       const { fired, lines } = await this.dmWatches(waifuId, conversation, burst, records);
-      const [first, ...more] = fired;
       const fromName = removed ? "someone" : (burst.userName ?? message?.authorName ?? "someone");
-      // One line per message (§20): each `dm`, a watch's match on the message it matched.
-      const firstOf = new Map<string, FiredWatch>();
-      for (const entry of fired) if (!firstOf.has(entry.messageId)) firstOf.set(entry.messageId, entry);
+      // One line per message (§20): each `dm`, its wakeups' matches on the message they matched.
+      const firedOn = new Map(fired.map((entry) => [entry.messageId, entry.wakeups] as const));
+      const first = fired[0]?.wakeups;
       const joined = joinMessages([
         lines.map((line) => {
-          const hit = firstOf.get(line.id);
+          const hits = firedOn.get(line.id);
           return {
             id: line.id,
             fromUserId: userId,
             fromName: line.removed ? "someone" : fromName,
             preview: line.preview,
-            reasons: hit ? (["dm", "watch"] as WakeReason[]) : (["dm"] as WakeReason[]),
-            ...(hit ? { matched: hit.matched, note: hit.watch.note } : {})
+            reasons: hits ? (["dm", "watch"] as WakeReason[]) : (["dm"] as WakeReason[]),
+            ...(hits ? { ...(hits[0]!.matched !== undefined ? { matched: hits[0]!.matched } : {}), note: hits[0]!.note, wakeups: hits } : {})
           };
         })
       ]);
       const wake: Wake = {
         id: newWakeId(),
         reason: "dm",
-        ...(first ? { reasons: ["dm", "watch"] as WakeReason[], watchId: first.watch.id, matched: first.matched, note: first.watch.note } : {}),
+        ...(first ? { reasons: ["dm", "watch"] as WakeReason[], ...watchFields(first) } : {}),
         placeKey,
         fromUserId: userId,
         fromName,
@@ -843,26 +859,28 @@ export class Intake {
         at: deps.now().toISOString()
       };
       const outcome = await this.o.router.route(waifuId, wake, { dmUserId: userId });
-      // A watch is her own intention: when the DM itself is dropped (its rate limit), the match still
-      // reaches her as a plain watch wake. Further watches matching the burst join the line of the
-      // message they matched.
-      const watchWake = (entry: FiredWatch & { messageId: string }): Wake => {
-        const line = lines.find((candidate) => candidate.id === entry.messageId);
-        return {
-          id: newWakeId(),
-          reason: "watch",
-          watchId: entry.watch.id,
-          matched: entry.matched,
-          note: entry.watch.note,
-          placeKey,
-          fromUserId: userId,
-          fromName: line?.removed ? "someone" : wake.fromName!,
-          messageId: entry.messageId,
-          ...(line ? { preview: line.preview } : {}),
-          at: wake.at
-        };
-      };
-      for (const entry of outcome === "dropped" ? fired : more.filter((entry) => firstOf.get(entry.messageId) !== entry)) await this.o.router.route(waifuId, watchWake(entry), {});
+      // A wakeup is her own intention: when the DM itself is dropped (its rate limit), what fired
+      // still reaches her as a plain watch wake per message.
+      if (outcome === "dropped") {
+        for (const entry of fired) {
+          const line = lines.find((candidate) => candidate.id === entry.messageId);
+          await this.o.router.route(
+            waifuId,
+            {
+              id: newWakeId(),
+              reason: "watch",
+              ...watchFields(entry.wakeups),
+              placeKey,
+              fromUserId: userId,
+              fromName: line?.removed ? "someone" : wake.fromName!,
+              messageId: entry.messageId,
+              ...(line ? { preview: line.preview } : {}),
+              at: wake.at
+            },
+            {}
+          );
+        }
+      }
       this.mark(placeKey, burst.messageIds);
     } finally {
       this.release(placeKey, burst.messageIds, "routing");
@@ -870,20 +888,19 @@ export class Intake {
   }
 
   /**
-   * A DM burst's messages, oldest first, with their previews (§20), and her watches that fire for
-   * them (once-watches removed, fires recorded), each with the message it matched.
+   * A DM burst's messages, oldest first, with their previews (§20), and her wakeups that fire for
+   * them (once-watches removed, fires recorded), per message they matched.
    */
   private async dmWatches(
     waifuId: string,
     conversation: ConversationRef,
     burst: DmBurst,
     records: { forgotten: ForgottenPerson[]; unreadable: boolean }
-  ): Promise<{ fired: Array<FiredWatch & { messageId: string }>; lines: Array<{ id: string; preview: string; removed: boolean }> }> {
+  ): Promise<{ fired: Array<{ messageId: string; wakeups: FiredWakeup[] }>; lines: Array<{ id: string; preview: string; removed: boolean }> }> {
     const deps = this.deps;
     const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
     const placeKey = conversationKey(conversation);
-    const now = deps.now();
-    const fired: Array<FiredWatch & { messageId: string }> = [];
+    const fired: Array<{ messageId: string; wakeups: FiredWakeup[] }> = [];
     const lines: Array<{ id: string; preview: string; removed: boolean }> = [];
     for (const id of [...burst.messageIds].sort(compareIds)) {
       const raw = await this.findMessage(conversation, id);
@@ -892,13 +909,52 @@ export class Intake {
       lines.push({ id, preview: messagePreview(raw, EMPTY_GUILD_DIRECTORY, deps.timeZone, { removed }), removed });
       if (!waifu) continue;
       const text = removed ? "(removed)" : (renderDiscordMessage(raw, EMPTY_GUILD_DIRECTORY, deps.timeZone)?.body ?? "");
-      const hits = await fireWatches(homeStoreFor(deps, waifu), { placeKey, authorId: raw.authorId, text, own: false, createdAt: raw.createdAt }, { now, timeZone: deps.timeZone, maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }).catch((error: unknown) => {
+      const selfIds = await selfAuthorIds(deps.storage, waifu);
+      const referenced = raw.referenceMessageId ? await this.findMessage(conversation, raw.referenceMessageId) : undefined;
+      const hits = await this.firedWakeups(waifu, {
+        placeKey,
+        handle: () => handleOf(deps.storage, waifu.id, placeKey),
+        authorId: raw.authorId,
+        fromName: removed ? "someone" : raw.authorName,
+        isWaifu: false,
+        text,
+        mentionsMe: selfIds.some((self) => self in raw.mentions.users),
+        repliesToMe: referenced !== undefined && selfIds.includes(referenced.authorId),
+        own: false,
+        createdAt: raw.createdAt,
+        messageId: raw.id,
+        files: removed ? [] : raw.attachments.map((file) => ({ name: file.filename, size: file.size })),
+        ref: () => this.refOf(placeKey, raw)
+      }).catch((error: unknown) => {
         deps.logger.warn("Life DM watch check failed", { waifuId, message: error instanceof Error ? error.message : String(error) });
-        return [] as FiredWatch[];
+        return [] as FiredWakeup[];
       });
-      for (const hit of hits) if (!fired.some((entry) => entry.watch.id === hit.watch.id)) fired.push({ ...hit, messageId: id });
+      const fresh = hits.filter((hit) => !fired.some((entry) => entry.wakeups.some((known) => known.id === hit.id)));
+      if (fresh.length > 0) fired.push({ messageId: id, wakeups: fresh });
     }
     return { fired, lines };
+  }
+
+  /**
+   * Her wakeups that fire for one message (§30.2); a wakeup her errors stopped sends its
+   * `wakeup_error` wake from here.
+   */
+  private async firedWakeups(waifu: WaifuConfig, message: WakeupMessage): Promise<FiredWakeup[]> {
+    const deps = this.deps;
+    const { fired, errorWakes } = await fireWakeupWatches(
+      { store: homeStoreFor(deps, waifu), sandbox: sharedSandbox(), now: deps.now(), timeZone: deps.timeZone },
+      message,
+      { maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }
+    );
+    for (const wake of errorWakes) await this.o.router.route(waifu.id, wake, {});
+    return fired;
+  }
+
+  /** A message's ref (`k3`) for her function filters. */
+  private async refOf(placeKey: string, raw: RawDiscordMessage): Promise<string | undefined> {
+    const refs = await refsForMessages(this.deps, placeKey, [{ id: raw.id, at: raw.createdAt }], this.deps.now());
+    const ref = refs.get(raw.id);
+    return ref ? `#${ref}` : undefined;
   }
 
   /** Fires every pending DM wake now (tests; the boot catch-up after a long pause). */
@@ -1001,4 +1057,10 @@ export class Intake {
       }));
     }
   }
+}
+
+/** A watch wake's fields for the wakeups that fired on one message (the first is its `watchId`). */
+function watchFields(fired: readonly FiredWakeup[]): Pick<Wake, "watchId" | "matched" | "note" | "wakeups"> {
+  const first = fired[0]!;
+  return { watchId: first.id, ...(first.matched !== undefined ? { matched: first.matched } : {}), note: first.note, wakeups: fired.map((entry) => ({ id: entry.id, ...(entry.matched !== undefined ? { matched: entry.matched } : {}), note: entry.note })) };
 }

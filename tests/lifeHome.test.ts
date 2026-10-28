@@ -113,16 +113,16 @@ describe("Bash change sets (§16.3.5, §16.9)", () => {
     expect(await readdir(path.join(w.root, "user/waifus/ella/life/pending-changes"))).toEqual([]);
   });
 
-  it("the Write path and the change-set path refuse the same bad watches.json", async () => {
+  it("the Write path and the change-set path refuse the same bad wakeups.json", async () => {
     const w = await lifeWorld(roots);
     const store = await storeOf(w);
-    const broken = Buffer.from('[{"timeout": "2026-10-25 10:00", "note": "x", "when": []},]');
-    const changes = { writes: [{ path: "/home/ella/life/watches.json", data: broken }], deletes: [], dirs: [] };
+    const broken = Buffer.from('[{"kind": "at", "when": "2026-10-25 10:00", "note": "x"},]');
+    const changes = { writes: [{ path: "/home/ella/life/wakeups.json", data: broken }], deletes: [], dirs: [] };
     const viaBash = await store.applyChanges(changes, new Map(), checkEnvFor(w.cast.deps, "ella"), { journalId: "c" }).catch((error: unknown) => error);
-    const viaWrite = await writeHerFile(w, "life/watches.json", broken.toString()).catch((error: unknown) => error);
+    const viaWrite = await writeHerFile(w, "life/wakeups.json", broken.toString()).catch((error: unknown) => error);
     expect(viaBash).toBeInstanceOf(HomeError);
     expect((viaBash as Error).message).toBe((viaWrite as Error).message);
-    expect((viaBash as Error).message).toMatch(/^error: watches\.json line 1, column \d+: /u);
+    expect((viaBash as Error).message).toMatch(/^error: wakeups\.json line 1, column \d+: /u);
   });
 });
 

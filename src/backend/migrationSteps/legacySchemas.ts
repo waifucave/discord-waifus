@@ -3,6 +3,7 @@
 // queue. Nothing outside src/backend/migrations.ts and src/backend/migrationSteps/ may import this.
 import { z } from "zod";
 import { IsoDateStringSchema, RevisionedRecordSchema } from "../../shared/schemas/common.js";
+import { parseLocalDateTime } from "../../life/clock.js";
 
 // W3 unified memory record. Replaces the former WaifuMemory/ShortTermMemory split: a
 // "short-term memory" is now just a record with source "waifu_tool", kind "context", and an
@@ -125,4 +126,95 @@ export const L2ScheduleFileSchema = z.object({
       })
     )
     .default([])
+});
+
+// Her reminder and watch files from L4 to §30 (`~/reminders.json`, `~/watches.json`, then in
+// `~/life/`), written by `living-cast-home-v1` and read by `living-cast-wakeups-v1`, which turns them
+// into `~/life/wakeups.json` (spec §30.3).
+export type LegacyReminderEntry = { id: string; at: string; repeat?: "daily" | "weekly"; note: string };
+export type LegacyWatchBindingEntry = { place?: string; from?: string; words?: string[]; any_message?: boolean };
+export type LegacyWatchEntry = { id: string; timeout: string; once: boolean; note: string; when: LegacyWatchBindingEntry[] };
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** `[{...}, …]` one entry per line, with spaces after `:` and `,` (the files' look then). */
+export function legacyFormatEntries(entries: ReadonlyArray<Record<string, unknown>>): string {
+  if (entries.length === 0) return "[]\n";
+  const spaced = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(spaced).join(", ")}]`;
+    if (isRecord(value)) return `{${Object.entries(value).map(([key, inner]) => `${JSON.stringify(key)}: ${spaced(inner)}`).join(", ")}}`;
+    return JSON.stringify(value);
+  };
+  return `[\n${entries.map((entry) => `  ${spaced(entry)}`).join(",\n")}\n]\n`;
+}
+
+export function legacyScheduleText(entries: readonly LegacyReminderEntry[]): string {
+  return legacyFormatEntries(entries.map((entry) => ({ id: entry.id, at: entry.at, ...(entry.repeat ? { repeat: entry.repeat } : {}), note: entry.note })));
+}
+
+export function legacyWatchesText(entries: readonly LegacyWatchEntry[]): string {
+  return legacyFormatEntries(entries.map((entry) => ({ id: entry.id, timeout: entry.timeout, once: entry.once, note: entry.note, when: entry.when.map((binding) => ({ ...binding })) })));
+}
+
+/** Her saved reminders, read leniently (an entry without a readable time is left out; one without an id has id "": it gets a new one). */
+export function readLegacyReminders(text: string | undefined, timeZone: string): LegacyReminderEntry[] {
+  if (!text?.trim()) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): LegacyReminderEntry[] => {
+    if (!isRecord(entry) || typeof entry["at"] !== "string" || !parseLocalDateTime(entry["at"], timeZone)) return [];
+    return [{ id: typeof entry["id"] === "string" ? entry["id"] : "", at: entry["at"], ...(entry["repeat"] === "daily" || entry["repeat"] === "weekly" ? { repeat: entry["repeat"] } : {}), note: typeof entry["note"] === "string" ? entry["note"] : "" }];
+  });
+}
+
+/** Her saved watches, read leniently (the same rules). */
+export function readLegacyWatches(text: string | undefined, timeZone: string): LegacyWatchEntry[] {
+  if (!text?.trim()) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): LegacyWatchEntry[] => {
+    if (!isRecord(entry) || typeof entry["timeout"] !== "string" || !parseLocalDateTime(entry["timeout"], timeZone)) return [];
+    const when = Array.isArray(entry["when"]) ? (entry["when"] as unknown[]).filter(isRecord) : [];
+    return [
+      {
+        id: typeof entry["id"] === "string" ? entry["id"] : "",
+        timeout: entry["timeout"],
+        once: entry["once"] !== false,
+        note: typeof entry["note"] === "string" ? entry["note"] : "",
+        when: when.map((b) => ({
+          ...(typeof b["place"] === "string" ? { place: b["place"] } : {}),
+          ...(typeof b["from"] === "string" ? { from: b["from"] } : {}),
+          ...(Array.isArray(b["words"]) ? { words: (b["words"] as unknown[]).filter((w): w is string => typeof w === "string") } : {}),
+          ...(typeof b["any_message"] === "boolean" ? { any_message: b["any_message"] } : {})
+        }))
+      }
+    ];
+  });
+}
+
+/** `life/watch-ids.json` before §30: how each watch's bindings resolved, fires, timeouts routed. */
+export const LegacyWatchIdsSchema = z.object({
+  nextId: z.number().int().positive().default(1),
+  sourceHash: z.string().default(""),
+  watches: z.record(z.string(), z.object({ bindings: z.array(L2WatchBindingSchema).default([]), fires: z.array(IsoDateStringSchema).default([]) })).default({}),
+  fired: z.array(z.string()).default([]),
+  recoveredAt: IsoDateStringSchema.optional()
+});
+export type LegacyWatchIds = z.infer<typeof LegacyWatchIdsSchema>;
+
+/** `life/schedule-ids.json` before §30: the reminder id counter and occurrences routed. */
+export const LegacyScheduleIdsSchema = z.object({
+  nextId: z.number().int().positive().default(1),
+  fired: z.array(z.string()).default([]),
+  recoveredAt: IsoDateStringSchema.optional()
 });

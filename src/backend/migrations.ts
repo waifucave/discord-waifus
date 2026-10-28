@@ -33,6 +33,7 @@ import { migrateLivingCastHome } from "./migrationSteps/livingCastHome.js";
 import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastLifeFolder } from "./migrationSteps/livingCastLifeFolder.js";
 import { DROP_REST_NOTICE_RATIO_STEP_ID, migrateLivingCastDropRestNoticeRatio } from "./migrationSteps/livingCastRestNoticeRatio.js";
 import { migrateLivingCastSendCap, SEND_CAP_STEP_ID } from "./migrationSteps/livingCastSendCap.js";
+import { migrateLivingCastWakeups, WAKEUPS_STEP_ID } from "./migrationSteps/livingCastWakeups.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
 import { migrateLivingCastDmState } from "./migrationSteps/livingCastDmState.js";
@@ -194,6 +195,9 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   { id: DROP_REST_NOTICE_RATIO_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastDropRestNoticeRatio(dataRoot) },
   // SendMessage scripts (spec §27.1): life.maxSendsPerTurn still at the old default 8 becomes 15.
   { id: SEND_CAP_STEP_ID, frequency: "once", run: migrateLivingCastSendCap },
+  // Wakeup(script) (spec §30.3): her reminders.json and watches.json become ~/life/wakeups.json (old
+  // files archived, side files follow), and lives on the old tools start a new epoch.
+  { id: WAKEUPS_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastWakeups(dataRoot) },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

@@ -246,8 +246,8 @@ async function moveFiles(dataRoot: string, waifuId: string, home: string, counts
 }
 
 /** The app's names in `~/life/` after the moves: a path there is never her renamed notes folder's. */
-/** The names the app keeps in `~/life/` (and `schedule.json`, her day). */
-const APP_FILE_NAMES = new Set([...LIFE_FOLDER_MOVES.map((move) => key(move.to)), key("schedule.json")]);
+/** The names the app keeps in `~/life/` (and `schedule.json`, her day; `wakeups.json` since §30). */
+const APP_FILE_NAMES = new Set([...LIFE_FOLDER_MOVES.map((move) => key(move.to)), key("schedule.json"), key("wakeups.json")]);
 
 /** Set on a provenance index or journal once its paths were rewritten: a re-run never maps them twice. */
 const REWRITTEN = "lifeFolderV1";

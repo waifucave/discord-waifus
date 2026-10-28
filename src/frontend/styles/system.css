@@ -419,7 +419,7 @@ select.cell { padding-right: 34px; background-position: right 16px center; }
 .empty-help { font-size: 12px; line-height: 1.6; max-width: 420px; }
 .empty-cell { padding: 40px 26px; text-align: center; flex: none; }
 
-/* soft rows inside a cell (files, reminders, review lines, web searches) */
+/* soft rows inside a cell (files, wakeups, review lines, web searches) */
 .soft-row { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; padding: 7px 0; border-top: var(--line) solid var(--rule); }
 .soft-row > .btn.mono, nav .btn.mono { justify-content: flex-start; text-align: left; white-space: normal; height: auto; min-height: 28px; }
 .soft-divider { margin-top: 12px; padding-top: 12px; border-top: var(--line) solid var(--rule); }

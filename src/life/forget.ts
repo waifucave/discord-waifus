@@ -20,12 +20,12 @@
 //      held. With no model, or a call that fails or is aborted, nothing changes (her summary is never
 //      emptied, the epoch and its log stay) and the step stays pending (`pendingSteps`), run again at
 //      the next scrub run and before her next turn (after the compaction backoff);
-//   3. other state: their wakes and pending notices, watches from the person or bound to their DM
-//      or to words naming them (in her `~/life/watches.json`), reminder notes naming them (in her
-//      `~/life/reminders.json`) and her day's text naming them (`~/life/schedule.json`), her DM read cursor and handle, maintenance.jsonl and review lines,
-//      the host's recent web queries naming them, and her slice of the Living cast archive.
-//      Someone else's wake that names them keeps its place and loses the quote; her reminder or
-//      watch note naming them becomes `(removed)`;
+//   3. other state: their wakes and pending notices, every wakeup (in her `~/life/wakeups.json`,
+//      §30.3) watching their DM, with a filter resolved to them, or whose note, code or state names
+//      them (removed whole), her day's text naming them (`~/life/schedule.json`), her DM read cursor
+//      and handle, maintenance.jsonl and review lines, the host's recent web queries naming them, and
+//      her slice of the Living cast archive. Someone else's wake that names them keeps its place and
+//      loses the quote;
 //   4. notes scrub: a maintenance session told to remove everything about the person, on her model,
 //      else on `life.dreamModel`; with no model, or a failed session, it stays pending the same way
 //      (step 5's whole-line and sentence removal runs meanwhile);
@@ -85,7 +85,10 @@ import { markedUserIds, MEMORY_INDEX } from "./home/memoryIndex.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import type { HomeStore } from "./home/homeStore.js";
-import { DAY_SCHEDULE_FILE, LIFE_DIR, PLACES_FILE, PROFILE_FILE, REMINDERS_FILE, WATCHES_FILE } from "./home/pathRules.js";
+import { DAY_SCHEDULE_FILE, LIFE_DIR, PLACES_FILE, PROFILE_FILE, WAKEUPS_FILE } from "./home/pathRules.js";
+import { functionSourceOf, type WakeupEntry } from "./wakeups/file.js";
+import { saveWakeupStates } from "./wakeups/schedule.js";
+import { dropState } from "./wakeups/state.js";
 import { homeDir, lifeDir, legacyNotesDir } from "./paths.js";
 import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
@@ -215,14 +218,14 @@ function adder(sets: NameSets) {
   };
 }
 
-/** Step 0 from what is on disk: DM state, watches, her DM handle, and every waifu's names. */
+/** Step 0 from what is on disk: DM state, her watches' resolved names, her DM handle, and every waifu's names. */
 async function storedNames(storage: StorageService, waifu: WaifuConfig, userId: string, sets: NameSets): Promise<void> {
   const add = adder(sets);
   const dmState = await readDmState(storage, userId, waifu.id).catch(() => undefined);
   add("mine", dmState?.userDisplayName);
   const home = homeStoreFor({ storage, config: () => DEFAULT_APP_CONFIG }, waifu);
-  for (const watch of Object.values((await home.readWatchIds().catch(() => undefined))?.watches ?? {})) {
-    for (const binding of watch.bindings) if (binding.fromUserId === userId) add("mine", binding.fromName);
+  for (const watch of Object.values((await home.readWakeupSide().catch(() => undefined))?.watches ?? {})) {
+    for (const binding of watch.filters ?? []) if (binding.fromUserId === userId) add("mine", binding.fromName);
   }
   const dmKey = conversationKey({ kind: "dm", waifuId: waifu.id, userId });
   const handles = await readLifeFile(storage, waifu.id, "handles").catch(() => ({ handles: {} as Record<string, string> }));
@@ -372,7 +375,7 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   });
   if (o.dmOnly) {
     let removed = transcriptLines + (await scrubWakeQueue(deps.storage, waifu.id, { userId: "", placeKeys: new Set([dmKey]), mentions: () => false }));
-    removed += await dropWatches(home, deps.timeZone, (bindings) => bindings.some((binding) => binding.placeKey === dmKey));
+    removed += await dropWakeups(home, (_entry, watch) => boundTo(watch, dmKey));
     await setReadCursor(deps.storage, waifu.id, dmKey, floor, deps.now());
     return removed;
   }
@@ -389,45 +392,27 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     // `scrubbedAt` loses what is past the DM forget window here too (an owner forget adds nothing).
     return { ...current, pendingNotices, scrubbedAt: recentScrubs(current.scrubbedAt, deps.now()) };
   });
-  // Her watch file (§16.9 keeps step 3's rules): a watch goes when it is from the person, bound to
-  // their DM or its word names them ("kevin's exam" for Kevin). A word that is only a part of one of
-  // their names ("bake sale" in "Kevin from the Bake Sale") may be anyone's: listed.
-  const namesThem = (word: string) => names.some((name) => namesSomeone(word, name));
+  // Her wakeups (§30.3): every one whose note, filter, check or state names the person (their id or
+  // a name), that watches their DM or is from them, goes. Her code's waiting state is saved first,
+  // so what it remembers is checked too. A name that may be anyone's is listed for review.
+  await saveWakeupStates(home, deps.now().getTime(), { force: true }).catch(() => undefined);
   const partOfName = (word: string) => names.some((name) => namesSomeone(name, word));
-  await home.rewriteWatches(deps.timeZone, (entries, side) => {
-    const watches = { ...side.watches };
-    const kept = entries.flatMap((watch) => {
-      const bindings = side.watches[watch.id]?.bindings ?? [];
-      const words = watch.when.flatMap((binding) => binding.words ?? []);
-      if (bindings.some((binding) => binding.fromUserId === identity.userId || binding.placeKey === dmKey) || words.some(namesThem)) {
-        removed += 1;
-        delete watches[watch.id];
-        return [];
-      }
-      // A watch bound to a DM is private (D14): its review lines are too.
-      const dm = bindings.some((binding) => isDmPlaceKey(binding.placeKey));
-      for (const word of words) if (o.review && partOfName(word)) o.review({ where: "watches", line: word.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
-      for (const word of words) if (!partOfName(word)) review("watches")(word, dm);
-      if (mentions(watch.note)) {
-        removed += 1;
-        return [{ ...watch, note: REMOVED_TEXT }];
-      }
-      review("watches")(watch.note, dm);
-      return [watch];
-    });
-    return { entries: kept, ids: { ...side, watches } };
+  removed += await dropWakeups(home, (entry, watch) => {
+    if (boundTo(watch, dmKey) || (watch?.filters ?? []).some((filter) => filter.fromUserId === identity.userId)) return true;
+    if (mentions(wakeupText(entry))) return true;
+    // A wakeup watching a DM is private (D14): its review lines are too. A word that is only a part
+    // of one of their names ("bake sale" in "Kevin from the Bake Sale") may be anyone's: listed.
+    const dm = (watch?.placeKeys ?? []).some((key) => isDmPlaceKey(key)) || (watch?.filters ?? []).some((filter) => isDmPlaceKey(filter.placeKey));
+    const words = (watch?.filters ?? []).flatMap((filter) => filter.words ?? []);
+    for (const word of words) {
+      if (partOfName(word)) o.review?.({ where: "wakeups", line: word.trim().slice(0, 300), ...(dm ? { private: true as const } : {}) });
+      else review("wakeups")(word, dm);
+    }
+    review("wakeups")(entry.note, dm);
+    const source = functionSourceOf(entry);
+    if (source !== undefined) review("wakeups")(source, dm);
+    return false;
   });
-  // A reminder is hers: it stays and loses the text that names the person.
-  await home.rewriteReminders(deps.timeZone, (entries) =>
-    entries.map((reminder) => {
-      if (mentions(reminder.note)) {
-        removed += 1;
-        return { ...reminder, note: REMOVED_TEXT };
-      }
-      review("reminders")(reminder.note);
-      return reminder;
-    })
-  );
   // Her day (§21.6): its text fields are hers too; one that names the person becomes `(removed)`.
   await home.rewriteDay((plan) => {
     const scrub = (text: string): string => {
@@ -465,21 +450,34 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
   return removed;
 }
 
-/** Removes her watches whose resolved bindings match (`/forget conversation`: the ones bound to the DM). */
-async function dropWatches(home: HomeStore, timeZone: string, drop: (bindings: Array<{ placeKey?: string; fromUserId?: string }>) => boolean): Promise<number> {
+/** Everything of a wakeup a forget looks at: its note, filter or check (source or object) and state. */
+export function wakeupText(entry: WakeupEntry): string {
+  return [entry.note, functionSourceOf(entry) ?? "", typeof entry.filter === "object" ? JSON.stringify(entry.filter) : "", typeof entry.check === "object" ? JSON.stringify(entry.check) : "", entry.state ? JSON.stringify(entry.state) : ""].join("\n");
+}
+
+/** A watch that looks at this place (its places, or an object filter's place). */
+function boundTo(watch: { placeKeys?: string[] | undefined; filters?: Array<{ placeKey?: string | undefined }> | undefined } | undefined, placeKey: string): boolean {
+  return (watch?.placeKeys ?? []).includes(placeKey) || (watch?.filters ?? []).some((filter) => filter.placeKey === placeKey);
+}
+
+/** Removes her wakeups `drop` picks (with their side entries and waiting state). Returns how many. */
+async function dropWakeups(home: HomeStore, drop: (entry: WakeupEntry, watch: WakeupSideWatch | undefined) => boolean): Promise<number> {
   let removed = 0;
-  await home.rewriteWatches(timeZone, (entries, side) => {
+  await home.rewriteWakeups((entries, side) => {
     const watches = { ...side.watches };
-    const kept = entries.filter((watch) => {
-      if (!drop(side.watches[watch.id]?.bindings ?? [])) return true;
-      delete watches[watch.id];
+    const kept = entries.filter((entry) => {
+      if (!drop(entry, side.watches[entry.id])) return true;
+      delete watches[entry.id];
+      dropState(home.storage.dataRoot, home.waifuId, entry.id);
       removed += 1;
       return false;
     });
-    return { entries: kept, ids: { ...side, watches } };
+    return { entries: kept, side: { ...side, watches } };
   });
   return removed;
 }
+
+type WakeupSideWatch = { placeKeys?: string[] | undefined; filters?: Array<{ placeKey?: string | undefined; fromUserId?: string | undefined; words?: string[] | undefined }> | undefined };
 
 /**
  * Step 1's files (§16.9): every file in her home and /tmp whose hash the provenance index records
@@ -654,8 +652,8 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   const out: Verify = { removedLines: 0, removedSentences: 0, removedNotes: 0, needsReview: [] };
   const home = homeStoreFor(deps, waifu);
   // Every text file of her home (§16.9), except the ones step 3 handled by their own rules (her
-  // reminders, watches and day) and places.md (the app's), all in ~/life/.
-  const all = new Map([...(await home.readAllText())].filter(([notePath]) => !([REMINDERS_FILE, WATCHES_FILE, PLACES_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as string[]).map((name) => `${LIFE_DIR}/${name}`).includes(notePath)));
+  // wakeups and day) and places.md (the app's), all in ~/life/.
+  const all = new Map([...(await home.readAllText())].filter(([notePath]) => !([WAKEUPS_FILE, PLACES_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as string[]).map((name) => `${LIFE_DIR}/${name}`).includes(notePath)));
   let notesChanged = (await deletePersonNotes(home, all, identity, out)).length > 0;
   // Notes marked as someone else's: a name match there (or in the index line linking one) is
   // listed for review, never removed (two people may share the name).

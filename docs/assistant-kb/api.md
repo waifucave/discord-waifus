@@ -141,11 +141,9 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | DELETE | `/api/waifus/:waifuId/life/needs-review/:itemId` | Dismiss a review line. | `forget` |
 | POST | `/api/waifus/:waifuId/life/reset` | Reset her short-term memory: a fresh epoch, no summary ({confirm: true}). | `life` |
 | POST | `/api/waifus/:waifuId/link-bot` | Create or link her Discord bot entry. | `bot` |
-| GET | `/api/waifus/:waifuId/schedule` | Her reminders (~/life/reminders.json), parsed. | `life` |
-| DELETE | `/api/waifus/:waifuId/schedule/:reminderId` | Remove one reminder from her life/reminders.json. | `life` |
 | POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips her bed time and budget). | `life` |
-| GET | `/api/waifus/:waifuId/watches` | Her watches (~/life/watches.json), parsed; a watch bound to a DM is redacted unless a local includePrivate=1. | `life` |
-| DELETE | `/api/waifus/:waifuId/watches/:watchId` | Remove one watch from her life/watches.json. | `life` |
+| GET | `/api/waifus/:waifuId/wakeups` | Her wakeups (~/life/wakeups.json) with their sources, parsed; a wakeup watching a DM (and an everywhere watch's state) is redacted unless a local includePrivate=1. | `life` |
+| DELETE | `/api/waifus/:waifuId/wakeups/:wakeupId` | Remove one wakeup from her life/wakeups.json (she is not told). | `life` |
 
 <!-- /generated:routes -->
 
@@ -192,7 +190,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   (lines from private chats, her summary or her queue read `[private chat redacted]` unless the
   owner reveals them on the host); `DELETE …/life/needs-review/:itemId` dismisses one.
 - **Her files** (`life` topic; spec §16.11): her home `/home/<name>` (`~`: notes, `MEMORY.md`, and
-  `life/` with `schedule.json` (her day), `reminders.json`, `watches.json`, `profile.json` and the
+  `life/` with `schedule.json` (her day), `wakeups.json` (her wakeups), `profile.json` and the
   read-only `places.md`) and `/tmp` (downloads, deleted 7 days
   after the last write). `GET /api/waifus/:id/files?root=home|tmp|transcripts&dir=` lists one folder →
   `{root, dir, display, parent, entries: [{name, path, kind: file|dir, size, modified, private?,
@@ -203,12 +201,12 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   hash, text?, tooLarge?, readOnly?, special?, private?}` (`text` for a UTF-8 file up to 1 MiB);
   `?raw=1` answers the bytes (images by their magic bytes, inline; anything else as an attachment;
   `nosniff`, sandboxed). `PUT {text, expectedHash?}` writes a text file under her Write tool's checks:
-  `life/places.md` 400 `ReadOnlyFile`, a broken `life/schedule.json`, `life/reminders.json`,
-  `life/watches.json` or `life/profile.json` 400 `InvalidFile` with
+  `life/places.md` 400 `ReadOnlyFile`, a broken `life/schedule.json`, `life/wakeups.json`
+  (her functions compiled too) or `life/profile.json` 400 `InvalidFile` with
   the line and column (nothing saved), over 256 KiB or a full home 413 `HomeLimit`, a binary file
   400 `NotTextFile`, a name differing only by case 409 `NameCollision`; `expectedHash` is the `hash`
   last read (mismatch 409 `Conflict`; `null` = must not exist yet) → `{path, display, hash, size,
-  created, rewritten}` (`rewritten`: new reminder or watch entries got their ids). `DELETE
+  created, rewritten}` (`rewritten`: new wakeup entries got their ids, a `for` became `until`). `DELETE
   …/files/<path>?expectedHash=` → `{deleted: true}`. Her read-only `/transcripts` (§18.3: one file
   per place per day, `/transcripts/<server>/<room>/<YYYY-MM-DD>.md`, DMs under `/transcripts/dm/`)
   lists with `?root=transcripts` (or `?dir=/transcripts/…`; no `usage`) and reads as text
@@ -217,17 +215,21 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   copy of one by content, anything under `/tmp/dm/`) is listed as `[private chat redacted]`
   without a path, and reading, writing or deleting it (or listing a folder under `/tmp/dm/`) needs
   a local `includePrivate=1` (else 403 `PrivateContentLocalOnly`). The assistant's writes need its
-  confirmation card (403 `AssistantConfirmationRequired` otherwise). `GET /api/waifus/:id/schedule`
-  → `{timeZone, entries: [{id, at, repeat?, note}], unreadable?}`; `GET …/watches` → `{timeZone,
-  entries: [{id, timeout, once, note, when: [{place?, from?, words?, any_message?}], private?}],
-  unreadable?, includePrivate}` (a watch bound to a DM reads `[private chat redacted]` unless a local
-  `includePrivate=1`). `DELETE …/schedule/:rid` and `…/watches/:wid` remove one entry by rewriting
-  the file (404 when absent, 409 when the file does not read cleanly).
+  confirmation card (403 `AssistantConfirmationRequired` otherwise). `GET /api/waifus/:id/wakeups`
+  (§30.3) → `{waifuId, timeZone, includePrivate, entries: [{id, kind: at|every|watch|page, when?,
+  next? (an every's next three times), places?, filter?, url?, check?, options?: {until?, once?,
+  every?}, note, state?, disabled?, private?}], unreadable?}`: each wakeup with its source (`filter`
+  or `check` is her function's code when she wrote one). A wakeup watching a DM is `private: true`
+  and its note, places, filter and state read `[private chat redacted]` unless a local
+  `includePrivate=1` (403 `PrivateContentLocalOnly` over Remote Access or for the assistant); an
+  "everywhere" watch's `state` too. `DELETE …/wakeups/:wakeupId` removes one by rewriting the file
+  (404 when absent, 409 when the file does not read cleanly); she is not told. `wakeups.json` read
+  through the files routes is redacted the same way and is read-only then.
 - `POST /api/people/:userId/forget` `{confirm: true, dryRun?}`: the owner's forget of one Discord
   user, best effort: every DM with them (conversations, DM state, cached DM images; rate-limit
   counters reset to their forget floor), a `forgotten.json` record, server member lists, the Living
   cast archive, their entries in the captured traffic, then each waifu's life scrub (summary, wakes,
-  reminders, watches, the text files in her home, the files the person sent her, a new epoch,
+  wakeups naming or watching them, the text files in her home, the files the person sent her, a new epoch,
   verification). Returns counts (`dmContexts`, `dmStates`,
   `dmLimits`, `cachedImages`, `memberLists`, `archive`) and `lives: [{waifuId, removedLines,
   removedSentences, removedNotes?, removedFiles?, needsReview, queued?}]` (Discord offline: `livesQueued`). A part

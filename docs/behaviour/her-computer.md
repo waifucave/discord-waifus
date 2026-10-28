@@ -1,7 +1,7 @@
 # Her own computer
 
 Each waifu works in a small isolated machine: two folders of her own, a read-only `/transcripts`,
-eleven tools, and a simulated Bash. She never sees a host path.
+ten tools, and a simulated Bash. She never sees a host path.
 
 ## Her folders
 
@@ -19,7 +19,7 @@ eleven tools, and a simulated Bash. She never sees a host path.
   `.`/`..`, not ending in a dot or space, never a Windows device name in any disguise (`con`, `aux.`,
   `COM¹`, `lpt1 .md`).
 - Names are compared as a case-insensitive disk does (`collisionKey`: NFC + lower case): `~/Memory.md`
-  is `~/MEMORY.md`, `~/Life/Watches.json` is `~/life/watches.json`. Two names in one folder that
+  is `~/MEMORY.md`, `~/Life/Wakeups.json` is `~/life/wakeups.json`. Two names in one folder that
   differ only by case are refused when a write would create the second.
 - No links: never created (Bash `ln` fails), an existing one on disk is never followed, listed or
   written through.
@@ -44,8 +44,7 @@ something first"); nothing is written.
 | `~/` (anything else) | Her notes, any layout | Text or any file | Her (and the dream) | Yes | Yes | Path/size rules | — |
 | `~/life/` | Her daily machinery (all files here are private: never attached) | folder | App + her | Its files as below | The folder can't be removed while it holds `places.md` | — | — |
 | `~/life/schedule.json` | Her day ([day-and-bed-time.md](day-and-bed-time.md)) | JSON object | Her (each morning) | Yes; Write needs no prior Read | Yes (= no plan) | Strict JSON + field rules, busy not in bed time | Live for routing, Jev and the time line; prompt copy at next compaction |
-| `~/life/reminders.json` | Her reminders (`ScheduleWake` appends) | JSON array of `{id?, at, repeat?, note}` | Her + app (fires, removes, moves) | Yes; whole-file Write needs a current Read this turn | Yes (= no reminders) | Strict JSON; `at` local `YYYY-MM-DD HH:MM`, 5 min–30 days ahead (an unchanged past `at` kept), `repeat` daily/weekly, note ≤ 200, ids unique, ≤ 20 | New entries get the next `r<n>` id and the file is rewritten one entry per line |
-| `~/life/watches.json` | Her watches (`WatchFor` appends) | JSON array of `{id?, timeout, once?, note, when[]}` | Her + app (match, timeout) | Yes; whole-file Write needs a current Read | Yes (= no watches) | Strict JSON; timeout in the future, ≤ 7 days; ≤ 5 bindings, each `place`/`from`/`words` (1–10, ≤ 60 chars)/`any_message`; names resolvable; ≤ 10 watches; a `once` watch that already matched can't come back | `from` names resolved to user ids in `life/watch-ids.json` |
+| `~/life/wakeups.json` | Her wakeups (`Wakeup` adds and cancels; see below) | JSON array, one entry per line: `{id?, kind: at\|every\|watch\|page, when?, places?, filter?, url?, check?, options?, note, state?, disabled?}` | Her + app (fires, removes an `at` and a once watch, ends watches and pages, saves her code's `state`, disables after errors) | Yes; whole-file Write needs a current Read this turn | Yes (= no wakeups) | Strict JSON ≤ 64 KiB; each entry as `Wakeup` checks it (times, places, names, her functions compiled in the sandbox); ≤ 20 timed, 10 watches, 3 pages; note ≤ 200, state ≤ 4 KiB; ids `t<n>`/`w<n>`/`p<n>` matching the kind; a once watch that already fired can't come back | New entries get the next id, `for` becomes `until`, `at`'s time becomes a local time, and the file is rewritten one entry per line; places and `from` names resolved in `life/wakeup-ids.json`; changing a stopped wakeup's code turns it back on |
 | `~/life/profile.json` | Her Discord profile: `name` (read-only), `username`, `bio`, `nicknames` keyed by server slug | JSON object | Her + app (rewritten from her config) | Yes, outside sessions; whole-file Write needs a current Read | **No** | Discord username rules, bio ≤ 400, nickname 1–32, known servers, `name` unchanged | Saved to her config, then profile sync runs; the result says when Discord will show it |
 | `~/life/places.md` | Her rooms, her servers' emojis and her DMs | Markdown | App only (≤ 1/min, every turn start, when a new place folds in) | **No** (`places.md is kept up to date for you and can't be changed`) | **No** | — | — |
 | `/tmp/<place>/<ref>-<name>` | Attachments `ReadMessages` downloaded | the file | App | Yes | Yes | `/tmp` limits | Expire after 7 days |
@@ -56,11 +55,12 @@ Sources: `src/life/home/pathRules.ts` (`LIFE_FILES`), `src/life/home/homeStore.t
 `src/life/home/specialFiles.ts`, `src/life/home/daySchedule.ts`, `src/life/home/profileFile.ts`,
 `src/life/tools/files.ts`.
 
-- **Read before Write** (reminders, watches, profile): the turn remembers the hash she read; a
-  missing file counts as read when she read it missing. Otherwise `error: watches.json already
-  exists; Read it first (Write replaces the whole file)` or `error: watches.json changed since you
-  read it (a watch matched or timed out); Read it again` (`(a reminder fired)`, `(your profile was
-  changed for you)`). `Edit` works on the current file and needs no Read.
+- **Read before Write** (wakeups, profile): the turn remembers the hash she read; a missing file
+  counts as read when she read it missing. Otherwise `error: wakeups.json already exists; Read it
+  first (Write replaces the whole file)` or `error: wakeups.json changed since you read it (a wakeup
+  fired, ran or ended); Read it again` (`(your profile was changed for you)`). `Edit` works on the
+  current file and needs no Read. A once watch that fired is gone for good: writing it back is
+  `error: wakeups.json entry w1: it already fired once and was removed; leave it out`.
 - **profile.json in sessions**: nightly dreaming and a forget's notes scrub refuse Write/Edit/Bash
   changes to it (`error: profile.json isn't changed while tidying; leave it as it is`); the forget
   scrub never edits it.
@@ -78,11 +78,15 @@ Sources: `src/life/home/pathRules.ts` (`LIFE_FILES`), `src/life/home/homeStore.t
   refresh (a renamed one counts as unused until the next recount). The emoji lines carry no counts
   or times, so they change the file only when an emoji or the hourly order changes (an unchanged
   text is never written). The list is not in the system prompt; sending and `React` are unchanged.
-- **Side files** outside her folders (never visible to her): `life/watch-ids.json`,
-  `life/schedule-ids.json` (id counters, resolutions, fire times, already-routed occurrences, newest
-  100), `life/files-index.json` (download provenance, newest 10,000). A side file that does not parse
-  is kept as `<name>.corrupt-<ms>`, replaced, and the owner is told; reminders/timeouts due before the
-  recovery are removed without a wake.
+- **Side files** outside her folders (never visible to her): `life/wakeup-ids.json` (id counters per
+  kind, each watch's resolved places and names and fire times, when each `every` started counting,
+  each page's last check, her code's errors in a row, already-routed occurrences, newest 200),
+  `life/files-index.json` (download provenance, newest 10,000). A side file that does not parse is
+  kept as `<name>.corrupt-<ms>`, replaced, and the owner is told; timed wakeups and ends due before
+  the recovery are removed without a wake.
+- Her `reminders.json` and `watches.json` (before §30) became `wakeups.json` by migration
+  (`living-cast-wakeups-v1`: reminder `r4` is `t4`, watch `w3` stays `w3`; the old files are archived);
+  a `reminders.json` she writes now is an ordinary file.
 - A `~/life/` folder of her own from before 3.3.0 was renamed `~/life-notes/` by migration.
 
 ## Notes and MEMORY.md
@@ -92,10 +96,10 @@ Her notes are free-form files in her home. `MEMORY.md` is her index: its copy in
 diary, as soon as you learn something" and says "only your files last". See
 [memory-and-dreaming.md](memory-and-dreaming.md).
 
-## The eleven tools
+## The ten tools
 
-Fixed order (part of the cached prefix): `ReadMessages`, `SendMessage`, `React`, `WatchFor`,
-`ScheduleWake`, `Read`, `Write`, `Edit`, `Bash`, `WebSearch`, `WebFetch` (`src/life/tools/index.ts`).
+Fixed order (part of the cached prefix): `ReadMessages`, `SendMessage`, `React`, `Wakeup`, `Read`,
+`Write`, `Edit`, `Bash`, `WebSearch`, `WebFetch` (`src/life/tools/index.ts`).
 Results are short text; errors start with `error:` and set `is_error`. Tool names are PascalCase,
 parameters snake_case.
 
@@ -104,8 +108,7 @@ parameters snake_case.
 | `ReadMessages` | `place`, `query?` | Up to 5 places or `everywhere`; downloads attachments; see [messages-and-refs.md](messages-and-refs.md) |
 | `SendMessage` | `place`, `script` (`m:`, `reply`, `attach`, `react`, `wait`, `typing` lines) | The only way anyone sees her words; several messages per call; see [messages-and-refs.md](messages-and-refs.md) |
 | `React` | `place`, `ref`, `emoji` | Unicode or `:server_emoji:` |
-| `WatchFor` | `when` (0–5 bindings), `note` (≤ 200), `timeout_minutes` (1–10,080), `once?` (true) | Appends to `~/life/watches.json`; ≤ 10 watches; `watching w3 until Sun 25 Oct 14:02 (in ~/life/watches.json)` |
-| `ScheduleWake` | `at?` or `in_minutes?` (exactly one), `note` (≤ 200), `repeat?` (`daily`/`weekly`) | 5 min–30 days ahead; ≤ 20; `set r4 for Sun 25 Oct 18:00 (in ~/life/reminders.json)` |
+| `Wakeup` | `script` (JavaScript, ≤ 20,000 chars) calling `at`, `every`, `watch`, `page`, `cancel` | Every wakeup; all or nothing; see below. Refused while dreaming |
 | `Read` | `file_path`, `offset?`, `limit?`, `pages?` | Text, image or PDF from her folders or `/transcripts` |
 | `Write` | `file_path`, `content` | Creates/replaces a text file (folders made); ≤ 256 KiB; refuses `places.md`, binary files, `/transcripts` |
 | `Edit` | `file_path`, `old_string`, `new_string`, `replace_all?` | `old_string` must occur exactly once unless `replace_all`; non-empty and different |
@@ -113,16 +116,65 @@ parameters snake_case.
 | `WebSearch` | `query` (≤ 300), `num_results?` (5, 1–8) | Exa; host-wide 2/s, 50/day, 20 per waifu per day; `error: no more searches today`; not offered when a cap is 0 |
 | `WebFetch` | `url`, `prompt` (≤ 500) | One page; ≤ 3 per turn, 20 per waifu per day; pages > 2,000 chars are read by a digest call; SSRF-guarded (no private addresses); cached 15 min; not offered when a cap is 0 |
 
-**Watch matching** (`src/life/watches.ts`): a binding matches when every field it sets matches —
-place, author (`from` resolved to an id), any of its `words` (whole word, case-insensitive), or
-`any_message`. A binding with only `from` matches that person anywhere she can read. Her own messages
-never match; an empty `when` never matches (a timer). `once` (default) removes the watch at its first
-match; a repeating watch fires at most once per 10 minutes and `life.maxWatchFiresPerDay` (24) times a
-day. A message posted before the timeout still matches when handled later (catch-up).
+## Wakeup(script)
 
-**Reminders**: due reminders are routed first under a fixed id per occurrence, then removed or moved
-to the next daily/weekly occurrence, under her home lock; a file the app can't parse is never
-rewritten and the routed list stops it firing twice (`Scheduler.reminders`).
+One tool for every wakeup (spec §30; `src/life/tools/wakeup.ts`, `src/life/wakeups/`). Her script is
+JavaScript run once in the sandbox (below, 500 ms); each call adds one wakeup to `~/life/wakeups.json`
+or cancels one. Up to 40 calls per script.
+
+| Call | Adds | Rules |
+|---|---|---|
+| `at(when, note)` | `t<n>`, once | `"2026-10-30 18:00"`, `"18:00"` (today, else tomorrow), `"fri 18:00"`, `"tomorrow 09:00"`, `"in 45m"`, `"in 1h30m"`; 5 minutes to 30 days ahead; saved as a local time |
+| `every(when, note)` | `t<n>`, repeating | `"day 09:00"`, `"weekday 08:30"`, `"weekend 11:00"`, `"mon,fri 18:30"` or a 5-field cron (`"0 20 1 * *"`); steps of at least 15 minutes; the result shows the next three times |
+| `watch(places, filter, options, note)` | `w<n>` | `places`: a handle, a list (≤ 10) or `"everywhere"`; `filter`: `{from?, words?, any?}` (every field set must match; `words` 1–10 whole words, case-insensitive), a list of such objects (≤ 5, each may add its own `place`; any matches; `[]` is a timer), or her function `(msg, state) => …`; `options`: `{for: "2h"}` or `{until: "…"}` (≤ 7 days), `once?` (true) |
+| `page(url, check, options, note)` | `p<n>` | `check`: `{contains: "in stock"}` (fires when it appears), `"changes"` (fires when the text changes after a first look) or her function `(page, state) => …`; `options`: `{every: "6h", for: "3d"}`, `every` ≥ 1h, at most 7 days |
+| `cancel(id)` | — | Removes one (`cancel("w3")`) |
+
+- **All or nothing**: any error refuses the whole script with her line number and saves nothing
+  (`error: line 3: at: "someday" isn't a time; …; nothing was saved`); a script that runs too long has
+  no line (`error: your script took too long; nothing was saved`). The result lists what was set:
+  `set w1 (bake-club/#general, until Sat 24 Oct 16:00), t1 (Fri 30 Oct 18:00) (in ~/life/wakeups.json)`,
+  `w2 (timer, until …)`, plus `t2 next: Mon 26 Oct 08:30, Tue 27 Oct 08:30, Wed 28 Oct 08:30` for an
+  `every`; `cancelled t1`.
+- **Caps**: 20 timed (`at` + `every`), 10 watches, 3 pages (`error: you'd have 11 watches; at most
+  10; nothing was saved`).
+- **Her functions** are one plain arrow or function expression (≤ 8 KiB, not async or a generator)
+  that uses only its arguments and JavaScript's built-ins: a name from outside it is refused
+  (`filters can't use variables from outside them; put what they need inside (it uses kevin)`). Each
+  is compiled in the sandbox before saving; a syntax error is refused with its line.
+- `msg` is `{place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files}`; `page` is
+  `{url, status, title, text}` (text ≤ 200 KB). `state` is an object she may change; it persists
+  between runs (≤ 4 KiB as JSON), is written into her file at most once a minute and at shutdown.
+  Returning `true` fires, a string fires and is the wake's line (≤ 200 characters), anything else
+  doesn't.
+- **Watch matching** (`src/life/wakeups/run.ts`): only messages in the watch's places (or anywhere she
+  can read); her own never. An object filter costs nothing; her functions run in the sandbox once per
+  such message (50 ms CPU, 16 MiB, 64 KiB stack each). `once` (default) removes the watch at its first
+  fire; a repeating one fires at most once per 10 minutes and `life.maxWatchFiresPerDay` (24) times a
+  day (its function still runs, so its state stays current). A message posted before the watch ended
+  still counts when handled later (catch-up). Several of her wakeups firing on one message are one wake,
+  a line each.
+- **Pages** are fetched by the scheduler through the same SSRF-checked fetcher as `WebFetch`
+  (`privateAddressPolicy: "deny"`, no cache, no daily fetch cap, no model call), first at the next tick
+  after she sets it, then every `every`. A fire is a `watch` wake with the page's URL.
+- **Ends**: a watch or page whose `until` passes is removed and she gets `watch timed out · your
+  note: …` (`watch_timeout`), so a watch with `[]` works as a timer.
+- **Timed ones**: a due `at` or `every` is routed as a `reminder` wake under a fixed id per occurrence
+  (`w-reminder-<id>-<time>`), recorded, then the `at` is removed (an `every` stays); a late `at` fires
+  once at the first tick, an `every` counts from when it was first seen (a new one never fires a past
+  time). A file the app can't parse is never rewritten and the routed list stops it firing twice.
+- **Errors are never silent**: a run that throws, hits a limit or leaves a state over 4 KiB counts
+  one, a good run resets the count; three in a row stop the wakeup (`disabled` in her file, with the
+  reason) and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError: … (line 2)`), which
+  gets through busy and bed time like a reminder. Changing its code (in her file) turns it back on.
+
+## The sandbox
+
+Her code runs in QuickJS (`quickjs-emscripten` 0.32.0, exact pin; `src/life/sandbox/`) in one worker
+thread: a fresh runtime per run with no host functions, modules, timers, `console` or network; only
+JSON crosses in and out. `Date` reads the app's clock in her time zone. Limits: 50 ms CPU, 16 MiB,
+64 KiB stack per run (her script: 500 ms). A limit hit or a crash restarts the worker; nothing of the
+host is reachable (`tests/sandboxIsolation.test.ts`).
 
 **Read** (`src/life/tools/files.ts`):
 

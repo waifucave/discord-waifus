@@ -23,8 +23,7 @@ import {
   HerFileWriteResponseSchema,
   PlanEntryDeleteResponseSchema,
   PRIVATE_FILE_NAME,
-  ScheduleResponseSchema,
-  WatchesResponseSchema
+  WakeupsResponseSchema
 } from "../src/shared/schemas/api.js";
 import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { StorageService } from "../src/storage/storageService.js";
@@ -156,11 +155,11 @@ describe("her files", { timeout: 30_000 }, () => {
     expect(places.statusCode).toBe(400);
     expect(places.json()).toMatchObject({ error: "ReadOnlyFile", message: expect.stringContaining("places.md") });
 
-    const broken = await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/life/watches.json", payload: { text: '[\n  {"timeout": "2026-10-25 18:00", "note": "x", "when": []}\n  {"note": "y"}\n]' } });
+    const broken = await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/life/wakeups.json", payload: { text: '[\n  {"kind": "at", "when": "2026-10-25 18:00", "note": "x"}\n  {"note": "y"}\n]' } });
     expect(broken.statusCode).toBe(400);
-    expect(broken.json()).toMatchObject({ error: "InvalidFile", message: expect.stringMatching(/^watches\.json line 3, column 3: /u) });
+    expect(broken.json()).toMatchObject({ error: "InvalidFile", message: expect.stringMatching(/^wakeups\.json line 3, column 3: /u) });
     expect(broken.body).not.toContain(w.root);
-    expect((await w.home.files.inspect(w.home.life("watches.json"))).kind).toBe("missing");
+    expect((await w.home.files.inspect(w.home.life("wakeups.json"))).kind).toBe("missing");
 
     const first = HerFileWriteResponseSchema.parse((await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/plans.md", payload: { text: "bake", expectedHash: null } })).json());
     expect((await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/plans.md", payload: { text: "again", expectedHash: null } })).statusCode).toBe(409);
@@ -171,10 +170,10 @@ describe("her files", { timeout: 30_000 }, () => {
     expect(second.created).toBe(false);
     expect((await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/big.md", payload: { text: "x".repeat(300 * 1024) } })).statusCode).toBe(413);
 
-    // A new reminder gets its id when saved (the file is rewritten).
+    // A new wakeup gets its id when saved (the file is rewritten).
     const at = localMinuteText(new Date(Date.now() + 2 * 3_600_000), hostTimeZone());
-    const schedule = HerFileWriteResponseSchema.parse((await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/life/reminders.json", payload: { text: JSON.stringify([{ at, note: "flyer" }]) } })).json());
-    expect(schedule.rewritten).toBe(true);
+    const saved = HerFileWriteResponseSchema.parse((await w.app.inject({ method: "PUT", url: "/api/waifus/ella/files/~/life/wakeups.json", payload: { text: JSON.stringify([{ kind: "at", when: at, note: "flyer" }]) } })).json());
+    expect(saved.rewritten).toBe(true);
 
     expect((await w.app.inject({ method: "DELETE", url: `/api/waifus/ella/files/~/plans.md?expectedHash=${first.hash}` })).statusCode).toBe(409);
     const deleted = await w.app.inject({ method: "DELETE", url: `/api/waifus/ella/files/~/plans.md?expectedHash=${second.hash}` });
@@ -192,46 +191,55 @@ describe("her files", { timeout: 30_000 }, () => {
   });
 });
 
-describe("her reminders and watches", { timeout: 30_000 }, () => {
-  it("lists them parsed, redacts a watch bound to a DM, and deletes one entry by rewriting the file", async () => {
+describe("her wakeups (§30.3)", { timeout: 30_000 }, () => {
+  it("lists them with their sources, redacts a wakeup watching a DM, and deletes one entry by rewriting the file", async () => {
     const w = await world();
     const zone = hostTimeZone();
     const soon = localMinuteText(new Date(Date.now() + 2 * 3_600_000), zone);
     const later = localMinuteText(new Date(Date.now() + 5 * 3_600_000), zone);
-    await w.home.files.writeBytes(w.home.life("reminders.json"), Buffer.from(JSON.stringify([{ id: "r1", at: soon, note: "flyer" }, { id: "r2", at: later, repeat: "daily", note: "water plants" }])));
+    const filter = "(msg, state) => { state.seen = (state.seen || 0) + 1; return msg.text.includes('exam'); }";
     await w.home.files.writeBytes(
-      w.home.life("watches.json"),
-      Buffer.from(JSON.stringify([{ id: "w1", timeout: soon, once: true, note: "tea", when: [] }, { id: "w2", timeout: later, once: true, note: "Kevin's exam result", when: [{ place: "dm/kevin", words: ["exam"] }] }]))
+      w.home.life("wakeups.json"),
+      Buffer.from(
+        JSON.stringify([
+          { id: "t1", kind: "at", when: soon, note: "flyer" },
+          { id: "t2", kind: "every", when: "day 08:30", note: "water plants" },
+          { id: "w1", kind: "watch", places: "everywhere", filter: [], options: { until: soon }, note: "tea" },
+          { id: "w2", kind: "watch", places: "dm/kevin", filter, options: { until: later }, note: "Kevin's exam result", state: { seen: 2 } },
+          { id: "w3", kind: "watch", places: "everywhere", filter: { words: ["cake"] }, options: { until: later }, note: "cake talk", state: { last: "a DM's words" } }
+        ])
+      )
     );
-    await mkdir(path.dirname(w.storage.dataPath(lifePaths.watchIds("ella"))), { recursive: true });
-    await writeFile(w.storage.dataPath(lifePaths.watchIds("ella")), JSON.stringify({ nextId: 3, watches: { w2: { bindings: [{ placeKey: DM_KEY, words: ["exam"] }], fires: [] } } }));
+    await mkdir(path.dirname(w.storage.dataPath(lifePaths.wakeupIds("ella"))), { recursive: true });
+    await writeFile(w.storage.dataPath(lifePaths.wakeupIds("ella")), JSON.stringify({ nextId: { t: 3, w: 4, p: 1 }, watches: { w2: { placeKeys: [DM_KEY], fires: [] } } }));
 
-    const schedule = ScheduleResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/schedule" })).json());
-    expect(schedule.entries.map((entry) => entry.id)).toEqual(["r1", "r2"]);
-    expect(schedule.unreadable).toBeUndefined();
+    const listed = WakeupsResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/wakeups" })).json());
+    expect(listed.entries.map((entry) => entry.id)).toEqual(["t1", "t2", "w1", "w2", "w3"]);
+    expect(listed.unreadable).toBeUndefined();
+    expect(listed.entries[1]!.next).toHaveLength(3);
+    expect(listed.entries[2]).toMatchObject({ id: "w1", note: "tea", places: "everywhere", filter: [] });
+    // The private one: only that it is private. An everywhere watch's state may hold a DM's words.
+    expect(listed.entries[3]).toMatchObject({ id: "w2", private: true, note: PRIVATE_FILE_NAME, places: PRIVATE_FILE_NAME, filter: PRIVATE_FILE_NAME, state: PRIVATE_FILE_NAME });
+    expect(listed.entries[4]).toMatchObject({ id: "w3", note: "cake talk", filter: { words: ["cake"] }, state: PRIVATE_FILE_NAME });
+    expect(JSON.stringify(listed)).not.toContain("exam");
+    expect(JSON.stringify(listed)).not.toContain("a DM's words");
+    const open = WakeupsResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/wakeups?includePrivate=1" })).json());
+    // With the local reveal, her code itself (the source).
+    expect(open.entries[3]).toMatchObject({ note: "Kevin's exam result", places: "dm/kevin", filter, state: { seen: 2 } });
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/ella/wakeups?includePrivate=1" })).statusCode).toBe(403);
 
-    const watches = WatchesResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/watches" })).json());
-    expect(watches.entries[0]).toMatchObject({ id: "w1", note: "tea", when: [] });
-    expect(watches.entries[1]).toMatchObject({ id: "w2", private: true, note: PRIVATE_FILE_NAME, when: [{ place: PRIVATE_FILE_NAME, words: [PRIVATE_FILE_NAME] }] });
-    expect(JSON.stringify(watches)).not.toContain("exam");
-    const open = WatchesResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/watches?includePrivate=1" })).json());
-    expect(open.entries[1]).toMatchObject({ note: "Kevin's exam result", when: [{ place: "dm/kevin", words: ["exam"] }] });
-    expect((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/ella/watches?includePrivate=1" })).statusCode).toBe(403);
-
-    expect(PlanEntryDeleteResponseSchema.parse((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/schedule/r1" })).json())).toEqual({ waifuId: "ella", removed: "r1" });
-    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/schedule/r1" })).statusCode).toBe(404);
-    expect((await w.home.readReminders(zone)).map((entry) => entry.id)).toEqual(["r2"]);
-
-    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/watches/w2" })).json()).toEqual({ waifuId: "ella", removed: "w2" });
-    const after = await w.home.readWatches(zone);
-    expect(after.entries.map((entry) => entry.id)).toEqual(["w1"]);
-    expect(after.ids.watches["w2"]).toBeUndefined();
-    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/watches/w9" })).statusCode).toBe(404);
+    expect(PlanEntryDeleteResponseSchema.parse((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/wakeups/t1" })).json())).toEqual({ waifuId: "ella", removed: "t1" });
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/wakeups/t1" })).statusCode).toBe(404);
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/wakeups/w2" })).json()).toEqual({ waifuId: "ella", removed: "w2" });
+    const after = await w.home.readWakeups();
+    expect(after.entries.map((entry) => entry.id)).toEqual(["t2", "w1", "w3"]);
+    expect((await w.home.readWakeupSide()).watches["w2"]).toBeUndefined();
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/wakeups/w9" })).statusCode).toBe(404);
 
     // A hand-broken file: listed as unreadable, and nothing is rewritten.
-    await w.home.files.writeBytes(w.home.life("reminders.json"), Buffer.from(`[{"id": "r2", "at": "${later}", "note": "x"},]`));
-    expect((await w.app.inject({ method: "GET", url: "/api/waifus/ella/schedule" })).json()).toMatchObject({ unreadable: true });
-    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/schedule/r2" })).statusCode).toBe(409);
+    await w.home.files.writeBytes(w.home.life("wakeups.json"), Buffer.from(`[{"id": "t2", "kind": "at", "when": "${later}", "note": "x"},]`));
+    expect((await w.app.inject({ method: "GET", url: "/api/waifus/ella/wakeups" })).json()).toMatchObject({ unreadable: true });
+    expect((await w.app.inject({ method: "DELETE", url: "/api/waifus/ella/wakeups/t2" })).statusCode).toBe(409);
   });
 });
 
@@ -254,35 +262,35 @@ describe("D14 by any spelling (review S3, S4)", { timeout: 30_000 }, () => {
     }
   });
 
-  it("watches.json with a DM-bound watch reads redacted without includePrivate (also for the assistant), and can't be replaced or deleted then", async () => {
+  it("wakeups.json with a wakeup watching a DM reads redacted without includePrivate (also for the assistant), and can't be replaced or deleted then", async () => {
     const w = await world();
     const later = localMinuteText(new Date(Date.now() + 3 * 86_400_000), hostTimeZone());
-    const raw = `[\n  {"id": "w1", "timeout": "${later}", "once": true, "note": "ask Kevin how the biopsy went", "when": [{"place": "dm/kevin", "words": ["biopsy"]}]},\n  {"id": "w2", "timeout": "${later}", "once": true, "note": "tea", "when": []}\n]\n`;
-    await w.home.files.writeBytes(w.home.life("watches.json"), Buffer.from(raw));
+    const raw = `[\n  {"id": "w1", "kind": "watch", "places": "dm/kevin", "filter": {"words": ["biopsy"]}, "options": {"until": "${later}"}, "note": "ask Kevin how the biopsy went"},\n  {"id": "w2", "kind": "watch", "places": "everywhere", "filter": [], "options": {"until": "${later}"}, "note": "tea"}\n]\n`;
+    await w.home.files.writeBytes(w.home.life("wakeups.json"), Buffer.from(raw));
     for (const principal of [remote(), createLocalRequestPrincipal()]) {
       const delegation = principal.kind === "local" ? { conversationId: "c1" } : undefined;
-      for (const url of ["/api/waifus/ella/files/~/life/watches.json", "/api/waifus/ella/files/home/ella/Life/WATCHES.json"]) {
+      for (const url of ["/api/waifus/ella/files/~/life/wakeups.json", "/api/waifus/ella/files/home/ella/Life/WAKEUPS.json"]) {
         const answer = await dispatchInternal(w.app, principal, delegation, { method: "GET", url });
         expect(answer.statusCode, url).toBe(200);
         expect(answer.body).not.toContain("biopsy");
         const file = HerFileResponseSchema.parse(answer.json());
-        expect(file).toMatchObject({ redacted: true, readOnly: true, private: true, special: "watches" });
+        expect(file).toMatchObject({ redacted: true, readOnly: true, private: true, special: "wakeups" });
         expect(file.text).toContain(`"note": "${PRIVATE_FILE_NAME}"`);
         expect(file.text).toContain('"note": "tea"');
       }
-      const rawBytes = await dispatchInternal(w.app, principal, delegation, { method: "GET", url: "/api/waifus/ella/files/~/life/watches.json?raw=1" });
+      const rawBytes = await dispatchInternal(w.app, principal, delegation, { method: "GET", url: "/api/waifus/ella/files/~/life/wakeups.json?raw=1" });
       expect(rawBytes.body).not.toContain("biopsy");
     }
-    // Writing the redacted copy back (or deleting the file) would lose the private watch: refused.
-    expect((await dispatchInternal(w.app, remote(), undefined, { method: "PUT", url: "/api/waifus/ella/files/~/life/watches.json", headers: { "idempotency-key": Buffer.alloc(32, 0x61).toString("base64url") }, payload: { text: "[]\n", expectedHash: sha256(raw) } })).statusCode).toBe(403);
-    expect((await dispatchInternal(w.app, remote(), undefined, { method: "DELETE", url: `/api/waifus/ella/files/~/life/watches.json?expectedHash=${sha256(raw)}`, headers: { "idempotency-key": Buffer.alloc(32, 0x62).toString("base64url") } })).statusCode).toBe(403);
+    // Writing the redacted copy back (or deleting the file) would lose the private wakeup: refused.
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "PUT", url: "/api/waifus/ella/files/~/life/wakeups.json", headers: { "idempotency-key": Buffer.alloc(32, 0x61).toString("base64url") }, payload: { text: "[]\n", expectedHash: sha256(raw) } })).statusCode).toBe(403);
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "DELETE", url: `/api/waifus/ella/files/~/life/wakeups.json?expectedHash=${sha256(raw)}`, headers: { "idempotency-key": Buffer.alloc(32, 0x62).toString("base64url") } })).statusCode).toBe(403);
     // Locally with the reveal, the whole file.
-    const local = HerFileResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/files/~/life/watches.json?includePrivate=1" })).json());
+    const local = HerFileResponseSchema.parse((await w.app.inject({ method: "GET", url: "/api/waifus/ella/files/~/life/wakeups.json?includePrivate=1" })).json());
     expect(local.text).toBe(raw);
     expect(local.redacted).toBeUndefined();
     // A file that does not read whole and names a DM is refused outright.
-    await w.home.files.writeBytes(w.home.life("watches.json"), Buffer.from(`[{"id": "w1", "timeout": "${later}", "note": "biopsy", "when": [{"place": "dm/kevin"}]},]`));
-    expect((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/ella/files/~/life/watches.json" })).statusCode).toBe(403);
+    await w.home.files.writeBytes(w.home.life("wakeups.json"), Buffer.from(`[{"id": "w1", "kind": "watch", "places": "dm/kevin", "options": {"until": "${later}"}, "note": "biopsy"},]`));
+    expect((await dispatchInternal(w.app, remote(), undefined, { method: "GET", url: "/api/waifus/ella/files/~/life/wakeups.json" })).statusCode).toBe(403);
   });
 
   it("a notes file reads without its lines from private chats unless a local reveal (also for the assistant), read-only, with the real file's hash", async () => {

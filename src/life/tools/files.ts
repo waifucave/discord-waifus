@@ -7,8 +7,8 @@
 // never depends on the file) or its OCR text, or a PDF's text with page markers; its output is cut
 // at READ_MAX_OUTPUT_CHARS. A file from a DM is recorded as a DM call (D14), so the owner's views
 // hide it. Outside her life (maintenance, a forget's scrub: `ctx.mode` "session") an image is always
-// its OCR text and her life's image state is never touched. A whole-file Write of reminders.json or
-// watches.json (in ~/life/) needs a Read of it this turn that is still current (spec §16.4, §16.5).
+// its OCR text and her life's image state is never touched. A whole-file Write of wakeups.json or
+// profile.json (in ~/life/) needs a Read of it this turn that is still current (spec §16.14, §30.3).
 
 import { z } from "zod";
 import { MAX_INLINE_IMAGE_BYTES } from "../../orchestration/context/images.js";
@@ -255,7 +255,7 @@ async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
 }
 
 /** Dreaming tidies her notes and MEMORY.md only (§21.6): `~/life/` is left alone. */
-export const DREAM_LIFE_REFUSED = "error: ~/life/ isn't changed while dreaming (her day, reminders, watches, profile and places stay as they are); leave it alone";
+export const DREAM_LIFE_REFUSED = "error: ~/life/ isn't changed while dreaming (her day, wakeups, profile and places stay as they are); leave it alone";
 
 /**
  * After she changed `~/life/schedule.json` or `MEMORY.md` in her life (§21.2): both have a copy in
@@ -310,8 +310,8 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
-  // A whole-file Write of her reminders or watches replaces what the app changed since she read it
-  // (a reminder fired, a watch matched or timed out, the owner deleted one): it needs a current Read.
+  // A whole-file Write of her wakeups replaces what the app changed since she read it (one fired, ran
+  // or ended, the owner deleted one): it needs a current Read.
   // Her day (§21.2) only she and the owner change: a Write needs no Read, but one she read this turn
   // must still be current.
   const special = specialJsonFile(target.path);
@@ -321,7 +321,7 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   const name = target.path.segments[target.path.segments.length - 1];
   // A file from a DM she replaces (or a new one in a DM's folder) makes the call a DM call (D14).
   await noteDmFile(store, target.path);
-  const why = special === "watches" ? "a watch matched or timed out" : special === "profile" ? "your profile was changed for you" : special === "schedule" ? "it was changed for you" : "a reminder fired";
+  const why = special === "wakeups" ? "a wakeup fired, ran or ended" : special === "profile" ? "your profile was changed for you" : "it was changed for you";
   const guard =
     special && !(special === "schedule" && known === undefined)
       ? {
@@ -407,7 +407,7 @@ export const fileTools: LifeTool[] = [
   {
     name: "Write",
     description:
-      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. ~/life/places.md can't be changed; the other files in ~/life/ are checked before they are saved, and reminders.json, watches.json and profile.json need a fresh Read before Write replaces them.",
+      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. ~/life/places.md can't be changed; the other files in ~/life/ are checked before they are saved, and wakeups.json and profile.json need a fresh Read before Write replaces them.",
     inputSchema: {
       type: "object",
       properties: { file_path: textPathSchema, content: { type: "string", description: "The whole file (at most 256 KB)." } },

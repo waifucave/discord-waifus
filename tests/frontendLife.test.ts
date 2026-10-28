@@ -6,8 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ForgetPersonPanel, forgetSummary } from "../src/frontend/components/ForgetPersonPanel.js";
 import { TurnCell } from "../src/frontend/screens/LifeScreen.js";
-import { blockRow, breadcrumbs, castEvents, fileSize, groupByTurn, matchingReveal, mergeTimeline, PRIVATE_HIDDEN, settledAll, stateLabel, watchWhenText } from "../src/frontend/screens/lifeView.js";
-import { FileRow, ReminderList, WatchList } from "../src/frontend/screens/LifeFiles.js";
+import { blockRow, breadcrumbs, castEvents, fileSize, groupByTurn, matchingReveal, mergeTimeline, PRIVATE_HIDDEN, settledAll, stateLabel, wakeupWhatText } from "../src/frontend/screens/lifeView.js";
+import { FileRow, WakeupList } from "../src/frontend/screens/LifeFiles.js";
 import { PRIVATE_FILE_NAME } from "../src/shared/constants/files.js";
 import { ConfirmDialog } from "../src/frontend/components/ConfirmDialog.js";
 import { detectorChoiceOf, detectorPatch } from "../src/frontend/screens/RoomsScreen.js";
@@ -235,7 +235,7 @@ describe("review: dashboard fixes", () => {
   });
 });
 
-describe("her files, reminders and watches (§16.11)", () => {
+describe("her files and wakeups (§16.11, §30.3)", () => {
   it("a DM file the server left unnamed stays unnamed and cannot be opened", () => {
     const hidden = renderToStaticMarkup(createElement(FileRow, { entry: { name: PRIVATE_FILE_NAME, kind: "file", size: 30, modified: AT, private: true, redacted: true }, onOpen: () => undefined }));
     expect(hidden).toContain(PRIVATE_FILE_NAME);
@@ -256,25 +256,29 @@ describe("her files, reminders and watches (§16.11)", () => {
     expect(breadcrumbs({ root: "tmp", dir: "/tmp", display: "/tmp" })).toEqual([{ label: "/tmp", dir: "/tmp" }]);
   });
 
-  it("lists reminders and watches with delete buttons; a private watch shows only that it is private", () => {
-    const reminders = renderToStaticMarkup(createElement(ReminderList, { data: { waifuId: "ella", timeZone: "UTC", entries: [{ id: "r4", at: "2026-10-25 18:00", repeat: "daily", note: "check the flyer" }] }, onDelete: () => undefined }));
-    expect(reminders).toContain("check the flyer");
-    expect(reminders).toContain("daily");
-    expect(reminders).toContain(">Delete</button>");
-    const watches = {
+  it("lists her wakeups with delete buttons and her code; a private one shows only that it is private", () => {
+    const data = {
       waifuId: "ella",
       timeZone: "UTC",
       includePrivate: false,
       entries: [
-        { id: "w3", timeout: "2026-10-25 18:00", once: true, note: "tea", when: [] },
-        { id: "w4", timeout: "2026-10-25 19:00", once: true, note: PRIVATE_FILE_NAME, when: [{ place: PRIVATE_FILE_NAME }], private: true as const }
+        { id: "t4", kind: "every" as const, when: "weekday 08:30", next: ["2026-10-26 08:30", "2026-10-27 08:30", "2026-10-28 08:30"], note: "check the flyer" },
+        { id: "w3", kind: "watch" as const, places: "everywhere", filter: [], options: { until: "2026-10-25 18:00", once: true }, note: "tea" },
+        { id: "w5", kind: "watch" as const, places: "bake-club/#general", filter: "(msg) => msg.text.includes('cake')", options: { until: "2026-10-25 18:00" }, note: "cake", disabled: "TypeError: x is undefined (line 1)" },
+        { id: "w4", kind: "watch" as const, places: PRIVATE_FILE_NAME, filter: PRIVATE_FILE_NAME, options: { until: "2026-10-25 19:00", once: true }, note: PRIVATE_FILE_NAME, private: true as const },
+        { id: "p1", kind: "page" as const, url: "https://example.com/menu", check: { contains: "brownies" }, options: { every: "6h", until: "2026-10-27 18:00" }, note: "menu" }
       ]
     };
-    const html = renderToStaticMarkup(createElement(WatchList, { data: watches, includePrivate: false, onDelete: () => undefined }));
-    expect(html).toContain("timer · tea");
+    const html = renderToStaticMarkup(createElement(WakeupList, { data, includePrivate: false, onDelete: () => undefined }));
+    expect(html).toContain("every weekday 08:30 (next 2026-10-26 08:30, 2026-10-27 08:30, 2026-10-28 08:30) · check the flyer");
+    expect(html).toContain("watch everywhere until 2026-10-25 18:00 · timer · tea");
+    expect(html).toContain("(msg) =&gt; msg.text.includes(&#x27;cake&#x27;)");
+    expect(html).toContain("stopped");
     expect(html).toContain(PRIVATE_HIDDEN);
     expect(html).toContain("private chat");
-    expect(watchWhenText({ when: [{ place: "bake-club/#general", from: "Mina", words: ["brownie"] }] })).toBe("in bake-club/#general · from Mina · words: brownie");
+    expect(html).toContain('page https://example.com/menu every 6h until 2026-10-27 18:00 · has &quot;brownies&quot; · menu');
+    expect(html.match(/>Delete<\/button>/gu)).toHaveLength(5);
+    expect(wakeupWhatText({ kind: "watch", places: ["bake-club/#general"], filter: { from: "Mina", words: ["brownie"] }, options: { until: "2026-10-25 18:00", once: false } })).toBe("watch bake-club/#general until 2026-10-25 18:00 (repeats) · from Mina · words: brownie");
   });
 });
 

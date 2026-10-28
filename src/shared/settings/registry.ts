@@ -84,7 +84,7 @@ const APP: SettingGroup = {
     "life.maxSendPlacesPerTurn": { label: "Places per turn", help: "Distinct places she may send to in one turn.", ...reload, example: "3" },
     "life.maxSendsPerTurn": { label: "Messages per turn", help: "Messages she may send in one turn (each m: line of a SendMessage script counts one, and so does a message with only files).", ...reload, example: "15" },
     "life.maxWakesPerUserPerHour": { label: "Wakes per person per hour", help: "Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line.", ...reload, example: "20" },
-    "life.maxWatchFiresPerDay": { label: "Watch fires per day", help: "How often one of her repeating watches may fire per day.", ...reload, example: "24" },
+    "life.maxWatchFiresPerDay": { label: "Watch fires per day", help: "How often one of her repeating watches (a Wakeup watch with once: false) may fire per day; at most once per 10 minutes either way.", ...reload, example: "24" },
     "life.notificationLinesPerPlace": {
       label: "Notification lines per place",
       help: "Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out.",
@@ -120,7 +120,7 @@ const APP: SettingGroup = {
     "life.webFetch.timeoutMs": { label: "Time limit per page", help: "Time limit for one page.", unit: "ms", ...reload, example: "20000" },
     "life.webFetch.maxRedirects": { label: "Redirects followed", help: "Redirects followed (each hop is checked against private addresses).", ...reload, example: "5" },
     "life.webFetch.cacheMinutes": { label: "Keep fetched pages", help: "Fetched pages are cached this long.", unit: "minutes", ...reload, example: "15" },
-    "life.home.maxBytes": { label: "Home folder size", help: "Her home folder (her notes, reminders, watches and anything she keeps) may hold at most this much; a write past it is refused.", unit: "bytes", ...live, example: "52428800" },
+    "life.home.maxBytes": { label: "Home folder size", help: "Her home folder (her notes, wakeups and anything she keeps) may hold at most this much; a write past it is refused.", unit: "bytes", ...live, example: "52428800" },
     "life.home.maxFiles": { label: "Files in her home", help: "Files her home folder may hold.", ...live, example: "2000" },
     "life.home.maxFolders": { label: "Folders in her home", help: "Folders her home folder may hold.", ...live, example: "500" },
     "life.tmp.maxBytes": { label: "/tmp size", help: "Her /tmp (downloads and scratch files) may hold at most this much; the oldest files there are deleted when a download would not fit.", unit: "bytes", ...live, example: "209715200" },
@@ -311,9 +311,9 @@ export const RESOURCE_TOPICS: readonly ResourceTopic[] = Object.freeze([
   {
     id: "life",
     title: "A waifu's life",
-    summary: "Status, the life log, owner wakes, a manual compaction and a reset; her files, reminders and watches.",
+    summary: "Status, the life log, owner wakes, a manual compaction and a reset; her files and wakeups.",
     description:
-      "Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout and MEMORY.md her index; life/ with schedule.json her day, which she writes every morning: busy blocks with why, phone checks, mood, plans (one with a time wakes her then); reminders.json, watches.json, profile.json and places.md kept by the app), /tmp (files people sent, deleted 7 days after the last write) and the read-only /transcripts (everything said where she is, one file per room per day, kept forever; see `waifus help dreaming`). The files routes list, read, write and delete them under the same checks as her Write tool (life/places.md refused, the JSON files in life/ checked with line and column; revision by content hash, expectedHash). While she is busy (a block of her day), DMs, mentions, replies, her name, the owner, her reminders, timed plans and watches reach her at once; detector picks, @everyone and role mentions wait for her next phone check (or the block's end), except in a place where she is chatting (life.busyEngagedMinutes after her last send there). Her bed time (availability.bedTime, the owner's) is soft: up late while she keeps sending, then dozing (like busy, but the rest waits for the morning), then asleep after life.bedDozeMinutes (only her reminders, timed plans and the owner's wakes get through; DMs get the sleep notice). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a watch bound to a DM is redacted the same way, and so is a note's line that links to such a file or names a DM (the note then reads as a read-only copy).",
+      "Each waifu is an autonomous agent with one continuous life: wakes arrive as notifications, she decides what to do with her tools, and only her sends reach people. The life log hides DM content unless a local request reveals it (includePrivate=1; never over Remote Access). Compact summarises her life now; reset starts a fresh epoch with no summary (her files and queued wakes stay). Each waifu has her own computer: her home /home/<name> (her notes in any layout and MEMORY.md her index; life/ with schedule.json her day, which she writes every morning: busy blocks with why, phone checks, mood, plans (one with a time wakes her then); wakeups.json (her wakeups: timed ones, watches and pages, set with her Wakeup tool, each with its source), profile.json and places.md kept by the app), /tmp (files people sent, deleted 7 days after the last write) and the read-only /transcripts (everything said where she is, one file per room per day, kept forever; see `waifus help dreaming`). The files routes list, read, write and delete them under the same checks as her Write tool (life/places.md refused, the JSON files in life/ checked with line and column, her wakeups' functions compiled; revision by content hash, expectedHash). While she is busy (a block of her day), DMs, mentions, replies, her name, the owner, her timed wakeups, timed plans and watches reach her at once; detector picks, @everyone and role mentions wait for her next phone check (or the block's end), except in a place where she is chatting (life.busyEngagedMinutes after her last send there). Her bed time (availability.bedTime, the owner's) is soft: up late while she keeps sending, then dozing (like busy, but the rest waits for the morning), then asleep after life.bedDozeMinutes (only her timed wakeups, timed plans, stopped-wakeup notices and the owner's wakes get through; DMs get the sleep notice). A file from a private chat is listed as [private chat redacted] and opens only with a local includePrivate=1; a wakeup watching a DM is redacted the same way (and an everywhere watch's state), and so is a note's line that links to such a file or names a DM (the note then reads as a read-only copy).",
     routes: [
       { method: "GET", path: "/api/waifus/:waifuId/life" },
       { method: "GET", path: "/api/waifus/:waifuId/life/log" },
@@ -326,12 +326,10 @@ export const RESOURCE_TOPICS: readonly ResourceTopic[] = Object.freeze([
       { method: "GET", path: "/api/waifus/:waifuId/files/*" },
       { method: "PUT", path: "/api/waifus/:waifuId/files/*" },
       { method: "DELETE", path: "/api/waifus/:waifuId/files/*" },
-      { method: "GET", path: "/api/waifus/:waifuId/schedule" },
-      { method: "DELETE", path: "/api/waifus/:waifuId/schedule/:reminderId" },
-      { method: "GET", path: "/api/waifus/:waifuId/watches" },
-      { method: "DELETE", path: "/api/waifus/:waifuId/watches/:watchId" }
+      { method: "GET", path: "/api/waifus/:waifuId/wakeups" },
+      { method: "DELETE", path: "/api/waifus/:waifuId/wakeups/:wakeupId" }
     ],
-    cli: ["waifus life <waifu> [--log] [--private]", "waifus wake <waifu> [note]", "waifus files <waifu> [path] [--root tmp|transcripts] [--private]", "waifus schedule <waifu>", "waifus watches <waifu> [--private]"]
+    cli: ["waifus life <waifu> [--log] [--private]", "waifus wake <waifu> [note]", "waifus files <waifu> [path] [--root tmp|transcripts] [--private]", "waifus wakeups <waifu> [--private]"]
   },
   {
     id: "dreaming",

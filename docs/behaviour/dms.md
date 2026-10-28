@@ -26,7 +26,7 @@ re-logs only the bots whose DM set changed. DM-eligible bots register a DM-only 
 - The DM burst fires **2.5 s** after the person's last message (`discord.debounce.dmMs`), later while
   they keep typing (**6 s** per typing event), at most **60 s** after the first message
   (`dmMaxWaitMs`). One `dm` wake per burst, one notification line per message.
-- Her watches on the DM's messages are matched after the hold and ride on the same wake
+- Her wakeup watches on the DM's messages are matched after the hold and ride on the same wake
   (`dm, watch · dm/kevin · "match" · from Kevin · #a3 "…" · your note: "…"`).
 - Then the router: rate limit (below) → bed time → busy → budget.
   - **Awake or busy**: a DM always gets through (it is in the busy set).

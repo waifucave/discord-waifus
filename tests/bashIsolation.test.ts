@@ -294,12 +294,12 @@ describe("her changes are checked and saved all or nothing (§16.3.5, §16.12)",
     expect(await herFile(w, "ella", "home/life/places.md")).toContain("# Your places");
   });
 
-  it("a command that breaks watches.json saves nothing, with the exact problem", async () => {
-    const result = await bash("echo 'kept?' > ~/ok.md; printf '[{\"timeout\": \"2026-10-25 10:00\", \"note\": \"x\", \"when\": []},]' > ~/life/watches.json");
+  it("a command that breaks wakeups.json saves nothing, with the exact problem", async () => {
+    const result = await bash("echo 'kept?' > ~/ok.md; printf '[{\"kind\": \"at\", \"when\": \"2026-10-25 10:00\", \"note\": \"x\"},]' > ~/life/wakeups.json");
     expect(result.isError).toBe(true);
-    expect(result.text).toMatch(/\nerror: changes not saved: watches\.json line 1, column \d+: /u);
+    expect(result.text).toMatch(/\nerror: changes not saved: wakeups\.json line 1, column \d+: /u);
     expect(await herFile(w, "ella", "home/ok.md")).toBeUndefined();
-    expect(await herFile(w, "ella", "home/life/watches.json")).toBeUndefined();
+    expect(await herFile(w, "ella", "home/life/wakeups.json")).toBeUndefined();
   });
 
   it("a change set over her home's limits saves nothing", async () => {

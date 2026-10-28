@@ -1,5 +1,5 @@
 // Her day (Living cast spec §21.2): `~/life/schedule.json`, which she writes every morning and may
-// change during the day. A special file like `watches.json`: every write is checked first (strict
+// change during the day. A special file like `wakeups.json`: every write is checked first (strict
 // JSON with line and column, then the rules below) and refused with the exact problem.
 //
 //   {

@@ -24,16 +24,16 @@ import { dayPlanFor } from "./home/index.js";
 import { readLifeState, updateLifeState } from "./lifeStore.js";
 
 /** Wake reasons that reach her while she is busy (S4) or up late / dozing in her bed time (§21.6c). */
-export const BUSY_THROUGH_REASONS: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "reminder", "plan", "watch", "watch_timeout", "morning"]);
+export const BUSY_THROUGH_REASONS: ReadonlySet<WakeReason> = new Set(["mention", "name", "dm", "owner", "reminder", "plan", "watch", "watch_timeout", "morning", "wakeup_error"]);
 
 /** A wake that reaches her while she is busy: any of its reasons does (a burst with a mention does). */
 export function getsThroughBusy(wake: Pick<Wake, "reason" | "reasons">): boolean {
   return [wake.reason, ...(wake.reasons ?? [])].some((reason) => BUSY_THROUGH_REASONS.has(reason));
 }
 
-/** Wake reasons that reach her while she is asleep in her bed time (§21.6c): her reminders (and timed plans, §29) and the owner's wakes. */
+/** Wake reasons that reach her while she is asleep in her bed time (§21.6c): her reminders (her timed wakeups, timed plans §29, a wakeup her errors stopped §30.2) and the owner's wakes. */
 export function getsThroughAsleep(wake: Pick<Wake, "reason" | "reasons">): boolean {
-  return [wake.reason, ...(wake.reasons ?? [])].some((reason) => reason === "reminder" || reason === "plan" || reason === "owner");
+  return [wake.reason, ...(wake.reasons ?? [])].some((reason) => reason === "reminder" || reason === "plan" || reason === "owner" || reason === "wakeup_error");
 }
 
 /** The place is open for her while busy (§21.4): her latest send there was recent, inside this block. */
