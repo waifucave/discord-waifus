@@ -3464,11 +3464,11 @@ its own tool. The script is lines, each one a command:
 | Line | Meaning |
 |---|---|
 | `m: <text>` | Send one message. A following line that starts with whitespace continues it (a newline inside the message), for the rare poem or list. |
-| `reply #k3` | The next `m:` is a Discord reply to `#k3`. |
-| `attach <path>` | Attach a file (her folders, the `files` rules as today) to the next `m:`. Several `attach` lines may precede one `m:` (at most `life.send.maxFiles`). An `attach` with no `m:` after it (followed by another command or the end) is sent as a message of its own with only the file. |
+| `reply #k3` | The next send (an `m:`, or a file-only `attach` group) is a Discord reply to `#k3`. |
+| `attach <path>` | Attach a file (her folders, the `files` rules as today). One or more `attach` lines directly after an `m:` (and its continuation lines) attach to that message (at most `life.send.maxFiles`). `attach` lines that do not directly follow an `m:` (at the start of the script, or after `wait`/`typing`/`react`/`reply`) are sent together as one message with only the files. (Owner change, 2026-10-28: attach lines go after their `m:`.) |
 | `react #k3 <emoji>` | React, with `React`'s rules. |
 | `wait <seconds>` | Pause 1–60 s. If anyone else writes in that place during the wait (a person or another waifu; typing does not count), the rest of the script is not sent. |
-| `typing <seconds>` | Show typing there for 1–10 s without sending. |
+| `typing <seconds>` | Show typing there for 1–10 s without sending. (Review, 2026-10-28: counts in the same 120 s as the waits.) |
 
 - Blank lines are ignored; a line that is none of these is a parse error. The whole script is parsed and
   checked first (places, refs, files, emoji, caps); any error refuses it with the line number and
@@ -3476,7 +3476,7 @@ its own tool. The script is lines, each one a command:
 - The existing typing pacing runs before every `m:` (30 ms × chars, 0.6–4.5 s). Between lines without
   a `wait`, new messages do not stop the script (a person bursting doesn't stop mid-burst either).
 - Caps: each `m:` (and each file-only send) counts one against `life.maxSendsPerTurn`, whose default
-  rises from 8 to 15; a script's waits total at most 120 s; one place per call (the per-turn place cap
+  rises from 8 to 15; a script's waits and typing lines total at most 120 s; one place per call (the per-turn place cap
   is unchanged). A script over a cap is refused before anything is sent.
 - The turn keeps running during a wait. Wakes that arrive fold into the next tool results as today. A
   wait cut short adds to the result what stopped it, as notification lines (with refs), so she sees it
@@ -3505,6 +3505,96 @@ Parser (every command, continuation, errors with line numbers, caps), wait stopp
 not by typing, attach-only sends, reply/attach binding to the next `m:`, intents per line and boot
 repair, the nudge (threshold, median, too few samples, DMs use the other person), the new prompt text
 (golden), the settings default, `docs/behaviour/messages-and-refs.md` and `her-computer.md`.
+
+### 27.4 As built (2026-10-28)
+
+- **Parser** (`src/life/tools/sendScript.ts`, pure): commands are case-insensitive (`M:hi`), `m:`
+  needs no space after the colon, a number may end in `s` (`wait 5s`) and may have decimals. A script
+  indented as a whole is read as if it were not (the common indent is removed first), so a model that
+  indents every line still works; after that, an indented line continues the open `m:` and is an
+  error (`an indented line continues an m: message, and there is none above it`) anywhere else,
+  except that an indented line that is a whole command is that command (review, 2026-10-28:
+  `  attach /tmp/flyer.png` after an `m:` attaches the file instead of posting its text): `m:` with
+  text, `attach` with something path-like (starting `~`, `/`, `./`, holding a `/`, or a name with an
+  extension), `reply`/`react` with a `#ref`, `wait`/`typing` with a number (an out-of-range one then
+  reports its range).
+  Blank lines inside a message are ignored like any blank line (a message cannot hold an empty
+  line). Continuation lines lose their own indent. A `reply` with nothing after it, two `reply` lines
+  for one send, and a script with nothing to send or react (only waits or typing) are parse errors.
+  Waits and typing share the 120 s (review, 2026-10-28; `typing` alone was unbounded): the cap is
+  reported on the last `wait` or `typing` line (`waiting and typing add up to 121 seconds; at most 120
+  in one script`). A message over 2,000 characters is a parse
+  error on its `m:` line.
+- **Errors** read `error: line N: <why>; nothing was sent`; a ref that doesn't resolve is
+  `line N: #k9: message too old`, a file `line N: can't attach <path> (<the files rule>)`. Unlike the
+  old `files` (which sent what it could and listed the rest), a file that can't go now refuses the
+  whole script, as §27.1 says. The caps say `this script sends 4 messages, and you can send 2 more
+  this turn; nothing was sent`; the old `you've already sent 15 messages this turn; wait for replies`
+  stays for none left. When nothing went out because Discord refused the only line, the error is the
+  reason alone, as before (`error: they can't receive your messages right now`); in a longer script
+  `error: line 1: <reason>; nothing was sent`. An interrupted script that sent nothing is
+  `error: interrupted before sending`, as before.
+- **The old arguments**: a call with `text`/`reply_to`/`files` and no `script` (a log line from
+  before, or a habit copied from a kept turn) still runs as one message with its files (`legacySteps`);
+  the schema offers only `place` and `script`. Old log lines render as before: the Life screen and
+  `/print life` show a call's arguments generically, and D14's DM detection still reads the `place`
+  argument (`dm/…`); a script's text is a string argument too, so a room script that names a `dm/`
+  path is hidden like any such call.
+- **Waits**: the wait ends early when the conversation cache reports a message by someone else there
+  (its `create` event); afterwards one page after the wait's start (a snowflake of the host's clock,
+  or her last sent message when that is newer) is read too, so a cache without events (tests, a
+  reconnect) still sees what came in. Anyone but her counts: a person, another waifu or another bot.
+  A wait that is the script's last line and gets cut short still reports `stopped at line N`, with
+  nothing after it. The lines that came in are rendered like notification lines without a reason
+  (`- <place> · from <name> · #ref "<preview>"`), at most `life.notificationLinesPerPlace` (the first
+  saying `+N earlier`), forgotten people as `someone` / `(removed)`; their refs are assigned with the
+  messages before them. A `typing` line shows typing once (Discord keeps it about 10 s).
+- **Order of checks**: the place is resolved before the script is parsed, so a DM script refused for
+  a bad line is still recorded as a DM call (D14; review, 2026-10-28). `isDmPlaceRef` (the owner's
+  views' fallback for calls with no record) reads string arguments up to 40,000 characters, a
+  script's size, instead of 4,000.
+- **A place that closes during a script** (review, 2026-10-28): after a `wait` or a `typing` line the
+  place is resolved again (the turn's place cache dropped first) before the next send or reaction; the
+  cast paused, the server paused, the place gone or no longer the same, or (before a send) a DM she
+  may no longer write in stops the rest as a failed line, `line N failed: you can't post there`, with
+  the `not sent:` lines (an error when nothing went out).
+- **Typing**: the streaming call's typing keeper (§6.3) stops when the SendMessage call starts to run;
+  the script then shows typing itself before each `m:` and for `typing` lines, so nothing types during
+  a `wait`.
+- **Intents** (`LifeIntentSchema` gains `line` and `lineDone`): per message, `{line, contentDigest}`
+  just before its Discord call (inside `onFinalContent`) and `{line, lineDone: true, resultRef}` right
+  after; the call's own start and done lines stay, the done line's `resultRef` now every sent id,
+  comma-separated. Boot repair (`recoverScript` in `repair.ts`) takes the messages with `lineDone`
+  as sent, looks for the first one after them among her messages since the intent (digest, else the
+  loose text, as before), and treats everything after it as not tried; the result is
+  `sent #a #b (recovered)` plus `not sent: <text>` lines, or the unknown-line text when Discord
+  can't be read. A call whose done line is there (it finished, its result was not saved) is rebuilt
+  the same way: its recorded ids, then `not sent:` for the script's sends after them (review,
+  2026-10-28). Reactions in a script are not reported by repair (adding one again is harmless).
+  An intent written before §27 (a digest line without `line`) belongs to the call's one message.
+- **Result**: partial sends are not `is_error` (something went out); the last line of a stopped or
+  failed script lists every send left as `not sent: <text>` (a multi-line message on one line, joined
+  by ` / `; files as `[path, path]`) and every reaction left as `not done: react #k2 👍`. The
+  result's `messageIds` are her sent messages and those that came in during a wait (§5.6 omission).
+  `noteSend` (busy/bed time) and the typing keeper's `sent` run when the call sent anything, even if
+  it then stopped.
+- **The nudge** reports her longest sent line only. Typical length: message content trimmed,
+  empty messages (only files) left out; the cache's buffer first (`authorIsBot` false, not one of the
+  app's own bots), then her transcript of the place, newest of its last 14 days first (lines without
+  `waifu`, not by the app's bots; a non-waifu bot in a transcript can't be told from a person). In a
+  DM only the other person's messages count. The median of an even count is the mean of the middle
+  two, rounded.
+- **Default and migration**: `life.maxSendsPerTurn` defaults to 15; the once-step
+  `living-cast-send-cap-15-v1` (`migrationSteps/livingCastSendCap.ts`) moves a saved config.toml's
+  `8` (the old default, which every saved config spells out) to 15 and leaves any other value.
+- **Epochs**: the SendMessage description and schema are part of the harness hash, so a running life
+  starts a configuration compaction (reason `config`) at its next turn, the way any tool change does;
+  no migration step is needed. Kept turns may still show old-style calls; they run (above).
+- **Prompt** (block A, `LIFE_TEXT`): the chat paragraph now says to write one short line per message,
+  several `m:` lines instead of one long one, and shows one script (two lines, a `wait`, a `reply`,
+  a react). Goldens: `life-system-prompt.txt`, `life-rest-epoch.txt` (prompt, tool text and a ref
+  shift), the send results in `life-wake-turn`, `life-dm-wake`, `life-image-turn`, `life-bash-call`,
+  `life-watch-timeout`, and the new `life-send-script.txt` (a script a wait stops, with the nudge).
 
 ## 28. Server emojis in `places.md` (owner request, 2026-10-28)
 

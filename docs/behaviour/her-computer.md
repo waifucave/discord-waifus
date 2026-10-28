@@ -102,7 +102,7 @@ parameters snake_case.
 | Tool | Parameters | Key rules and limits |
 |---|---|---|
 | `ReadMessages` | `place`, `query?` | Up to 5 places or `everywhere`; downloads attachments; see [messages-and-refs.md](messages-and-refs.md) |
-| `SendMessage` | `place`, `text?` (≤ 2,000), `reply_to?`, `files?` | The only way anyone sees her words; see [messages-and-refs.md](messages-and-refs.md) |
+| `SendMessage` | `place`, `script` (`m:`, `reply`, `attach`, `react`, `wait`, `typing` lines) | The only way anyone sees her words; several messages per call; see [messages-and-refs.md](messages-and-refs.md) |
 | `React` | `place`, `ref`, `emoji` | Unicode or `:server_emoji:` |
 | `WatchFor` | `when` (0–5 bindings), `note` (≤ 200), `timeout_minutes` (1–10,080), `once?` (true) | Appends to `~/life/watches.json`; ≤ 10 watches; `watching w3 until Sun 25 Oct 14:02 (in ~/life/watches.json)` |
 | `ScheduleWake` | `at?` or `in_minutes?` (exactly one), `note` (≤ 200), `repeat?` (`daily`/`weekly`) | 5 min–30 days ahead; ≤ 20; `set r4 for Sun 25 Oct 18:00 (in ~/life/reminders.json)` |
@@ -190,10 +190,12 @@ rewritten and the routed list stops it firing twice (`Scheduler.reminders`).
 - A forgotten person's old messages show `(removed)` and their attachments are never downloaded.
 - Every download is recorded in `life/files-index.json` (hash, place, message, author, attachment,
   path, size) for forget, the DM redaction and the dedupe.
-- `SendMessage` can attach up to `life.send.maxFiles` (4) files, each ≤ 10 MiB and ≤ 10 MiB together;
-  never `MEMORY.md`, any file it links to, anything under `~/life/`, a transcript path, or a byte-copy
-  of a private transcript day she was shown. The message goes with what could be attached; the
-  result lists the rest. With `life.send.maxFiles = 0` the tool has no `files` parameter.
+- `SendMessage` can attach up to `life.send.maxFiles` (4) files per message (`attach` lines), each
+  ≤ 10 MiB and ≤ 10 MiB together; never `MEMORY.md`, any file it links to, anything under `~/life/`,
+  a transcript path, or a byte-copy of a private transcript day she was shown. A file that can't go
+  refuses the whole script with its line (`error: line 2: can't attach ~/MEMORY.md (…); nothing was
+  sent`). With `life.send.maxFiles = 0` the description has no `attach` line and an `attach` is a
+  parse error.
 
 ## Private (DM-origin) files
 

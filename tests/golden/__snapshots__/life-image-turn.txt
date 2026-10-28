@@ -28,9 +28,9 @@ bake-club/#general (Bake Club › #general)
 [Sat 24 Oct 14:00 · awake]
 === 5 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"bake-club/#general","text":"omg that glaze. saving this","reply_to":"#a1"}
+{"place":"bake-club/#general","script":"reply #a1\nm: omg that glaze\nm: saving this"}
 === 6 user ===
 --- tool result call_1_SendMessage ---
-sent #a2
+sent #a2 #a3
 --- text ---
 [Sat 24 Oct 14:00 · awake]

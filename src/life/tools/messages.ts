@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { assignConversationRefs, normalizeRef, resolveConversationRef, shiftId, snowflakeAt, snowflakeTime } from "../../discord/refStore.js";
+import { conversationKey } from "../../orchestration/context/keys.js";
 import { compareIds } from "../../discord/rawMessage.js";
 import { EMPTY_GUILD_DIRECTORY, formatBytes, imageRef, isImageAttachment, renderDiscordMessage, type RawAttachment } from "../../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../../orchestration/context/types.js";
@@ -23,7 +24,7 @@ import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/path
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
-import { placeLabel, placesWithHandles, resolvePlace, type ResolvedPlace } from "../places.js";
+import { placeLabel, placesWithHandles, refreshPlaces, resolvePlace, type ResolvedPlace } from "../places.js";
 import { notePlace } from "../placeRecorder.js";
 import { refsForMessages } from "../messageRefs.js";
 import { entryHeader, entryLine, type LineMessage, type LineView } from "../render.js";
@@ -46,6 +47,8 @@ import { DEFAULT_MAX, DEFAULT_RANGE_MAX, fold, matchesSearch, MAX_MESSAGES, pars
 import type { LifeDeps } from "../deps.js";
 import { noteDmFile, pathArg, storeOf } from "./files.js";
 import { transcriptsSegments } from "../transcripts/view.js";
+import { messagePreview } from "../notifications.js";
+import { legacySteps, parseSendScript, scriptSends, sendLabel, type ScriptReact, type ScriptSend, type ScriptStep, type ScriptTyping, type ScriptWait } from "./sendScript.js";
 import { CANNOT_POST, MESSAGE_TOO_OLD, parseInput, toolError, UNKNOWN_PLACE, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 /** At most this many attachments are downloaded by one ReadMessages call (§16.3.1). */
@@ -718,76 +721,63 @@ class Downloads {
   }
 }
 
-// ---- SendMessage ---------------------------------------------------------------------------------
+// ---- SendMessage (§6.3, §27) ----------------------------------------------------------------------
 
 const SendInput = z.object({
   place: z.string().min(1),
-  text: z.string().max(2000).default(""),
+  script: z.string().max(40_000).optional(),
+  // Before §27 the tool took one message as these; an old call (a kept turn's habit) still runs.
+  text: z.string().max(4000).optional(),
   reply_to: z.string().min(1).optional(),
-  files: z.array(z.string().min(1).max(2000)).max(10).default([])
+  files: z.array(z.string().min(1).max(2000)).max(10).optional()
 });
 
 export const PRIVATE_FILE_REASON = "your notes and the files in ~/life/ are private and can't be attached";
 export const TRANSCRIPT_COPY_REASON = "a copy of a private chat's transcript can't be attached";
 
-/** The files she asked to attach: what can go, and why the rest can't (§16.3.2). */
-async function attachments(ctx: ToolContext, requested: readonly string[]): Promise<{ files: OutgoingFile[]; skipped: string[] }> {
+/**
+ * The files of one message (§16.3.2): what can go, or the first one that can't and why (by its index
+ * in `requested`).
+ */
+async function attachments(ctx: ToolContext, requested: readonly string[]): Promise<{ files: OutgoingFile[]; refused?: { index: number; reason: string } }> {
   const store = storeOf(ctx);
   const max = ctx.deps.config().life.send.maxFiles;
   const privateFiles = await store.privateFiles();
   const files: OutgoingFile[] = [];
-  const skipped: string[] = [];
   const seen = new Set<string>();
   let total = 0;
-  for (const input of requested) {
+  for (const [index, input] of requested.entries()) {
+    const refuse = (reason: string) => ({ files, refused: { index, reason } });
     // Transcripts are hers to read, never to send (§18.3).
-    if (transcriptsSegments(input, store.slug)) {
-      skipped.push(`${input} (transcripts can't be attached)`);
-      continue;
-    }
+    if (transcriptsSegments(input, store.slug)) return refuse(`${input} (transcripts can't be attached)`);
     const target = await pathArg(store, input);
-    if (!target.ok) {
-      skipped.push(`${input} (${String(target.output.content).replace(/^error:\s*/u, "")})`);
-      continue;
-    }
+    if (!target.ok) return refuse(`${input} (${String(target.output.content).replace(/^error:\s*/u, "")})`);
     const p = target.path;
     // Names compare as the disk does (`~/memory.md` is `~/MEMORY.md`).
     const key = pathKey(p.virtual);
     if (seen.has(key)) continue;
     seen.add(key);
-    if (privateFiles.has(key) || isLifeDirPath(p)) {
-      skipped.push(`${p.display} (${PRIVATE_FILE_REASON})`);
-      continue;
-    }
-    if (files.length >= max) {
-      skipped.push(`${p.display} (${max === 0 ? "files can't be attached" : `at most ${max} file${max === 1 ? "" : "s"} per message`})`);
-      continue;
-    }
+    if (privateFiles.has(key) || isLifeDirPath(p)) return refuse(`${p.display} (${PRIVATE_FILE_REASON})`);
+    if (files.length >= max) return refuse(`${p.display} (${max === 0 ? "files can't be attached" : `at most ${max} file${max === 1 ? "" : "s"} per message`})`);
     const info = await store.files.inspect(p);
-    if (info.kind === "missing") skipped.push(`${p.display} (it doesn't exist)`);
-    else if (info.kind === "dir") skipped.push(`${p.display} (it is a folder)`);
-    else if (info.kind !== "file") skipped.push(`${p.display} (it can't be used)`);
-    else if (info.size > MAX_SEND_FILE_BYTES) skipped.push(`${p.display} (larger than ${MAX_SEND_FILE_BYTES / (1024 * 1024)} MB)`);
-    else if (total + info.size > MAX_SEND_TOTAL_BYTES) skipped.push(`${p.display} (the files together would be over ${MAX_SEND_TOTAL_BYTES / (1024 * 1024)} MB, Discord's limit for one message)`);
-    else {
-      const data = await store.files.readBytes(p, { maxBytes: MAX_SEND_FILE_BYTES }).catch(() => undefined);
-      if (!data) {
-        skipped.push(`${p.display} (it can't be read)`);
-        continue;
-      }
-      // A copy of a private chat's transcript never goes out (§18.3, D14).
-      if (await store.isTranscriptCopy(p)) {
-        await noteDmFile(store, p);
-        skipped.push(`${p.display} (${TRANSCRIPT_COPY_REASON})`);
-        continue;
-      }
-      // A DM's download sent anywhere is about that DM (D14): the owner's views hide the call.
+    if (info.kind === "missing") return refuse(`${p.display} (it doesn't exist)`);
+    if (info.kind === "dir") return refuse(`${p.display} (it is a folder)`);
+    if (info.kind !== "file") return refuse(`${p.display} (it can't be used)`);
+    if (info.size > MAX_SEND_FILE_BYTES) return refuse(`${p.display} (larger than ${MAX_SEND_FILE_BYTES / (1024 * 1024)} MB)`);
+    if (total + info.size > MAX_SEND_TOTAL_BYTES) return refuse(`${p.display} (the files together would be over ${MAX_SEND_TOTAL_BYTES / (1024 * 1024)} MB, Discord's limit for one message)`);
+    const data = await store.files.readBytes(p, { maxBytes: MAX_SEND_FILE_BYTES }).catch(() => undefined);
+    if (!data) return refuse(`${p.display} (it can't be read)`);
+    // A copy of a private chat's transcript never goes out (§18.3, D14).
+    if (await store.isTranscriptCopy(p)) {
       await noteDmFile(store, p);
-      total += data.length;
-      files.push({ name: p.segments[p.segments.length - 1]!, data });
+      return refuse(`${p.display} (${TRANSCRIPT_COPY_REASON})`);
     }
+    // A DM's download sent anywhere is about that DM (D14): the owner's views hide the call.
+    await noteDmFile(store, p);
+    total += data.length;
+    files.push({ name: p.segments[p.segments.length - 1]!, data });
   }
-  return { files, skipped };
+  return { files };
 }
 
 /** D11: may she write in this DM? (DMed her before, deliverable, wrote since any forget, not limited.) */
@@ -829,118 +819,384 @@ function isTooLarge(error: unknown): boolean {
   return code === 40005 || code === "40005" || status === 413;
 }
 
+/** A send checked and ready: its final text, resolved reply and files. */
+type ReadySend = { step: ScriptSend; text: string; replyToId?: string; files: OutgoingFile[] };
+type ReadyReact = { step: ScriptReact; messageId: string; emoji: string };
+type ReadyStep = ReadySend | ReadyReact | { step: ScriptWait | ScriptTyping };
+
+const lineError = (line: number, message: string) => toolError(`line ${line}: ${message.replace(/^error:\s*/u, "")}; nothing was sent`);
+
+/** Refs for `ids` in a place, after the messages before them get theirs (refs stay in message order, §4.7). */
+async function refsThrough(deps: LifeDeps, place: ResolvedPlace, ids: readonly string[]): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map();
+  const newest = ids.reduce((a, b) => (compareIds(a, b) >= 0 ? a : b));
+  const now = deps.now();
+  const dmFloor = place.kind === "dm" && place.ref.kind === "dm" ? await readDmFloor(deps.storage, place.userId!, place.ref.waifuId).catch(() => undefined) : undefined;
+  // The buffer and one page before it (served from the buffer when the conversation is trusted).
+  const earlier = await deps.conversations.readPage({ conversation: place.ref, beforeId: newest, limit: 50 }).catch(() => ({ messages: [] as RawDiscordMessage[] }));
+  const before = [...deps.conversations.bufferedMessages(place.ref), ...earlier.messages]
+    .filter((message) => compareIds(message.id, newest) < 0 && aboveFloor(message.id, dmFloor))
+    .map((message) => message.id);
+  return assignConversationRefs(deps.storage, place.placeKey as never, [...before, ...ids], now);
+}
+
+/** People's messages a place's typical length comes from (§27.2): the newest 50, at least 10. */
+export const TYPICAL_SAMPLE = 50;
+export const TYPICAL_MIN_SAMPLES = 10;
+/** Below this many characters a line is never called long. */
+export const LONG_LINE_MIN_CHARS = 120;
+const TYPICAL_DAYS = 14;
+
+/**
+ * The typical length of a message from people in a place (§27.2): the median of the newest 50 non-empty
+ * messages from people (not waifus, not bots; in a DM the other person), from the cache and then the
+ * place's transcript; undefined with fewer than 10.
+ */
+export async function typicalLength(ctx: ToolContext, place: ResolvedPlace): Promise<number | undefined> {
+  const { deps } = ctx;
+  const own = new Set([...ctx.selfAuthorIds, ...(deps.discord()?.ownAuthorIds?.() ?? [])]);
+  const person = (authorId: string) => (place.kind === "dm" ? authorId === place.userId : !own.has(authorId));
+  const lengths = new Map<string, number>();
+  for (const message of deps.conversations.bufferedMessages(place.ref)) {
+    if (message.authorIsBot || !person(message.authorId) || !message.content.trim()) continue;
+    lengths.set(message.id, message.content.trim().length);
+  }
+  if (lengths.size < TYPICAL_SAMPLE) {
+    const days = (await listTranscriptDays(deps.storage.dataRoot, place.placeKey).catch(() => [] as string[])).slice(-TYPICAL_DAYS).reverse();
+    for (const day of days) {
+      const { lines } = await readTranscriptDayLite(deps.storage.dataRoot, place.placeKey, day).catch(() => ({ lines: [] as TranscriptLine[] }));
+      for (const line of lines) if (!line.waifu && person(line.authorId) && line.text.trim() && !lengths.has(line.id)) lengths.set(line.id, line.text.trim().length);
+      if (lengths.size >= TYPICAL_SAMPLE) break;
+    }
+  }
+  const newest = [...lengths.entries()].sort((a, b) => compareIds(b[0], a[0])).slice(0, TYPICAL_SAMPLE).map(([, length]) => length);
+  if (newest.length < TYPICAL_MIN_SAMPLES) return undefined;
+  const sorted = newest.sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return Math.round(sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2);
+}
+
+/** The room-aware nudge (§27.2): her longest line when it is over max(3 × typical, 120). */
+async function lengthNudge(ctx: ToolContext, place: ResolvedPlace, texts: readonly string[]): Promise<string | undefined> {
+  const longest = Math.max(0, ...texts.map((text) => text.length));
+  if (longest <= LONG_LINE_MIN_CHARS) return undefined;
+  const typical = await typicalLength(ctx, place).catch(() => undefined);
+  if (typical === undefined || longest <= Math.max(3 * typical, LONG_LINE_MIN_CHARS)) return undefined;
+  return `that line was ${longest} characters; people here usually write about ${typical}`;
+}
+
+/**
+ * A `wait` (§27.1): pauses up to `seconds`, cut short when someone else writes there. Returns what
+ * came in meanwhile (by others, newest last): from the cache's events, and a page after the wait's
+ * start (so a cache without events sees them too).
+ */
+async function waitInPlace(ctx: ToolContext, place: ResolvedPlace, seconds: number, after: string): Promise<RawDiscordMessage[]> {
+  const { deps, signal } = ctx;
+  const self = new Set(ctx.selfAuthorIds);
+  const came = new Map<string, RawDiscordMessage>();
+  const early = new AbortController();
+  const stopEarly = () => early.abort();
+  signal.addEventListener("abort", stopEarly, { once: true });
+  const off = deps.conversations.onEvent((event) => {
+    if (event.type !== "create" || event.conversation.kind !== place.ref.kind || conversationKey(event.conversation) !== place.placeKey) return;
+    if (self.has(event.message.authorId)) return;
+    came.set(event.message.id, event.message);
+    early.abort();
+  });
+  try {
+    await deps.sleep(seconds * 1000, early.signal);
+  } finally {
+    off();
+    signal.removeEventListener("abort", stopEarly);
+  }
+  if (signal.aborted) return [];
+  const dmFloor = place.kind === "dm" ? await readDmFloor(deps.storage, place.userId!, ctx.waifu.id).catch(() => undefined) : undefined;
+  const page = await deps.conversations.readPage({ conversation: place.ref, afterId: after, limit: 50, signal }).catch(() => ({ messages: [] as RawDiscordMessage[] }));
+  for (const message of page.messages) if (!self.has(message.authorId) && compareIds(message.id, after) > 0) came.set(message.id, message);
+  return [...came.values()].filter((message) => aboveFloor(message.id, dmFloor)).sort((a, b) => compareIds(a.id, b.id));
+}
+
+/** What came in during a wait, as notification lines with refs (§27.1, §20). */
+async function cameInLines(ctx: ToolContext, place: ResolvedPlace, messages: readonly RawDiscordMessage[]): Promise<string[]> {
+  const { deps } = ctx;
+  const forgotten = await forgottenPeople(deps.storage).catch(() => undefined);
+  const refs = await refsThrough(deps, place, messages.map((message) => message.id)).catch(() => new Map<string, string>());
+  const dir = await directoryFor(deps, place);
+  const shown = messages.slice(-deps.config().life.notificationLinesPerPlace);
+  const lines = shown.map((message, index) => {
+    const removed = !forgotten || isRemovedMessage(message, forgotten);
+    const preview = messagePreview(message, dir, deps.timeZone, { removed });
+    const name = removed ? "someone" : message.authorName.replace(/"/gu, "'").replace(/\s*[\r\n]+\s*/gu, " ");
+    const ref = refs.get(message.id);
+    const parts = [place.handle, ...(index === 0 && messages.length > shown.length ? [`+${messages.length - shown.length} earlier`] : []), `from ${name}`];
+    const quoted = `"${preview.replace(/"/gu, "'").replace(/\s*[\r\n]+\s*/gu, " ")}"`;
+    parts.push(preview ? (ref ? `#${ref} ${quoted}` : quoted) : ref ? `#${ref}` : "");
+    return `- ${parts.filter(Boolean).join(" · ")}`;
+  });
+  return lines;
+}
+
+/** A reaction's emoji as Discord takes it (React's rules), or why it can't be used. */
+async function reactionEmoji(deps: LifeDeps, place: ResolvedPlace, raw: string): Promise<{ ok: true; emoji: string } | { ok: false; error: string }> {
+  const emoji = raw.trim();
+  const custom = /^<?a?:([A-Za-z0-9_~]{2,32}):(\d+)?>?$/.exec(emoji);
+  if (custom) {
+    if (custom[2]) return { ok: true, emoji: custom[2] };
+    const found = place.guildId ? await deps.directory.findEmoji(place.guildId, custom[1]!) : undefined;
+    return found ? { ok: true, emoji: found.id } : { ok: false, error: `there is no :${custom[1]}: emoji here` };
+  }
+  if (/[A-Za-z0-9]/.test(emoji) && !/\p{Extended_Pictographic}/u.test(emoji)) return { ok: false, error: "use a unicode emoji or :server_emoji:" };
+  return { ok: true, emoji };
+}
+
+/** The steps of a call: its script, or (before §27) its one message. */
+function stepsOf(args: z.infer<typeof SendInput>, maxFiles: number): ReturnType<typeof parseSendScript> {
+  if (args.script !== undefined) return parseSendScript(args.script, { maxFiles });
+  if (args.text === undefined && args.files === undefined) return { ok: false, line: 1, error: "script is missing: write each message on an m: line" };
+  return legacySteps({ text: args.text, reply_to: args.reply_to, files: args.files });
+}
+
+/** The steps a SendMessage call's arguments name (boot repair reads them; undefined when they don't parse). */
+export function sendCallSteps(input: unknown, maxFiles: number): ScriptStep[] | undefined {
+  const parsed = SendInput.safeParse(input ?? {});
+  if (!parsed.success) return undefined;
+  const steps = stepsOf(parsed.data, Math.max(maxFiles, 10));
+  return steps.ok ? steps.steps : undefined;
+}
+
+/**
+ * SendMessage (§27): the whole script is checked first (place, permission, caps, every line's text,
+ * refs, files and emoji); any error refuses it with its line number and nothing is sent. Then the
+ * lines run in order: typing before each message as a person would take, a wait that someone else
+ * cuts short stops the rest. Each send has its own intent line and done line (boot repair, §5.7).
+ */
 export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const parsed = parseInput(SendInput, input);
   if (!parsed.ok) return parsed.output;
   const { deps, waifu, turn } = ctx;
-  const args = parsed.value;
-  const place = await resolvePlace(deps.storage, waifu.id, args.place);
+  const life = deps.config().life;
+  // The place first: a refused DM script is still a DM call (D14: resolving it records the place).
+  const place = await resolvePlace(deps.storage, waifu.id, parsed.value.place);
   if (!place) return toolError(UNKNOWN_PLACE);
+  const script = stepsOf(parsed.value, life.send.maxFiles);
+  if (!script.ok) return lineError(script.line, script.error);
+  const steps = script.steps;
   // Without a bot of her own she cannot post at all (never through the House bot): she is told,
   // and so is the owner (review M12).
   if (!waifu.botId) {
     deps.notices?.set(`no-bot:${waifu.id}`, `${waifu.displayName} has no Discord bot of her own, so she cannot post; link one on the Cast page.`);
     return toolError(NO_BOT);
   }
-  if (place.kind === "dm" ? !(await dmSendAllowed(deps, ctx, place)) : place.paused === true) return toolError(CANNOT_POST);
-  const life = deps.config().life;
+  const sends = scriptSends(steps);
+  if (sends.length > 0 ? (place.kind === "dm" ? !(await dmSendAllowed(deps, ctx, place)) : place.paused === true) : place.paused === true) return toolError(CANNOT_POST);
   const maxPlaces = life.maxSendPlacesPerTurn;
-  if (!turn.sentPlaces.has(place.placeKey) && turn.sentPlaces.size >= maxPlaces) {
-    return toolError(`you've already written in ${maxPlaces} places this turn`);
+  if (sends.length > 0 && !turn.sentPlaces.has(place.placeKey) && turn.sentPlaces.size >= maxPlaces) return toolError(`you've already written in ${maxPlaces} places this turn`);
+  const sentSoFar = turn.sends ?? 0;
+  if (sends.length > 0 && sentSoFar >= life.maxSendsPerTurn) return toolError(`you've already sent ${life.maxSendsPerTurn} messages this turn; wait for replies`);
+  if (sentSoFar + sends.length > life.maxSendsPerTurn) {
+    const left = life.maxSendsPerTurn - sentSoFar;
+    return toolError(`this script sends ${sends.length} messages, and you can send ${left} more this turn; nothing was sent`);
   }
-  if ((turn.sends ?? 0) >= life.maxSendsPerTurn) return toolError(`you've already sent ${life.maxSendsPerTurn} messages this turn; wait for replies`);
-  const text = stripCopiedHeader(args.text, [waifu.name, waifu.displayName]);
-  if (text && isOnlyToolCallSyntax(text, ctx.toolNames)) return toolError("that looks like a tool call, not a message; write what you want to say");
-  const attached = args.files.length > 0 ? await attachments(ctx, args.files) : { files: [], skipped: [] };
-  if (!text && attached.files.length === 0) {
-    return toolError(attached.skipped.length > 0 ? `nothing was sent: not attached: ${attached.skipped.join(", ")}` : "there is nothing to send: put your message in text, or save a file with Write first and list its path in files");
-  }
-  let replyToId: string | undefined;
-  if (args.reply_to) {
-    replyToId = await messageIdForRef(deps, place, args.reply_to);
-    if (!replyToId) return toolError(MESSAGE_TOO_OLD);
+  // Every line checked before anything goes out.
+  const ready: ReadyStep[] = [];
+  for (const step of steps) {
+    if (step.kind === "send") {
+      const text = step.text ? stripCopiedHeader(step.text, [waifu.name, waifu.displayName]) : "";
+      if (step.text && !text && step.files.length === 0) return lineError(step.line, "there is nothing left to send on that line");
+      if (text && isOnlyToolCallSyntax(text, ctx.toolNames)) return lineError(step.line, "that looks like a tool call, not a message; write what you want to say");
+      let replyToId: string | undefined;
+      if (step.replyTo) {
+        replyToId = await messageIdForRef(deps, place, step.replyTo.ref);
+        if (!replyToId) return lineError(step.replyTo.line, `#${step.replyTo.ref}: message too old`);
+      }
+      const attached = step.files.length > 0 ? await attachments(ctx, step.files.map((file) => file.path)) : { files: [] };
+      if (attached.refused) return lineError(step.files[attached.refused.index]!.line, `can't attach ${attached.refused.reason}`);
+      ready.push({ step, text, ...(replyToId ? { replyToId } : {}), files: attached.files });
+    } else if (step.kind === "react") {
+      const messageId = await messageIdForRef(deps, place, step.ref);
+      if (!messageId) return lineError(step.line, `#${step.ref}: message too old`);
+      const emoji = await reactionEmoji(deps, place, step.emoji);
+      if (!emoji.ok) return lineError(step.line, emoji.error);
+      ready.push({ step, messageId, emoji: emoji.emoji });
+    } else ready.push({ step });
   }
   const discord = deps.discord();
   if (!discord) return toolError("you can't reach Discord right now");
-  // Typing first, for as long as a person would take (§6.3).
-  if (place.kind === "dm") await discord.sendDirectTyping?.({ waifuId: waifu.id, userId: place.userId! });
-  else await discord.sendTyping({ guildId: place.guildId!, channelId: place.channelId!, senderBotId: waifu.botId });
-  await deps.sleep(typingDelayMs(text), ctx.signal);
-  if (ctx.signal.aborted) return toolError("interrupted before sending");
-  // Just before the Discord call: a digest of the final content (mentions and emoji resolved) goes
-  // into her intents, so boot repair recognises the message after a crash (§5.7, review I5).
-  const onFinalContent = async (final: string) => {
-    if (!ctx.intent) return;
-    await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: deps.now().toISOString(), contentDigest: contentDigest(final) });
+  if (ready.some((item) => item.step.kind === "react") && !discord.addReaction) return toolError("you can't react right now");
+  const sentIds: string[] = [];
+  const sentTexts: string[] = [];
+  const reacted: string[] = [];
+  let stop: { at: number; line: number; kind: "wait"; seconds: number; came: RawDiscordMessage[] } | { at: number; line: number; kind: "failed"; reason: string } | { at: number; line: number; kind: "interrupted" } | undefined;
+  // After a wait or a typing line, the place is looked at again before the next send or reaction:
+  // a server paused, a DM closed or a place no longer hers meanwhile stops the rest (§27.4).
+  let recheck = false;
+  const stillOpen = async (forSend: boolean): Promise<boolean> => {
+    if (deps.isPaused()) return false;
+    refreshPlaces(deps.storage, waifu.id);
+    const current = await resolvePlace(deps.storage, waifu.id, parsed.value.place).catch(() => undefined);
+    if (!current || current.placeKey !== place.placeKey) return false;
+    if (current.kind === "dm") return !forSend || (await dmSendAllowed(deps, ctx, current).catch(() => false));
+    return current.paused !== true;
   };
-  let messageId: string;
-  try {
+  const showTyping = async () => {
+    if (place.kind === "dm") await discord.sendDirectTyping?.({ waifuId: waifu.id, userId: place.userId! });
+    else await discord.sendTyping({ guildId: place.guildId!, channelId: place.channelId!, senderBotId: waifu.botId });
+  };
+  for (const [at, item] of ready.entries()) {
+    const step = item.step;
+    if (ctx.signal.aborted) {
+      stop = { at, line: step.line, kind: "interrupted" };
+      break;
+    }
+    if (step.kind === "wait") {
+      const after = sentIds.length > 0 && compareIds(sentIds[sentIds.length - 1]!, snowflakeAt(deps.now().getTime())) > 0 ? sentIds[sentIds.length - 1]! : snowflakeAt(deps.now().getTime());
+      const came = await waitInPlace(ctx, place, step.seconds, after);
+      if (ctx.signal.aborted) {
+        stop = { at: at + 1, line: step.line, kind: "interrupted" };
+        break;
+      }
+      if (came.length > 0) {
+        stop = { at: at + 1, line: step.line, kind: "wait", seconds: step.seconds, came };
+        break;
+      }
+      recheck = true;
+      continue;
+    }
+    if (step.kind === "typing") {
+      await showTyping().catch(() => undefined);
+      await deps.sleep(step.seconds * 1000, ctx.signal);
+      recheck = true;
+      continue;
+    }
+    if (recheck) {
+      recheck = false;
+      if (!(await stillOpen(step.kind === "send"))) {
+        stop = { at, line: step.line, kind: "failed", reason: CANNOT_POST.replace(/^error:\s*/u, "") };
+        break;
+      }
+    }
+    if (step.kind === "react") {
+      const react = item as ReadyReact;
+      try {
+        await discord.addReaction!({ waifuId: waifu.id, botId: waifu.botId, conversation: place.ref, messageId: react.messageId, emoji: react.emoji });
+      } catch (error) {
+        deps.logger.warn("Life reaction failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
+        stop = { at, line: step.line, kind: "failed", reason: "the reaction could not be added" };
+        break;
+      }
+      reacted.push(step.ref);
+      deps.logger.info("Life reaction added", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId: react.messageId });
+      continue;
+    }
+    const send = item as ReadySend;
+    // Typing first, for as long as a person would take (§6.3).
+    await showTyping().catch(() => undefined);
+    await deps.sleep(typingDelayMs(send.text), ctx.signal);
+    if (ctx.signal.aborted) {
+      stop = { at, line: step.line, kind: "interrupted" };
+      break;
+    }
+    // Just before the Discord call: a digest of the final content (mentions and emoji resolved) goes
+    // into her intents with the line, so boot repair recognises this message after a crash (§5.7).
+    const onFinalContent = async (final: string) => {
+      if (!ctx.intent) return;
+      await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: deps.now().toISOString(), line: step.line, contentDigest: contentDigest(final) });
+    };
+    let messageId: string;
+    try {
+      if (place.kind === "dm") {
+        messageId = (
+          await discord.sendDirectMessage!({
+            waifuId: waifu.id,
+            userId: place.userId!,
+            content: send.text,
+            ...(send.replyToId ? { replyToMessageId: send.replyToId } : {}),
+            ...(send.files.length > 0 ? { files: send.files } : {}),
+            onFinalContent
+          })
+        ).messageId;
+      } else {
+        messageId = (
+          await discord.sendWaifuMessage({
+            guildId: place.guildId!,
+            channelId: place.channelId!,
+            content: send.text,
+            senderBotId: waifu.botId,
+            ...(send.replyToId ? { replyToMessageId: send.replyToId } : {}),
+            allowedUserMentionIds: await presentPeople(deps, place),
+            ...(send.files.length > 0 ? { files: send.files } : {}),
+            onFinalContent
+          })
+        ).messageId;
+      }
+    } catch (error) {
+      let reason = "the message could not be sent";
+      if (place.kind === "dm" && isUndeliverable(error)) {
+        await updateExistingDmState(deps.storage, place.userId!, waifu.id, (state) => ({ ...state, undeliverableSince: deps.now().toISOString() })).catch(() => undefined);
+        reason = "they can't receive your messages right now";
+      } else if (send.files.length > 0 && isTooLarge(error)) {
+        reason = "the message could not be sent: the files are too large for Discord here; send fewer or smaller ones";
+      } else {
+        deps.logger.warn("Life send failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
+        if (isNoAccess(error)) reason = "the message could not be sent: Discord says you can't post in this room right now; that can change, so try again later";
+      }
+      stop = { at, line: step.line, kind: "failed", reason };
+      break;
+    }
+    const now = deps.now();
     if (place.kind === "dm") {
-      messageId = (
-        await discord.sendDirectMessage!({
-          waifuId: waifu.id,
-          userId: place.userId!,
-          content: text,
-          ...(replyToId ? { replyToMessageId: replyToId } : {}),
-          ...(attached.files.length > 0 ? { files: attached.files } : {}),
-          onFinalContent
-        })
-      ).messageId;
-    } else {
-      messageId = (
-        await discord.sendWaifuMessage({
-          guildId: place.guildId!,
-          channelId: place.channelId!,
-          content: text,
-          senderBotId: waifu.botId,
-          ...(replyToId ? { replyToMessageId: replyToId } : {}),
-          allowedUserMentionIds: await presentPeople(deps, place),
-          ...(attached.files.length > 0 ? { files: attached.files } : {}),
-          onFinalContent
-        })
-      ).messageId;
+      const userId = place.userId!;
+      // One reply per turn per user counts toward the rate limit (§4.4 guard 2).
+      if (!turn.dmUsersSent.has(userId)) {
+        await updateDmLimit(deps.storage, userId, waifu.id, (limits) => {
+          const assessed = assessDmLimit([...limits.replyTimestamps, now.toISOString()], waifu.dm.rateLimit, now);
+          return { ...limits, replyTimestamps: assessed.pruned };
+        });
+      }
+      turn.dmUsersSent.add(userId);
+      await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
     }
-  } catch (error) {
-    if (place.kind === "dm" && isUndeliverable(error)) {
-      await updateExistingDmState(deps.storage, place.userId!, waifu.id, (state) => ({ ...state, undeliverableSince: deps.now().toISOString() })).catch(() => undefined);
-      return toolError("they can't receive your messages right now");
-    }
-    if (attached.files.length > 0 && isTooLarge(error)) return toolError("the message could not be sent: the files are too large for Discord here; send fewer or smaller ones");
-    deps.logger.warn("Life send failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
-    if (isNoAccess(error)) return toolError("the message could not be sent: Discord says you can't post in this room right now; that can change, so try again later");
-    return toolError("the message could not be sent");
+    turn.sentPlaces.add(place.placeKey);
+    turn.sends = (turn.sends ?? 0) + 1;
+    sentIds.push(messageId);
+    sentTexts.push(send.text);
+    if (ctx.intent) await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: now.toISOString(), line: step.line, lineDone: true, resultRef: messageId });
+    deps.notices?.clear(`no-bot:${waifu.id}`);
+    // Her message gets its ref after the messages before it get theirs (refs stay in message order, §4.7).
+    await refsThrough(deps, place, [messageId]);
+    await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
+    // A room's handle lets the dashboard name the place; a DM's handle would name the person.
+    deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });
   }
-  const now = deps.now();
-  if (place.kind === "dm") {
-    const userId = place.userId!;
-    // One reply per turn per user counts toward the rate limit (§4.4 guard 2).
-    if (!turn.dmUsersSent.has(userId)) {
-      await updateDmLimit(deps.storage, userId, waifu.id, (limits) => {
-        const assessed = assessDmLimit([...limits.replyTimestamps, now.toISOString()], waifu.dm.rateLimit, now);
-        return { ...limits, replyTimestamps: assessed.pruned };
-      });
+  const refs = sentIds.length > 0 ? await refsThrough(deps, place, sentIds).catch(() => new Map<string, string>()) : new Map<string, string>();
+  const done: string[] = [];
+  if (sentIds.length > 0) done.push(`sent ${sentIds.map((id) => (refs.get(id) ? `#${refs.get(id)}` : "a message")).join(" ")}`);
+  if (reacted.length > 0) done.push(`reacted to ${reacted.map((ref) => `#${ref}`).join(" ")}`);
+  const lines: string[] = [];
+  const came = stop?.kind === "wait" ? stop.came : [];
+  if (stop) {
+    const head = done.join(", ");
+    const what = stop.kind === "wait" ? `stopped at line ${stop.line} (wait ${stop.seconds}):` : stop.kind === "failed" ? `line ${stop.line} failed: ${stop.reason}` : `interrupted at line ${stop.line}`;
+    lines.push(head ? `${head}; ${what}` : what);
+    if (stop.kind === "wait") lines.push(...(await cameInLines(ctx, place, stop.came)));
+    for (const item of ready.slice(stop.at)) {
+      if (item.step.kind === "send") lines.push(`not sent: ${sendLabel(item.step)}`);
+      else if (item.step.kind === "react") lines.push(`not done: react #${item.step.ref} ${item.step.emoji}`);
     }
-    turn.dmUsersSent.add(userId);
-    await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
+  } else lines.push(done.join(", "));
+  const nudge = sentTexts.length > 0 ? await lengthNudge(ctx, place, sentTexts) : undefined;
+  if (nudge) lines.push(nudge);
+  const nothingDone = sentIds.length === 0 && reacted.length === 0;
+  if (nothingDone && stop && stop.kind !== "wait") {
+    // One line alone says just what happened; in a longer script, which line and that nothing went out.
+    if (stop.kind === "interrupted") return toolError("interrupted before sending");
+    return toolError(ready.length === 1 ? stop.reason : `line ${stop.line}: ${stop.reason}; nothing was sent`);
   }
-  turn.sentPlaces.add(place.placeKey);
-  turn.sends = (turn.sends ?? 0) + 1;
-  deps.notices?.clear(`no-bot:${waifu.id}`);
-  // The messages before hers without a ref get theirs first (the buffer and one page before it,
-  // served from the buffer when the conversation is trusted), so her send never takes a ref ahead
-  // of a message written before it (refs stay in message order, §4.7).
-  const dmFloor = place.kind === "dm" ? await readDmFloor(deps.storage, place.userId!, waifu.id).catch(() => undefined) : undefined;
-  const earlier = await deps.conversations.readPage({ conversation: place.ref, beforeId: messageId, limit: 50 }).catch(() => ({ messages: [] as RawDiscordMessage[] }));
-  const before = [...deps.conversations.bufferedMessages(place.ref), ...earlier.messages]
-    .filter((message) => compareIds(message.id, messageId) < 0 && aboveFloor(message.id, dmFloor))
-    .map((message) => message.id);
-  const refs = await assignConversationRefs(deps.storage, place.placeKey as never, [...before, messageId], now);
-  await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
-  // A room's handle lets the dashboard name the place; a DM's handle would name the person.
-  deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });
-  const ref = refs.get(messageId);
-  const sent = ref ? `sent #${ref}` : "sent";
-  return { content: attached.skipped.length > 0 ? `${sent}; not attached: ${attached.skipped.join(", ")}` : sent, resultRef: messageId, messageIds: [messageId] };
+  return {
+    content: lines.join("\n"),
+    ...(sentIds.length > 0 ? { resultRef: sentIds.join(",") } : {}),
+    messageIds: [...sentIds, ...came.map((message) => message.id)]
+  };
 }
 
 function readMessagesDescription(retentionDays: number): string {
@@ -953,23 +1209,31 @@ function readMessagesDescription(retentionDays: number): string {
   ].join("\n");
 }
 
-const SEND_DESCRIPTION =
-  "Send a message to a place. This is the only way anyone sees what you write. Keep it like a chat message; send several if you have several things to say. Use <@Name> to mention someone who is there.";
 const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to and the files in ~/life/ can't be attached.";
 
-/** SendMessage's input schema; `files` (at most `maxFiles`) only when attaching is on. */
+/** SendMessage's description (§27.1); the attach line only when attaching is on. */
+function sendDescription(maxFiles: number): string {
+  return [
+    "Send messages to one place. This is the only way anyone sees what you write. The script is one command per line:",
+    "m: <text> — one message (an indented line after it continues it, for the rare poem or list)",
+    "reply #k3 — the next message replies to #k3",
+    ...(maxFiles > 0 ? [`attach <path> — right after an m: line, a file from your folders for that message (at most ${maxFiles}); on its own, a message with just the file. ${PRIVATE_ATTACH_TEXT} To post something you write as a file, save it with Write first.`] : []),
+    "react #k3 <emoji> — a reaction (a unicode emoji or :server_emoji:)",
+    "wait <1-60> — pause that many seconds; if anyone else writes here meanwhile, the rest isn't sent and you see what came in",
+    "typing <1-10> — show typing for that many seconds (waits and typing: at most 120 seconds in one script)",
+    "Keep each message as short as a chat line and use several m: lines instead of one long one. Use <@Name> to mention someone who is there. If a line is wrong, nothing is sent."
+  ].join("\n");
+}
+
+/** SendMessage's input schema (§27.1); attach only when attaching is on. */
 function sendSchema(maxFiles: number): Record<string, unknown> {
   return {
     type: "object",
     properties: {
       place: { type: "string", description: "A place handle." },
-      text: { type: "string", maxLength: 2000, description: maxFiles > 0 ? "The message itself. It may be empty only when you attach a file." : "The message itself." },
-      reply_to: { type: "string", description: "Optional: the ref of the message you are replying to, like #k3." },
-      ...(maxFiles > 0
-        ? { files: { type: "array", items: { type: "string" }, maxItems: maxFiles, description: `Optional: paths of files to attach, like /tmp/cake-small.png (at most ${maxFiles}). To post something you write as a file, save it with Write first.` } }
-        : {})
+      script: { type: "string", description: `One command per line: m: <text>, reply #ref, ${maxFiles > 0 ? "attach <path>, " : ""}react #ref <emoji>, wait <seconds>, typing <seconds>.` }
     },
-    required: ["place"],
+    required: ["place", "script"],
     additionalProperties: false
   };
 }
@@ -992,22 +1256,12 @@ export async function reactTool(input: unknown, ctx: ToolContext): Promise<ToolO
   if (place.paused) return toolError(CANNOT_POST);
   const messageId = await messageIdForRef(deps, place, args.ref);
   if (!messageId) return toolError(MESSAGE_TOO_OLD);
-  let emoji = args.emoji.trim();
-  const custom = /^<?a?:([A-Za-z0-9_~]{2,32}):(\d+)?>?$/.exec(emoji);
-  if (custom) {
-    if (custom[2]) emoji = custom[2];
-    else {
-      const found = place.guildId ? await deps.directory.findEmoji(place.guildId, custom[1]!) : undefined;
-      if (!found) return toolError(`there is no :${custom[1]}: emoji here`);
-      emoji = found.id;
-    }
-  } else if (/[A-Za-z0-9]/.test(emoji) && !/\p{Extended_Pictographic}/u.test(emoji)) {
-    return toolError("use a unicode emoji or :server_emoji:");
-  }
+  const emoji = await reactionEmoji(deps, place, args.emoji);
+  if (!emoji.ok) return toolError(emoji.error);
   const discord = deps.discord();
   if (!discord?.addReaction || !waifu.botId) return toolError("you can't react right now");
   try {
-    await discord.addReaction({ waifuId: waifu.id, botId: waifu.botId, conversation: place.ref, messageId, emoji });
+    await discord.addReaction({ waifuId: waifu.id, botId: waifu.botId, conversation: place.ref, messageId, emoji: emoji.emoji });
   } catch (error) {
     deps.logger.warn("Life reaction failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
     return toolError("the reaction could not be added");
@@ -1036,9 +1290,8 @@ export const messageTools: LifeTool[] = [
   },
   {
     name: "SendMessage",
-    description:
-      `${SEND_DESCRIPTION} You can attach files from your folders; ${PRIVATE_ATTACH_TEXT}`,
-    describe: (config) => (config.life.send.maxFiles > 0 ? `${SEND_DESCRIPTION} You can attach files from your folders; ${PRIVATE_ATTACH_TEXT}` : SEND_DESCRIPTION),
+    description: sendDescription(4),
+    describe: (config) => sendDescription(config.life.send.maxFiles),
     schemaFor: (config) => sendSchema(config.life.send.maxFiles),
     inputSchema: sendSchema(4),
     sideEffect: true,

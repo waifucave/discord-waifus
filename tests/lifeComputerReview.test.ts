@@ -106,12 +106,12 @@ describe("names as the disk compares them (review S1, S2)", () => {
       "~/life/Reminders.json"
     ];
     for (const file of tries) {
-      const sent = await run("SendMessage", { place: "bake-club/#general", text: `try ${file}`, files: [file] }, { ...ctx, turn: { id: "t", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
-      expect(text(sent), file).toMatch(/not attached: .*private and can't be attached/u);
+      const sent = await run("SendMessage", { place: "bake-club/#general", script: `m: try ${file}\nattach ${file}` }, { ...ctx, turn: { id: "t", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
+      expect(text(sent), file).toMatch(/^error: line 2: can't attach .*private and can't be attached\); nothing was sent$/u);
     }
-    expect(w.discord.sent.every((message) => !("files" in message) || (message as { files?: unknown[] }).files === undefined)).toBe(true);
+    expect(w.discord.sent).toEqual([]);
     // A note MEMORY.md does not link to is hers to share.
-    const shared = await run("SendMessage", { place: "bake-club/#general", text: "my note", files: ["~/people/shared.md"] }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
+    const shared = await run("SendMessage", { place: "bake-club/#general", script: "m: my note\nattach ~/people/shared.md" }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
     expect(text(shared)).toMatch(/^sent #[0-9a-z]+$/u);
 
     // A broken reminder file written as ~/Life/Reminders.json by Bash, or ~/LIFE/WATCHES.json by Write, is checked.
@@ -393,10 +393,12 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
     await put(w, "a.bin", Buffer.alloc(6 * 1024 * 1024, 1));
     await put(w, "b.bin", Buffer.alloc(6 * 1024 * 1024, 2));
     const ctx = await ctxFor(w);
-    const sent = text(await run("SendMessage", { place: "bake-club/#general", text: "files", files: ["~/a.bin", "~/b.bin"] }, ctx));
-    expect(sent).toMatch(/not attached: ~\/b\.bin \(the files together would be over 10 MB, Discord's limit for one message\)/u);
+    const sent = text(await run("SendMessage", { place: "bake-club/#general", script: "m: files\nattach ~/a.bin\nattach ~/b.bin" }, ctx));
+    expect(sent).toBe("error: line 3: can't attach ~/b.bin (the files together would be over 10 MB, Discord's limit for one message); nothing was sent");
+    // In two messages they go.
+    expect(text(await run("SendMessage", { place: "bake-club/#general", script: "m: files\nattach ~/a.bin\nm: and\nattach ~/b.bin" }, ctx))).toMatch(/^sent #\w+ #\w+$/u);
     w.discord.sendErrors.push(Object.assign(new Error("Request entity too large"), { code: 40005 }));
-    const refused = await run("SendMessage", { place: "bake-club/#general", text: "again", files: ["~/a.bin"] }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
+    const refused = await run("SendMessage", { place: "bake-club/#general", script: "m: again\nattach ~/a.bin" }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
     expect(refused).toEqual({ content: "error: the message could not be sent: the files are too large for Discord here; send fewer or smaller ones", isError: true });
   });
 
@@ -406,11 +408,11 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
     const { modelTools } = await import("../src/life/tools/index.js");
     const tools = Object.fromEntries(modelTools(["ReadMessages", "SendMessage", "Bash"], tuned).map((tool) => [tool.name, tool]));
     expect(tools["ReadMessages"]!.description).toContain("saved in /tmp for 3 days");
-    expect(JSON.stringify(tools["SendMessage"]!.inputSchema)).not.toContain('"files"');
+    expect(JSON.stringify(tools["SendMessage"]!.inputSchema)).not.toContain("attach");
     expect(tools["SendMessage"]!.description).not.toContain("attach");
     expect(JSON.stringify(tools["Bash"]!.inputSchema)).toContain("(default 10000, at most 30000)");
     const defaults = Object.fromEntries(modelTools(["SendMessage"], config).map((tool) => [tool.name, tool]));
-    expect(JSON.stringify(defaults["SendMessage"]!.inputSchema)).toContain('"maxItems":4');
+    expect(defaults["SendMessage"]!.description).toContain("a file from your folders for that message (at most 4)");
     expect(defaults["SendMessage"]!.description).toContain("MEMORY.md, the notes it links to and the files in ~/life/ can't be attached.");
   });
 

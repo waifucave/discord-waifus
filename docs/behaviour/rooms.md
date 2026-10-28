@@ -66,7 +66,8 @@ up from the pause start ([triggers.md](triggers.md)).
   ping (`allowedMentions` users only, roles `[]`, `repliedUser: false`) (`src/discord/normalization.ts`);
 - Discord 50001/50013 (no access/permission) → `error: the message could not be sent: Discord says
   you can't post in this room right now; that can change, so try again later`;
-- at most `life.maxSendPlacesPerTurn` (3) places and `life.maxSendsPerTurn` (8) messages per turn.
+- at most `life.maxSendPlacesPerTurn` (3) places and `life.maxSendsPerTurn` (15) messages per turn
+  (each `m:` line of a script counts one).
 
 Her room sends are logged with the room's handle (Activity, Life "recent sends").
 

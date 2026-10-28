@@ -291,7 +291,7 @@ export const DEFAULT_LIFE_CONFIG = {
   maxInlineImagesPerEpoch: 8,
   maxInlineImageBytesPerEpoch: 12_582_912,
   maxSendPlacesPerTurn: 3,
-  maxSendsPerTurn: 8,
+  maxSendsPerTurn: 15,
   maxWakesPerUserPerHour: 20,
   maxWatchFiresPerDay: 24,
   notificationLinesPerPlace: 8,

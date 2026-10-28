@@ -63,7 +63,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(w.discord.typing).toEqual(["200000000000000002"]);
     expect(w.discord.sent).toMatchObject([{ placeKey: ROOM_KEY, content: "brownies are ready", senderBotId: "ella-bot" }]);
     expect(await run("SendMessage", { place: "elsewhere/#random", text: "hi" }, ctx)).toEqual({ content: "error: unknown place; see ~/life/places.md", isError: true });
-    expect(await run("SendMessage", { place: "bake-club/#general", text: "" }, ctx)).toEqual({ content: "error: there is nothing to send: put your message in text, or save a file with Write first and list its path in files", isError: true });
+    expect(await run("SendMessage", { place: "bake-club/#general", script: "" }, ctx)).toEqual({ content: "error: line 1: there is nothing to send: write each message on an m: line; nothing was sent", isError: true });
     expect((await run("SendMessage", { place: "bake-club/#general", text: "x".repeat(2001) }, ctx)).isError).toBe(true);
     // Missing access says why and that it can change, so she doesn't write the room off.
     w.discord.sendErrors.push(Object.assign(new Error("Missing Access"), { code: 50001 }));
@@ -135,7 +135,7 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     expect(w.cast.notices.list()).toEqual([expect.stringMatching(/has no Discord bot of her own/u)]);
   });
 
-  it("attaches her files; private ones (MEMORY.md, the notes it links, reminders, watches, places) are never attached and the message still goes", async () => {
+  it("attaches her files; private ones (MEMORY.md, the notes it links, reminders, watches, places) are never attached, and a script naming one sends nothing", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
     await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n- [Kevin](people/kevin.md) — likes tea\n" }, ctx);
@@ -143,41 +143,39 @@ describe("SendMessage (§6.3, §16.3.2, D11)", () => {
     await run("Write", { file_path: "~/flyer.txt", content: "BAKE SALE saturday\n" }, ctx);
     await run("Bash", { command: "cp ~/people/kevin.md ~/kevin-copy.md" }, ctx);
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
-    const sent = await run(
-      "SendMessage",
-      { place: "bake-club/#general", text: "the flyer", files: ["~/flyer.txt", "/home/ella/MEMORY.md", "people/kevin.md", "~/life/places.md", "~/kevin-copy.md", "~/nope.txt"] },
-      ctx
-    );
-    expect(sent.isError).toBeFalsy();
-    expect(text(sent)).toMatch(/^sent #[0-9a-z]+; not attached: /u);
-    expect(text(sent)).toContain("~/MEMORY.md (your notes and the files in ~/life/ are private and can't be attached)");
-    expect(text(sent)).toContain("~/people/kevin.md (your notes and the files in ~/life/ are private and can't be attached)");
-    expect(text(sent)).toContain("~/life/places.md (your notes and the files in ~/life/ are private and can't be attached)");
-    expect(text(sent)).toContain("~/nope.txt (it doesn't exist)");
+    const refused = (file: string) => run("SendMessage", { place: "bake-club/#general", script: `m: the flyer\nattach ~/flyer.txt\nattach ${file}` }, ctx);
+    const PRIVATE = "(your notes and the files in ~/life/ are private and can't be attached); nothing was sent";
+    expect(await refused("/home/ella/MEMORY.md")).toEqual({ content: `error: line 3: can't attach ~/MEMORY.md ${PRIVATE}`, isError: true });
+    expect(await refused("people/kevin.md")).toEqual({ content: `error: line 3: can't attach ~/people/kevin.md ${PRIVATE}`, isError: true });
+    expect(await refused("~/life/places.md")).toEqual({ content: `error: line 3: can't attach ~/life/places.md ${PRIVATE}`, isError: true });
+    expect(await refused("~/nope.txt")).toEqual({ content: "error: line 3: can't attach ~/nope.txt (it doesn't exist); nothing was sent", isError: true });
+    expect(w.discord.sent).toEqual([]);
     // A copy under another name is hers to share.
+    expect(text(await refused("~/kevin-copy.md"))).toMatch(/^sent #[0-9a-z]+$/u);
     expect(w.discord.sent[0]!.files).toEqual([
       { name: "flyer.txt", size: 19 },
       { name: "kevin-copy.md", size: 20 }
     ]);
-    // Files only (no text) is a message; only private files is nothing, and nothing is sent.
-    expect(text(await run("SendMessage", { place: "bake-club/#general", files: ["~/flyer.txt"] }, await ctxFor(w)))).toMatch(/^sent #/u);
+    // Files only (an attach line on its own) is a message; so is an old call with files and no text.
+    expect(text(await run("SendMessage", { place: "bake-club/#general", script: "attach ~/flyer.txt" }, await ctxFor(w)))).toMatch(/^sent #/u);
     expect(w.discord.sent[1]).toMatchObject({ content: "", files: [{ name: "flyer.txt" }] });
-    const nothing = await run("SendMessage", { place: "bake-club/#general", files: ["~/MEMORY.md"] }, await ctxFor(w));
-    expect(nothing).toEqual({ content: "error: nothing was sent: not attached: ~/MEMORY.md (your notes and the files in ~/life/ are private and can't be attached)", isError: true });
-    expect(w.discord.sent).toHaveLength(2);
+    expect(text(await run("SendMessage", { place: "bake-club/#general", files: ["~/flyer.txt"] }, await ctxFor(w)))).toMatch(/^sent #/u);
+    expect(w.discord.sent).toHaveLength(3);
   });
 
-  it("caps attachments at life.send.maxFiles; a file over 10 MB or a folder is skipped", async () => {
+  it("caps attachments at life.send.maxFiles; a file over 10 MB or a folder is refused", async () => {
     const w = await lifeWorld(roots, { config: (config) => ({ ...config, life: { ...config.life, send: { ...config.life.send, maxFiles: 1 } } }) });
     const ctx = await ctxFor(w);
     await mkdir(hostPath(w, "tmp/big"), { recursive: true });
     await writeFile(hostPath(w, "tmp/big/huge.bin"), Buffer.alloc(10 * 1024 * 1024 + 1));
     await writeFile(hostPath(w, "tmp/a.txt"), "a");
     await writeFile(hostPath(w, "tmp/b.txt"), "b");
-    const sent = text(await run("SendMessage", { place: "bake-club/#general", text: "files", files: ["/tmp/big/huge.bin", "/tmp/a.txt", "/tmp/b.txt", "/tmp/big"] }, ctx));
-    expect(sent).toContain("/tmp/big/huge.bin (larger than 10 MB)");
-    expect(sent).toContain("/tmp/b.txt (at most 1 file per message)");
-    expect(w.discord.sent[0]!.files).toEqual([{ name: "a.txt", size: 1 }]);
+    const send = (script: string) => run("SendMessage", { place: "bake-club/#general", script }, ctx);
+    expect(text(await send("m: files\nattach /tmp/big/huge.bin"))).toBe("error: line 2: can't attach /tmp/big/huge.bin (larger than 10 MB); nothing was sent");
+    expect(text(await send("m: files\nattach /tmp/a.txt\nattach /tmp/b.txt"))).toBe("error: line 3: at most 1 file per message; nothing was sent");
+    expect(text(await send("m: files\nattach /tmp/big"))).toBe("error: line 2: can't attach /tmp/big (it is a folder); nothing was sent");
+    expect(text(await send("m: files\nattach /tmp/a.txt\nm: and\nattach /tmp/b.txt"))).toMatch(/^sent #\w+ #\w+$/u);
+    expect(w.discord.sent.map((entry) => entry.files)).toEqual([[{ name: "a.txt", size: 1 }], [{ name: "b.txt", size: 1 }]]);
   });
 });
 

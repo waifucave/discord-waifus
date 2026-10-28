@@ -107,37 +107,107 @@ starts when the page is not all today; `(no messages)` when empty.
   only once it holds 1,000 refs past the span; a message older than 30 days gets no new ref.
 - **Resolution** (`messageIdForRef`): `refs.json`, else the transcript line carrying that ref
   (`findTranscriptRef`), never a line a forget covers or at/below a DM floor. So a ref she saw in a
-  transcript works in `ReadMessages`, `reply_to` and `React` for as long as the line exists.
+  transcript works in `ReadMessages`, a script's `reply`/`react` and `React` for as long as the line
+  exists.
 
 ## SendMessage
 
-`SendMessage(place, text?, reply_to?, files?)` → `sent #k9` (`sendMessageTool`). Checks in order:
+`SendMessage(place, script)` (spec §27, `sendMessageTool`; the parser is `src/life/tools/sendScript.ts`).
+The script is one command per line:
 
-1. `error: unknown place; see ~/life/places.md`.
-2. No bot of her own: `error: you have no Discord bot of your own, so you can't post; the owner has been
+| Line | Meaning |
+|---|---|
+| `m: <text>` | One message. A following line that starts with whitespace continues it (a newline inside the message), unless that line is a whole command (`  attach /tmp/flyer.png`, ` m: next`, `  wait 5`, `  reply #k3`, `  react #k3 👍`, `  typing 2`: a `reply`/`react` with its `#`, an attach with a path, wait/typing with a number); then it is that command. |
+| `reply #k3` | The next send (an `m:` or a file-only `attach` group) is a Discord reply to `#k3`. |
+| `attach <path>` | Right after an `m:` (and its continuation lines): a file of that message. Lines that don't directly follow an `m:` (at the start, or after `wait`/`typing`/`react`/`reply`) are sent together as one message with only files. At most `life.send.maxFiles` (4) per message. |
+| `react #k3 <emoji>` | A reaction, with `React`'s rules. |
+| `wait <1-60>` | A pause. If anyone else writes in that place meanwhile (a person, another waifu or a bot; typing doesn't count), the wait ends at once and the rest of the script is not sent. |
+| `typing <1-10>` | Typing there for that long, without sending. Waits and typing together: at most **120 s** per script. |
+
+```
+attach ~/tmp/crying-cat.png        a message with only the file
+wait 5
+reply #k2
+m: Anyone here?
+attach ~/tmp/crying-cat.png        a file of "Anyone here?"
+```
+
+- Blank lines are ignored. Commands are case-insensitive (`M:hi` works); a script indented as a whole
+  reads as if it were not; a number may end in `s` (`wait 5s`).
+- **Checked first, all or nothing.** Shape (unknown line, bad number, `reply` with nothing after
+  it, two `reply` lines for one send, an indented line with no `m:` above it, more files than
+  `life.send.maxFiles`, a message over 2,000 characters, waits and typing over **120 s** in all
+  (`waiting and typing add up to 121 seconds; at most 120 in one script`), nothing to send), then
+  the caps, every line's text, refs, files and emoji. Any error refuses the
+  whole script and nothing is sent: `error: line 3: #k9: message too old; nothing was sent`,
+  `error: line 2: can't attach ~/MEMORY.md (your notes and the files in ~/life/ are private and can't
+  be attached); nothing was sent`, `error: line 4: not a command: "hello" (each line starts with m:,
+  reply, attach, react, wait or typing)`.
+- Before §27 the tool took `text`, `reply_to` and `files`; such a call (an old log line, or a habit
+  from a kept turn) still runs as one message with its files.
+
+Checks in order:
+
+1. `error: unknown place; see ~/life/places.md` (the place first, so a refused DM script is still a
+   DM call in the owner's views, D14).
+2. The script's shape (above).
+3. No bot of her own: `error: you have no Discord bot of your own, so you can't post; the owner has been
    told` (owner notice `no-bot:<id>`, cleared at her next successful send).
-3. A DM she may not write in, or a paused server: `error: you can't post there` ([dms.md](dms.md)).
-4. More than `life.maxSendPlacesPerTurn` (3) places this turn: `you've already written in 3 places this
-   turn`; more than `life.maxSendsPerTurn` (8) messages: `you've already sent 8 messages this turn;
-   wait for replies`.
-5. A leading copied `[HH:MM #ref] Name:` header is stripped; text that is only tool-call syntax is
-   refused (`that looks like a tool call, not a message; write what you want to say`).
-6. Files resolved (see [her-computer.md](her-computer.md)); nothing left to send: `there is nothing to
-   send…` or `nothing was sent: not attached: …`.
-7. `reply_to` resolved like any ref, else `error: message too old`.
-8. Typing for `30 ms × chars` (0.6–4.5 s), then the send through her bot.
+4. A DM she may not write in, or a paused server: `error: you can't post there` ([dms.md](dms.md)).
+5. More than `life.maxSendPlacesPerTurn` (3) places this turn: `you've already written in 3 places this
+   turn`. Every `m:` (and every file-only send) counts one against `life.maxSendsPerTurn` (**15**):
+   none left, `you've already sent 15 messages this turn; wait for replies`; a script that would go
+   over, `this script sends 4 messages, and you can send 2 more this turn; nothing was sent`.
+6. Per line: a leading copied `[HH:MM #ref] Name:` header is stripped; text that is only tool-call
+   syntax is refused (`that looks like a tool call, not a message; write what you want to say`).
+7. `reply` and `react` refs resolved like any ref, else `#k9: message too old`; files resolved (see
+   [her-computer.md](her-computer.md)); emoji as for `React`.
+
+Then the lines run in order. Before every `m:` her bot types for `30 ms × chars` (0.6–4.5 s), then
+the message goes through her bot. Between lines without a `wait`, new messages don't stop the
+script. The turn keeps running during a wait; wakes that arrive fold into the next tool results as
+usual.
+
+**Result**: `sent #k9 #ka, reacted to #k2`. Stopped by a wait, the first line names it, then what came
+in as notification lines (with refs, at most `life.notificationLinesPerPlace`), then each line that
+did not go out:
+
+```
+sent #k9; stopped at line 4 (wait 5):
+- bake-club/#general · from Mina · #kb "wait what"
+not sent: Anyone here?
+```
+
+A Discord error on a line stops the rest: `sent #k9; line 3 failed: the message could not be sent`
+and the `not sent:` lines (`not done: react #k2 👍` for a reaction). An interrupted script (stop,
+pause, abort) sends nothing more: `sent #k9; interrupted at line 3` and the rest. After a `wait` or a
+`typing` line the place is looked at again before the next send or reaction: a server paused, the
+cast paused, a DM she may no longer write in or a place no longer hers stops the rest with
+`sent #k9; line 4 failed: you can't post there` and the `not sent:` lines. When nothing went
+out it is an error: one line alone gives just the reason (`error: they can't receive your messages
+right now`), a longer script `error: line 1: the message could not be sent; nothing was sent`.
 
 Errors from Discord: DM 50007 → `they can't receive your messages right now` (DM marked undeliverable);
-40005/413 with files → `…the files are too large for Discord here; send fewer or smaller ones`;
-50001/50013 → `…Discord says you can't post in this room right now…`; anything else → `the message
-could not be sent`.
+40005/413 with files → `the message could not be sent: the files are too large for Discord here; send
+fewer or smaller ones`; 50001/50013 → `the message could not be sent: Discord says you can't post in
+this room right now…`; anything else → `the message could not be sent`.
 
-- `text` ≤ 2,000 characters; may be empty only with a file attached.
+**Shorter messages (§27.2)**: when a sent line is longer than max(3 × the place's typical length,
+120) characters, the result adds one line: `that line was 180 characters; people here usually write
+about 25` (her longest line). The typical length is the median of the newest **50** non-empty
+messages from people in that place (not waifus, not bots; in a DM the other person), from the
+conversation cache and then the place's transcript (its last 14 days), used only with at least **10**
+of them. Nothing is refused for length.
+
 - Mentions: `<@Name>` resolves and pings only people present; no `@everyone`, `@here` or role pings.
-- On success: the DM rate-limit counter (first send per turn per person), her read cursor, her busy
-  "open place" / bed-time clock (`noteSend`), the intent's done line, typing stops there.
-- The result lists files not attached: `sent #k9; not attached: ~/people/kevin.md (your notes and the
-  files in ~/life/ are private and can't be attached)`.
+- After each message: the DM rate-limit counter (first send per turn per person), her read cursor,
+  its ref (`sent #k9`, after the messages before it get theirs) and its own intent lines: the final
+  content's digest (`line`, `contentDigest`) just before the Discord call and `lineDone` with the
+  message id right after, so boot repair knows each message on its own
+  ([life-and-turns.md](life-and-turns.md)). After a script that sent anything: her busy "open place"
+  / bed-time clock (`noteSend`) and the call's done line (every message id).
+- Her bot's typing from the streaming call stops when the script starts; the script shows typing
+  itself (before each `m:` and for `typing` lines), never during a `wait`.
 
 ## React
 
@@ -146,9 +216,11 @@ could not be sent`.
 - `emoji`: a unicode emoji, or `:name:` / `<:name:id>` for a server emoji (`there is no :x: emoji
   here` when unknown); plain text is refused (`use a unicode emoji or :server_emoji:`).
 - A paused server: `error: you can't post there`. Needs her own bot (`you can't react right now`).
-- The ref resolves like `reply_to`.
+- The ref resolves like a script's `reply`.
 
 ## Spec differs
 
 - §6.2 (read cursor advances on every read, footer `pass before:"#a0"`) and §16.3's `limit`/`before`
   parameters are replaced by §22; the code matches the §22.5 as-built notes.
+- §6.3/§16.3.2 `SendMessage(place, text?, reply_to?, files?)` is replaced by the §27 script; choices
+  the spec left open are in §27.4.

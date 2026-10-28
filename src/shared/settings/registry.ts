@@ -82,7 +82,7 @@ const APP: SettingGroup = {
     "life.maxInlineImagesPerEpoch": { label: "Inline images per epoch", help: "Images shown to her as images per epoch; later ones are described by their OCR text.", ...reload, example: "8" },
     "life.maxInlineImageBytesPerEpoch": { label: "Inline image bytes per epoch", help: "Image bytes shown to her as images per epoch.", unit: "bytes", ...reload, example: "12582912" },
     "life.maxSendPlacesPerTurn": { label: "Places per turn", help: "Distinct places she may send to in one turn.", ...reload, example: "3" },
-    "life.maxSendsPerTurn": { label: "Messages per turn", help: "Messages she may send in one turn.", ...reload, example: "8" },
+    "life.maxSendsPerTurn": { label: "Messages per turn", help: "Messages she may send in one turn (each m: line of a SendMessage script counts one, and so does a message with only files).", ...reload, example: "15" },
     "life.maxWakesPerUserPerHour": { label: "Wakes per person per hour", help: "Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line.", ...reload, example: "20" },
     "life.maxWatchFiresPerDay": { label: "Watch fires per day", help: "How often one of her repeating watches may fire per day.", ...reload, example: "24" },
     "life.notificationLinesPerPlace": {
