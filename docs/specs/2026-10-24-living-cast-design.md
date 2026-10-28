@@ -3505,3 +3505,21 @@ Parser (every command, continuation, errors with line numbers, caps), wait stopp
 not by typing, attach-only sends, reply/attach binding to the next `m:`, intents per line and boot
 repair, the nudge (threshold, median, too few samples, DMs use the other person), the new prompt text
 (golden), the settings default, `docs/behaviour/messages-and-refs.md` and `her-computer.md`.
+
+## 28. Server emojis in `places.md` (owner request, 2026-10-28)
+
+She sees custom emojis only as `:name:` in messages she reads, so she knows only the ones people use.
+`~/life/places.md` (generated, read-only, refreshed at most once a minute and at every turn start)
+gains one line per server she is cast in:
+
+`emojis: :kekw: :pepe_cry: :blobheart: … (+12 more)`
+
+- Only emojis the server has and that are available (`GuildDirectory`), at most 50 per server.
+- Order: most used first, counted over that server's transcript lines of the last 30 days (`:name:` in
+  text; reactions when the transcripts carry them), then the rest by name. Animated ones are listed like
+  the others.
+- No emojis: no line. A server paused for her still lists them (places.md lists it already).
+- The list is not put in the system prompt (no cache change). Sending and reacting are unchanged
+  (room sends match `:name:` to the closest server emoji; `React` refuses unknown names).
+- Tests: the line (cap, order, `+N more`, no emojis), refresh when emojis change, golden for
+  places.md; `docs/behaviour/her-computer.md` (places.md) updated.
