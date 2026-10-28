@@ -33,7 +33,7 @@ import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
 import { dayStartAt, timeLine } from "./clock.js";
-import { compactLife, compactRetiredTools, currentHarness, newTurnId, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
+import { compactLife, compactRetiredTools, currentHarness, newTurnId, offersRetiredTools, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
@@ -471,7 +471,7 @@ export class Life {
       const dayStart = dayStartAt(waifu, deps.now(), deps.timeZone, deps.config().life.dayStartHourLocal).toISOString();
       return updateLifeState(deps.storage, this.waifuId, (current) => (current.lastDayStart === undefined ? { ...current, lastDayStart: dayStart } : current));
     }
-    if (state.pendingEpochStart && state.pendingEpochReason === "tools") {
+    if ((state.pendingEpochStart && state.pendingEpochReason === "tools") || (!state.pendingEpochStart && offersRetiredTools(state))) {
       const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
       const outcome = await compactRetiredTools(deps, {
         waifu,

@@ -4,7 +4,7 @@
 // temp data root; no live calls.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compactLife, compactRetiredTools, currentHarness, flattenRetiredCalls, KEPT_TURNS, RESULT_LEFT_OUT, withoutLastResults } from "../src/life/compaction.js";
-import { readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
+import { appendLifeLog, readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
@@ -149,6 +149,32 @@ describe("a tool-surface change (§16.13, review B4)", () => {
     expect(after.epoch).toBe(state.epoch + 1);
     expect(after.summary).toBe("Summary after the move.");
     expect((await readLifeLog(w.storage, "ella", after.epoch))[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
+  });
+
+  it("an epoch that still offers WebSearch and WebFetch (§31) is summarised before her next turn, its web calls as text", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("ok"), textTurn("Summary with the old web calls."), textTurn("hello again")) });
+    const { state } = await compactable(w);
+    // Her epoch from before §31: its tools and a kept turn calling WebSearch.
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, systemSnapshot: { ...current.systemSnapshot!, tools: [...current.systemSnapshot!.tools.filter((name) => name !== "Web"), "WebSearch", "WebFetch"] } }));
+    await appendLifeLog(w.storage, "ella", state.epoch, [
+      { seq: 0, at: AT, kind: "notifications", turnId: "old", message: { role: "user", content: "<notifications>wake old</notifications>" } },
+      { seq: 0, at: AT, kind: "assistant", turnId: "old", message: { role: "assistant", content: [{ type: "tool_use", id: "call_old", name: "WebSearch", input: { query: "lemon tart" } }] } },
+      { seq: 0, at: AT, kind: "tool_results", turnId: "old", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call_old", content: "1. Lemon tart" }] } },
+      { seq: 0, at: AT, kind: "assistant", turnId: "old", message: { role: "assistant", content: [{ type: "text", text: "found it" }] } }
+    ]);
+    const calls = w.anthropic.calls.length;
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "reminder", note: "second", at: w.clock.now().toISOString() });
+    await w.cast.life("ella").runNow();
+    const summaryRequest = JSON.stringify(w.anthropic.calls[calls]!.request.messages);
+    expect(summaryRequest).toContain("[used WebSearch lemon tart]");
+    expect(summaryRequest).not.toContain('"name":"WebSearch"');
+    const after = await readLifeState(w.storage, "ella");
+    expect(after.epoch).toBe(state.epoch + 1);
+    expect(after.systemSnapshot!.tools).toContain("Web");
+    expect(after.systemSnapshot!.tools).not.toContain("WebSearch");
+    expect((await readLifeLog(w.storage, "ella", after.epoch))[0]!.boundary).toMatchObject({ reason: "tools", keptTurns: 0 });
+    // Her turn's request then offers Web and calls no retired tool.
+    expect(JSON.stringify(w.anthropic.calls.at(-1)!.request)).not.toContain('"name":"WebSearch"');
   });
 
   it("a failed summary falls back to the reset: her old summary carries over and the epoch starts", async () => {

@@ -150,8 +150,9 @@ const ModelsConfigSchema = z
   .default(() => ({ allowed: [...DEFAULT_MODELS_CONFIG.allowed], maxOutputUsdPerMTok: DEFAULT_MODELS_CONFIG.maxOutputUsdPerMTok }));
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 
-// WebFetch (spec §6.9): the digest model ("" = the cheapest offered route with a key; a
-// contributor route only when named here), caps, the fetch bounds and the page cache.
+// Pages her Web scripts open (spec §31, §6.9): the model behind page.ask() ("" = the cheapest
+// offered route with a key; a contributor route only when named here), caps, the fetch bounds and
+// the page cache. `directMaxChars` is no longer used (kept so saved settings load).
 const WEB_FETCH_FIELDS = {
   model: z.union([z.literal(""), z.string().regex(MODEL_ROUTE_RE, "Use a winter route key such as openai/gpt-6-luna.")]),
   maxPerWaifuPerDay: z.number().int().min(0).max(500),
@@ -358,7 +359,7 @@ export const LifeConfigSchema = z
   });
 export type LifeConfig = z.infer<typeof LifeConfigSchema>;
 
-// WebSearch (spec §6.8): Exa's hosted MCP server, keyless by default; an Exa key saved as the `exa`
+// search() in her Web scripts (spec §31, §6.8): Exa's hosted MCP server, keyless by default; an Exa key saved as the `exa`
 // provider credential is the fallback. Host-wide and per-waifu caps; 0 disables search.
 const SEARCH_FIELDS = {
   maxPerSecond: z.number().int().min(0).max(10),

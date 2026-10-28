@@ -24,7 +24,7 @@ files and the code disagree, the code is right and the files are fixed.
 | [day-and-bed-time.md](day-and-bed-time.md) | Her daily `~/life/schedule.json`, busy holds, the morning wake, bed time states |
 | [rooms.md](rooms.md) | Behaviour specific to server channels and threads |
 | [dms.md](dms.md) | Behaviour specific to private chats |
-| [her-computer.md](her-computer.md) | Her folders, every pre-set file, the ten tools, `Wakeup(script)` and its sandbox, the Bash sandbox |
+| [her-computer.md](her-computer.md) | Her folders, every pre-set file, the nine tools, `Wakeup(script)` and `Web(script)` with their sandboxes, the Bash sandbox |
 | [memory-and-dreaming.md](memory-and-dreaming.md) | MEMORY.md and notes, transcripts, the nightly dream |
 | [messages-and-refs.md](messages-and-refs.md) | ReadMessages grammar, refs, SendMessage, React |
 | [privacy-and-forget.md](privacy-and-forget.md) | DM privacy (D14) everywhere, every forget path |

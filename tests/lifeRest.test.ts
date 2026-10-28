@@ -86,7 +86,7 @@ describe("the rest notice (§19.2, §19.3)", () => {
         play(toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }])),
         queueingWake(() => world!, "second", textTurn("done here")),
         // The rest turn: she saves a note, tries to message someone, then writes her summary.
-        play(toolTurn([{ name: "Write", input: { file_path: "~/saturday.md", content: "Saturday: lemon tarts\n" } }, { name: "SendMessage", input: { place: "bake-club/#general", text: "brb" } }])),
+        play(toolTurn([{ name: "Write", input: { file_path: "~/saturday.md", content: "Saturday: lemon tarts\n" } }, { name: "SendMessage", input: { place: "bake-club/#general", text: "brb" } }, { name: "Web", input: { script: 'return await search("lemon tarts")' } }])),
         thenSmall(textTurn(SUMMARY)),
         // The wake's turn, in the new epoch.
         play(textTurn("hello again"))
@@ -109,6 +109,8 @@ describe("the rest notice (§19.2, §19.3)", () => {
     expect(JSON.stringify(calls[2]!.messages.slice(0, calls[1]!.messages.length - 1))).toBe(JSON.stringify(calls[1]!.messages.slice(0, -1)));
     // In the rest turn people are out of reach; her files are not.
     expect(JSON.stringify(calls[3]!.messages)).toContain(REST_REFUSED_RESULT);
+    // SendMessage and Web (§31) both refused.
+    expect(JSON.stringify(calls[3]!.messages).split(JSON.stringify(REST_REFUSED_RESULT).slice(1, -1)).length - 1).toBe(2);
     expect(w.discord.sent).toEqual([]);
     expect(await homeOf(w).read("saturday.md")).toBe("Saturday: lemon tarts\n");
     // Accepted: a new epoch whose prompt holds only her summary; the wake comes after it.

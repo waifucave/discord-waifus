@@ -209,8 +209,12 @@ Golden: `tests/golden/__snapshots__/life-system-prompt.txt`.
 
 **Tools**: the offered tool names, descriptions and schemas are snapshotted too (their texts follow
 `life.bash.python`, `life.bash.maxTimeoutMs`, `life.send.maxFiles`, `life.tmp.retentionDays`).
-`WebSearch`/`WebFetch` are offered only while their caps allow; `Bash` only while
-`life.bash.enabled` (`src/life/tools/index.ts` `offeredToolNames`).
+`Web` is offered while search or page opening is on (a cap above 0); `Bash` only while
+`life.bash.enabled` (`src/life/tools/index.ts` `offeredToolNames`). An epoch whose snapshot offers a
+tool the app no longer has (**unreleased (on main)**: `WebSearch`/`WebFetch`, which became `Web`) is summarised
+before her next turn with those calls as text and no turns kept (boundary reason `tools`,
+`compaction.ts` `offersRetiredTools`), since a provider refuses a history calling a tool the
+request lacks.
 
 **What changes the snapshot**: the harness hash covers block A (with today's plan replaced by a
 placeholder), the tool list with descriptions and schemas, and the model route with effort
@@ -303,7 +307,7 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   recognised by the notice's first 60 characters (`isRestNotice`), in this wording or the earlier
   one ("…When this turn ends, your context will be reset…"), so rest turns in older logs stay private
   and are never kept by compaction.
-- `SendMessage`, `React`, `WebSearch`, `WebFetch` answer `error: finish your summary first; you can
+- `SendMessage`, `React`, `Web` answer `error: finish your summary first; you can
   do this after the reset`. File tools, Bash, `Wakeup` work. No wake is taken or
   folded in.
 - **Accepted**: the turn ended normally and her final text is at least `life.restSummaryMinChars`

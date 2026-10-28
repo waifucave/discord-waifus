@@ -352,6 +352,16 @@ export function flattenRetiredCalls(lines: readonly LifeLogLine[], isKnown: (nam
 }
 
 /**
+ * Her epoch offers a tool the app no longer has (§31: `WebSearch` and `WebFetch` became `Web`), so
+ * its kept turns may call it: the next cycle summarises it like a tool-surface change, without a
+ * migration step (and whatever retires a tool next).
+ */
+export function offersRetiredTools(state: Pick<LifeState, "systemSnapshot">): boolean {
+  const tools = state.systemSnapshot?.tools;
+  return Array.isArray(tools) && tools.some((name) => lifeTool(name) === undefined);
+}
+
+/**
  * The pending epoch of a tool-surface change (§16.13): her epoch is summarised like any compaction,
  * with the retired calls as text and no turns kept (they would call tools that are gone). Only a
  * failed summary falls back to the reset (her old summary carries over); an aborted one changes

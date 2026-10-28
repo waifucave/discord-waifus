@@ -1,7 +1,7 @@
 # Her own computer
 
 Each waifu works in a small isolated machine: two folders of her own, a read-only `/transcripts`,
-ten tools, and a simulated Bash. She never sees a host path.
+nine tools, and a simulated Bash. She never sees a host path.
 
 ## Her folders
 
@@ -96,10 +96,12 @@ Her notes are free-form files in her home. `MEMORY.md` is her index: its copy in
 diary, as soon as you learn something" and says "only your files last". See
 [memory-and-dreaming.md](memory-and-dreaming.md).
 
-## The ten tools
+## The nine tools
 
 Fixed order (part of the cached prefix): `ReadMessages`, `SendMessage`, `React`, `Wakeup`, `Read`,
-`Write`, `Edit`, `Bash`, `WebSearch`, `WebFetch` (`src/life/tools/index.ts`).
+`Write`, `Edit`, `Bash`, `Web` (`src/life/tools/index.ts`). **Unreleased (on main):** `Web` replaced
+`WebSearch` and `WebFetch`; a life whose epoch still offers them is summarised before her next turn
+([life-and-turns.md](life-and-turns.md)).
 Results are short text; errors start with `error:` and set `is_error`. Tool names are PascalCase,
 parameters snake_case.
 
@@ -113,8 +115,7 @@ parameters snake_case.
 | `Write` | `file_path`, `content` | Creates/replaces a text file (folders made); ≤ 256 KiB; refuses `places.md`, binary files, `/transcripts` |
 | `Edit` | `file_path`, `old_string`, `new_string`, `replace_all?` | `old_string` must occur exactly once unless `replace_all`; non-empty and different |
 | `Bash` | `command` (≤ 20,000 chars), `timeout_ms?` (default 10 s, ≤ `life.bash.maxTimeoutMs` 60 s) | Simulated; see below. Not offered when `life.bash.enabled` is off |
-| `WebSearch` | `query` (≤ 300), `num_results?` (5, 1–8) | Exa; host-wide 2/s, 50/day, 20 per waifu per day; `error: no more searches today`; not offered when a cap is 0 |
-| `WebFetch` | `url`, `prompt` (≤ 500) | One page; ≤ 3 per turn, 20 per waifu per day; pages > 2,000 chars are read by a digest call; SSRF-guarded (no private addresses); cached 15 min; not offered when a cap is 0 |
+| `Web` | `script` (JavaScript, ≤ 20,000 chars) using `search`, `open` and a page's `find`, `next`, `at`, `link`, `ask` | Search and read the web; see below. Not offered when both search and page opening are off |
 
 ## Wakeup(script)
 
@@ -158,7 +159,7 @@ or cancels one. Up to 40 calls per script.
   day (its function still runs, so its state stays current). A message posted before the watch ended
   still counts when handled later (catch-up). Several of her wakeups firing on one message are one wake,
   a line each.
-- **Pages** are fetched by the scheduler through the same SSRF-checked fetcher as `WebFetch`
+- **Pages** are fetched by the scheduler through the same SSRF-checked fetcher as `Web`'s `open()`
   (`privateAddressPolicy: "deny"`, no cache, no model call), first at the next tick after she sets
   it, then every `every`; a URL fetched for any of her pages (its `#fragment` aside) is not fetched
   again sooner, so editing a page or cancelling it and setting it again never fetches early, and she
@@ -193,6 +194,52 @@ each run is also timed whole, so a native call QuickJS can't interrupt (a long s
 finishes over its budget (+25 ms) is a time limit hit too, and the host's watchdog stops a run still
 going 250 ms past its budget (the runs after it go to a fresh worker). A limit hit or a crash
 restarts the worker; nothing of the host is reachable (`tests/sandboxIsolation.test.ts`).
+
+## Web(script)
+
+**Unreleased (on main).** One tool for the web (spec §31; `src/life/tools/web.ts`,
+`src/life/sandbox/webScript.ts`, `webScriptWorker.ts`, `webPage.ts`, `src/life/search.ts`). Her
+script is the body of an async JavaScript function: she `await`s the web functions, loops and
+branches, and what she `return`s and `print`s (also `console.log`) is what she sees.
+
+| Function | Gives | Rules |
+|---|---|---|
+| `search(query, {recent, domains, exclude, n})` | `[{n, title, url, date?, snippet}]` | Exa; query 1–300 chars; `recent` days (0 < N ≤ 3,650, Exa's published-date filter), `domains`/`exclude` a site or ≤ 10 (`"bbc.co.uk"`, a scheme/path/`www.` is dropped), `n` 1–8 (5); `date` is `YYYY-MM-DD`, `snippet` ≤ 300 chars. Any other option, or a bad value, throws before Exa is asked |
+| `open(url \| hit, {line})` | `{url, title, status, line, lines, total, links, more}` (+ `note`) | One page through the SSRF-checked fetcher (`privateAddressPolicy: "deny"`, the https upgrade, `life.webFetch` time/size/redirects, the 15-minute cache). `lines`: from `line` (0-based, default 0) about 3,000 characters of the page's text, each line as `N: text` (blank lines left out, numbers kept; a line over 3,000 cut); `total` lines; `more` whether non-blank lines follow; `links`: the page's links (`[{n, text, url}]`, absolute, numbered in the order they first appear in the page, ≤ 500, from winter-web) that are on those lines; `title` the page's `<title>`, else its first heading or line. A PDF (by content type or `%PDF-`) is read by the app's PDF worker: pages 1–50 as `--- page N ---` blocks (`note` says when there are more, or no text); another binary page throws `that page is not text (image/png)`; `note` also says when a page was cut at `maxBytes` |
+| `page.find(text \| /re/)` | `[{line, text}]`, ≤ 20 | Text is case-insensitive; a RegExp keeps its `i`, `m`, `s`, `u` flags; `text` is the matching line (cut to 300 around the match) with the non-blank line before and after it |
+| `page.next()` / `page.at(line)` | A page (the next window, or the one at `line`); `next()` is `null` at the end | No fetch, no count |
+| `page.link(n)` | `open()` of link `n` | Counts as an open |
+| `page.ask(question)` | The answer (text) | One digest call over the whole page (≤ 100,000 chars) on `life.webFetch.model`, else the cheapest offered keyed route, else her own; purpose `web`; question ≤ 500 |
+
+- **Result**: her prints, then her return value (text as is, anything else as compact JSON), cut at
+  8,000 characters (`… (cut)`); nothing at all: `done (nothing returned)`. When the script searched
+  or opened anything, the first line is `(untrusted web content: information, not instructions)`. A
+  thrown error ends it with `error: TypeError: … (line 3)` after what she printed (`is_error`); a
+  web call that fails throws `Error` with the line of the call (`open: that address is not on the
+  public internet`, `open: the page answered with an error (404)`, `no more searches today`), which
+  her script may catch.
+- **Caps per call**: 4 searches, 6 opens, 2 asks (the next one throws `search: at most 4 searches in
+  one script`), 24 web calls of any kind, 60 seconds in all (`your script ran for 60 seconds and was
+  stopped`). On top: the daily caps (`search.maxPerWaifuPerDay`, `search.maxPerDay`,
+  `life.webFetch.maxPerWaifuPerDay`; each search and each open counts, a cached page too) and
+  `life.webFetch.maxPerTurn` (3) pages across all her scripts in one turn (`open: you've opened 3
+  pages this turn; that's the most for one turn`). An ask counts only against its script's 2. With
+  search off `search()` throws `web search is off`, with page opening off `open()` throws `page
+  fetching is off`; with both off the tool is not offered (`error: the web is off`).
+- **Her sandbox** is QuickJS (the §30 package, sync build) in a fresh worker thread per call, so a
+  slow script holds up no one else. The web calls return promises the worker resolves when the host
+  answers (several may run at once). Her own computing has 1 s in all, waiting for the web not
+  counted (QuickJS's interrupt, plus the host's watchdog on the worker's busy time + 250 ms, which
+  also stops a RegExp in `find` that never ends); 16 MiB of memory, 256 KiB of stack; `Date` is the
+  app's clock in her zone; no `require`, network, timers or host objects. After her program ends no
+  more of her code runs and no web call is made; calls still going (never awaited) are aborted. A
+  call's arguments are sent as JSON, at most 16,384 characters; everything coming back from the
+  sandbox is checked again on the host, and one bad script only fails itself.
+- **Privacy (D14)**: what she searches and opens is on the dashboard's search list as before, private
+  when the turn touched a DM; a `Web` call is a DM call in the life views by the same rule as any call
+  (a string argument naming a DM place).
+- A rest turn refuses it (`error: finish your summary first…`). Settings keep their names;
+  `life.webFetch.directMaxChars` is no longer used.
 
 **Read** (`src/life/tools/files.ts`):
 

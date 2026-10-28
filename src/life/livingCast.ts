@@ -53,7 +53,7 @@ import { privateNoteLines } from "./notesPrivacy.js";
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import { NOTES_INDEX_PRIVATE, printLifeLines, printNotesText, printSystemPromptText } from "./lifeView.js";
-import { compactLife, compactRetiredTools, currentHarness, startEpoch, startPendingEpoch } from "./compaction.js";
+import { compactLife, compactRetiredTools, currentHarness, offersRetiredTools, startEpoch, startPendingEpoch } from "./compaction.js";
 import { repairLife } from "./repair.js";
 import { Scheduler } from "./scheduler.js";
 import { TranscriptWriter } from "./transcripts/writer.js";
@@ -796,7 +796,7 @@ export class LivingCast {
         // A forget or a deferred reset left an epoch to start: that epoch starts now, nothing is
         // summarised again (a reset's old log would come back into the summary).
         // A tool-surface change is summarised with the old calls as text (§16.13).
-        if (state.pendingEpochStart && state.pendingEpochReason === "tools") {
+        if ((state.pendingEpochStart && state.pendingEpochReason === "tools") || (!state.pendingEpochStart && offersRetiredTools(state))) {
           const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
           const outcome = await compactRetiredTools(deps, {
             waifu,

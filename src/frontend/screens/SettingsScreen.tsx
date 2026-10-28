@@ -603,7 +603,7 @@ function SearchTab() {
         </button>
       </div>
       <RegistryForm topic="app.search" title="Search caps" hint="0 turns web search off." config={config.data} onSaved={(saved) => { config.setData(saved); usage.reload(); }} />
-      <RegistryForm topic="app.life.webFetch" title="Reading web pages" hint="WebFetch: pages she opens, and the digest call that reads long ones." config={config.data} onSaved={config.setData} columns={4} />
+      <RegistryForm topic="app.life.webFetch" title="Reading web pages" hint="Web: pages she opens with open(), and the model that answers page.ask()." config={config.data} onSaved={config.setData} columns={4} />
       <div className="cell growcell" />
     </div>
   );

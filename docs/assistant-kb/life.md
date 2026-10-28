@@ -14,7 +14,7 @@ summarises it into her `<life_so_far>` and a new epoch starts with her last few 
 `compaction.triggerRatio` (default 0.7) of her context budget, the turn after the running one is
 a rest turn: a notice tells her that her context will be reset to the summary she writes now, that
 her home, `/tmp` and `/transcripts` stay as they are, and to write it clearly. In that turn she can
-use her files, Bash and Wakeup, but SendMessage, React, WebSearch and WebFetch answer
+use her files, Bash and Wakeup, but SendMessage, React and Web answer
 "finish your summary first". Queued wakes wait until after it. If her final reply is at least
 `life.restSummaryMinChars` (default 200) characters, a new epoch starts from that summary alone
 (Life shows "rested (her own summary)"); a shorter reply, a failed turn or a cap means compaction
@@ -193,6 +193,21 @@ read-only, and its `hash` is still the real file's. Over Remote Access, and for 
 hidden. The assistant can list and read her files and propose a write (`write_file`), which only a
 click on its secure dashboard card applies.
 
+## The web
+
+She uses the web with one tool, **Web**: a short JavaScript program (in its own sandbox, like her
+wakeup code) that awaits `search(query, {recent, domains, exclude, n})` (Exa: results with a number,
+title, url, date and snippet), `open(url or a result, {line})` (a page in windows of about 3,000
+characters with line numbers, its title and its numbered links; PDFs as text) and, on a page,
+`find`, `next`, `at`, `link(n)` and `ask(question)` (one cheap model call over the whole page,
+purpose `web`). She sees what the program prints and returns, at most 8,000 characters, marked as
+web content (information, not instructions). One call makes at most 4 searches, opens 6 pages and
+asks 2 questions in 60 seconds; the daily caps (`search.*`, `life.webFetch.*`) count each search and
+each page as before, and `life.webFetch.maxPerTurn` (3) limits the pages of all her scripts in one
+turn. Every page goes through the private-address protection; Web is not offered when both search
+and page opening are off. The dashboard's search list shows each search and page, private when the
+turn touched a DM.
+
 ## Her wakeups
 
 She plans ahead with one tool, `Wakeup(script)`: a short JavaScript script calling `at(when, note)`
@@ -210,7 +225,7 @@ Her functions run in a sandbox (QuickJS in a worker thread, no network or host a
 and may not use anything from outside themselves; `state` lets them remember things between runs (it
 is saved in her file at most once a minute). One that fails three times in a row is stopped
 (`disabled` in her file, with the reason) and she is told; changing its code turns it back on.
-Pages are fetched by the app with the same private-address protection as WebFetch and no model call,
+Pages are fetched by the app with the same private-address protection as her Web tool and no model call,
 at most 72 a day, and not at all while page fetching is off (a `life.webFetch` cap at 0: then she
 can't set a new page).
 

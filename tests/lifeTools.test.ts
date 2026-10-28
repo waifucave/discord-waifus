@@ -381,12 +381,15 @@ describe("Read, Write, Edit and the path rules (§16.2, §16.3.3, §16.3.4)", { 
 });
 
 describe("tool list (§16.3)", () => {
-  it("offers the eleven tools; web tools only while their caps allow; Bash only while enabled", async () => {
+  it("offers the nine tools; Web while search or page fetching is on (§31); Bash only while enabled", async () => {
     const w = await lifeWorld(roots);
-    expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "Wakeup", "Read", "Write", "Edit", "Bash", "WebSearch", "WebFetch"]);
-    w.setConfig((config) => ({ ...config, search: { ...config.search, maxPerDay: 0 }, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 0 }, bash: { ...config.life.bash, enabled: false } } }));
+    expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "Wakeup", "Read", "Write", "Edit", "Bash", "Web"]);
+    // One of the two on is enough: the other function throws in her script.
+    w.setConfig((config) => ({ ...config, search: { ...config.search, maxPerDay: 0 } }));
+    expect(offeredToolNames(w.cast.deps)).toContain("Web");
+    w.setConfig((config) => ({ ...config, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 0 }, bash: { ...config.life.bash, enabled: false } } }));
     expect(offeredToolNames(w.cast.deps)).toEqual(["ReadMessages", "SendMessage", "React", "Wakeup", "Read", "Write", "Edit"]);
-    for (const retired of ["list_places", "write_note", "list_watches", "cancel_wake", "send_message", "WatchFor", "ScheduleWake"]) expect(lifeTool(retired)).toBeUndefined();
+    for (const retired of ["list_places", "write_note", "list_watches", "cancel_wake", "send_message", "WatchFor", "ScheduleWake", "WebSearch", "WebFetch"]) expect(lifeTool(retired)).toBeUndefined();
   });
 
   it("~/life/places.md lists her rooms and private chats by handle", async () => {

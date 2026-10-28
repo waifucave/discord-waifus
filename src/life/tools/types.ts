@@ -30,7 +30,7 @@ export type TurnScratch = {
   sends?: number;
   /** DM users she already sent to this turn: they may keep getting messages past the rate limit. */
   dmUsersSent: Set<string>;
-  /** WebFetch calls this turn (`life.webFetch.maxPerTurn`). */
+  /** Pages her Web scripts opened this turn (`life.webFetch.maxPerTurn`). */
   fetches: number;
   /**
    * A DM turn (D14, spec §14.4): its wakes include a DM, or a call resolved to a DM place. Its web

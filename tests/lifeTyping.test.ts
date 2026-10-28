@@ -110,7 +110,7 @@ describe("typing in a turn", () => {
     const w = await lifeWorld(roots, {
       scripts: script(
         toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "WebSearch", input: { query: "lemon tart recipe" } }]),
+        toolTurn([{ name: "Web", input: { script: `await search("lemon tart recipe")` } }]),
         toolTurn([{ name: "Write", input: { file_path: "~/kevin.md", content: "likes tarts" } }]),
         textTurn("(nothing to add)")
       )

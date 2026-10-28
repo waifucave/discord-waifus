@@ -4,7 +4,7 @@ import { IsoDateStringSchema } from "./common.js";
 // One line of user/usage/YYYY-MM-DD.jsonl per model call (spec 8.10, Living cast §9.1). Written by
 // usageLedger.ts from winter's usage event; read by the usage routes.
 
-/** Purposes new lines are written with (Living cast §9.1, §9.3; `web` = the WebFetch digest, §6.9). */
+/** Purposes new lines are written with (Living cast §9.1, §9.3; `web` = page.ask() in her Web scripts, §31; before it the WebFetch digest). */
 export const USAGE_PURPOSES = ["life", "maintenance", "detector", "compaction", "assistant", "web"] as const;
 export type UsagePurpose = (typeof USAGE_PURPOSES)[number];
 

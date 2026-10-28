@@ -1,5 +1,6 @@
-// The web backend behind `WebSearch` and `WebFetch` (Living cast spec §6.8, §6.9): a thin adapter
-// over `@yanlinglabs/winter-web` (pinned exactly, with the other winter packages).
+// The web backend behind her `Web` scripts (Living cast spec §31; §6.8, §6.9) and her page wakeups
+// (§30): a thin adapter over `@yanlinglabs/winter-web` (pinned exactly, with the other winter
+// packages; 0.0.59 adds the date filters, a page's title and links, and binary bytes for PDFs).
 //
 // - Search: winter-web's Exa client (Exa's hosted MCP server, keyless tier first, the `exa` provider
 //   credential as the fallback key, sent only as the `x-api-key` header). One process-wide breaker and
@@ -11,7 +12,8 @@
 // - Digest: winter's digest message, with our own short system prompt (winter's has none) saying the
 //   page is untrusted data.
 // - Cache: winter's `MemoryWebFetchCache` behind a wrapper whose lifetime follows
-//   `life.webFetch.cacheMinutes` live.
+//   `life.webFetch.cacheMinutes` live. Entries pass through whole (an entry that lost its `links`
+//   would be a miss for winter); binary bodies are never cached.
 
 import {
   buildWebFetchDigestRequest as winterDigestRequest,

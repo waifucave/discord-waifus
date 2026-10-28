@@ -210,14 +210,14 @@ describe("life loop", () => {
       options: { webBackend: backend as never },
       scripts: script(
         // Turn 1 (a DM wake): a search.
-        toolTurn([{ name: "WebSearch", input: { query: "how to comfort a friend after a failed exam" } }]),
+        toolTurn([{ name: "Web", input: { script: `await search("how to comfort a friend after a failed exam")` } }]),
         textTurn("ok"),
         // Turn 2 (a room mention): a search, then a DM read: the turn becomes a DM turn.
-        toolTurn([{ name: "WebSearch", input: { query: "lemon cake" } }]),
+        toolTurn([{ name: "Web", input: { script: `await search("lemon cake")` } }]),
         toolTurn([{ name: "ReadMessages", input: { place: "dm/kevin" } }]),
         textTurn("ok"),
         // Turn 3 (a room mention): a search only.
-        toolTurn([{ name: "WebSearch", input: { query: "sprinkles" } }]),
+        toolTurn([{ name: "Web", input: { script: `await search("sprinkles")` } }]),
         textTurn("ok")
       )
     });
@@ -263,7 +263,7 @@ describe("mid-turn notifications (§4.6, §5.2)", () => {
     };
     world = await lifeWorld(roots, {
       options: { webBackend: backend as never },
-      scripts: script(toolTurn([{ name: "WebSearch", input: { query: "piping bag sizes" } }]), textTurn("ok"))
+      scripts: script(toolTurn([{ name: "Web", input: { script: `await search("piping bag sizes")` } }]), textTurn("ok"))
     });
     await reminder(world, "look up piping bags");
     await world.cast.life("ella").runNow();

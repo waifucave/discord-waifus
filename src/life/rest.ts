@@ -13,7 +13,7 @@ export const CACHE_REST_NOTICE = `${REST_NOTICE} You've been quiet a while; this
 /** What reaching people returns in the rest turn (the tools stay offered: the cached prefix holds). */
 export const REST_REFUSED_RESULT = "error: finish your summary first; you can do this after the reset";
 /** Tools that reach people or the web: refused while she writes her rest summary. */
-export const REST_REFUSED_TOOLS: ReadonlySet<string> = new Set(["SendMessage", "React", "WebSearch", "WebFetch"]);
+export const REST_REFUSED_TOOLS: ReadonlySet<string> = new Set(["SendMessage", "React", "Web"]);
 /** How her own summary opens her new epoch's `<life_so_far>`. */
 export const REST_SUMMARY_FRAME = "[your summary before the reset]";
 
