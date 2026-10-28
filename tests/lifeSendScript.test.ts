@@ -75,9 +75,31 @@ describe("parseSendScript (§27.1)", () => {
     expect(parse("")).toMatchObject({ ok: false });
   });
 
-  it("caps a script's waits at 120 seconds in all", () => {
+  it("caps a script's waits and typing at 120 seconds in all (one budget)", () => {
     expect(parse("m: a\nwait 60\nm: b\nwait 60\nm: c").ok).toBe(true);
-    expect(parse("m: a\nwait 60\nwait 60\nwait 1\nm: b")).toEqual({ ok: false, line: 4, error: "the waits add up to 121 seconds; at most 120 in one script" });
+    expect(parse("m: a\nwait 60\nwait 60\nwait 1\nm: b")).toEqual({ ok: false, line: 4, error: "waiting and typing add up to 121 seconds; at most 120 in one script" });
+    expect(parse("m: a\nwait 55\ntyping 10\nwait 55\ntyping 1\nm: b")).toEqual({ ok: false, line: 5, error: "waiting and typing add up to 121 seconds; at most 120 in one script" });
+    // Typing alone can't hold her turn either (300 × typing 10 would be 3,000 s).
+    expect(parse(`${"typing 10\n".repeat(13)}m: hi`)).toMatchObject({ ok: false, line: 13, error: "waiting and typing add up to 130 seconds; at most 120 in one script" });
+    expect(parse(`${"typing 10\n".repeat(12)}m: hi`).ok).toBe(true);
+  });
+
+  it("reads an indented line that is a whole command as that command, not more of the message (review)", () => {
+    expect(steps("m: here's the flyer\n  attach /tmp/flyer.png\n m: b\n  wait 5\n  reply #k3\n  m: c\n  react #k3 👍\n  typing 2\n  m: d")).toEqual([
+      { kind: "send", line: 1, text: "here's the flyer", files: [{ path: "/tmp/flyer.png", line: 2 }] },
+      { kind: "send", line: 3, text: "b", files: [] },
+      { kind: "wait", line: 4, seconds: 5 },
+      { kind: "send", line: 6, text: "c", files: [], replyTo: { ref: "k3", line: 5 } },
+      { kind: "react", line: 7, ref: "k3", emoji: "👍" },
+      { kind: "typing", line: 8, seconds: 2 },
+      { kind: "send", line: 9, text: "d", files: [] }
+    ]);
+    // Words that only start like a command stay text: no path, no #, no number.
+    expect(steps("m: a poem\n  attach the poster later\n  wait for me\n  reply soon\n  typing fast")).toEqual([
+      { kind: "send", line: 1, text: "a poem\nattach the poster later\nwait for me\nreply soon\ntyping fast", files: [] }
+    ]);
+    // An out-of-range number is still the command, so the error shows.
+    expect(parse("m: a\n  wait 90")).toMatchObject({ ok: false, line: 2, error: "wait takes seconds from 1 to 60, like wait 5" });
   });
 
   it("reads a pre-§27 call as one message, and labels sends for results", () => {

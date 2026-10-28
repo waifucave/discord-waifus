@@ -78,7 +78,7 @@ reply #k3 — the next message replies to #k3
 attach <path> — right after an m: line, a file from your folders for that message (at most 4); on its own, a message with just the file. MEMORY.md, the notes it links to and the files in ~/life/ can't be attached. To post something you write as a file, save it with Write first.
 react #k3 <emoji> — a reaction (a unicode emoji or :server_emoji:)
 wait <1-60> — pause that many seconds; if anyone else writes here meanwhile, the rest isn't sent and you see what came in
-typing <1-10> — show typing for that many seconds
+typing <1-10> — show typing for that many seconds (waits and typing: at most 120 seconds in one script)
 Keep each message as short as a chat line and use several m: lines instead of one long one. Use <@Name> to mention someone who is there. If a line is wrong, nothing is sent.
   {"type":"object","properties":{"place":{"type":"string","description":"A place handle."},"script":{"type":"string","description":"One command per line: m: <text>, reply #ref, attach <path>, react #ref <emoji>, wait <seconds>, typing <seconds>."}},"required":["place","script"],"additionalProperties":false}
 - React: Add a reaction to a message.

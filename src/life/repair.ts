@@ -68,11 +68,15 @@ async function recoverCall(
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
       // A script's done line names every message it sent (§27.1).
       const ids = intent.done.resultRef.split(",").filter(Boolean);
+      // A script that stopped part way (a wait, an error) sent its first messages: the rest were not.
+      const sends = scriptSends(sendCallSteps(input, deps.config().life.send.maxFiles) ?? []);
+      const notSent = sends.slice(ids.length).map((send) => `not sent: ${sendLabel(send)}`);
+      let head = "sent (recovered)";
       if (place) {
         const refs = await assignConversationRefs(deps.storage, place.placeKey as never, ids, deps.now());
-        if (ids.every((id) => refs.has(id))) return { text: `sent ${ids.map((id) => `#${refs.get(id)}`).join(" ")} (recovered)`, isError: false };
+        if (ids.every((id) => refs.has(id))) head = `sent ${ids.map((id) => `#${refs.get(id)}`).join(" ")} (recovered)`;
       }
-      return { text: "sent (recovered)", isError: false };
+      return { text: [head, ...notSent].join("\n"), isError: false };
     }
     return { text: "done (recovered)", isError: false };
   }

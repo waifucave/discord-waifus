@@ -117,12 +117,12 @@ The script is one command per line:
 
 | Line | Meaning |
 |---|---|
-| `m: <text>` | One message. A following line that starts with whitespace continues it (a newline inside the message). |
+| `m: <text>` | One message. A following line that starts with whitespace continues it (a newline inside the message), unless that line is a whole command (`  attach /tmp/flyer.png`, ` m: next`, `  wait 5`, `  reply #k3`, `  react #k3 👍`, `  typing 2`: a `reply`/`react` with its `#`, an attach with a path, wait/typing with a number); then it is that command. |
 | `reply #k3` | The next send (an `m:` or a file-only `attach` group) is a Discord reply to `#k3`. |
 | `attach <path>` | Right after an `m:` (and its continuation lines): a file of that message. Lines that don't directly follow an `m:` (at the start, or after `wait`/`typing`/`react`/`reply`) are sent together as one message with only files. At most `life.send.maxFiles` (4) per message. |
 | `react #k3 <emoji>` | A reaction, with `React`'s rules. |
 | `wait <1-60>` | A pause. If anyone else writes in that place meanwhile (a person, another waifu or a bot; typing doesn't count), the wait ends at once and the rest of the script is not sent. |
-| `typing <1-10>` | Typing there for that long, without sending. |
+| `typing <1-10>` | Typing there for that long, without sending. Waits and typing together: at most **120 s** per script. |
 
 ```
 attach ~/tmp/crying-cat.png        a message with only the file
@@ -136,8 +136,9 @@ attach ~/tmp/crying-cat.png        a file of "Anyone here?"
   reads as if it were not; a number may end in `s` (`wait 5s`).
 - **Checked first, all or nothing.** Shape (unknown line, bad number, `reply` with nothing after
   it, two `reply` lines for one send, an indented line with no `m:` above it, more files than
-  `life.send.maxFiles`, a message over 2,000 characters, waits over **120 s** in all, nothing to
-  send), then the place, the caps, every line's text, refs, files and emoji. Any error refuses the
+  `life.send.maxFiles`, a message over 2,000 characters, waits and typing over **120 s** in all
+  (`waiting and typing add up to 121 seconds; at most 120 in one script`), nothing to send), then
+  the caps, every line's text, refs, files and emoji. Any error refuses the
   whole script and nothing is sent: `error: line 3: #k9: message too old; nothing was sent`,
   `error: line 2: can't attach ~/MEMORY.md (your notes and the files in ~/life/ are private and can't
   be attached); nothing was sent`, `error: line 4: not a command: "hello" (each line starts with m:,
@@ -147,8 +148,9 @@ attach ~/tmp/crying-cat.png        a file of "Anyone here?"
 
 Checks in order:
 
-1. The script's shape (above).
-2. `error: unknown place; see ~/life/places.md`.
+1. `error: unknown place; see ~/life/places.md` (the place first, so a refused DM script is still a
+   DM call in the owner's views, D14).
+2. The script's shape (above).
 3. No bot of her own: `error: you have no Discord bot of your own, so you can't post; the owner has been
    told` (owner notice `no-bot:<id>`, cleared at her next successful send).
 4. A DM she may not write in, or a paused server: `error: you can't post there` ([dms.md](dms.md)).
@@ -178,7 +180,10 @@ not sent: Anyone here?
 
 A Discord error on a line stops the rest: `sent #k9; line 3 failed: the message could not be sent`
 and the `not sent:` lines (`not done: react #k2 👍` for a reaction). An interrupted script (stop,
-pause, abort) sends nothing more: `sent #k9; interrupted at line 3` and the rest. When nothing went
+pause, abort) sends nothing more: `sent #k9; interrupted at line 3` and the rest. After a `wait` or a
+`typing` line the place is looked at again before the next send or reaction: a server paused, the
+cast paused, a DM she may no longer write in or a place no longer hers stops the rest with
+`sent #k9; line 4 failed: you can't post there` and the `not sent:` lines. When nothing went
 out it is an error: one line alone gives just the reason (`error: they can't receive your messages
 right now`), a longer script `error: line 1: the message could not be sent; nothing was sent`.
 

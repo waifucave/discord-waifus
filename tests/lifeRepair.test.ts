@@ -177,6 +177,20 @@ describe("crash repair (§5.7)", () => {
     expect(unknown.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ \(recovered\); it is unknown whether line 3 was sent; read the place before sending it again$/u), "not sent: three"]);
   });
 
+  it("a script that finished stopped part way (its done line, its result lost) says what was not sent (review)", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
+    const input = { place: "bake-club/#general", script: "m: one\nwait 5\nm: two\nm: three" };
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
+    const id = w.discord.post(ROOM, "one", { authorId: ELLA_BOT, authorName: "Ella", bot: true }).id;
+    await appendIntent(w.storage, "ella", { turnId: "t-crash", toolCallId: "call_send", tool: "SendMessage", argsDigest: digest(input), at: w.clock.now().toISOString(), done: true, resultRef: id });
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("ella"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    const result = ((await tail(w)).message as { content: Array<{ content?: string }> }).content[0]!;
+    expect(result.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ \(recovered\)$/u), "not sent: two", "not sent: three"]);
+    expect(w.discord.sent).toEqual([]);
+  });
+
   it("a script whose call finished before the crash (its done line) recovers every message it sent", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     const input = { place: "bake-club/#general", script: "m: one\nm: two" };

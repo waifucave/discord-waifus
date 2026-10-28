@@ -84,7 +84,7 @@ and never sends anything itself: in a script cut off by a crash, a message with 
 was sent; the first message after those is looked for among her messages since the intent (by its
 digest, else by its text with mentions and emoji set aside); nothing after it was tried. All sent:
 `sent #k9 #ka (recovered)`; part: `sent #k9 (recovered)` then a `not sent: <text>` line per message
-left; none: `[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether
+left (also when the call had finished, stopped part way, and only its result was lost); none: `[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether
 this was sent; read the place before sending it again` (or, after messages that were sent, `it is
 unknown whether line 3 was sent; …`); then `[system] interrupted by a restart`
 (`src/life/repair.ts`). A pre-§27 call (`text`) is one message, its digest line without `line`.

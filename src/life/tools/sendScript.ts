@@ -1,13 +1,14 @@
 // The SendMessage script (Living cast spec §27.1): one command per line.
 //
-//   m: <text>          one message; a following indented line continues it (a newline inside it)
+//   m: <text>          one message; a following indented line continues it (a newline inside it),
+//                      unless that line is a whole command (`  attach /tmp/a.png`, ` m: next`)
 //   attach <path>      right after an m: (and its continuation lines): a file of that message; on its
 //                      own (at the start, or after wait/typing/react/reply): consecutive attach lines
 //                      are one message with only the files
 //   reply #k3          the next send (an m: or a file-only attach group) replies to #k3
 //   react #k3 <emoji>  a reaction, with React's rules
 //   wait <1-60>        a pause; anyone else writing there meanwhile stops the rest
-//   typing <1-10>      typing there for that long, without sending
+//   typing <1-10>      typing there for that long, without sending (waits and typing: 120 s in all)
 //
 // Blank lines are ignored; anything else is a parse error with its line number. This module only
 // parses and checks the shape (numbers, counts, binding); the tool checks places, refs, files and
@@ -15,7 +16,7 @@
 
 export const MAX_WAIT_SECONDS = 60;
 export const MAX_TYPING_SECONDS = 10;
-/** A script's waits together (§27.1). */
+/** A script's waits and typing together (§27.1, §27.4: one budget). */
 export const MAX_WAIT_TOTAL_SECONDS = 120;
 /** One message's text (Discord's limit). */
 export const MAX_MESSAGE_CHARS = 2000;
@@ -60,6 +61,36 @@ function refOf(raw: string): string | undefined {
   return /^[0-9a-z]{1,12}$/iu.test(ref) ? ref.toLowerCase() : undefined;
 }
 
+/** A path as an attach line names one: from a folder (`~/`, `/`, `./`), with a folder in it, or a file name with an extension. */
+function looksLikePath(raw: string): boolean {
+  return /^(?:~|\/|\.{1,2}\/)/u.test(raw) || raw.includes("/") || /^\S+\.[A-Za-z0-9]{1,8}$/u.test(raw);
+}
+
+/**
+ * An indented line that is a whole command (§27.4): it is that command, not more of the message
+ * above (`  attach /tmp/flyer.png`, ` m: next`, `  wait 5`, `  reply #k3`, `  react #k3 👍`). A
+ * `reply`/`react` needs its `#`, an attach a path, wait and typing a number.
+ */
+function isWholeCommand(body: string): boolean {
+  const command = COMMAND_RE.exec(body)?.[1]?.toLowerCase();
+  if (!command) return false;
+  const rest = body.slice(command.length).trim();
+  switch (command) {
+    case "m:":
+      return rest.length > 0;
+    case "attach":
+      return looksLikePath(rest);
+    case "reply":
+      return rest.startsWith("#") && refOf(rest) !== undefined;
+    case "react": {
+      const [first, ...emoji] = rest.split(/\s+/u);
+      return first !== undefined && first.startsWith("#") && refOf(first) !== undefined && emoji.length > 0;
+    }
+    default:
+      return /^\d+(?:\.\d+)?\s*s?$/iu.test(rest);
+  }
+}
+
 /**
  * Parses a script into steps. `maxFiles` is `life.send.maxFiles` (0: attach is refused). Shape
  * errors only; the first one wins.
@@ -80,8 +111,8 @@ export function parseSendScript(script: string, o: { maxFiles: number }): Parsed
     if (!full.trim()) continue;
     const indented = /^\s/u.test(full);
     const body = full.trim();
-    // An indented line continues the open m: message (a poem, a list).
-    if (indented && open && openIsText) {
+    // An indented line continues the open m: message (a poem, a list), unless it is a whole command.
+    if (indented && open && openIsText && !isWholeCommand(body)) {
       open.text = `${open.text}\n${body}`;
       continue;
     }
@@ -149,10 +180,11 @@ export function parseSendScript(script: string, o: { maxFiles: number }): Parsed
   }
   if (pendingReply) return fail(pendingReply.line, "reply needs a message after it (an m: or attach line)");
   if (!steps.some((step) => step.kind === "send" || step.kind === "react")) return fail(1, "there is nothing to send: write each message on an m: line");
-  const waited = steps.reduce((sum, step) => sum + (step.kind === "wait" ? step.seconds : 0), 0);
+  // Waits and typing share one budget: a script never holds her turn longer than this.
+  const waited = steps.reduce((sum, step) => sum + (step.kind === "wait" || step.kind === "typing" ? step.seconds : 0), 0);
   if (waited > MAX_WAIT_TOTAL_SECONDS) {
-    const last = [...steps].reverse().find((step) => step.kind === "wait")!;
-    return fail(last.line, `the waits add up to ${waited} seconds; at most ${MAX_WAIT_TOTAL_SECONDS} in one script`);
+    const last = [...steps].reverse().find((step) => step.kind === "wait" || step.kind === "typing")!;
+    return fail(last.line, `waiting and typing add up to ${waited} seconds; at most ${MAX_WAIT_TOTAL_SECONDS} in one script`);
   }
   for (const step of steps) {
     if (step.kind === "send" && step.text.length > MAX_MESSAGE_CHARS) return fail(step.line, `that message is ${step.text.length} characters; at most ${MAX_MESSAGE_CHARS}`);

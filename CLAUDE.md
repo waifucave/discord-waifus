@@ -143,7 +143,7 @@ stored on each line; a ref `refs.json` pruned resolves through the transcript
 file, else a file-only message), `react #ref <emoji>`, `wait <1-60>` (anyone else writing there stops
 the rest; what came in is shown with refs), `typing <1-10>`. The whole script is checked first (any
 error refuses it with its line number, nothing sent); each `m:` counts against `life.maxSendsPerTurn`
-(15; migration `living-cast-send-cap-15-v1` moves a saved 8), waits ≤ 120 s per script, one place per
+(15; migration `living-cast-send-cap-15-v1` moves a saved 8), waits and typing ≤ 120 s per script, one place per
 call; each message has its own intent and `lineDone` lines for boot repair; the result adds a length
 nudge when a line is over max(3 × the place's median message from people, 120) characters. A pre-§27
 call (`text`, `reply_to`, `files`) still runs as one message.

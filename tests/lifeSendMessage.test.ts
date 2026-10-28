@@ -8,10 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
 import type { ToolContext, ToolOutput } from "../src/life/tools/types.js";
 import { selfAuthorIds } from "../src/life/people.js";
-import { readIntents } from "../src/life/lifeStore.js";
+import { readIntents, readLifeLog, readLifeState } from "../src/life/lifeStore.js";
+import { scanDmContent, viewLogLine } from "../src/life/lifeView.js";
+import { ServerConfigSchema } from "../src/shared/schemas/domain.js";
+import { textTurn } from "./modelFakes.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
-import { CHANNEL, closeWorlds, dmOf, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, seedTranscript, tinyPng, type LifeWorld } from "./lifeFixtures.js";
+import { CHANNEL, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, script, seedTranscript, tinyPng, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -189,6 +192,76 @@ describe("SendMessage scripts (§27.1)", () => {
     const result = await send("m: one\nwait 10\nm: two", ctx);
     expect(text(result).split("\n")).toEqual([expect.stringMatching(/^sent #\w+; interrupted at line 2$/u), "not sent: two"]);
     expect(w.discord.sent).toHaveLength(1);
+  });
+
+  it("a server paused during a wait or a typing line stops the rest: you can't post there (review)", async () => {
+    const pause = async (world: LifeWorld) =>
+      world.storage.updateRevisionedJson({
+        resourceKey: `server:${GUILD}`,
+        relativePath: `user/servers/${GUILD}/server.json`,
+        schema: ServerConfigSchema,
+        fallback: undefined as never,
+        transform: (server) => ({ ...server, paused: true })
+      });
+    let pending: Promise<unknown> | undefined;
+    const { w } = await worldWithSleep((world, ms) => {
+      if (ms === 3000) pending = pause(world);
+    });
+    // The sleep hook can't await: the pause is written before the next line runs.
+    const ctx = await ctxFor(w);
+    const original = w.cast.deps.sleep;
+    w.cast.deps.sleep = async (ms, signal) => {
+      await original(ms, signal);
+      await pending;
+    };
+    const result = await send("m: one\nwait 3\nm: two\nm: three", ctx);
+    expect(text(result).split("\n")).toEqual([expect.stringMatching(/^sent #\w+; line 3 failed: you can't post there$/u), "not sent: two", "not sent: three"]);
+    expect(w.discord.sent.map((entry) => entry.content)).toEqual(["one"]);
+
+    // Nothing sent before the pause: an error, nothing went out.
+    const { w: v } = await worldWithSleep((world, ms) => {
+      if (ms === 2000) pending = pause(world);
+    });
+    const vctx = await ctxFor(v);
+    const vOriginal = v.cast.deps.sleep;
+    v.cast.deps.sleep = async (ms, signal) => {
+      await vOriginal(ms, signal);
+      await pending;
+    };
+    expect(await send("typing 2\nm: two", vctx)).toEqual({ content: "error: line 2: you can't post there; nothing was sent", isError: true });
+    expect(v.discord.sent).toEqual([]);
+  });
+
+  it("a DM script refused for a bad line is still a DM call: hidden in her life views and /print life (D14, review)", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: script(
+        textTurn("(read it)"),
+        toolTurn([{ name: "SendMessage", input: { place: "dm/kevin", script: "m: SECRET-LINE about the divorce\nwave hello" } }]),
+        textTurn("(oops)")
+      )
+    });
+    // Kevin DMed her before (the DM is hers), in a turn of its own.
+    const dm = w.discord.post(dmOf("ella"), "hi ella");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.flushDms();
+    await w.cast.settle();
+    await w.cast.life("ella").runNow();
+    // A room mention wakes the next turn, where she writes to the DM with a bad line.
+    const message = w.discord.post(ROOM, `<@${ELLA_BOT}> you there?`, { mentions: { [ELLA_BOT]: "Ella" } });
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
+    await w.cast.settle();
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
+    await w.cast.life("ella").runNow();
+    const lines = await readLifeLog(w.storage, "ella", (await readLifeState(w.storage, "ella")).epoch);
+    const results = lines.find((entry) => entry.kind === "tool_results" && JSON.stringify(entry.message).includes("line 2: not a command"));
+    expect(results?.dmCalls).toHaveLength(1);
+    const scan = scanDmContent(lines);
+    expect(JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view))).not.toContain("SECRET-LINE");
+    const printed = await w.cast.printLife("ella");
+    expect(printed).not.toContain("SECRET-LINE");
+    expect(printed).toContain("SendMessage([private chat redacted])");
+    expect(w.discord.sent).toEqual([]);
   });
 
   it("refuses a second place when the turn already wrote in its maximum, and a paused server", async () => {

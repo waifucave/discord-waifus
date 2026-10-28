@@ -3468,7 +3468,7 @@ its own tool. The script is lines, each one a command:
 | `attach <path>` | Attach a file (her folders, the `files` rules as today). One or more `attach` lines directly after an `m:` (and its continuation lines) attach to that message (at most `life.send.maxFiles`). `attach` lines that do not directly follow an `m:` (at the start of the script, or after `wait`/`typing`/`react`/`reply`) are sent together as one message with only the files. (Owner change, 2026-10-28: attach lines go after their `m:`.) |
 | `react #k3 <emoji>` | React, with `React`'s rules. |
 | `wait <seconds>` | Pause 1–60 s. If anyone else writes in that place during the wait (a person or another waifu; typing does not count), the rest of the script is not sent. |
-| `typing <seconds>` | Show typing there for 1–10 s without sending. |
+| `typing <seconds>` | Show typing there for 1–10 s without sending. (Review, 2026-10-28: counts in the same 120 s as the waits.) |
 
 - Blank lines are ignored; a line that is none of these is a parse error. The whole script is parsed and
   checked first (places, refs, files, emoji, caps); any error refuses it with the line number and
@@ -3476,7 +3476,7 @@ its own tool. The script is lines, each one a command:
 - The existing typing pacing runs before every `m:` (30 ms × chars, 0.6–4.5 s). Between lines without
   a `wait`, new messages do not stop the script (a person bursting doesn't stop mid-burst either).
 - Caps: each `m:` (and each file-only send) counts one against `life.maxSendsPerTurn`, whose default
-  rises from 8 to 15; a script's waits total at most 120 s; one place per call (the per-turn place cap
+  rises from 8 to 15; a script's waits and typing lines total at most 120 s; one place per call (the per-turn place cap
   is unchanged). A script over a cap is refused before anything is sent.
 - The turn keeps running during a wait. Wakes that arrive fold into the next tool results as today. A
   wait cut short adds to the result what stopped it, as notification lines (with refs), so she sees it
@@ -3512,11 +3512,18 @@ repair, the nudge (threshold, median, too few samples, DMs use the other person)
   needs no space after the colon, a number may end in `s` (`wait 5s`) and may have decimals. A script
   indented as a whole is read as if it were not (the common indent is removed first), so a model that
   indents every line still works; after that, an indented line continues the open `m:` and is an
-  error (`an indented line continues an m: message, and there is none above it`) anywhere else.
+  error (`an indented line continues an m: message, and there is none above it`) anywhere else,
+  except that an indented line that is a whole command is that command (review, 2026-10-28:
+  `  attach /tmp/flyer.png` after an `m:` attaches the file instead of posting its text): `m:` with
+  text, `attach` with something path-like (starting `~`, `/`, `./`, holding a `/`, or a name with an
+  extension), `reply`/`react` with a `#ref`, `wait`/`typing` with a number (an out-of-range one then
+  reports its range).
   Blank lines inside a message are ignored like any blank line (a message cannot hold an empty
   line). Continuation lines lose their own indent. A `reply` with nothing after it, two `reply` lines
   for one send, and a script with nothing to send or react (only waits or typing) are parse errors.
-  The 120 s wait cap is reported on the last `wait` line. A message over 2,000 characters is a parse
+  Waits and typing share the 120 s (review, 2026-10-28; `typing` alone was unbounded): the cap is
+  reported on the last `wait` or `typing` line (`waiting and typing add up to 121 seconds; at most 120
+  in one script`). A message over 2,000 characters is a parse
   error on its `m:` line.
 - **Errors** read `error: line N: <why>; nothing was sent`; a ref that doesn't resolve is
   `line N: #k9: message too old`, a file `line N: can't attach <path> (<the files rule>)`. Unlike the
@@ -3542,6 +3549,15 @@ repair, the nudge (threshold, median, too few samples, DMs use the other person)
   (`- <place> · from <name> · #ref "<preview>"`), at most `life.notificationLinesPerPlace` (the first
   saying `+N earlier`), forgotten people as `someone` / `(removed)`; their refs are assigned with the
   messages before them. A `typing` line shows typing once (Discord keeps it about 10 s).
+- **Order of checks**: the place is resolved before the script is parsed, so a DM script refused for
+  a bad line is still recorded as a DM call (D14; review, 2026-10-28). `isDmPlaceRef` (the owner's
+  views' fallback for calls with no record) reads string arguments up to 40,000 characters, a
+  script's size, instead of 4,000.
+- **A place that closes during a script** (review, 2026-10-28): after a `wait` or a `typing` line the
+  place is resolved again (the turn's place cache dropped first) before the next send or reaction; the
+  cast paused, the server paused, the place gone or no longer the same, or (before a send) a DM she
+  may no longer write in stops the rest as a failed line, `line N failed: you can't post there`, with
+  the `not sent:` lines (an error when nothing went out).
 - **Typing**: the streaming call's typing keeper (§6.3) stops when the SendMessage call starts to run;
   the script then shows typing itself before each `m:` and for `typing` lines, so nothing types during
   a `wait`.
@@ -3552,7 +3568,9 @@ repair, the nudge (threshold, median, too few samples, DMs use the other person)
   as sent, looks for the first one after them among her messages since the intent (digest, else the
   loose text, as before), and treats everything after it as not tried; the result is
   `sent #a #b (recovered)` plus `not sent: <text>` lines, or the unknown-line text when Discord
-  can't be read. Reactions in a script are not reported by repair (adding one again is harmless).
+  can't be read. A call whose done line is there (it finished, its result was not saved) is rebuilt
+  the same way: its recorded ids, then `not sent:` for the script's sends after them (review,
+  2026-10-28). Reactions in a script are not reported by repair (adding one again is harmless).
   An intent written before §27 (a digest line without `line`) belongs to the call's one message.
 - **Result**: partial sends are not `is_error` (something went out); the last line of a stopped or
   failed script lists every send left as `not sent: <text>` (a multi-line message on one line, joined

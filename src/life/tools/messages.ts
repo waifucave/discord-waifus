@@ -24,7 +24,7 @@ import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/path
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
 import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
-import { placeLabel, placesWithHandles, resolvePlace, type ResolvedPlace } from "../places.js";
+import { placeLabel, placesWithHandles, refreshPlaces, resolvePlace, type ResolvedPlace } from "../places.js";
 import { notePlace } from "../placeRecorder.js";
 import { refsForMessages } from "../messageRefs.js";
 import { entryHeader, entryLine, type LineMessage, type LineView } from "../render.js";
@@ -975,11 +975,12 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   if (!parsed.ok) return parsed.output;
   const { deps, waifu, turn } = ctx;
   const life = deps.config().life;
+  // The place first: a refused DM script is still a DM call (D14: resolving it records the place).
+  const place = await resolvePlace(deps.storage, waifu.id, parsed.value.place);
+  if (!place) return toolError(UNKNOWN_PLACE);
   const script = stepsOf(parsed.value, life.send.maxFiles);
   if (!script.ok) return lineError(script.line, script.error);
   const steps = script.steps;
-  const place = await resolvePlace(deps.storage, waifu.id, parsed.value.place);
-  if (!place) return toolError(UNKNOWN_PLACE);
   // Without a bot of her own she cannot post at all (never through the House bot): she is told,
   // and so is the owner (review M12).
   if (!waifu.botId) {
@@ -1026,6 +1027,17 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
   const sentTexts: string[] = [];
   const reacted: string[] = [];
   let stop: { at: number; line: number; kind: "wait"; seconds: number; came: RawDiscordMessage[] } | { at: number; line: number; kind: "failed"; reason: string } | { at: number; line: number; kind: "interrupted" } | undefined;
+  // After a wait or a typing line, the place is looked at again before the next send or reaction:
+  // a server paused, a DM closed or a place no longer hers meanwhile stops the rest (§27.4).
+  let recheck = false;
+  const stillOpen = async (forSend: boolean): Promise<boolean> => {
+    if (deps.isPaused()) return false;
+    refreshPlaces(deps.storage, waifu.id);
+    const current = await resolvePlace(deps.storage, waifu.id, parsed.value.place).catch(() => undefined);
+    if (!current || current.placeKey !== place.placeKey) return false;
+    if (current.kind === "dm") return !forSend || (await dmSendAllowed(deps, ctx, current).catch(() => false));
+    return current.paused !== true;
+  };
   const showTyping = async () => {
     if (place.kind === "dm") await discord.sendDirectTyping?.({ waifuId: waifu.id, userId: place.userId! });
     else await discord.sendTyping({ guildId: place.guildId!, channelId: place.channelId!, senderBotId: waifu.botId });
@@ -1047,12 +1059,21 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
         stop = { at: at + 1, line: step.line, kind: "wait", seconds: step.seconds, came };
         break;
       }
+      recheck = true;
       continue;
     }
     if (step.kind === "typing") {
       await showTyping().catch(() => undefined);
       await deps.sleep(step.seconds * 1000, ctx.signal);
+      recheck = true;
       continue;
+    }
+    if (recheck) {
+      recheck = false;
+      if (!(await stillOpen(step.kind === "send"))) {
+        stop = { at, line: step.line, kind: "failed", reason: CANNOT_POST.replace(/^error:\s*/u, "") };
+        break;
+      }
     }
     if (step.kind === "react") {
       const react = item as ReadyReact;
@@ -1199,7 +1220,7 @@ function sendDescription(maxFiles: number): string {
     ...(maxFiles > 0 ? [`attach <path> — right after an m: line, a file from your folders for that message (at most ${maxFiles}); on its own, a message with just the file. ${PRIVATE_ATTACH_TEXT} To post something you write as a file, save it with Write first.`] : []),
     "react #k3 <emoji> — a reaction (a unicode emoji or :server_emoji:)",
     "wait <1-60> — pause that many seconds; if anyone else writes here meanwhile, the rest isn't sent and you see what came in",
-    "typing <1-10> — show typing for that many seconds",
+    "typing <1-10> — show typing for that many seconds (waits and typing: at most 120 seconds in one script)",
     "Keep each message as short as a chat line and use several m: lines instead of one long one. Use <@Name> to mention someone who is there. If a line is wrong, nothing is sent."
   ].join("\n");
 }
