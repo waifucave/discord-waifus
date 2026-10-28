@@ -3570,3 +3570,85 @@ On Beta (2026-10-28) every waifu wrote timed plans ("17:30 send K a photo", "09:
   does not fire, inside bed time does not fire, busy block gets through, several at once = one wake,
   budget defer, golden for the notification line and the greeting; `docs/behaviour/day-and-bed-time.md`
   and `triggers.md`.
+
+## 30. `Wakeup(script)`: one tool for every wakeup, with her own code (owner request, 2026-10-28)
+
+`ScheduleWake` and `WatchFor` merge into one tool, `Wakeup(script)`. The script is JavaScript she
+writes, using a small set of functions we provide; her filters are real code that runs in a sandbox
+(owner choice "B", 2026-10-28, over parsed-only calls). Inspired by the owner's Grok bot routines
+(timed triggers and event listeners); real inbound webhooks are out of scope because the host never
+listens on the network, so events beyond Discord come from polling web pages.
+
+### 30.1 The sandbox
+
+- QuickJS compiled to WebAssembly (`quickjs-emscripten`, exact pin), in a worker thread like her Bash.
+  No `require`, no network, no file system, no timers, no host objects: only the functions below and
+  standard JS built-ins (`Math`, `JSON`, `Date` (her local time zone), `RegExp`, `String`, arrays).
+- Limits per run: 50 ms CPU (interrupt handler), 16 MiB memory, 64 KiB of stack; a script run at
+  registration gets 500 ms. Exceeding one is an error (`your filter took too long` / `used too much
+  memory`), never a host problem. The worker is restarted after a crash or a limit hit.
+- Her code is stored as source text and runs again in a fresh context for each event (filters must be
+  self-contained: closures over the script's variables are refused at registration with `filters can't
+  use variables from outside them; put what they need inside`).
+
+### 30.2 The functions
+
+Run once when she calls `Wakeup`; each call adds one wakeup (ids `t<n>` timed, `w<n>` watch, `p<n>`
+page) or cancels one. The script may hold many calls, for many places; it is all-or-nothing (any error
+refuses the whole script with the line, nothing saved).
+
+| Function | Wakes her |
+|---|---|
+| `at(when, note)` | Once at `when`: `"fri 18:00"`, `"2026-10-30 18:00"`, `"18:00"` (today, else tomorrow), `"in 45m"`, `"in 2h"`. 5 min to 30 days ahead. |
+| `every(when, note)` | Repeating: `"day 09:00"`, `"weekday 08:30"`, `"weekend 11:00"`, `"mon,fri 18:30"`, or a 5-field cron in her time zone (`"0 20 1 * *"`; steps every ≥ 15 min). The result echoes the next three times in words. |
+| `watch(places, filter, options, note)` | When a message in `places` (a handle, an array of handles, or `"everywhere"` = her places) passes `filter`. `filter` is an object (`{from, words, any}` as `WatchFor` had, no code) or a function `(msg, state) => boolean \| string`. Options: `for` (`"2h"`, ≤ 7 days, required), `once` (default true). Times out with a `watch_timeout` wake as today. |
+| `page(url, check, options, note)` | Polls a web page: `check` is `{contains: "text"}`, `"changes"` or a function `(page, state) => boolean \| string`. Options: `every` (≥ `"1h"`), `for` (≤ 7 days). |
+| `cancel(id)` | Removes a wakeup. |
+
+- **`msg`** given to a filter: `{place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at,
+  files}` (text as she would read it, ≤ 4,000 chars). Only messages in the watch's places, and DMs only
+  her own, the same visibility as `ReadMessages`.
+- **`page`**: `{url, status, title, text}` (readable text, ≤ 200 KB), fetched by the SSRF-checked web
+  fetcher (`privateAddressPolicy: "deny"`), no model call. `"changes"` compares a hash of the text.
+- **`state`**: a JSON object per wakeup the function may change (≤ 4 KiB serialized; over that the change
+  is refused and the run counts as an error), for conditions across events ("Kevin and Mina both talked
+  within 10 minutes", "the price dropped below 50 since last time"). Kept in memory and saved when it
+  changed, at most once a minute and at shutdown (SSD writes).
+- **Return**: `true` fires, a string fires and is shown as the wake's line (≤ 200 chars, e.g. `"price is
+  now 45"`), anything else doesn't.
+- **Errors are never silent**: a runtime error or limit hit is counted; after 3 in a row the wakeup is
+  disabled and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError: … (line 2)`), which goes
+  through like a reminder. A disabled wakeup stays listed until she fixes or cancels it.
+
+### 30.3 The file `~/life/wakeups.json`
+
+One file replaces `reminders.json` and `watches.json`: a JSON array of `{id, kind, when|places|url,
+filter|check (object or source string), options, note, state?, disabled?}`, written one entry per line.
+She may Read/Write/Edit it (whole-file Write needs a current Read this turn, as today); every write runs
+the same checks, including compiling each function in the sandbox. Caps: ≤ 20 timed, ≤ 10 watches, ≤ 3
+pages, ≤ 8 KiB source per function, ≤ 64 KiB file.
+
+- **Migration** `living-cast-wakeups-v1` (once, per-waifu marker like the life-folder step): each
+  reminder becomes a `t` entry (`at` or `every day/weekday` from `repeat`), each watch a `w` entry with an
+  object filter; ids keep their numbers (`r4` → `t4`, `w3` stays); the old files are archived, side files
+  (`watch-ids.json`, `schedule-ids.json`) follow.
+- Code wakeups run only on the host (never in maintenance or dreaming); dreaming never changes the file.
+  A forget removes every wakeup whose note, filter source or state names the person (id or names).
+- The owner's views (Life files, `/print`) show each wakeup with its source; one watching a DM is a
+  private entry (D14).
+
+### 30.4 Cost and limits
+
+- Object filters cost nothing extra. A function filter runs once per message in its places (≤ 10
+  watches); a page check once per `every`. No model call until a wakeup fires.
+- Several wakeups firing on the same message are one wake with one line each.
+- The tool result: `set w4 (kingdom/#general, until Wed 28 Oct 14:02), t5 (fri 18:00), p1 (every 6h,
+  until Wed 4 Nov)` and, for `every`, the next three times.
+
+### 30.5 Tests and docs
+
+Sandbox escapes and limits (no host access, CPU/memory/stack, closures refused, worker restart), each
+function's parsing and caps, filters (object and code, state across messages, string returns), page
+checks (contains/changes/function, SSRF deny, `every` ≥ 1h), errors disabling after 3 with the wake,
+the migration (every reminder/watch shape, markers, archive), forget, D14 views, the prompt and tool
+description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-time, privacy-and-forget).
