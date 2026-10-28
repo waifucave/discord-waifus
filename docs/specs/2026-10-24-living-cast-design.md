@@ -3544,3 +3544,29 @@ gains one line per server she is cast in:
   times, and `HomeStore.writePlaces` still skips an unchanged text, so places.md is rewritten only
   when a place, an emoji or the hourly order really changes. A failed count is cached as empty for
   the hour (order by name). Tests: `tests/lifePlacesEmojis.test.ts`.
+
+## 29. A plan with a time wakes her (owner request, 2026-10-28)
+
+On Beta (2026-10-28) every waifu wrote timed plans ("17:30 send K a photo", "09:30 check
+#secret-room") and none set a reminder, so nothing happened at those times. A plan in today's
+`~/life/schedule.json` with `at` now wakes her at that time.
+
+- **Reason `plan`**, routed by the scheduler tick like a reminder (`Scheduler`): when the clock reaches
+  `at` on the schedule's `date` (today), the plan fires once. Fired plans are recorded app-side
+  (`life/plans-fired.json`: date + `at` + a hash of `what`), so an edit of the text or the time is a new
+  plan, and the same plan never fires twice. The file of a past day is dropped from it.
+- **Late or missed**: a plan fires up to 15 minutes late (host down, paused, a turn running); later than
+  that it is skipped (a plan is soft; reminders are for what must happen). A plan written after its
+  time does not fire. A budget pause defers it like a reminder.
+- **Routing**: `plan` joins the busy set (it gets through a busy block, it is hers) and is treated like
+  `reminder` in bed time (gets through when up late, dozing or asleep). A plan whose `at` is inside her
+  bed time does not wake her (it stays a note).
+- **Notification**: `- plan · 17:30 · "send one photo to dm/k if K is around"` (no place; she decides).
+  Several plans at the same tick are one wake with one line each. It folds mid-turn like any wake.
+- **Prompt**: the morning greeting adds "Plans with a time wake you then." The schedule field help and
+  the tool-result note for a schedule write say the same.
+- **Plans without `at`** stay notes. `phoneChecks`, busy blocks and reminders are unchanged.
+- Tests: fires once at `at`, edit = new plan, late ≤ 15 min fires / later skipped, written after its time
+  does not fire, inside bed time does not fire, busy block gets through, several at once = one wake,
+  budget defer, golden for the notification line and the greeting; `docs/behaviour/day-and-bed-time.md`
+  and `triggers.md`.
