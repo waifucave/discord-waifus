@@ -268,9 +268,13 @@ export class WebTools {
   async openPage(o: { waifuId: string; turn: TurnScratch; signal?: AbortSignal }, url: string): Promise<{ ok: true; page: WebOpenedPage } | { ok: false; error: string }> {
     const config = this.o.config().life.webFetch;
     if (!this.fetchOffered()) return { ok: false, error: "page fetching is off" };
+    // Reserved before any await: concurrent opens (Promise.all) each see the ones before them.
     if (o.turn.fetches >= config.maxPerTurn) return { ok: false, error: `you've opened ${config.maxPerTurn} pages this turn; that's the most for one turn` };
-    if (!(await this.countWaifu(o.waifuId, "fetches", config.maxPerWaifuPerDay))) return { ok: false, error: "no more page fetches today" };
     o.turn.fetches += 1;
+    if (!(await this.countWaifu(o.waifuId, "fetches", config.maxPerWaifuPerDay))) {
+      o.turn.fetches -= 1;
+      return { ok: false, error: "no more page fetches today" };
+    }
     await this.countHost("fetch", o.waifuId, url, undefined, o.turn);
     const page = await this.o.backend.fetchPage(url, {
       ...this.o.fetchOptions,

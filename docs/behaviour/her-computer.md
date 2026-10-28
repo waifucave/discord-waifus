@@ -223,14 +223,16 @@ branches, and what she `return`s and `print`s (also `console.log`) is what she s
   stopped`). On top: the daily caps (`search.maxPerWaifuPerDay`, `search.maxPerDay`,
   `life.webFetch.maxPerWaifuPerDay`; each search and each open counts, a cached page too) and
   `life.webFetch.maxPerTurn` (3) pages across all her scripts in one turn (`open: you've opened 3
-  pages this turn; that's the most for one turn`). An ask counts only against its script's 2. With
+  pages this turn; that's the most for one turn`), also for opens run at once (each takes its place
+  before it waits for anything; one the daily cap refuses gives it back). An ask counts only against its script's 2. With
   search off `search()` throws `web search is off`, with page opening off `open()` throws `page
   fetching is off`; with both off the tool is not offered (`error: the web is off`).
 - **Her sandbox** is QuickJS (the §30 package, sync build) in a fresh worker thread per call, so a
   slow script holds up no one else. The web calls return promises the worker resolves when the host
   answers (several may run at once). Her own computing has 1 s in all, waiting for the web not
-  counted (QuickJS's interrupt, plus the host's watchdog on the worker's busy time + 250 ms, which
-  also stops a RegExp in `find` that never ends); 16 MiB of memory, 256 KiB of stack; `Date` is the
+  counted: QuickJS's interrupt, and her busy time summed from the worker's own timestamps (a host
+  busy with something else never adds to it; over 1 s + 250 ms is a time hit), plus a backstop that
+  stops a worker still busy 2 s past her budget (a RegExp in `find` that never ends); 16 MiB of memory, 256 KiB of stack; `Date` is the
   app's clock in her zone; no `require`, network, timers or host objects. After her program ends no
   more of her code runs and no web call is made; calls still going (never awaited) are aborted. A
   call's arguments are sent as JSON, at most 16,384 characters; everything coming back from the

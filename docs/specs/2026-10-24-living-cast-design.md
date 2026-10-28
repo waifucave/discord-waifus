@@ -3978,9 +3978,12 @@ the 8,000-character cap, goldens for the tool description and a result; `docs/be
 - **Its own worker per call** (`src/life/sandbox/webScript.ts` host side, `webScriptWorker.ts`, the
   pure `webPage.ts` loaded by a computed import): the §30 sandbox is one shared worker taking requests
   in turn, and a script waiting a minute on the network would hold up every filter. Limits: 1 s of her
-  own computing in all (QuickJS's interrupt deadline moves on by the time spent waiting; the host times
-  the worker's `busy`/`idle` messages and stops it at 1 s + 250 ms of busy time, which also catches a
-  native call or a RegExp in `find` that never returns), 60 s wall clock, 16 MiB, 256 KiB of stack
+  own computing in all (QuickJS's interrupt deadline moves on by the time spent waiting; the host sums
+  her busy time from the worker's `busy`/`idle` messages, each stamped with the worker's own clock,
+  so a host event loop busy elsewhere adds nothing (review, 2026-10-28: summing by when the host read
+  them stopped a near-idle script when the host blocked 1.5 s), over 1 s + 250 ms is a time hit; a
+  backstop timer stops a worker still busy 2 s past her budget, a native call or a RegExp in `find`
+  that never returns), 60 s wall clock, 16 MiB, 256 KiB of stack
   (async frames), 10 s to start; 24 web calls per script (past the 4 + 6 + 2), a call's arguments
   ≤ 16,384 characters as JSON (checked by length before they are copied out), prints copied out only
   up to the 8,000. The worker reads her values with `JSON.parse`/`stringify` captured before her
@@ -4004,7 +4007,10 @@ the 8,000-character cap, goldens for the tool description and a result; `docs/be
   error) or Exa is asked.
 - **Caps**: the per-call ones throw (`search: at most 4 searches in one script`). Each search and each
   `open`/`link` counts against the daily caps as before (a cache hit too, as WebFetch's did) and
-  against `life.webFetch.maxPerTurn` across her scripts in the turn, whose default (3) stays: with it
+  against `life.webFetch.maxPerTurn` across her scripts in the turn (reserved before any await, so
+  opens run at once hold it too, and given back when the daily cap refuses; review, 2026-10-28: six
+  `Promise.allSettled` opens fetched six pages at 3; the daily counters check and count in one locked
+  write, the per-script ones synchronously), whose default (3) stays: with it
   a turn opens at most 3 pages (owner decision pending whether to raise it to 6 with a migration like
   §27's). An ask counts only against its script's 2. `life.webFetch.directMaxChars` is no longer read
   (kept so saved settings load; its help says so).

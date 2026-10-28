@@ -176,6 +176,24 @@ describe("Web script sandbox: abuse of the async host functions", () => {
     expect(split).toMatchObject({ stop: "time" });
   }, 30_000);
 
+  it("a host whose own event loop is blocked never counts against her time (review: busy time from the worker's stamps)", async () => {
+    // The host blocks its event loop for 1.5 s while answering (her budget is 1 s): the worker's idle
+    // message waits behind it, but her busy time comes from the worker's own stamps.
+    const blocking: WebCall = async () => {
+      const end = Date.now() + 1_500;
+      while (Date.now() < end) {
+        // the host is busy with something else
+      }
+      return { ok: true, value: [] };
+    };
+    const twice = await runWebScript(`await search("a"); await search("b"); return "fine"`, blocking, { timeZone: TZ, now: NOW });
+    expect(twice).toMatchObject({ output: "fine" });
+    expect(twice.error).toBeUndefined();
+    // A host blocked while she really computes past her budget still stops her (the worker's own check).
+    const spinning = await runWebScript(`await search("a"); const end = Date.now() + 1500; while (Date.now() < end) {} return "late"`, blocking, { timeZone: TZ, now: NOW });
+    expect(spinning).toMatchObject({ stop: "time" });
+  }, 30_000);
+
   it("a RegExp that backtracks forever in find is stopped by the watchdog", async () => {
     const host = fakeHost({ pages: { "https://example.com/a": { text: `${"a".repeat(40)}!` } } });
     const started = Date.now();

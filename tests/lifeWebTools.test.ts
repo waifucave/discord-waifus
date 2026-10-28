@@ -261,6 +261,37 @@ describe("Web: caps", () => {
   }, 30_000);
 });
 
+describe("Web: caps under concurrent calls (review: Promise.all)", () => {
+  const SIX = ["short", "crust", "recipe", "brownies", "menu.pdf", "cake.png"].map((path) => `"https://pages.test/${path}"`).join(", ");
+  const settle = (calls: string) => `const results = await Promise.allSettled(${calls}); return results.map((r) => r.status === "fulfilled" ? "ok" : r.reason.message).join("\\n");`;
+
+  it("life.webFetch.maxPerTurn holds when her opens run at once", async () => {
+    const h = await harness();
+    h.setConfig((config) => ({ ...config, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 3, maxPerWaifuPerDay: 50 } } }));
+    const scratch = turn("t-all");
+    const result = await h.web(settle(`[${SIX}].map((url) => open(url))`), scratch);
+    const lines = String(result.content).split("\n").slice(1);
+    expect(lines).toHaveLength(6);
+    expect(lines.filter((line) => line === "open: you've opened 3 pages this turn; that's the most for one turn")).toHaveLength(3);
+    expect(h.page.hits).toHaveLength(3);
+    expect(scratch.fetches).toBe(3);
+  }, 30_000);
+
+  it("the daily page and search caps hold when her calls run at once; a refused open gives its turn count back", async () => {
+    const h = await harness();
+    h.setConfig((config) => ({ ...config, search: { ...config.search, maxPerDay: 50, maxPerWaifuPerDay: 2 }, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerTurn: 20, maxPerWaifuPerDay: 2 } } }));
+    const scratch = turn("t-day");
+    const opens = await h.web(settle(`[${SIX}].map((url) => open(url))`), scratch);
+    const lines = String(opens.content).split("\n").slice(1);
+    expect(lines.filter((line) => line === "open: no more page fetches today")).toHaveLength(4);
+    expect(h.page.hits).toHaveLength(2);
+    expect(scratch.fetches).toBe(2);
+    const searches = await h.web(settle(`["a", "b", "c", "d"].map((q) => search(q))`), turn("t-search"));
+    expect(String(searches.content).split("\n").slice(1).sort()).toEqual(["no more searches today", "no more searches today", "ok", "ok"]);
+    expect(h.searches).toHaveLength(2);
+  }, 30_000);
+});
+
 describe("Web: errors", () => {
   it("keeps what she printed before an error, with the error's line, and refuses private addresses with a fixed text", async () => {
     const h = await harness();

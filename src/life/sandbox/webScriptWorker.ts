@@ -35,10 +35,14 @@ export type WebScriptError = { kind: WebScriptErrorKind; name: string; message: 
 /** The run's end: what she returned (shown as text) or her error; prints went out as they came. */
 export type WebScriptDone = { ok: true; value: string | null; cut: boolean } | { ok: false; error: WebScriptError };
 
-/** Worker → host. `busy`/`idle`: her code runs / waits for the host (the host times only `busy`). */
+/**
+ * Worker → host. `busy`/`idle`: her code runs / waits for the host, each stamped with this worker's
+ * clock when it happened (`performance.timeOrigin + performance.now()`): the host sums her busy time
+ * from these stamps, so a host busy with something else never adds to it.
+ */
 export type WebWorkerMessage =
-  | { t: "busy" }
-  | { t: "idle" }
+  | { t: "busy"; at: number }
+  | { t: "idle"; at: number }
   | { t: "call"; call: number; fn: "search" | "open" | "ask"; args: string }
   | { t: "print"; text: string }
   | { t: "done"; result: WebScriptDone };
@@ -250,8 +254,9 @@ async function main(input: WebScriptInput, post: (message: WebWorkerMessage) => 
     ended = true;
     return result;
   };
+  const stamp = () => performance.timeOrigin + performance.now();
   try {
-    post({ t: "busy" });
+    post({ t: "busy", at: stamp() });
     const factory = vm.evalCode(PRELUDE, "prelude");
     if (factory.error) return finish({ ok: false, error: errorOf(vm, factory.error, interrupted) });
     const api = vm.callFunction(factory.value, vm.undefined, host, pageOp, out);
@@ -312,11 +317,11 @@ async function main(input: WebScriptInput, post: (message: WebWorkerMessage) => 
       }
       // Waiting: for the host, or for nothing that will ever come.
       if (pending.size === 0) return finish({ ok: false, error: { kind: "error", name: "Error", message: "your script is waiting for something that never finishes" } });
-      post({ t: "idle" });
+      post({ t: "idle", at: stamp() });
       const waitStart = performance.now();
       const next = await replies.next();
       waited += performance.now() - waitStart;
-      post({ t: "busy" });
+      post({ t: "busy", at: stamp() });
       if (next.done) return finish({ ok: false, error: { kind: "error", name: "Error", message: "the script was stopped" } });
       const reply = next.value;
       const entry = pending.get(reply.call);

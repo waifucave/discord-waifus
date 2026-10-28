@@ -4,8 +4,11 @@
 // (`call`, the per-call and daily caps live there) and answers. It keeps the time:
 //
 // - her own computing: the worker says when her code runs (`busy`) and when it waits for the web
-//   (`idle`); `cpuMs` of busy time in all, plus `RUN_GRACE_MS`, and the worker is stopped (a native
-//   call QuickJS can't interrupt, a slow RegExp in `find`, counts here);
+//   (`idle`), each message stamped with the worker's own clock, and her busy time is summed from
+//   those stamps (never from when this side got to the message: a host busy with something else
+//   adds nothing); over `cpuMs` + `RUN_GRACE_MS` the run is a time hit. A backstop timer stops a
+//   worker still busy `BACKSTOP_SLACK_MS` past her budget (a native call QuickJS can't interrupt, a
+//   slow RegExp in `find`), after reading any messages already waiting;
 // - the whole run: `wallMs` (60 s), whatever it waits for (each web call has its own time limit too);
 // - a stop, a pause or a turn's abort ends it at once.
 //
@@ -28,8 +31,10 @@ export const WEB_SCRIPT_LIMITS: WebScriptLimits = {
 };
 /** The longest one script runs, waiting included. */
 export const WEB_SCRIPT_WALL_MS = 60_000;
-/** Her busy time past `cpuMs` by this much ends the worker. */
+/** Her busy time (from the worker's stamps) past `cpuMs` by this much is a time hit. */
 export const RUN_GRACE_MS = 250;
+/** The backstop for a worker stuck busy: this long past her remaining budget, by this side's clock. */
+export const BACKSTOP_SLACK_MS = 2_000;
 /** Until her code first runs (the worker loads QuickJS first). */
 const START_MS = 10_000;
 const MAX_ERROR_CHARS = 300;
@@ -157,13 +162,16 @@ export function runWebScript(
       resolve({ output, empty: parts.length === 0, ...(error !== undefined ? { error } : {}), ...(stop ? { stop } : {}) });
     };
 
+    // The backstop only: her busy time itself comes from the worker's stamps. Messages already
+    // waiting (an `idle`, her end) are read first, and the slack is far over a host's own hiccups.
     const armCpu = () => {
       if (cpuTimer) clearTimeout(cpuTimer);
-      const left = Math.max(0, limits.cpuMs - used) + RUN_GRACE_MS;
-      // Messages already waiting (an `idle`, her end) are read first: a busy host never blames her.
+      const left = Math.max(0, limits.cpuMs - used) + BACKSTOP_SLACK_MS;
       cpuTimer = setTimeout(() => setImmediate(() => (busySince !== undefined ? end({ stop: "time" }) : undefined)), left);
       cpuTimer.unref?.();
     };
+    /** The worker's stamp, else (a malformed one) this side's clock on the same base. */
+    const stampOf = (at: unknown) => (typeof at === "number" && Number.isFinite(at) ? at : performance.timeOrigin + performance.now());
     const wallTimer = setTimeout(() => end({ stop: "wall" }), wallMs);
     wallTimer.unref?.();
     let first = true;
@@ -181,12 +189,12 @@ export function runWebScript(
           first = false;
           clearTimeout(startTimer);
         }
-        if (busySince === undefined) busySince = performance.now();
+        if (busySince === undefined) busySince = stampOf(message.at);
         armCpu();
         return;
       }
       if (message.t === "idle") {
-        if (busySince !== undefined) used += performance.now() - busySince;
+        if (busySince !== undefined) used += Math.max(0, stampOf(message.at) - busySince);
         busySince = undefined;
         if (cpuTimer) clearTimeout(cpuTimer);
         if (used > limits.cpuMs + RUN_GRACE_MS) end({ stop: "time" });
