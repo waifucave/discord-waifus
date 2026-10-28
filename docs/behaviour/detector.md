@@ -115,5 +115,5 @@ answer, `fallback:anyone`/`fallback:none`, or `nobody_around`. Served by
 ## Spec differs
 
 - Before §24 (and in §4.3) the `anyone` draw weighted busy ×1 and asleep ×0 and `all` woke every cast
-  waifu in the channel; as built (unreleased) only waifus around are candidates, all weighted ×3 ×
+  waifu in the channel; as built only waifus around are candidates, all weighted ×3 ×
   recency, and `all` wakes only them.

@@ -127,7 +127,7 @@ Built when her bed time ends (or a budget pause lifts) from `wakes.json` `deferr
 
 - Header: `- during your bed time (<start>–<end>):` for a sleep batch with a bed time; `- while you
   were asleep (HH:MM–HH:MM):` without one; `- while you were away (since HH:MM):` for a budget pause.
-- **Unreleased (on main)** (§23): **DMs** one line per message (time, ref, 60-char preview), oldest
+- (§23) **DMs** one line per message (time, ref, 60-char preview), oldest
   first; **rooms** by most mentions, a counts line with the night's time span, then one line per
   message that addressed her (mention or reply, her name, a role, `@everyone`) with reason, time,
   ref, author and preview. Ordinary chatter, detector picks and chime-ins stay counts. At most
