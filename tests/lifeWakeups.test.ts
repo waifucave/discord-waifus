@@ -9,6 +9,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { migrateLivingCastWakeups } from "../src/backend/migrationSteps/livingCastWakeups.js";
 import { homeStoreFor } from "../src/life/home/index.js";
+import { HomeStore } from "../src/life/home/homeStore.js";
 import { readLifeFile } from "../src/life/lifeStore.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { sharedSandbox } from "../src/life/sandbox/index.js";
@@ -206,6 +207,22 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     const full = await lifeWorld(roots);
     await call(full, `{ watch: Array.from({ length: 10 }, (_, i) => ({ places: "bake-club/#general", words: ["w" + i], for: "1h", note: "n" + i })) }`);
     expect(await saved(full, '{ cancel: ["w3"], watch: [{ places: "bake-club/#general", any: true, for: "1h", note: "instead" }] }')).toEqual(["wakeup: saved: set w11 (bake-club/#general, until Sat 24 Oct 15:00); cancelled w3 (in ~/life/wakeups.json)"]);
+  });
+
+  it("a save that fails for another reason is her readable error with its receipt, never a thrown tool (review)", async () => {
+    const w = await lifeWorld(roots);
+    const original = HomeStore.prototype.applyWakeups;
+    const spy = vi.spyOn(HomeStore.prototype, "applyWakeups").mockImplementation(function (this: HomeStore, ...args: Parameters<HomeStore["applyWakeups"]>) {
+      if (!args[0].dryRun) return Promise.reject(new Error("disk full"));
+      return original.apply(this, args);
+    });
+    try {
+      const output = await runScript("Wakeup", 'await tools.wakeup({ at: [{ when: "in 1h", note: "tea" }] })', await ctxFor(w));
+      expect(output).toMatchObject({ isError: true });
+      expect(text(output)).toBe("error: that didn't work\n[receipt] wakeup: saving went wrong; read ~/life/wakeups.json to see what is set");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("is all or nothing per call: any error names the item and saves nothing of it", async () => {

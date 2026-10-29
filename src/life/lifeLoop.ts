@@ -929,6 +929,8 @@ export class Life {
       } else {
         const argsDigest = createHash("sha256").update(JSON.stringify(call.input ?? {})).digest("hex").slice(0, 32);
         if (tool.sideEffect) await appendIntent(deps.storage, this.waifuId, { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest, at: deps.now().toISOString() });
+        // Its own set: the places it touched are kept when it throws, too (D14).
+        const touched = new Set<string>();
         try {
           const recorded = await withPlaceRecord(() => tool.run(call.input, {
             deps,
@@ -940,12 +942,14 @@ export class Life {
             selfAuthorIds: run.selfIds,
             toolNames: run.state.systemSnapshot?.tools ?? [],
             ...(tool.sideEffect ? { intent: { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest } } : {})
-          }));
+          }), touched);
           output = recorded.value;
           places = recorded.places;
           // D14 (spec §14.4): the owner's views hide a call that resolved to (or named) a DM place.
           if ([...recorded.places].some(isDmPlaceKey)) dmCalls.push(call.id);
         } catch (error) {
+          places = touched;
+          if ([...touched].some(isDmPlaceKey)) dmCalls.push(call.id);
           if (error instanceof ImageBuildAbortedError || run.signal.aborted) {
             interrupted = true;
             results.push({ type: "tool_result", tool_use_id: call.id, content: INTERRUPTED_RESULT, is_error: true });

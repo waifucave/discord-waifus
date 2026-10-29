@@ -242,7 +242,10 @@ async function saveStaged(ctx: ToolContext, stage: WakeupStage, run: ScriptRun, 
   try {
     saved = await store.applyWakeups({ add: stage.adds.map((item) => item.record), cancel: stage.cancels }, { ...env, sandbox });
   } catch (error) {
-    if (!(error instanceof HomeError)) throw error;
+    if (!(error instanceof HomeError)) {
+      run.receipts.push(`wakeup: saving went wrong; read ${lifeDisplay(WAKEUPS_FILE)} to see what is set`);
+      throw error;
+    }
     const message = itemError(error.message, kept, stage.adds).replace(/^error:\s*/u, "");
     run.receipts.push(`wakeup: nothing saved (${message})`);
     throw new ScriptError(`tools.wakeup: ${message}; nothing was saved`);

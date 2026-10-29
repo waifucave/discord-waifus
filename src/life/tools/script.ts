@@ -133,6 +133,26 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
   const parsed = parseInput(Input, input);
   if (!parsed.ok) return parsed.output;
   const run: ScriptRun = { messageIds: [], resultRefs: [], sentPlaces: new Set(), images: new Map(), counts: new Map(), receipts: [], running: new Map() };
+  try {
+    return await runScriptParsed(parsed.value.script, ctx, spec, run);
+  } catch (error) {
+    // Anything that went wrong around her script (a worker that didn't start, a picture, a save that
+    // failed) is her readable error with what was done, never a lost result (§32.3a); an abort is
+    // the turn's own.
+    if (ctx.signal.aborted) throw error;
+    ctx.deps.logger?.warn?.("Life script tool failed", { waifuId: ctx.waifu.id, tool: spec.tool, message: error instanceof Error ? error.message : String(error) });
+    const lines = ["error: that didn't work", ...run.receipts.map((receipt) => `[receipt] ${receipt}`)];
+    return {
+      content: lines.join("\n"),
+      isError: true,
+      ...(run.messageIds.length > 0 ? { messageIds: [...new Set(run.messageIds)] } : {}),
+      ...(run.resultRefs.length > 0 ? { resultRef: run.resultRefs.join(",") } : {}),
+      ...(run.sentPlaces.size > 0 ? { sentPlaces: [...run.sentPlaces] } : {})
+    };
+  }
+}
+
+async function runScriptParsed(script: string, ctx: ToolContext, spec: ScriptToolSpec, run: ScriptRun): Promise<ToolOutput> {
   const byName = new Map(spec.functions.map((fn) => [fn.name, fn] as const));
   const maxArgChars = Math.max(...spec.functions.map((fn) => fn.maxArgChars ?? 16_384));
   // Each call runs in this tool call's async context: the places it resolves are this call's (D14).
@@ -162,7 +182,7 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
     maxHostCalls: spec.maxHostCalls ?? spec.functions.reduce((sum, fn) => sum + fn.max, 0) + 1,
     maxArgChars
   };
-  const outcome = await runToolScript(parsed.value.script, call, {
+  const outcome = await runToolScript(script, call, {
     surface: surfaceOf(spec),
     timeZone: ctx.deps.timeZone,
     now: ctx.deps.now(),

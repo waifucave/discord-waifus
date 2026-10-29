@@ -19,6 +19,8 @@ import { removeTempRoot } from "./testUtils.js";
 import { readMessages, receiptsOf, runScript, sendMessage, withoutReceipts } from "./toolCalls.js";
 import { sendScriptWallMs } from "../src/life/tools/messages.js";
 import { MAX_TYPING_DELAY_MS } from "../src/life/outbound.js";
+import { notePlace } from "../src/life/placeRecorder.js";
+import { DM_NAMED } from "../src/life/tools/script.js";
 
 const roots: string[] = [];
 // Several tests build more than one world: slow under full-suite load.
@@ -341,6 +343,35 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     expect(printed).not.toContain("SECRET-TWO");
     expect(printed).toContain("SendMessage([private chat redacted])");
     expect(w.discord.sent).toEqual([]);
+  });
+
+  it("a DM call that throws still records its places: hidden in her life views (D14, review)", async () => {
+    const w = await lifeWorld(roots, {
+      scripts: script(toolTurn([{ name: "SendMessage", input: { script: 'await tools.send_message({ place: "dm/kevin", messages: [{ text: "SECRET-THREE" }] })' } }]), textTurn("(hm)"))
+    });
+    const tool = lifeTool("SendMessage")!;
+    // A tool that named a DM, then failed outside her script (a worker that didn't start, say).
+    const spy = vi.spyOn(tool, "run").mockImplementation(async () => {
+      notePlace(DM_NAMED);
+      throw new Error("worker failed to start");
+    });
+    try {
+      const message = w.discord.post(ROOM, `<@${ELLA_BOT}> you there?`, { mentions: { [ELLA_BOT]: "Ella" } });
+      await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: message.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: message });
+      await w.cast.settle();
+      w.cast.intake.flushDetector();
+      await w.cast.settle();
+      await w.cast.life("ella").runNow();
+    } finally {
+      spy.mockRestore();
+    }
+    const lines = await readLifeLog(w.storage, "ella", (await readLifeState(w.storage, "ella")).epoch);
+    const results = lines.filter((entry) => entry.kind === "tool_results" && JSON.stringify(entry.message).includes("something went wrong"));
+    expect(results).toHaveLength(1);
+    expect(results[0]!.dmCalls).toHaveLength(1);
+    const scan = scanDmContent(lines);
+    const view = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
+    expect(view).not.toContain("SECRET-THREE");
   });
 
   it("refuses a second place when the turn already wrote in its maximum", async () => {
