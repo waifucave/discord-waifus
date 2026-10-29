@@ -333,7 +333,8 @@ a whole file longer than the 20,000-character script is written with Bash.
   heredoc around the patch is taken off.
 - **Matching** (Codex's `seek_sequence`), chunk by chunk in file order against the file as it was:
   exact, else ignoring trailing whitespace, else both ends', else with Unicode dashes, quotes and odd
-  spaces made ASCII. A chunk with only `+` lines appends at the end of the file. Lines keep their
+  spaces made ASCII. A chunk with only `+` lines appends at the end of the file, even under an `@@` line (as
+  Codex; the description says so: to insert after a line, she includes that line as context). Lines keep their
   endings (CRLF too); inserted lines take the file's first ending; the file ends with a newline.
 - **Safer than Codex**: a chunk without an `@@` anchor whose lines match in two places (in the first
   pass that finds them, after the previous chunk and End of File; one exact match is taken even when a

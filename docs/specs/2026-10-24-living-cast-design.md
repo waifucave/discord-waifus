@@ -4288,6 +4288,12 @@ waits, closures, budgets) stay.
     script (a worker that didn't start, a picture, a save that failed for another reason) into
     `error: that didn't work` with its receipts (Wakeup adds `saving went wrong; read
     ~/life/wakeups.json to see what is set`).
+  - Before merge (2026-10-29): an Update (or Move source) of a file over `writeMaxBytes` (256 KB) is
+    refused before it is read (`~/x.txt is too large to patch (over 256 KB); use Bash`; a 10 MB file
+    in /tmp had cost 1.6 s and ~1 GB under the home lock; such a file can still be deleted); a patch
+    still queued when the script is stopped never starts; the Edit description says a chunk of only
+    `+` lines goes at the end of the file even under an `@@` line (include the line as context to
+    insert after it).
   - Boot repair of a send script looks at every call without `callDone` (one that threw part way
     while her script went on is no longer hiding later calls), and a running call whose place no
     longer resolves leaves its tried message unknown, never "not sent".

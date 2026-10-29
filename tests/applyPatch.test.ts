@@ -124,6 +124,9 @@ describe("apply_patch: matching (seek_sequence) and the updated file", () => {
     expect(update(original, "@@ def g():", "-    pass", "+    return 1")).toEqual({ ok: true, contents: "def f():\n    pass\ndef g():\n    return 1\n" });
     expect(update(original, "@@ def h():", "-    pass")).toEqual({ ok: false, error: "Failed to find context 'def h():' in f.txt" });
     expect(update("a\nb\n", "@@ a", "+added")).toEqual({ ok: true, contents: "a\nb\nadded\n" });
+    // So the description says how to insert after a line: that line as context.
+    expect(update("a\nb\n", "@@", " a", "+added")).toEqual({ ok: true, contents: "a\nadded\nb\n" });
+    expect(EDIT_DESCRIPTION).toContain("A chunk with only + lines is added at the end of the file, even under an @@ line: to insert after a line, include that line as context");
   });
 
   it("refuses a chunk whose lines match in two places, with both line numbers, and one it can't find", () => {
