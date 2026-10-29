@@ -84,9 +84,13 @@ after, and `callDone` when the call ends (§27.1, §32.4). `Bash` journals its o
 (`life/pending-changes/<toolCallId>.json`), and so does each `apply_patch` of an `Edit` script
 (`<toolCallId>-patch<n>`, with `patch:<n>` and its `lineDone` intent lines). Boot repair uses these
 to close an interrupted turn and never sends anything itself: in a script cut off by a crash, a
-finished call sent the messages with a `lineDone` line and nothing else; in the call that was running,
-the first message after those is looked for among her messages since the intent (by its digest, else
-by its text with mentions and emoji set aside); nothing after it was tried (calls run one at a time).
+finished call sent the messages with a `lineDone` line, or the ones its `callDone` line lists (a
+message's own done line can be missing when the bookkeeping after Discord took it failed), and
+nothing else; in a call without `callDone` (the one running, or one that threw part way while her
+script went on, so every call is looked at), the first message after those is looked for among her
+messages since the intent (by its digest, else by its text with mentions and emoji set aside); nothing
+after it in that call was tried. When that call's place no longer resolves, a message whose digest
+was written is unknown (`it is unknown whether "four" was sent; …`), never "not sent".
 All sent: `sent #k9 #ka (recovered)`; part: `sent #k9 (recovered)` then a `not sent: <text>` line per
 message left (also when the call had finished, stopped part way, and only its result was lost); none:
 `[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether this was

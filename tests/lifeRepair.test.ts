@@ -209,7 +209,7 @@ describe("crash repair (§5.7)", () => {
    * A §32 SendMessage script crashed in its second tools.send_message call: the first call (lines 1–2)
    * finished; the second (lines 3–5) sent line 3 and wrote line 4's intent just before its Discord call.
    */
-  const callsCrash = async (o: { fourthArrived?: boolean; readable?: boolean; firstOnly?: boolean; secondUnsent?: boolean } = {}) => {
+  const callsCrash = async (o: { fourthArrived?: boolean; readable?: boolean; firstOnly?: boolean; secondUnsent?: boolean; secondPlace?: string; thirdCall?: boolean; firstDoneLost?: boolean } = {}) => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     const input = {
       script: [
@@ -221,23 +221,29 @@ describe("crash repair (§5.7)", () => {
     const base = { turnId: "t-crash", toolCallId: "call_send", tool: "SendMessage", argsDigest: digest(input) };
     const at = () => w.clock.now().toISOString();
     const sends = (lines: Array<[number, string]>) => lines.map(([line, text]) => ({ line, text, files: [] }));
-    const sent = async (line: number, text: string) => {
+    const sent = async (line: number, text: string, o2: { doneLost?: boolean } = {}) => {
       const message = w.discord.post(ROOM, text, { authorId: ELLA_BOT, authorName: "Ella", bot: true });
       await appendIntent(w.storage, "ella", { ...base, at: at(), line, contentDigest: contentDigest(text) });
-      await appendIntent(w.storage, "ella", { ...base, at: at(), line, lineDone: true, resultRef: message.id });
+      if (!o2.doneLost) await appendIntent(w.storage, "ella", { ...base, at: at(), line, lineDone: true, resultRef: message.id });
       return message.id;
     };
     await appendIntent(w.storage, "ella", { ...base, at: at(), plan: { call: 1, place: "bake-club/#general", sends: sends([[1, "one"], [2, "two"]]) } });
     if (!o.firstOnly) {
-      const ids = [await sent(1, "one"), await sent(2, "two")];
+      const ids = [await sent(1, "one"), await sent(2, "two", { doneLost: o.firstDoneLost })];
       await appendIntent(w.storage, "ella", { ...base, at: at(), callDone: 1, resultRef: ids.join(",") });
-      await appendIntent(w.storage, "ella", { ...base, at: at(), plan: { call: 2, place: "bake-club/#general", sends: sends([[3, "three"], [5, "four"], [6, "five"]]) } });
+      await appendIntent(w.storage, "ella", { ...base, at: at(), plan: { call: 2, place: o.secondPlace ?? "bake-club/#general", sends: sends([[3, "three"], [5, "four"], [6, "five"]]) } });
       if (o.secondUnsent) await appendIntent(w.storage, "ella", { ...base, at: at(), line: 3, contentDigest: contentDigest("three") });
       else {
         await sent(3, "three");
         await appendIntent(w.storage, "ella", { ...base, at: at(), line: 5, contentDigest: contentDigest("four") });
       }
       if (o.fourthArrived) w.discord.post(ROOM, "four", { authorId: ELLA_BOT, authorName: "Ella", bot: true });
+      if (o.thirdCall) {
+        // The second call threw part way (no done line), her script caught it and called again.
+        await appendIntent(w.storage, "ella", { ...base, at: at(), plan: { call: 3, place: "bake-club/#general", sends: sends([[7, "six"]]) } });
+        const six = await sent(7, "six");
+        await appendIntent(w.storage, "ella", { ...base, at: at(), callDone: 3, resultRef: six });
+      }
     }
     if (o.readable === false) {
       w.discord.fetchContextSince = async () => {
@@ -268,6 +274,21 @@ describe("crash repair (§5.7)", () => {
     // The running call sent nothing it knows of: its first message is unknown, the first call's are sent.
     const first = await callsCrash({ readable: false, secondUnsent: true });
     expect(first.content!).toMatch(/^sent #[0-9a-z]+ #[0-9a-z]+ \(recovered\); it is unknown whether "three" was sent; read the place before sending it again\nnot sent: four\nnot sent: five$/u);
+  });
+
+  it("a running call whose place no longer resolves: its message with a digest may have been sent, never 'not sent' (review)", async () => {
+    const gone = await callsCrash({ secondPlace: "bake-club/#gone", readable: false });
+    expect(gone.content!).toMatch(/^sent #[0-9a-z]+ #[0-9a-z]+ 1 message \(recovered\); it is unknown whether "four" was sent; read the place before sending it again\nnot sent: five$/u);
+  });
+
+  it("a call after one that threw part way is looked at too: its messages are reported sent (review)", async () => {
+    const after = await callsCrash({ thirdCall: true });
+    expect(after.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u), "not sent: four", "not sent: five"]);
+  });
+
+  it("a finished call whose message lost its done line: the call's done line still lists it as sent (review)", async () => {
+    const lost = await callsCrash({ firstDoneLost: true });
+    expect(lost.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u), "not sent: four", "not sent: five"]);
   });
 
   it("a tool script whose first call planned but sent nothing: not sent (§32)", async () => {

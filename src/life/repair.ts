@@ -199,7 +199,8 @@ function recoverPatches(call: Call, intent: { lines: LifeIntent[] }, recoveredCh
  * and sends, lines numbered across the script) before its first Discord call, and `callDone` after
  * it. A finished call sent the messages with a done line and nothing else; the call that was running
  * is recovered message by message like a §27 script (digest, else loose text; unknown when Discord
- * can't be read). Calls ran one at a time: there is none after it.
+ * can't be read, or when its place no longer resolves). Calls ran one at a time, but a call that threw
+ * part way (her script caught it and went on) has no done line either: every call is looked at.
  */
 async function recoverSendCalls(
   deps: LifeDeps,
@@ -210,6 +211,7 @@ async function recoverSendCalls(
   if (plans.length === 0) return { text: "[interrupted] not sent", isError: true };
   const doneIds = new Map(intent.lines.flatMap((line) => (line.lineDone && line.line !== undefined && line.resultRef ? [[line.line, line.resultRef] as const] : [])));
   const callsDone = new Set(intent.lines.flatMap((line) => (line.callDone !== undefined ? [line.callDone] : [])));
+  const callRefs = new Map(intent.lines.flatMap((line) => (line.callDone !== undefined && line.resultRef ? [[line.callDone, line.resultRef.split(",").filter(Boolean)] as const] : [])));
   const sentParts: string[] = [];
   const notes: string[] = [];
   const rest: string[] = [];
@@ -218,14 +220,35 @@ async function recoverSendCalls(
   for (const plan of plans) {
     const sends: ScriptSend[] = plan.sends.map((send) => ({ kind: "send", line: send.line, text: send.text, files: send.files.map((path) => ({ path, line: send.line })) }));
     const place = await resolvePlace(deps.storage, waifu.id, plan.place);
-    if (intent.done || callsDone.has(plan.call) || !place) {
-      const ids = sends.flatMap((send) => (doneIds.has(send.line) ? [doneIds.get(send.line)!] : []));
+    if (intent.done || callsDone.has(plan.call)) {
+      // The call's done line lists every message it sent, in order (a message's own done line may be
+      // missing when the bookkeeping after Discord took it failed).
+      const listed = callRefs.get(plan.call) ?? [];
+      const byDone = sends.flatMap((send) => (doneIds.has(send.line) ? [doneIds.get(send.line)!] : []));
+      const ids = listed.length > byDone.length ? listed : byDone;
+      const sentLines = new Set(listed.length > byDone.length ? sends.slice(0, listed.length).map((send) => send.line) : sends.filter((send) => doneIds.has(send.line)).map((send) => send.line));
       if (ids.length > 0) {
         anySent = true;
         const refs = place ? await assignConversationRefs(deps.storage, place.placeKey as never, ids, deps.now()) : new Map<string, string>();
         sentParts.push(ids.every((id) => refs.has(id)) ? ids.map((id) => `#${refs.get(id)}`).join(" ") : `${ids.length} message${ids.length === 1 ? "" : "s"}`);
       }
-      rest.push(...sends.filter((send) => !doneIds.has(send.line)).map((send) => `not sent: ${sendLabel(send)}`));
+      rest.push(...sends.filter((send) => !sentLines.has(send.line)).map((send) => `not sent: ${sendLabel(send)}`));
+      continue;
+    }
+    if (!place) {
+      // A running call whose place is gone can't be looked for: its done messages were sent, the first
+      // one after them whose digest was written (just before its Discord call) may have been.
+      const ids = sends.flatMap((send) => (doneIds.has(send.line) ? [doneIds.get(send.line)!] : []));
+      if (ids.length > 0) {
+        anySent = true;
+        sentParts.push(`${ids.length} message${ids.length === 1 ? "" : "s"}`);
+      }
+      const [first, ...after] = sends.filter((send) => !doneIds.has(send.line));
+      if (first && intent.lines.some((line) => line.line === first.line && line.contentDigest !== undefined)) {
+        unknown = true;
+        notes.push(`it is unknown whether ${JSON.stringify(sendLabel(first).slice(0, 80))} was sent; read the place before sending it again`);
+        rest.push(...after.map((send) => `not sent: ${sendLabel(send)}`));
+      } else if (first) rest.push(...[first, ...after].map((send) => `not sent: ${sendLabel(send)}`));
       continue;
     }
     const lines = intent.lines.filter((line) => line.line === undefined || sends.some((send) => send.line === line.line));
@@ -243,7 +266,6 @@ async function recoverSendCalls(
       if (first) notes.push(`it is unknown whether ${JSON.stringify(sendLabel(first).slice(0, 80))} was sent; read the place before sending it again`);
       rest.push(...after.map((send) => `not sent: ${sendLabel(send)}`));
     } else rest.push(...sends.map((send) => `not sent: ${sendLabel(send)}`));
-    break;
   }
   if (!anySent) return { text: unknown ? UNCERTAIN_SEND : "[interrupted] not sent", isError: true };
   return { text: [[`sent ${sentParts.join(" ")} (recovered)`, ...notes].join("; "), ...rest].join("\n"), isError: false };
