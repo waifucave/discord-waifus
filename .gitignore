@@ -23,3 +23,4 @@ tests/eval/fixtures/live/*
 tests/eval/reports/
 scripts/decision-benchmark/__pycache__/
 PUBLISHING.md
+bench-results/
