@@ -4206,3 +4206,11 @@ only where it is relevant; it targets the §32 tools only.
   developer's session gives packets to Opus subagents, which write scores (in character, natural and
   short, relevant, kind to the room, and for variants: same personality as the baseline) as JSON that
   the report merges. Runs below the gate are ranked on the automatic metrics alone.
+- Summarisation quality (owner request, 2026-10-29): every summary the run makes (her epoch and rest
+  summaries, the day compaction, the morning summary, the nightly dream's notes changes) is saved with
+  the text it summarised. Automatic: facts the scenario marks as must-keep (who, promises, plans,
+  preferences, open questions) found in the summary, invented facts the judge flags, size against the
+  input. Judged: faithful, complete on what matters to her, nothing invented, keeps her voice and
+  her open threads. A scenario can also probe after a compaction (she still knows a fact only the
+  summarised turns held). Summary steps can run with a different model than her chat model, so the
+  report also scores summarisation per model on the same saved inputs.
