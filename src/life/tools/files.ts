@@ -440,7 +440,8 @@ export const MAX_PATCH_CHARS = 300 * 1024;
 const NOTHING_CHANGED = "; nothing was changed";
 
 /** What one file is while the patch is checked: as on disk at first, then after each hunk. */
-type Simulated = { path: HerPath; original: string | undefined; current: string | undefined; base: { kind: "file"; size: number; mtimeMs: number } | undefined };
+/** A file of the patch: `tooLarge` when it is over the write limit (never read: only deleted or named). */
+type Simulated = { path: HerPath; original: string | undefined; current: string | undefined; base: { kind: "file"; size: number; mtimeMs: number } | undefined; tooLarge?: boolean };
 
 const patchError = (message: string): never => {
   throw new ScriptError(`tools.apply_patch: ${message.replace(/^error:\s*/u, "")}${NOTHING_CHANGED}`);
@@ -487,13 +488,15 @@ async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number, run: Sc
       if (info.kind === "dir") patchError(`${p.display} is a folder`);
       if (info.kind === "other") patchError(`${p.display} can't be used`);
       let original: string | undefined;
-      if (info.kind === "file") {
-        if (info.size > READ_MAX_BYTES) patchError(`${p.display} is too large to patch`);
-        const bytes = await store.files.readBytes(p, { maxBytes: READ_MAX_BYTES });
+      // A file over the write limit (a big download in /tmp, say) is never read here: matching it
+      // would hold her home lock for seconds. It can still be deleted or named; an Update refuses it.
+      const tooLarge = info.kind === "file" && info.size > maxBytes;
+      if (info.kind === "file" && !tooLarge) {
+        const bytes = await store.files.readBytes(p, { maxBytes });
         if (!isTextBytes(bytes)) patchError(`${p.display} isn't a text file`);
         original = bytes.toString("utf8");
-      }
-      const entry: Simulated = { path: p, original, current: original, base: info.kind === "file" ? { kind: "file", size: info.size, mtimeMs: info.mtimeMs } : undefined };
+      } else if (tooLarge) original = "";
+      const entry: Simulated = { path: p, original, current: original, base: info.kind === "file" ? { kind: "file", size: info.size, mtimeMs: info.mtimeMs } : undefined, ...(tooLarge ? { tooLarge } : {}) };
       files.set(key, entry);
       return entry;
     };
@@ -517,6 +520,7 @@ async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number, run: Sc
         if (updatedPaths.has(key)) patchError(`${file.path.display} is updated twice in this patch; put all its changes under one *** Update File, in file order`);
         updatedPaths.add(key);
         if (file.current === undefined) patchError(`Update File: ${file.path.display} doesn't exist (a new file is *** Add File)`);
+        if (file.tooLarge) patchError(`${file.path.display} is too large to patch (over ${maxBytes / 1024} KB); use Bash`);
         const updated = updateContents(file.current!, hunk.chunks, file.path.display);
         if (!updated.ok) return patchError(updated.error);
         if (hunk.movePath !== undefined && hunk.movePath.trim()) {

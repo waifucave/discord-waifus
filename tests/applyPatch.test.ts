@@ -6,13 +6,15 @@
 // Against a temp data root; no live calls.
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalisePunctuation, parsePatch, seekSequence, updateContents, type PatchHunk } from "../src/life/tools/applyPatch.js";
 import { offeredToolNames } from "../src/life/tools/index.js";
 import type { ToolContext } from "../src/life/tools/types.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { refreshPlacesFile } from "../src/life/home/index.js";
+import { HomeStore } from "../src/life/home/homeStore.js";
+import { EDIT_DESCRIPTION } from "../src/life/tools/files.js";
 import { readIntents } from "../src/life/lifeStore.js";
 import { closeWorlds, herFile, lifeWorld, type LifeWorld } from "./lifeFixtures.js";
 import { applyPatch, outputText, runScript } from "./toolCalls.js";
@@ -275,6 +277,21 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
     const lines = (await readFile(home(w, "n.md"), "utf8")).split("\n");
     expect(lines[0]).toBe("notes");
     expect(lines.slice(1, 4).sort()).toEqual(["line 1", "line 2", "line 3"]);
+  });
+
+  it("refuses to patch a file over the write limit before reading it, quickly; it can still be deleted (review)", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w);
+    const tmp = path.join(w.root, "user", "waifus", "ella", "tmp");
+    await mkdir(tmp, { recursive: true });
+    await writeFile(path.join(tmp, "big.txt"), "a line of a big download\n".repeat(400_000));
+    const started = performance.now();
+    const refused = await applyPatch(ctx, patch("*** Update File: /tmp/big.txt", "@@", "-not there", "+x"));
+    expect(outputText(refused)).toMatch(/tools\.apply_patch: \/tmp\/big\.txt is too large to patch \(over 256 KB\); use Bash; nothing was changed/u);
+    const moved = await applyPatch(ctx, patch("*** Update File: /tmp/big.txt", "*** Move to: ~/big.txt", "@@", "+x"));
+    expect(outputText(moved)).toMatch(/too large to patch \(over 256 KB\); use Bash/u);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(outputText(await applyPatch(ctx, patch("*** Delete File: /tmp/big.txt")))).toMatch(/^Updated: D \/tmp\/big\.txt/u);
   });
 
   it("runs patches called at once one at a time: each one's done line is written before the next begins (review)", async () => {

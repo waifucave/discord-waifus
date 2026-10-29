@@ -344,7 +344,9 @@ a whole file longer than the 20,000-character script is written with Bash.
   File` of one path in a patch is refused (`put all its changes under one *** Update File`), as are
   overlapping chunks; `*** Add File` on an existing file is refused (`change it with *** Update File`),
   and so is a Move onto an existing file, or from or to a protected path; Update and Delete need an
-  existing text file. Finding the chunks makes at most 2,000,000 line comparisons per file (each line
+  existing text file, and an Update (or Move source) of a file over the write limit (256 KB, a big
+  download in `/tmp` say) is refused before it is read (`~/x.txt is too large to patch (over 256 KB);
+  use Bash`; such a file can still be deleted). Finding the chunks makes at most 2,000,000 line comparisons per file (each line
   normalised once per pass, only positions where the chunk's first line is are tried); a chunk past
   that is refused (`that chunk of ~/x.md is too long to find; use fewer lines`).
 - **All or nothing**: every file is checked first (her path rules, `/transcripts` read-only,
