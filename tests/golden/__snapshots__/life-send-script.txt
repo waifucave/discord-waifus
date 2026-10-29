@@ -10,6 +10,7 @@
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"yes!!\", reply_to: \"#a1\" }, { text: \"ok so the plan is lemon tarts on saturday, i'll bring the piping bags and the good butter, and someone needs to remind kevin about the oven timer this time\" }, { wait: 5 }, { text: \"anyone else coming?\" }] }))"}
 === 2 user ===
 --- tool result call_1_SendMessage ---
-{"sent":["#a2","#a3"],"stopped":"messages[2] (wait 5): someone wrote\n- bake-club/#general · from Mina · #a4 \"wait which oven\"","not_sent":["anyone else coming?"],"note":"that line was 155 characters; people here usually write about 15"}
+{"sent":["#a2","#a3"],"reactions":[],"stopped":{"reason":"new_message","next_index":3,"incoming":["- bake-club/#general · from Mina · #a4 \"wait which oven\""]},"note":"that line was 155 characters; people here usually write about 15"}
+[receipt] send_message to bake-club/#general: sent #a2 #a3; stopped (someone wrote during the wait): messages[3] and after were not sent
 --- text ---
 [Sat 24 Oct 14:00 · awake]

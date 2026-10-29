@@ -10,7 +10,8 @@
 {"script":"text(await tools.wakeup({ watch: [{ places: \"everywhere\", for: \"12m\", note: \"the tarts come out of the oven\" }] }))"}
 === 2 user ===
 --- tool result call_1_Wakeup ---
-set w1 (timer, until Sat 24 Oct 14:12) (in ~/life/wakeups.json)
+{"set":[{"id":"w1","kind":"watch","about":"timer, until Sat 24 Oct 14:12"}],"saved":"when your script ends without an error (in ~/life/wakeups.json)"}
+[receipt] wakeup: saved: set w1 (timer, until Sat 24 Oct 14:12) (in ~/life/wakeups.json)
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
@@ -18,7 +19,8 @@ set w1 (timer, until Sat 24 Oct 14:12) (in ~/life/wakeups.json)
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"on it, timer set\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-{"sent":["#a2"]}
+{"sent":["#a2"],"reactions":[]}
+[receipt] send_message to bake-club/#general: sent #a2; the whole list ran
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 5 assistant ===

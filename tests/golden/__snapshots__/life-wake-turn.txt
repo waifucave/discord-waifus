@@ -25,6 +25,7 @@ bake-club/#general (Bake Club › #general)
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"yes!!\", reply_to: \"#a1\" }, { text: \"i'm bringing lemon tarts\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-{"sent":["#a2","#a3"]}
+{"sent":["#a2","#a3"],"reactions":[]}
+[receipt] send_message to bake-club/#general: sent #a2 #a3; the whole list ran
 --- text ---
 [Sat 24 Oct 14:00 · awake]

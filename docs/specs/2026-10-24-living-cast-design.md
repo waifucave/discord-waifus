@@ -4166,9 +4166,24 @@ waits, closures, budgets) stay.
   function's error. Error messages are cut at 1,000 characters. `tools/script.ts` `runScriptTool` is the
   shared host side; each tool's adapter checks every field and maps onto what existed (`runSend`, the
   §22 `ReadQuery`, `readFile`, `HomeStore.applyChanges`, `applyWakeups`, the §31 web session).
-- **`text()`** as §32.1; `console.log` is `text()` too. An image result is `{ path, kind: "image", about,
-  image_id }`; `text()` of it (or returning it) shows the picture, anything else shows it as JSON. A
-  picture is marked shown for the epoch's image caps only when she shows it; at most 10 in a script.
+- **`text()`** as §32.1 and §32.3a; `console.log` is `text()` too; `text(undefined)` (and an
+  `undefined` among several values) shows nothing. An image result is `{ path, kind: "image", about,
+  image_id }`, a handle (the bytes stay in the host); `text()` of it (or returning it) shows the
+  picture, anything else shows it as JSON. A picture is marked shown for the epoch's image caps only
+  when she shows it; at most 10 in a script. A cut output ends `… (cut: at most 8,000 characters are
+  shown)`. The examples in the descriptions and the prompt end in `return await tools.…(…)` (Read's in
+  `text(await …)`).
+- **Receipts** (§32.3a): `ScriptRun.receipts`, one `[receipt] …` line per side effect after
+  everything she showed and her error, whatever her script did: `send_message to <place>: sent #k9
+  #ka; the whole list ran` (or `stopped (<why>): messages[2] and after were not sent`), `apply_patch
+  1: saved M ~/MEMORY.md`, `wakeup: saved: set w1 (…); cancelled t1 (in ~/life/wakeups.json)` or
+  `wakeup: nothing saved (…)`. A refused call (nothing done) has none. When her script ends, the calls
+  still going are waited for up to the wall clock, then told to stop (their signal) and given 10 s
+  (`SETTLE_GRACE_MS`) to finish what they began; one still going after that gets `tools.<fn>: a call
+  was still running when the script was stopped; what it did is not known yet` (for a send: read the
+  place before sending again), never "not sent". A stop, a pause or the turn's abort tells them at
+  once. A tool's `finish` hook runs after that (Wakeup's save). The prefix `[receipt]` and the wording
+  are ours (the contract names what a receipt says, not how).
 - **Errors**: a call that fails rejects with an `Error` (a `TypeError`/`RangeError` for a bad argument
   or a cap) whose message names the function or the item: `tools.read_file: ~/x.md doesn't exist`,
   `tools.send_message: messages[2]: #zz9: message too old; nothing was sent`, `watch[0]: …; nothing was
@@ -4185,12 +4200,16 @@ waits, closures, budgets) stay.
   `people` and `search` a text or a list. §22 had no output cap of its own: a script shows at most
   100,000 characters. The page hints keep §22's wording (`— more before: before #k3 —`); she passes
   it as `before: "#k3"`.
-- **SendMessage**: items as §32.2; an object that is none of them, or an unknown field, is refused.
-  The calls of a script run one at a time in the order she made them (her waits and intents stay in
-  order) and share the 120 s and the per-turn caps. A call checks all its items first and refuses the
-  whole call naming the item; what it sent is final, a later call's error leaves it sent. Returns
-  `{ sent, reacted?, stopped?, not_sent?, note? }` (`note` is the length nudge; `stopped` names the
-  item, `messages[1] (wait 5): someone wrote`, then what came in). Intents: a `plan` (`call`, `place`,
+- **SendMessage**: items as §32.2 and §32.3a: exactly one variant each (`{ text, wait }`, `{}`, an
+  unknown field throw), `attach` a list only. The calls of a script run one at a time in the order she
+  made them (also started together with `Promise.all`; her waits and intents stay in order) and share
+  the 120 s and the per-turn caps. A call checks all its items first and refuses the whole call naming
+  the item; what it sent is final, a later call's error leaves it sent. Returns `{ sent, reactions,
+  stopped?, note? }`: `stopped` is `{ reason: "new_message", next_index, incoming }` for a wait someone
+  cut short (that list only; the script goes on) and, beyond the contract, `{ reason: "send_failed",
+  next_index, error }` (a Discord error, a pause or a DM closed after a wait) or `{ reason:
+  "interrupted", next_index }`; `note` is the length nudge (kept, not in the contract's shape);
+  `reactions` are the refs reacted to; §27's `not_sent` is gone (`next_index` says it). Intents: a `plan` (`call`, `place`,
   its messages with lines numbered across the script) before the call's first Discord call, each
   message's `line` + `lineDone` as §27, then `callDone`. Boot repair (`repair.ts` `recoverSendCalls`)
   reads the plans: a finished call sent the messages with a done line and nothing else; in the running
@@ -4198,23 +4217,38 @@ waits, closures, budgets) stay.
   be read it is unknown and named by its text (`it is unknown whether "four" was sent`), never
   reported sent.
 - **Read**: as §32.2; the 100,000 characters are shared by a script's reads (a read past them throws).
-- **Edit**: as §32.2, plus: `*** Move to:` onto an existing file is refused like Add File; a patch that
-  changes nothing says `No change: …`; the duplicate refusal reads `tools.apply_patch: the lines to
-  change in ~/x.md match in 2 places (lines 4 and 19); add a line above or below to say which; nothing
-  was changed`. Each patch is its own all-or-nothing change set (journal `<callId>-patch<n>`, intent
+- **Edit**: as §32.2 and §32.3a: `*** Move to:` onto an existing file, a second `*** Update File` of
+  one path in a patch, an `@@` anchor line found twice (in the first pass that finds it, after the
+  previous chunk) and overlapping chunks are refused (chunks are found in file order, each after the
+  one before, so they can't overlap: the refusal is a backstop); a patch that changes nothing says
+  `No change: …`; the duplicate refusal reads `tools.apply_patch: the lines to change in ~/x.md match
+  in 2 places (lines 4 and 19); add a line above or below to say which; nothing was changed`. The
+  reads, matching, checks and commit run under one hold of her home lock (`HomeStore.transaction`,
+  whose `commit` is `applyChanges` without taking the lock again). The description shows the
+  line-list idiom and says a whole file over the script's 20,000 characters goes through Bash. Each patch is its own all-or-nothing change set (journal `<callId>-patch<n>`, intent
   lines `patch:<n>` and `lineDone`); repair says `patches 1, 2 saved (recovered)` or which was not. The
   special files' notes (her day's prompt copy, timed plans, `profile.json: saved; …`) follow the
   `Updated:` line. The dream's `~/life/` refusal and tidying's `profile.json` refusal hold.
-- **Wakeup**: as §32.2; a `watch` with none of `from`, `words`, `any`, `filter` is a timer (§30's `[]`).
-  Each `tools.wakeup` call is checked whole and saved on its own (a later call's error leaves an earlier
-  one saved). Returns the text §30 did (`set w1 (bake-club/#general, until …) (in
-  ~/life/wakeups.json)`). A list filter (several objects, each with its own `place`) is only written in
-  her file.
-- **Web**: as §32.2. `find` is plain text, case-insensitive, run in the host over the page (no RegExp:
-  one is refused as not text, so §31.4's RegExp watchdog has nothing left to stop); `response_length`
-  sets the window (1,500 / 3,000 / 6,000 characters) and the results (3 / 5 / 8). Pages a script
-  opened stay open for its later calls (`click`, `find`, `ask`); a step that fails carries its `error`
-  in its place in the result.
+- **Wakeup**: as §32.2 and §32.3a; a `watch` with none of `from`, `words`, `any`, `filter` is a timer
+  (§30's `[]`). Each call is checked whole against her file as it would be with everything the script
+  staged (`applyWakeups` with `dryRun`: caps, the ids it will give) and staged; the tool's `finish`
+  saves them all once, through `applyWakeups`, when the script ends without an error (a caught error
+  is no error), and none otherwise (the receipt says so; a save the file refuses at that point is her
+  error and saves none). Within a call cancels come first; an unknown id or one cancelled twice in the
+  script is an error. A call returns `{ set: [{ id, kind, about, next? }], cancelled?, saved }`: `about`
+  is §30's summary (an `at`'s time, a watch's places and until); `next`, the next three times, only for
+  an `every` (an `at`'s one time is its `about`). The closure error names the variable and shows her
+  function with each outside name replaced by `"<the value of kevin>"`. A list filter (several
+  objects, each with its own `place`) is only written in her file. Boot repair reads the one digest
+  the save writes (an older log's per-call digests too).
+- **Web**: as §32.2 and §32.3a's shapes, plus `question` on an `ask` and `kind: "generated digest of
+  the page, not its own words"` as its mark; a `click` gives the page as `open` does. `find` searches
+  the whole page: text case-insensitive in the host, or her RegExp (it leaves her script as `{
+  $regexp: { source, flags } }`, read with `RegExp.prototype`'s getters captured before her code, so
+  only a real one counts; flags `i m s u` kept) in a worker thread of its own for at most 1 s
+  (`sandbox/regexFind.ts`; over it, that step's error). `response_length` sets the window (1,500 /
+  3,000 / 6,000 characters) and the results (3 / 5 / 8); her own `n` wins. Pages a script opened stay
+  open for its later calls (`click`, `find`, `ask`); a step that fails is `{ …, error }` in its place.
 - **Kept, not offered**: `React`, `Write` (`index.ts` `UNOFFERED_TOOL_NAMES`), runnable for old log
   lines and tests. A call with a top-level `place` to `SendMessage` (a §27 script or a pre-§27 `text`)
   or `ReadMessages` (§22 `query`) still runs the old way. An epoch offering `React` or `Write` is

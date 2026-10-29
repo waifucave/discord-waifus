@@ -21,6 +21,7 @@ dm/kevin (DM with Kevin)
 {"script":"text(await tools.send_message({ place: \"dm/kevin\", messages: [{ text: \"good luck on friday!!\" }, { text: \"you've got this\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-{"sent":["#a2","#a3"]}
+{"sent":["#a2","#a3"],"reactions":[]}
+[receipt] send_message to dm/kevin: sent #a2 #a3; the whole list ran
 --- text ---
 [Sat 24 Oct 14:00 · awake]

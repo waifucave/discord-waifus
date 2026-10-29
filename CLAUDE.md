@@ -55,7 +55,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1–L4 done; L3's own
 choices are listed in spec §14.4, L4's "as built" notes in §16, which overrides §6 and §7.1–§7.3;
-her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its as-built §32.4)**: each waifu is an autonomous agent with one continuous
+her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
 `LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: typing-aware holds in
@@ -134,7 +134,7 @@ maintenance and the forget scrub get Read, Edit, Bash. A life whose epoch snapsh
 tool the app no longer offers (§31's `WebSearch`/`WebFetch`, §32's `React`/`Write`) is summarised
 before her next turn with those calls as text and no kept turns (`compaction.ts` `offersRetiredTools`,
 `offerableTool`; no migration step).
-**Tool scripts (spec §32, as-built §32.4)**: every tool but Bash takes one `script` (≤ 20,000 chars):
+**Tool scripts (spec §32, §32.3a, as-built §32.4)**: every tool but Bash takes one `script` (≤ 20,000 chars):
 the body of an async JavaScript function in its own QuickJS worker per call
 (`src/life/sandbox/toolScript.ts` host side with the busy-time and wall-clock watchdogs,
 `toolScriptWorker.ts` the sync build with promise-returning host calls resolved by a driver loop;
@@ -154,17 +154,27 @@ fails or doesn't parse. The adapters map onto the internals that existed before:
 `ReadQuery` built from fields, 100,000 chars shown); `tools.send_message({ place, messages: [{text,
 reply_to?, attach?} | {attach} | {react, to} | {wait} | {typing}] })` (§27's steps and `runSend`; calls
 run one at a time; waits + typing ≤ 120 s per script; each call writes a `plan` intent before its
-first Discord call and `callDone` after; returns `{sent, reacted?, stopped?, not_sent?, note?}`);
+first Discord call and `callDone` after; returns `{sent, reactions, stopped?: {reason, next_index,
+incoming|error}, note?}`; exactly one variant per item, `attach` always a list);
 `tools.read_file({ path, offset, limit, pages })` (≤ 10, 100,000 chars together; an image is prepared
 and only marked shown when she shows it); `tools.apply_patch(patch)` (≤ 4; `tools/applyPatch.ts` is
 Codex's parser and `seek_sequence`/`compute_replacements`, exact; safer: a chunk matching twice is
 refused with its lines, Add File never replaces, Move never overwrites, and the whole patch is one
 `HomeStore.applyChanges` change set journalled as `<callId>-patch<n>`); `tools.wakeup({ at, every,
-watch, page, cancel })` (≤ 4; each call checked whole and saved through `applyWakeups`);
+watch, page, cancel })` (≤ 4; each call checked whole, all saved once at the end through `applyWakeups`);
 `tools.web__run({ search_query, open, click, find, ask, response_length })` (`WebSession`: searches,
 then opens/clicks, then finds/asks; per script 4 searches, 6 page fetches reserved before any await, 2
-asks, 24 operations; a refused step is that step's `error`; `find` is plain text in the host over
-`sandbox/webPage.ts`). `tests/toolScriptSandbox.test.ts` is the sandbox's abuse suite,
+asks, 24 operations; a refused step is that step's `error`; results per §32.3a: `search[{q, hits}]`,
+`pages[{url, title, status, lineno, lines, total_lines, more, links[{id, text, url}]}]`, `find[{url,
+pattern, matches[{lineno, text}]}]`, `ask[{url, question, answer, kind}]`; `find` runs text in the host
+over `sandbox/webPage.ts` and her RegExp in a worker of its own for 1 s, `sandbox/regexFind.ts`).
+Receipts (§32.3a): every side effect gets a `[receipt] …` line after her output whatever the script
+did (`ScriptRun.receipts`); calls she never waited for are waited for up to the wall clock, then told
+to stop with `SETTLE_GRACE_MS` to finish; `text(undefined)` shows nothing; a cut output says so.
+`tools.wakeup` stages its calls (`applyWakeups` `dryRun` gives the ids) and the tool's `finish` saves
+them once when the script ends without an error (none otherwise); `apply_patch` reads, matches and
+commits under one hold of her home lock (`HomeStore.transaction`), refuses a repeated `@@` anchor and
+a second Update of one path. `tests/toolScriptSandbox.test.ts` is the sandbox's abuse suite,
 `tests/applyPatch.test.ts` the patch suite, `tests/toolCalls.ts` the tests' call helpers.
 Under the scripts: `search.ts` the daily caps and `life.webFetch.maxPerTurn` (6; migration
 `living-cast-web-turn-cap-6-v1` moves a saved 3), searches with `recentDays`, opens through winter-web

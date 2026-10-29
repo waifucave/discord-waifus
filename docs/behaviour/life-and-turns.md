@@ -95,10 +95,10 @@ whether "four" was sent; …`, naming the message by its text; a §27 script say
 `[system] interrupted by a restart` (`src/life/repair.ts`). A
 pre-§32 call (a §27 script with `place`, or a pre-§27 `text`) is recovered from its own lines as
 before. An `Edit` script: `patches 1, 2 saved (recovered)`, `[interrupted] patch 3 was not saved`, or
-`[interrupted] nothing was changed`. Each `tools.wakeup` call writes, just before saving, a digest of
-what it adds (kind, time and note of each) and cancels; repair finds those in `~/life/wakeups.json`
-(`set t2; cancelled t1 (recovered)`), stopping at the first call not saved, or says `[interrupted]
-not saved`. A `ScheduleWake`/`WatchFor` call from before §30 is found by its note (and
+`[interrupted] nothing was changed`. A `Wakeup` script saves its calls once when it ends (§32.3a),
+writing just before that a digest of what they add (kind, time and note of each) and cancel; repair
+finds it in `~/life/wakeups.json` (`set t2; cancelled t1 (recovered)`), or says `[interrupted] not
+saved` (an older log line may hold a digest per call: repair stops at the first not saved). A `ScheduleWake`/`WatchFor` call from before §30 is found by its note (and
 a one-off reminder's time) in the migrated file.
 
 ## Mid-turn notifications (folding)

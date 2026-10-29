@@ -369,7 +369,7 @@ describe("Living cast goldens", () => {
           input: {
             script: [
               'const r = await tools.web__run({ search_query: [{ q: "lemon tart recipe", n: 3 }] });',
-              "const url = r.search[0].results[0].url;",
+              "const url = r.search[0].hits[0].url;",
               'const p = await tools.web__run({ open: [{ ref_id: url }], find: [{ ref_id: url, pattern: "oven" }] });',
               "text({ title: p.pages[0].title, links: p.pages[0].links });",
               "text(p.find[0]);"

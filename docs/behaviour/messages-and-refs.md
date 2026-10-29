@@ -115,24 +115,26 @@ starts when the page is not all today; `(no messages)` when empty.
 `SendMessage` takes a script (spec §27, §32; [her-computer.md](her-computer.md#tool-scripts)) calling
 `tools.send_message({ place, messages: [...] })` (`sendMessageCall`, `runSend` in
 `src/life/tools/messages.ts`). One call sends to one place; a script may call it for several places
-(the calls run one at a time, in order). `messages` is a list, in order:
+(the calls run one at a time, in the order she made them, also when she starts them together with
+`Promise.all`). `messages` is a list, in order; each item is exactly one of these (`{ text, wait }`
+or `{}` throws):
 
 | Item | Meaning |
 |---|---|
-| `{ text, reply_to?, attach? }` | One message (≤ 2,000 characters; a newline inside it is fine). `reply_to: "#k3"` makes it a Discord reply; `attach: ["~/x.png"]` (or one path) adds files (at most `life.send.maxFiles`, 4). |
+| `{ text, reply_to?, attach? }` | One message (≤ 2,000 characters; a newline inside it is fine). `reply_to: "#k3"` makes it a Discord reply; `attach: ["~/x.png"]` (always a list) adds files (at most `life.send.maxFiles`, 4). |
 | `{ attach }` | A message with only the files. |
 | `{ react: "👍", to: "#k3" }` | A reaction: a unicode emoji, or `:name:` / `<:name:id>` for a server emoji (`there is no :x: emoji here` when unknown); plain text is refused (`use a unicode emoji or :server_emoji:`). |
 | `{ wait: 1–60 }` | A pause. If anyone else writes in that place meanwhile (a person, another waifu or a bot; typing doesn't count), the wait ends at once and the rest of the call is not sent. |
 | `{ typing: 1–10 }` | Typing there for that long, without sending. Waits and typing together: at most **120 s** per script (all its calls). |
 
 ```js
-text(await tools.send_message({ place: "bake-club/#general", messages: [
+return await tools.send_message({ place: "bake-club/#general", messages: [
   { text: "wait what" },
   { text: "kevin you said saturday" },
   { wait: 5 },
   { text: "ok fine i'm in", reply_to: "#k3" },
   { react: "😂", to: "#k4" }
-] }))
+] })
 ```
 
 - **Checked first, all or nothing per call.** Shape (an unknown field, an item that is none of the
@@ -167,20 +169,24 @@ the message goes through her bot. Between items without a `wait`, new messages d
 The turn keeps running during a wait; wakes that arrive fold into the next tool results as usual. The
 whole script has 150 s of wall clock.
 
-**Result**: `{ sent: ["#k9", "#ka"], reacted?: ["#k2"], stopped?, not_sent?, note? }`. Stopped by a
-wait, `stopped` names it, then what came in as notification lines (with refs, at most
-`life.notificationLinesPerPlace`), and `not_sent` lists what did not go out:
+**Result**: `{ sent: ["#k9", "#ka"], reactions: ["#k2"], stopped?, note? }`. A wait someone cut
+short ends that list only (her script and its other calls go on): `stopped` is `{ reason:
+"new_message", next_index, incoming }`, `next_index` the first item of the list not run and
+`incoming` what came in as notification lines (with refs, at most `life.notificationLinesPerPlace`):
 
 ```json
-{"sent":["#k9"],"stopped":"messages[2] (wait 5): someone wrote\n- bake-club/#general · from Mina · #kb \"wait what\"","not_sent":["Anyone here?"]}
+{"sent":["#k9"],"reactions":[],"stopped":{"reason":"new_message","next_index":2,"incoming":["- bake-club/#general · from Mina · #kb \"wait what\""]}}
 ```
 
-A Discord error on an item stops the rest: `stopped: "messages[3] failed: the message could not be
-sent"` and `not_sent` (`react #k2 👍` for a reaction). An interrupted script (stop, pause, abort) sends
-nothing more: `stopped: "interrupted at messages[3]"`. After a `wait` or a `typing` item the place is
-looked at again before the next send or reaction: a server paused, the cast paused, a DM she may no
-longer write in or a place no longer hers stops the rest with `messages[4] failed: you can't post
-there`. When nothing went out it throws: one item alone gives just the reason (`tools.send_message:
+A Discord error on an item stops the rest: `{ reason: "send_failed", next_index: 3, error: "the
+message could not be sent" }`. An interrupted script (stop, pause, abort) sends nothing more: `{
+reason: "interrupted", next_index }`. After a `wait` or a `typing` item the place is looked at again
+before the next send or reaction: a server paused, the cast paused, a DM she may no longer write in
+or a place no longer hers stops the rest (`send_failed`, `you can't post there`). Whatever her
+script does with the result, the host adds a receipt after her output (§32.3a): `[receipt]
+send_message to bake-club/#general: sent #k9; stopped (someone wrote during the wait): messages[2]
+and after were not sent`; a send she never waited for is waited for, and a send that began is never
+reported as not sent. When nothing went out it throws: one item alone gives just the reason (`tools.send_message:
 they can't receive your messages right now`), a longer call `tools.send_message: messages[0]: the
 message could not be sent; nothing was sent`.
 

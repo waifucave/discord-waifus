@@ -54,8 +54,10 @@ lines per place, the newest; the first then says `+N earlier`.
 **Her tools.** Every tool but Bash takes a short JavaScript program that calls the tool's own
 function on `tools` and shows her what she needs with `text()` (a sandbox of its own per call, 1 s of
 her own computing): `tools.read_messages`, `tools.send_message`, `tools.read_file`,
-`tools.apply_patch` (Edit), `tools.wakeup` and `tools.web__run` (Web). A script that names a private
-chat, or reads or sends in one, is private like any DM call.
+`tools.apply_patch` (Edit), `tools.wakeup` and `tools.web__run` (Web). After what she shows, the app
+adds a receipt for everything a script changed (messages sent, files saved, wakeups saved or not),
+whatever her script did. Her wakeups are saved when the script ends without an error, all of them
+or none. A script that names a private chat, or reads or sends in one, is private like any DM call.
 
 **Sending.** One `tools.send_message({ place, messages })` call sends to one place: each `{ text }`
 item is its own message (so she can write several short lines like people do), with `reply_to`,
