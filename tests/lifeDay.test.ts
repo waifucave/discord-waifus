@@ -342,7 +342,7 @@ describe("held wakes at the edges (§21.4, §21.6c)", () => {
 });
 
 describe("staying in a conversation while busy (§21.4, owner addition)", () => {
-  const SEND = toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "on shift, but sure" } }]);
+  const SEND = toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "on shift, but sure" }]) }]);
 
   /** A mention reaches her while busy and she answers in the room. */
   async function answered(w: LifeWorld): Promise<void> {

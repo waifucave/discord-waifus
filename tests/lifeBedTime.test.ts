@@ -15,6 +15,7 @@ import type { Wake } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
 import { CHANNEL_2, closeWorlds, GUILD, KEVIN, lifeWorld, ROOM_KEY, script, seedTranscript, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { scriptInput } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -26,7 +27,7 @@ afterEach(async () => {
 const ROOM_2_KEY = conversationKey({ kind: "guild", guildId: GUILD, channelId: CHANNEL_2 });
 const DM_KEY = `dm_${KEVIN}_ella`;
 const at = (iso: string) => Date.parse(iso);
-const SEND = toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "still up, yeah" } }]);
+const SEND = toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "still up, yeah" }]) }]);
 
 async function bedWorld(scripts = script()): Promise<LifeWorld> {
   const w = await lifeWorld(roots, {

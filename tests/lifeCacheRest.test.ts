@@ -23,6 +23,7 @@ import type { LifeState } from "../src/shared/schemas/life.js";
 import { textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { closeWorlds, lifeWorld, toolTurn, type LifeWorld, type WaifuSeed } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { scriptInput } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -74,7 +75,7 @@ function lastText(request: { messages: Array<{ content: unknown }> }): string {
 // Several lives, turns and scheduler ticks per case: a 30 s budget under suite load.
 describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
   it("comes at TTL − lead with a big context, from the tick; accepted, her new epoch starts from her summary", async () => {
-    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), play(toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "brb" } }])), thenSmall(textTurn(SUMMARY))] });
+    const w = await lifeWorld(roots, { scripts: [play(textTurn("noted")), play(toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "brb" }]) }])), thenSmall(textTurn(SUMMARY))] });
     const poke = await quietAfterATurn(w, 0.6);
     const sentAt = Date.parse((await readLifeState(w.storage, "ella")).lastRequestAt!);
     // Not before her cache's expiry − 10 minutes.

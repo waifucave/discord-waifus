@@ -119,7 +119,7 @@ describe("life loop", () => {
     const world = await lifeWorld(roots, {
       scripts: [
         ...Array.from({ length: 14 }, () => () => toolTurn([{ name: "Read", input: scriptInput.readFile("~/life/places.md") }])),
-        ...Array.from({ length: 4 }, () => () => toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general" } }]))
+        ...Array.from({ length: 4 }, () => () => toolTurn([{ name: "SendMessage", input: { script: 'await tools.send_message({ place: "bake-club/#general" })' } }]))
       ]
     });
     await enqueueWake(world.storage, "ella", { id: newWakeId(), reason: "reminder", note: "loop", at: world.clock.now().toISOString() });

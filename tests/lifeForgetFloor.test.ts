@@ -16,6 +16,7 @@ import { textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { closeWorlds, dmOf, KEVIN, lifeWorld, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { dmRoot } from "./dmFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { scriptInput } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -34,7 +35,7 @@ async function dm(w: LifeWorld, cast: LifeWorld["cast"], text: string): Promise<
 const reader: ScriptedTurn = (request) => {
   const last = JSON.stringify(request.messages.at(-1));
   if (last.includes(COMPACTION_INSTRUCTION.slice(0, 40))) return textTurn("A quiet DM.");
-  if (last.includes("<notifications>")) return toolTurn([{ name: "ReadMessages", input: { place: DM_KEY } }]);
+  if (last.includes("<notifications>")) return toolTurn([{ name: "ReadMessages", input: scriptInput.readMessages({ place: DM_KEY }) }]);
   return textTurn("(nothing to send)");
 };
 

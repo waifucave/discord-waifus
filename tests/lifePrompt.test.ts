@@ -79,7 +79,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
         reads += 1;
         // Ten long messages a read: each round adds about 6,000 tokens, so the turn climbs toward
         // the 32,000-token budget a step at a time.
-        return { thinking: `reading page ${reads}`, toolCalls: [{ name: "ReadMessages", input: { place: "bake-club/#general", limit: 10 } }] };
+        return { thinking: `reading page ${reads}`, toolCalls: [{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general", max: 10 }) }] };
       }
       return { thinking: "enough", text: "(done reading)" };
     };
@@ -154,7 +154,7 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
           reads += 1;
           // Each read goes one page further back (before the oldest ref the last page showed).
           const oldest = results.length > 0 ? /#([a-z0-9]+)\]/u.exec(JSON.stringify(results))?.[1] : undefined;
-          return { thinking: `reading page ${reads}`, toolCalls: [{ name: "ReadMessages", input: { place: "bake-club/#general", limit: 10, ...(oldest ? { before: `#${oldest}` } : {}) } }] };
+          return { thinking: `reading page ${reads}`, toolCalls: [{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general", max: 10, ...(oldest ? { before: `#${oldest}` } : {}) }) }] };
         }
         return { thinking: "enough", text: "(done reading)" };
       };

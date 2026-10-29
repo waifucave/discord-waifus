@@ -139,7 +139,7 @@ describe("turn endings", () => {
 
   it("a notification carries the message's ref; refs stay in message order through her send (§4.7)", async () => {
     const w = await lifeWorld(roots, {
-      scripts: script(toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "right here!", reply_to: "#a1" } }]), textTurn("(sent)"))
+      scripts: script(toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "right here!", reply_to: "#a1" }]) }]), textTurn("(sent)"))
     });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     w.discord.post(ROOM, "hi ella");
@@ -148,7 +148,7 @@ describe("turn endings", () => {
     await w.cast.life("ella").runNow();
     expect(JSON.stringify(w.anthropic.calls[0]!.request.messages)).toContain('from Kevin · #a1 \\"where did you go\\"');
     expect(w.discord.sent.at(-1)).toMatchObject({ replyToMessageId: asked.id });
-    expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain("sent #a2");
+    expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain(String.raw`{\"sent\":[\"#a2\"]}`);
     const refs = await readConversationRefs(w.storage, ROOM_KEY as never);
     expect(Object.values(refs.refs).sort()).toEqual(["a0", "a1", "a2"]);
   });
