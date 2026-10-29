@@ -454,7 +454,7 @@ const patchError = (message: string): never => {
  * special files in ~/life/ checked as they would be after it, places.md untouched, nothing changed
  * under her since it was read): all of it or nothing. Returns `Updated: M ~/MEMORY.md, A ~/x.md`.
  */
-async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number): Promise<string> {
+async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number, run: ScriptRun): Promise<string> {
   if (typeof arg !== "string") throw new ScriptError('tools.apply_patch takes the patch as one string: "*** Begin Patch\\n*** Update File: ~/MEMORY.md\\n@@\\n-old line\\n+new line\\n*** End Patch"', "TypeError");
   if (arg.length > MAX_PATCH_CHARS) patchError(`a patch is at most ${MAX_PATCH_CHARS / 1024} KB`);
   const parsed = parsePatch(arg);
@@ -463,93 +463,106 @@ async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number): Promis
   const { deps } = ctx;
   const store = storeOf(ctx);
   const maxBytes = homeLimitsOf(deps.config().life).writeMaxBytes;
-  const files = new Map<string, Simulated>();
-  /** Her path, checked by her folder rules (spelled as on disk), its file read once. */
-  const fileAt = async (input: string, verb: string): Promise<Simulated> => {
-    const name = input.trim();
-    if (transcriptsArg(ctx, name)) patchError(`${name}: ${TRANSCRIPTS_READ_ONLY.replace(/^error:\s*/u, "")}`);
-    const target = await pathArg(store, name);
-    if (!target.ok) return patchError(`${verb} ${name}: ${outputText(target.output)}`);
-    const p = target.path;
-    if (deleteReachesPlaces(p)) patchError(PLACES_REFUSED);
-    if (ctx.session === "dream" && isLifeDirPath(p)) patchError(DREAM_LIFE_REFUSED);
-    if (specialJsonFile(p) === "profile" && ctx.mode === "session") patchError(PROFILE_TIDY_REFUSED);
-    // A file from a DM she reads or changes makes the call a DM call (D14).
-    await noteDmFile(store, p);
-    const key = pathKey(p.virtual);
-    const known = files.get(key);
-    if (known) return known;
-    const info = await store.files.inspect(p);
-    if (info.kind === "link") patchError(`${p.display} can't be used: it is a link`);
-    if (info.kind === "dir") patchError(`${p.display} is a folder`);
-    if (info.kind === "other") patchError(`${p.display} can't be used`);
-    let original: string | undefined;
-    if (info.kind === "file") {
-      if (info.size > READ_MAX_BYTES) patchError(`${p.display} is too large to patch`);
-      const bytes = await store.files.readBytes(p, { maxBytes: READ_MAX_BYTES });
-      if (!isTextBytes(bytes)) patchError(`${p.display} isn't a text file`);
-      original = bytes.toString("utf8");
-    }
-    const entry: Simulated = { path: p, original, current: original, base: info.kind === "file" ? { kind: "file", size: info.size, mtimeMs: info.mtimeMs } : undefined };
-    files.set(key, entry);
-    return entry;
-  };
-  const marks: string[] = [];
-  for (const hunk of parsed.hunks) {
-    if (hunk.kind === "add") {
-      const file = await fileAt(hunk.path, "Add File:");
-      if (file.current !== undefined) patchError(`Add File: ${file.path.display} already exists; change it with *** Update File`);
-      file.current = hunk.contents;
-      marks.push(`A ${file.path.display}`);
-    } else if (hunk.kind === "delete") {
-      const file = await fileAt(hunk.path, "Delete File:");
-      if (file.current === undefined) patchError(`Delete File: ${file.path.display} doesn't exist`);
-      file.current = undefined;
-      marks.push(`D ${file.path.display}`);
-    } else {
-      const file = await fileAt(hunk.path, "Update File:");
-      if (file.current === undefined) patchError(`Update File: ${file.path.display} doesn't exist (a new file is *** Add File)`);
-      const updated = updateContents(file.current!, hunk.chunks, file.path.display);
-      if (!updated.ok) return patchError(updated.error);
-      if (hunk.movePath !== undefined && hunk.movePath.trim()) {
-        const to = await fileAt(hunk.movePath, "Move to:");
-        if (to.path.virtual !== file.path.virtual) {
-          if (to.current !== undefined) patchError(`Move to: ${to.path.display} already exists`);
-          file.current = undefined;
-          to.current = updated.contents;
-          marks.push(`M ${to.path.display} (from ${file.path.display})`);
-          continue;
-        }
+  // Checks, matching and the commit under her home lock (§32.3a): what was matched is what is saved.
+  type Committed = { unchanged: string } | { marks: string[]; writes: Array<{ path: string; data: Uint8Array }>; deletes: string[]; applied: Awaited<ReturnType<HomeStore["applyChanges"]>> };
+  const committed = await store.transaction<Committed>(async (commit) => {
+    const files = new Map<string, Simulated>();
+    /** Her path, checked by her folder rules (spelled as on disk), its file read once. */
+    const fileAt = async (input: string, verb: string): Promise<Simulated> => {
+      const name = input.trim();
+      if (transcriptsArg(ctx, name)) patchError(`${name}: ${TRANSCRIPTS_READ_ONLY.replace(/^error:\s*/u, "")}`);
+      const target = await pathArg(store, name);
+      if (!target.ok) return patchError(`${verb} ${name}: ${outputText(target.output)}`);
+      const p = target.path;
+      if (deleteReachesPlaces(p)) patchError(PLACES_REFUSED);
+      if (ctx.session === "dream" && isLifeDirPath(p)) patchError(DREAM_LIFE_REFUSED);
+      if (specialJsonFile(p) === "profile" && ctx.mode === "session") patchError(PROFILE_TIDY_REFUSED);
+      // A file from a DM she reads or changes makes the call a DM call (D14).
+      await noteDmFile(store, p);
+      const key = pathKey(p.virtual);
+      const known = files.get(key);
+      if (known) return known;
+      const info = await store.files.inspect(p);
+      if (info.kind === "link") patchError(`${p.display} can't be used: it is a link`);
+      if (info.kind === "dir") patchError(`${p.display} is a folder`);
+      if (info.kind === "other") patchError(`${p.display} can't be used`);
+      let original: string | undefined;
+      if (info.kind === "file") {
+        if (info.size > READ_MAX_BYTES) patchError(`${p.display} is too large to patch`);
+        const bytes = await store.files.readBytes(p, { maxBytes: READ_MAX_BYTES });
+        if (!isTextBytes(bytes)) patchError(`${p.display} isn't a text file`);
+        original = bytes.toString("utf8");
       }
-      file.current = updated.contents;
-      marks.push(`M ${file.path.display}`);
+      const entry: Simulated = { path: p, original, current: original, base: info.kind === "file" ? { kind: "file", size: info.size, mtimeMs: info.mtimeMs } : undefined };
+      files.set(key, entry);
+      return entry;
+    };
+    const marks: string[] = [];
+    const updatedPaths = new Set<string>();
+    for (const hunk of parsed.hunks) {
+      if (hunk.kind === "add") {
+        const file = await fileAt(hunk.path, "Add File:");
+        if (file.current !== undefined) patchError(`Add File: ${file.path.display} already exists; change it with *** Update File`);
+        file.current = hunk.contents;
+        marks.push(`A ${file.path.display}`);
+      } else if (hunk.kind === "delete") {
+        const file = await fileAt(hunk.path, "Delete File:");
+        if (file.current === undefined) patchError(`Delete File: ${file.path.display} doesn't exist`);
+        file.current = undefined;
+        marks.push(`D ${file.path.display}`);
+      } else {
+        const file = await fileAt(hunk.path, "Update File:");
+        // One Update per file in a patch: put all its chunks under one header, in file order.
+        const key = pathKey(file.path.virtual);
+        if (updatedPaths.has(key)) patchError(`${file.path.display} is updated twice in this patch; put all its changes under one *** Update File, in file order`);
+        updatedPaths.add(key);
+        if (file.current === undefined) patchError(`Update File: ${file.path.display} doesn't exist (a new file is *** Add File)`);
+        const updated = updateContents(file.current!, hunk.chunks, file.path.display);
+        if (!updated.ok) return patchError(updated.error);
+        if (hunk.movePath !== undefined && hunk.movePath.trim()) {
+          const to = await fileAt(hunk.movePath, "Move to:");
+          if (to.path.virtual !== file.path.virtual) {
+            if (to.current !== undefined) patchError(`Move to: ${to.path.display} already exists`);
+            file.current = undefined;
+            to.current = updated.contents;
+            marks.push(`M ${to.path.display} (from ${file.path.display})`);
+            continue;
+          }
+        }
+        file.current = updated.contents;
+        marks.push(`M ${file.path.display}`);
+      }
     }
-  }
-  // The change set: what differs from her files as they were.
-  const writes: Array<{ path: string; data: Uint8Array }> = [];
-  const deletes: string[] = [];
-  const base = new Map<string, { kind: "file" | "dir"; size: number; mtimeMs: number }>();
-  for (const file of files.values()) {
-    if (file.base) base.set(file.path.virtual, file.base);
-    if (file.current === file.original) continue;
-    if (file.current === undefined) {
-      deletes.push(file.path.virtual);
-      continue;
+    // The change set: what differs from her files as they were.
+    const writes: Array<{ path: string; data: Uint8Array }> = [];
+    const deletes: string[] = [];
+    const base = new Map<string, { kind: "file" | "dir"; size: number; mtimeMs: number }>();
+    for (const file of files.values()) {
+      if (file.base) base.set(file.path.virtual, file.base);
+      if (file.current === file.original) continue;
+      if (file.current === undefined) {
+        deletes.push(file.path.virtual);
+        continue;
+      }
+      const data = Buffer.from(file.current, "utf8");
+      if (data.length > maxBytes) patchError(`${file.path.display} would be ${sizeText(data.length)}; a file can be at most ${maxBytes / 1024} KB, so split it into several files`);
+      writes.push({ path: file.path.virtual, data });
     }
-    const data = Buffer.from(file.current, "utf8");
-    if (data.length > maxBytes) patchError(`${file.path.display} would be ${sizeText(data.length)}; a file can be at most ${maxBytes / 1024} KB, so split it into several files`);
-    writes.push({ path: file.path.virtual, data });
-  }
-  if (writes.length + deletes.length === 0) return `No change: ${marks.join(", ")} (the files already read like that)`;
-  // Intent first, its line done after (boot repair, §5.7): the change set is journalled under this id.
-  if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: deps.now().toISOString(), line: n, contentDigest: `patch:${n}` });
-  let applied: Awaited<ReturnType<HomeStore["applyChanges"]>>;
-  try {
-    applied = await store.applyChanges({ writes, deletes, dirs: [] }, base, checkEnvFor(deps, ctx.waifu.id), { journalId: patchJournalId(ctx.toolCallId, n) });
-  } catch (error) {
-    if (error instanceof HomeError) return patchError(error.message);
-    throw error;
-  }
+    if (writes.length + deletes.length === 0) return { unchanged: `No change: ${marks.join(", ")} (the files already read like that)` };
+    // Intent first, its line done after (boot repair, §5.7): the change set is journalled under this id.
+    if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: deps.now().toISOString(), line: n, contentDigest: `patch:${n}` });
+    let applied: Awaited<ReturnType<HomeStore["applyChanges"]>>;
+    try {
+      applied = await commit({ writes, deletes, dirs: [] }, base, checkEnvFor(deps, ctx.waifu.id), { journalId: patchJournalId(ctx.toolCallId, n) });
+    } catch (error) {
+      if (error instanceof HomeError) return patchError(error.message);
+      throw error;
+    }
+    return { marks, writes, deletes, applied };
+  });
+  if ("unchanged" in committed) return committed.unchanged;
+  const { marks, writes, deletes, applied } = committed;
+  run.receipts.push(`apply_patch ${n}: saved ${marks.join(", ")}`);
   if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: deps.now().toISOString(), line: n, lineDone: true });
   const lines = [`Updated: ${marks.join(", ")}`];
   for (const write of writes) {
@@ -583,7 +596,7 @@ async function editScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOut
   let n = 0;
   return runScriptTool(input, ctx, {
     tool: "Edit",
-    functions: [{ name: "apply_patch", max: MAX_PATCHES_PER_SCRIPT, maxArgChars: MAX_PATCH_CHARS + 1_024, run: (arg) => applyPatchCall(arg, ctx, (n += 1)) }]
+    functions: [{ name: "apply_patch", max: MAX_PATCHES_PER_SCRIPT, maxArgChars: MAX_PATCH_CHARS + 1_024, run: (arg, run) => applyPatchCall(arg, ctx, (n += 1), run) }]
   });
 }
 
@@ -604,8 +617,9 @@ export const EDIT_DESCRIPTION = [
   "*** Delete File: <path>",
   "*** Update File: <path> — optionally *** Move to: <path>, then chunks: a line @@ (or @@ followed by a line of the file just above, to say where), then the lines around the change starting with a space, removed lines with -, added lines with +",
   "*** End Patch",
-  "Copy the lines as they are in the file (Read it first; leave out the line numbers). A chunk whose lines are in the file twice is refused: add a line above or below. Everything in the patch is saved, or nothing is. ~/life/places.md can't be changed, the other files in ~/life/ are checked, /transcripts can't be changed; a file is at most 256 KB.",
-  'Example: text(await tools.apply_patch("*** Begin Patch\\n*** Update File: ~/people/kevin.md\\n@@\\n likes: brownies\\n-exam: friday\\n+exam: friday (passed!)\\n*** End Patch"))'
+  "Copy the lines as they are in the file (Read it first; leave out the line numbers). A chunk (or an @@ line) that is in the file twice is refused: add a line above or below. One *** Update File per file, its chunks in file order. Everything in the patch is saved, or nothing is (what was saved is listed after your output either way). ~/life/places.md can't be changed, the other files in ~/life/ are checked, /transcripts can't be changed; a file is at most 256 KB. A whole file longer than your script can be is written with Bash.",
+  "Write the patch as a list of lines joined, so quotes, backticks and ${…} in your notes stay as they are:",
+  'Example: return await tools.apply_patch(["*** Begin Patch", "*** Update File: ~/people/kevin.md", "@@", " likes: brownies", "-exam: friday", "+exam: friday (passed!)", "*** End Patch"].join("\\n"))'
 ].join("\n");
 
 export const fileTools: LifeTool[] = [

@@ -17,9 +17,11 @@
 // File is looked for only at the end; a chunk with no old lines appends at the end of the file. Lines
 // keep their own endings; inserted ones get the file's first ending, and every line ends with one.
 //
-// Safer than Codex (owner choice): a chunk whose old lines match in two places (in the pass that
-// found them) is refused with both line numbers. The rest (all files or none, Add File on an existing
-// file, her folder rules) is the tool's, in files.ts.
+// Safer than Codex (owner choice, §32.3a): a chunk whose old lines match in two places (in the first
+// pass that finds them, after the anchor and End of File constraints) is refused with both line
+// numbers, and so is an `@@` anchor line found twice; overlapping chunks are refused. The rest (all
+// files or none, one Update per file, Add File and Move onto an existing file, her folder rules) is
+// the tool's, in files.ts.
 
 export const BEGIN_PATCH = "*** Begin Patch";
 export const END_PATCH = "*** End Patch";
@@ -318,7 +320,12 @@ export function updateContents(original: string, chunks: readonly PatchChunk[], 
   let lineIndex = 0;
   for (const chunk of chunks) {
     if (chunk.context !== undefined) {
-      const anchor = seekSequence(lines, [chunk.context], lineIndex, false);
+      // Ours: an anchor line found twice (in the pass that found it) is refused like a chunk (§32.3a).
+      const anchor = seekSequence(lines, [chunk.context], lineIndex, false, { unique: true });
+      if ("ambiguous" in anchor) {
+        const [a, b] = anchor.ambiguous;
+        return { ok: false, error: `the @@ line '${chunk.context}' is in ${path} twice (lines ${a + 1} and ${b + 1}); use a line that is there once` };
+      }
       if (!("found" in anchor)) return { ok: false, error: `Failed to find context '${chunk.context}' in ${path}` };
       lineIndex = anchor.found + 1;
     }

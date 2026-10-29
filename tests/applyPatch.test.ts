@@ -12,6 +12,7 @@ import { offeredToolNames } from "../src/life/tools/index.js";
 import type { ToolContext } from "../src/life/tools/types.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
+import { refreshPlacesFile } from "../src/life/home/index.js";
 import { readIntents } from "../src/life/lifeStore.js";
 import { closeWorlds, herFile, lifeWorld, type LifeWorld } from "./lifeFixtures.js";
 import { applyPatch, outputText, runScript } from "./toolCalls.js";
@@ -130,6 +131,17 @@ describe("apply_patch: matching (seek_sequence) and the updated file", () => {
     expect(update(original, "@@ notes", "-likes: tea", "+likes: coffee")).toEqual({ ok: true, contents: "title\nlikes: tea\nnotes\nlikes: coffee\n" });
     expect(update(original, "@@", "-missing", "+x")).toEqual({ ok: false, error: "Failed to find expected lines in f.txt:\nmissing" });
   });
+
+  it("counts a chunk ambiguous only in the first pass that finds it, after the anchor and End of File (§32.3a)", () => {
+    // One exact match is taken even though a copy with other spacing is elsewhere.
+    expect(update("likes: tea\nlikes: tea  \n", "@@", "-likes: tea", "+likes: coffee")).toEqual({ ok: true, contents: "likes: coffee\nlikes: tea  \n" });
+    // Two copies before the anchor don't count: only what follows it.
+    expect(update("x\nx\n## B\nx\n", "@@ ## B", "-x", "+y")).toEqual({ ok: true, contents: "x\nx\n## B\ny\n" });
+    // End of File: only the copy at the end.
+    expect(update("x\nmid\nx\n", "@@", "-x", "+y", "*** End of File")).toEqual({ ok: true, contents: "x\nmid\ny\n" });
+    // An anchor line that is in the file twice (after the last change) is refused like a chunk.
+    expect(update("## Notes\na\n## Notes\nb\n", "@@ ## Notes", "-b", "+c")).toEqual({ ok: false, error: "the @@ line '## Notes' is in f.txt twice (lines 1 and 3); use a line that is there once" });
+  });
 });
 
 async function ctxFor(w: LifeWorld, o: { intent?: boolean; mode?: ToolContext["mode"]; session?: ToolContext["session"] } = {}): Promise<ToolContext> {
@@ -212,7 +224,35 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
     expect(outputText(updateMissing)).toMatch(/Update File: ~\/nope\.md doesn't exist/u);
     const deleteMissing = await applyPatch(ctx, patch("*** Delete File: ~/nope.md"));
     expect(outputText(deleteMissing)).toMatch(/Delete File: ~\/nope\.md doesn't exist/u);
+    // One Update per file in a patch; Move onto an existing file. (Chunks are found in file order, each
+    // after the one before, so two can't overlap; updateContents still refuses it if they ever did.)
+    const twice = await applyPatch(ctx, patch("*** Update File: ~/a.md", "@@", "-one", "+ONE", "*** Update File: ~/a.md", "@@", "-two", "+TWO"));
+    expect(outputText(twice)).toMatch(/tools\.apply_patch: ~\/a\.md is updated twice in this patch; put all its changes under one \*\*\* Update File, in file order; nothing was changed/u);
+    const onto = await applyPatch(ctx, patch("*** Update File: ~/a.md", "*** Move to: ~/b.md", "@@", "-one", "+ONE"));
+    expect(outputText(onto)).toMatch(/Move to: ~\/b\.md already exists; nothing was changed/u);
     expect(await before()).toEqual(start);
+  });
+
+  it("takes the patch as a list of lines joined, so backticks, quotes and ${…} in her notes stay as they are", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w);
+    const script = 'return await tools.apply_patch(["*** Begin Patch", "*** Add File: ~/code.md", "+use `npm test` and \\"${HOME}\\"", "*** End Patch"].join("\\n"))';
+    const output = await runScript("Edit", script, ctx);
+    expect(outputText(output)).toBe("Updated: A ~/code.md\n[receipt] apply_patch 1: saved A ~/code.md");
+    expect(await readFile(home(w, "code.md"), "utf8")).toBe('use `npm test` and "${HOME}"\n');
+  });
+
+  it("checks, matches and saves under her home lock: patches at once each see the ones saved before it (§32.3a)", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w);
+    await put(w, "n.md", "notes\n");
+    // Each appends a line: with the read and the save under one hold, none is lost or refused.
+    const append = (n: number) => `tools.apply_patch(["*** Begin Patch", "*** Update File: ~/n.md", "@@", "+line ${n}", "*** End Patch"].join("\\n"))`;
+    const output = await runScript("Edit", `const r = await Promise.allSettled([${append(1)}, ${append(2)}, ${append(3)}]); return r.map((x) => x.status === "fulfilled" ? "fulfilled" : x.reason.message)`, ctx);
+    expect(outputText(output).split("\n")[0]).toBe('["fulfilled","fulfilled","fulfilled"]');
+    const lines = (await readFile(home(w, "n.md"), "utf8")).split("\n");
+    expect(lines[0]).toBe("notes");
+    expect(lines.slice(1, 4).sort()).toEqual(["line 1", "line 2", "line 3"]);
   });
 
   it("holds her folder rules: places.md, the checked ~/life/ files, /transcripts, 256 KB, a parse error", async () => {
@@ -226,6 +266,14 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
     expect(await herFile(w, "ella", "home/life/wakeups.json")).toBeUndefined();
     const transcripts = await applyPatch(ctx, patch("*** Add File: /transcripts/x.md", "+no"));
     expect(outputText(transcripts)).toMatch(/transcripts are read-only; nothing was changed/u);
+    // A Move from or to a protected path is refused (§32.3a).
+    await refreshPlacesFile(w.cast.deps, await readWaifu(w.storage, "ella"));
+    const fromPlaces = await applyPatch(ctx, patch("*** Update File: ~/life/places.md", "*** Move to: ~/places-copy.md", "@@", "+more"));
+    expect(outputText(fromPlaces)).toMatch(/places\.md is kept up to date for you and can't be changed; nothing was changed/u);
+    await put(w, "note.md", "x\n");
+    const toPlaces = await applyPatch(ctx, patch("*** Update File: ~/note.md", "*** Move to: ~/life/places.md", "@@", "-x", "+y"));
+    expect(outputText(toPlaces)).toMatch(/nothing was changed/u);
+    expect(await herFile(w, "ella", "home/note.md")).toBe("x\n");
     const big = await runScript("Edit", `text(await tools.apply_patch("*** Begin Patch\\n*** Add File: ~/big.md\\n" + ("+" + "x".repeat(1000) + "\\n").repeat(300) + "*** End Patch"))`, ctx);
     expect(outputText(big)).toMatch(/a file can be at most 256 KB/u);
     expect(await herFile(w, "ella", "home/big.md")).toBeUndefined();
@@ -258,7 +306,7 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
        text(await tools.apply_patch("*** Begin Patch\\n*** Update File: ~/a.md\\n@@\\n-two\\n+three\\n*** End Patch"));`,
       ctx
     );
-    expect(outputText(twice)).toBe("Updated: M ~/a.md\nUpdated: M ~/a.md");
+    expect(outputText(twice)).toBe("Updated: M ~/a.md\nUpdated: M ~/a.md\n[receipt] apply_patch 1: saved M ~/a.md\n[receipt] apply_patch 2: saved M ~/a.md");
     expect(await readFile(home(w, "a.md"), "utf8")).toBe("three\n");
     const five = await runScript("Edit", `for (let i = 0; i < 5; i++) await tools.apply_patch("*** Begin Patch\\n*** Add File: ~/n" + i + ".md\\n+x\\n*** End Patch")`, ctx);
     expect(outputText(five)).toMatch(/tools\.apply_patch: at most 4 calls in one script/u);
