@@ -206,6 +206,8 @@ then the place's transcript (its last 14 days), used only with at least **10** o
 refused for length.
 
 - Mentions: `<@Name>` resolves and pings only people present; no `@everyone`, `@here` or role pings.
+  In a room, `<@Name}`, `<@Name)`, `<@Name]` or an unclosed `<@Name` for a known member resolves
+  the same way; with an unknown name the text is sent as written.
 - After each message: the DM rate-limit counter (first send per turn per person), her read cursor,
   its ref (after the messages before it get theirs) and its own intent lines: the final content's
   digest (`line`, numbered across the script, and `contentDigest`) just before the Discord call and

@@ -64,6 +64,9 @@ up from the pause start ([triggers.md](triggers.md)).
 - `<@Name>` mentions resolve and ping only people present in that place (authors of the last 50
   buffered messages and the room's active participants); `@everyone`, `@here` and role pings never
   ping (`allowedMentions` users only, roles `[]`, `repliedUser: false`) (`src/discord/normalization.ts`);
+- a mention whose only mistake is its closing bracket (`<@Priya}`, `<@Priya)`, `<@Priya]`, or
+  `<@Priya` with none) is repaired to `<@Priya>` first when Priya is a known member of the server
+  (`repairMalformedMentions`), then resolves like any `<@Name>`; an unknown name stays as written;
 - Discord 50001/50013 (no access/permission) → `error: the message could not be sent: Discord says
   you can't post in this room right now; that can change, so try again later`;
 - at most `life.maxSendPlacesPerTurn` (3) places and `life.maxSendsPerTurn` (15) messages per turn

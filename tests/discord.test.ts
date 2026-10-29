@@ -140,6 +140,60 @@ describe("Discord normalization", () => {
     expect(result.allowedMentions.parse).toBeUndefined();
   });
 
+  describe("a mention malformed only in its closing bracket", () => {
+    const people: GuildMemberCacheEntry[] = [
+      ...members,
+      { userId: "700", username: "priya", guildDisplayName: "Priya", bot: false, perChannelLastSeenAt: {} },
+      { userId: "800", username: "sam", guildDisplayName: "Sam", bot: false, perChannelLastSeenAt: {} },
+      { userId: "900", username: "priya-s", guildDisplayName: "Priya Sharma", bot: false, perChannelLastSeenAt: {} }
+    ];
+    const send = (text: string, activeAuthorIds?: string[]) => denormalizeModelContentForDiscord(text, { members: people, emojis, ...(activeAuthorIds ? { activeAuthorIds } : {}) });
+
+    it("resolves a wrong closing bracket like <@Name> (the benchmark's <@Priya})", () => {
+      const result = send("<@Priya} okay it's 11, spill...");
+      expect(result.content).toBe("<@700> okay it's 11, spill...");
+      expect(result.allowedMentions.users).toEqual(["700"]);
+      expect(result.allowedMentions.parse).toBeUndefined();
+      for (const close of [")", "]"]) expect(send(`hey <@Priya${close} you there`).content).toBe("hey <@700> you there");
+      expect(send("<@priya}").content).toBe("<@700>");
+    });
+
+    it("resolves a missing closing bracket before a space, punctuation or the end", () => {
+      expect(send("<@Priya okay").content).toBe("<@700> okay");
+      expect(send("ok <@Priya, you first").content).toBe("ok <@700>, you first");
+      expect(send("night <@Priya").content).toBe("night <@700>");
+      expect(send("<@Priya's turn").content).toBe("<@700>'s turn");
+    });
+
+    it("never lets a malformed mention swallow the next one", () => {
+      expect(send("<@Priya} and <@Sam>").content).toBe("<@700> and <@800>");
+      expect(send("<@Priya} -> <@Sam}").content).toBe("<@700> -> <@800>");
+      expect(send("<@Priya} and <@Sam>").allowedMentions.users).toEqual(["700", "800"]);
+    });
+
+    it("picks the longest known name and leaves a well-formed mention alone", () => {
+      expect(send("<@Priya Sharma} hi").content).toBe("<@900> hi");
+      expect(send("<@Priya Sharma> hi").content).toBe("<@900> hi");
+      // A closed mention whose name is not known stays unresolved, as before (no guessed ping).
+      expect(send("<@Priya Patel> hi").content).toBe("@Priya Patel hi");
+    });
+
+    it("goes through the normal resolver: an ambiguous name stays unpinged, an active author wins", () => {
+      const ambiguous = send("<@Kevin} hi");
+      expect(ambiguous.content).toBe("@Kevin hi");
+      expect(ambiguous.allowedMentions.users).toEqual([]);
+      expect(send("<@Kevin} hi", ["200"]).content).toBe("<@200> hi");
+    });
+
+    it("leaves an unknown name, a name that only starts like a known one and a DM (no members) unchanged", () => {
+      expect(send("<@Nobody} okay").content).toBe("<@Nobody} okay");
+      expect(send("<@Priyanka} hi").content).toBe("<@Priyanka} hi");
+      const dm = denormalizeModelContentForDiscord("<@Priya} okay", { activeAuthorIds: ["700"] });
+      expect(dm.content).toBe("<@Priya} okay");
+      expect(dm.allowedMentions.users).toEqual([]);
+    });
+  });
+
   it("denormalizes plain at-name model mentions with exact cached member matches", () => {
     const result = denormalizeModelContentForDiscord("come back @Mira", {
       members,

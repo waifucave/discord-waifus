@@ -106,7 +106,7 @@ export function denormalizeModelContentForDiscord(
     return `<@${resolved.userId}>`;
   };
 
-  let denormalized = sanitizeMassMentions(content).replace(
+  let denormalized = sanitizeMassMentions(repairMalformedMentions(content, cache.members ?? [])).replace(
     modelMentionRe,
     (
       raw,
@@ -346,6 +346,65 @@ function modelUserMentionRe(members: GuildMemberCacheEntry[]): RegExp {
   if (!names.length) return MODEL_USER_MENTION_RE;
   const namePattern = names.map(escapeRegExp).join("|");
   return new RegExp(`${MODEL_USER_MENTION_RE.source}|(^|[^A-Za-z0-9_<])(<@|@)(${namePattern})(?=$|[\\s.,!?;:)\\]}])`, "gi");
+}
+
+/** A wrong closing bracket right after a mention's name: `<@Priya}`, `<@Priya)`, `<@Priya]`. */
+const WRONG_MENTION_CLOSE = new Set(["}", ")", "]"]);
+/** What may follow a name whose `<@` was never closed: the end, a space or punctuation. */
+const OPEN_MENTION_END_RE = /^(?:$|[\s.,!?;:'"’])/u;
+/** A `<@…>` closed before the next `<` or line break (its inside, as written). */
+const CLOSED_MENTION_RE = /^<@([^<>\n]*)>/u;
+
+/**
+ * Models sometimes get only a mention's closing bracket wrong (`<@Priya} okay it's 11` went to
+ * Discord as text). A `<@` followed by a known member's model-visible name and a wrong closing
+ * bracket (`}`, `)` or `]`, which goes), or by no closing bracket at all (only when nothing closes
+ * that `<@` before the next `<` or line break), becomes `<@Name>`, which the resolver then treats
+ * like any well-formed mention. An unknown name, or a mention already closed with `>`, stays as
+ * written.
+ */
+export function repairMalformedMentions(content: string, members: GuildMemberCacheEntry[]): string {
+  if (!content.includes("<@")) return content;
+  const names = modelVisibleMemberNames(members);
+  if (!names.length) return content;
+  const known = new Set(names.map((name) => name.toLowerCase()));
+  let out = "";
+  let index = 0;
+  for (let at = content.indexOf("<@"); at >= 0; at = content.indexOf("<@", index)) {
+    out += content.slice(index, at);
+    index = at + 2;
+    const rest = content.slice(at);
+    const closed = CLOSED_MENTION_RE.exec(rest);
+    // `<@Name>` for a known name is already right (a name may itself end in a bracket).
+    if (closed && known.has(closed[1]!.trim().toLowerCase())) {
+      out += closed[0];
+      index = at + closed[0].length;
+      continue;
+    }
+    const name = longestNameAt(content.slice(at + 2), names);
+    if (name !== undefined) {
+      const after = content.slice(at + 2 + name.length);
+      if (WRONG_MENTION_CLOSE.has(after.charAt(0))) {
+        out += `<@${name}>`;
+        index = at + 2 + name.length + 1;
+        continue;
+      }
+      if (!closed && OPEN_MENTION_END_RE.test(after)) {
+        out += `<@${name}>`;
+        index = at + 2 + name.length;
+        continue;
+      }
+    }
+    out += "<@";
+  }
+  return out + content.slice(index);
+}
+
+/** The longest of `names` (sorted longest first) that `text` starts with, as written there. */
+function longestNameAt(text: string, names: readonly string[]): string | undefined {
+  const lower = text.toLowerCase();
+  const name = names.find((candidate) => lower.startsWith(candidate.toLowerCase()));
+  return name === undefined ? undefined : text.slice(0, name.length);
 }
 
 function modelVisibleMemberNames(members: GuildMemberCacheEntry[]): string[] {

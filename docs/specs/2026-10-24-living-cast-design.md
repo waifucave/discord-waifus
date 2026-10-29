@@ -3623,6 +3623,24 @@ repair, the nudge (threshold, median, too few samples, DMs use the other person)
   shift), the send results in `life-wake-turn`, `life-dm-wake`, `life-image-turn`, `life-bash-call`,
   `life-watch-timeout`, and the new `life-send-script.txt` (a script a wait stops, with the nudge).
 
+### 27.5 As built: a mention with the wrong closing bracket (owner request, 2026-10-29)
+
+A life benchmark run sent `tools.send_message({ place: "night-owls/#general", messages: [{ text:
+"<@Priya} okay it's 11, spill..." }] })`: a mention malformed only in its closing bracket, which
+reached the room as text (or, with Priya in the directory, as a ping followed by a stray `}`; at the
+start of a message with a later `>`, `<@…>` swallowed everything up to that `>`).
+
+- `repairMalformedMentions` (`src/discord/normalization.ts`) runs first in
+  `denormalizeModelContentForDiscord`, so in rooms (the DM path passes no members): a `<@` followed by
+  a known member's model-visible name (the guild directory's, longest first, any case) and `}`, `)`
+  or `]` becomes `<@Name>` (the wrong bracket goes); one followed by no closing bracket (the end, a
+  space or punctuation; only when nothing closes that `<@` with `>` before the next `<` or line
+  break) becomes `<@Name>` too. The usual resolver then treats it like a well-formed mention: an
+  active author wins, an ambiguous name is left unpinged as `@Name`.
+- An unknown name, a name that only starts like a known one (`<@Priyanka}`), and a mention already
+  closed with `>` stay as written; nothing is refused over it.
+- Tests: `tests/discord.test.ts` ("a mention malformed only in its closing bracket").
+
 ## 28. Server emojis in `places.md` (owner request, 2026-10-28)
 
 She sees custom emojis only as `:name:` in messages she reads, so she knows only the ones people use.
