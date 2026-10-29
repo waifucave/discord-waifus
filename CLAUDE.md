@@ -646,7 +646,7 @@ Fixture coverage is separate from native Windows/Linux updater-cycle validation.
 ## Model dependency (winter)
 
 - The app pins `@yanlinglabs/winter-provider-runtime`, `@yanlinglabs/winter-provider-catalog` and
-  `@yanlinglabs/winter-web` **exactly**, all to the same version (currently 0.0.61; winter's READMEs
+  `@yanlinglabs/winter-web` **exactly**, all to the same version (currently 0.0.62; winter's READMEs
   make that the supported rule). winter-web (page fetch with its SSRF guard, HTML conversion, Exa
   search, the digest prompt) sits behind the thin adapter in `src/life/web/`. Edit only those lines in `package.json` and the lockfile when bumping. The
   `@waifucave/gateway` dependency, its `/api/llm/*` mount and `npm run gateway:local` are gone; the

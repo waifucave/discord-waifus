@@ -122,13 +122,14 @@ describe("curated catalog over the installed winter 0.0.56 catalog (spec §9.2)"
 });
 
 describe("the W7 feature check (OpenRouter reasoning replay)", () => {
-  it("winter 0.0.56 replays reasoning on every curated OpenRouter row that needs it; Muse Spark needs none", () => {
+  it("winter replays reasoning on every curated OpenRouter row that needs it, and every curated route is offered", () => {
     const catalog = installedCatalog();
     for (const routes of Object.values(CURATED_FAMILY_ROUTES)) {
       const openrouter = row(catalog, routeKey(routes.openrouter));
       const direct = row(catalog, routeKey(routes.direct));
       const needsReplay = direct.reasoning?.supported.value === true && direct.reasoning.continuation !== "none";
-      expect(openRouterReasoningReplaySupported(openrouter), openrouter.key).toBe(needsReplay);
+      // A row may replay more than its direct counterpart needs (0.0.62 replays Muse Spark's opaque state).
+      if (needsReplay) expect(openRouterReasoningReplaySupported(openrouter), openrouter.key).toBe(true);
       expect(openRouterRouteOffered(openrouter, catalog), openrouter.key).toBe(true);
     }
   });
