@@ -4153,3 +4153,56 @@ waits, closures, budgets) stay.
   protected source or destination are refused. The description shows the line-list idiom
   (`["*** Begin Patch", …, "*** End Patch"].join("\n")`) so backticks and `${…}` in her notes are safe.
   A whole file larger than the 20,000-character script is written with Bash.
+
+## 33. The life benchmark: real models in a fake server (owner request, 2026-10-29)
+
+A developer tool (not shipped in the npm package) that runs one waifu's real life — the real
+harness, scheduler, tools and her real model through winter — inside a fake Discord server on a
+simulated clock, from a fixed script, and scores every curated model on the same scenarios. It sits
+next to the detector benchmark (`scripts/benchmark-decisions.ts`). Owner decisions (2026-10-29):
+measure tool use, chat quality, memory and follow-up, and cost and speed, and whether a different
+prompt improves results without hurting her personality; the other people are a fixed script only;
+quality is graded by Opus subagents in the developer's Claude Code session (not an API judge), and
+only where it is relevant; it targets the §32 tools only.
+
+### 33.1 Scenarios
+
+- A scenario file: the server (guilds, channels, people with names and ids), the waifu under test
+  (persona, style, model per run), her starting home files, a simulated start time and time zone, and
+  a fixed timeline of events (messages in channels and DMs with authors, replies, mentions and
+  attachments; joins; quiet gaps). The people never react to her; their lines are fixed.
+- Probes: checks on outcomes, never on call shapes, so they survive tool changes. Examples: by a time
+  she replied in a place, mentioning a word; she did NOT reply to a message not for her; a note under
+  her home mentions a fact; a wakeup exists that fires in a window; at that time she followed up; when
+  asked days later she recalled a fact; a DM's content never appeared in a server place (D14); no line
+  longer than N characters; no more than N messages in a burst.
+- First scenarios: a day in a small server (greetings, a question to her, a message for someone else,
+  plans to follow up, a preference to recall later); a DM with private details; a busy group burst
+  (addressing, short lines, no spam). Several simulated days, so compaction, her day and the nightly
+  maintenance happen.
+
+### 33.2 The run
+
+- Runs in a fresh temp data root per run; the real data root is only read for provider keys (never
+  printed, logged or written into results). No Discord: a fake gateway records what she sends and
+  reacts. Web is off unless `--web` (Exa and fetch cost).
+- The clock is simulated: between turns it jumps to the next event or due wake; her model calls take
+  real time but no simulated time passes while she thinks, except what her own waits declare.
+- Selection: `--models`, `--scenarios`, `--variants`, `--repeat N`, `--concurrency`, `--max-usd`
+  (stops new turns when reached). Before any model call it prints a cost estimate and needs `--yes`.
+  `--dry-run` uses a scripted fake model (used by the tests; no network).
+- Prompt variants: a variant file replaces or adds paragraphs of the life prompt's block A for the
+  run only (a benchmark hook, not a setting); the baseline is the shipped prompt.
+
+### 33.3 Results and grading
+
+- Per run: a JSONL transcript (turns, tool calls and results, what reached the fake server, wakes,
+  compactions), `summary.json`, and a Markdown report across models × variants × scenarios.
+- Automatic metrics: tool calls, failed calls and first-try success rate, retries; messages sent,
+  line lengths (median, longest), messages per turn; probes passed; dollars, tokens in and out, cache
+  read share, seconds per turn; loops (the same failing call repeated).
+- Grading: for runs past a gate (tool success and probe thresholds, set per run), the tool writes a
+  compact judge packet (the persona, the rubric, the transcript without the model's name); the
+  developer's session gives packets to Opus subagents, which write scores (in character, natural and
+  short, relevant, kind to the room, and for variants: same personality as the baseline) as JSON that
+  the report merges. Runs below the gate are ranked on the automatic metrics alone.
