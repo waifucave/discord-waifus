@@ -57,6 +57,9 @@ root holding only the waifu under test; nothing touches the real data root or Di
 <out>/grades/                       where graders write their JSON
 ```
 
+A failed model call's `call` event carries `error` (the app's kind), `errorStatus` (HTTP), `errorCode`
+(the provider's own code) and `errorMessage` (at most 200 characters, key-like runs masked).
+
 Automatic metrics: tool calls, failed calls (results marked `is_error`), first-try success,
 retries, loops (identical failing calls); messages, median and longest line, messages per turn,
 longest burst; probes passed; dollars, tokens in/out, cache-read share, seconds per turn; must-keep

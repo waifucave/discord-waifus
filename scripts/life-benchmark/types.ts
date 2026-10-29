@@ -14,7 +14,7 @@ export type TranscriptEvent =
   | { type: "wake"; at: string; reason: string; place?: string; outcome: string; note?: string; fromName?: string; wakeId: string }
   | { type: "detector"; at: string; messageId: string; label?: string; choice: string; chimeIn?: string }
   /** A model call (no content; the content of summaries is in summaries.json). */
-  | { type: "call"; at: string; seq: number; purpose: string; turnId?: string; route: string; finish?: string; error?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number; realMs: number; toolCalls?: string[] }
+  | { type: "call"; at: string; seq: number; purpose: string; turnId?: string; route: string; finish?: string; error?: string; errorMessage?: string; errorStatus?: number; errorCode?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number; realMs: number; toolCalls?: string[] }
   /** Her tool calls and their results, from her life log. */
   | { type: "tool_call"; at: string; epoch: number; turnId?: string; id: string; name: string; input: unknown }
   | { type: "tool_result"; at: string; epoch: number; turnId?: string; id: string; isError: boolean; content: string }

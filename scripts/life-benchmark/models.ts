@@ -26,9 +26,14 @@ export type CallRecord = {
   toolNames: string[];
   restNotice: boolean;
   result?: { text: string; toolCalls: Array<{ name: string; input: unknown }>; finishReason: string; durationMs: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number };
-  error?: { kind: string; message: string };
+  error?: { kind: string; message: string; status?: number; providerCode?: string };
   realMs: number;
 };
+
+/** Long token-like runs (keys, ids) in an error message become `[masked]`. */
+export function maskKeyLike(text: string): string {
+  return text.replace(/[A-Za-z0-9_\-]{24,}/g, "[masked]");
+}
 
 /** Text of a message's content (tool results and images summarised; no image bytes). */
 export function messageText(message: Pick<ProviderMessageLike, "content"> | undefined): string {
@@ -130,9 +135,15 @@ export class CapturingModelClient extends ModelClient {
       };
       return result;
     } catch (error) {
-      const kind = (error as { kind?: unknown } | null)?.kind;
-      // Only the app's error kind and a short message: never a provider body or a key.
-      record.error = { kind: typeof kind === "string" ? kind : "other", message: error instanceof Error ? error.message.slice(0, 200) : "failed" };
+      const { kind, status, providerCode } = (error ?? {}) as { kind?: unknown; status?: unknown; providerCode?: unknown };
+      // The app's error kind, the HTTP status, the provider's code and a short message with anything
+      // key-like masked: never a provider body or a key.
+      record.error = {
+        kind: typeof kind === "string" ? kind : "other",
+        message: error instanceof Error ? maskKeyLike(error.message.slice(0, 200)) : "failed",
+        ...(typeof status === "number" ? { status } : {}),
+        ...(typeof providerCode === "string" ? { providerCode: maskKeyLike(providerCode.slice(0, 80)) } : {})
+      };
       throw error;
     } finally {
       record.realMs = Math.round(performance.now() - started);

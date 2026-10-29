@@ -357,7 +357,7 @@ async function runInside(spec: RunSpec): Promise<RunOutput> {
           ...(call.turnId ? { turnId: call.turnId } : {}),
           route: call.route,
           ...(call.result ? { finish: call.result.finishReason, ...(call.result.inputTokens !== undefined ? { inputTokens: call.result.inputTokens, outputTokens: call.result.outputTokens!, cacheReadTokens: call.result.cacheReadTokens ?? 0 } : {}), ...(call.result.costUsd !== undefined ? { costUsd: call.result.costUsd } : {}), toolCalls: call.result.toolCalls.map((tool) => tool.name) } : {}),
-          ...(call.error ? { error: call.error.kind } : {}),
+          ...(call.error ? { error: call.error.kind, errorMessage: call.error.message, ...(call.error.status !== undefined ? { errorStatus: call.error.status } : {}), ...(call.error.providerCode ? { errorCode: call.error.providerCode } : {}) } : {}),
           realMs: call.realMs
         });
       },

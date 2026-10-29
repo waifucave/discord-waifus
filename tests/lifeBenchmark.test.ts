@@ -13,6 +13,7 @@ import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { mergeGradesInto, readSummary, resummariseInto, runBenchmark, selectModels } from "../scripts/life-benchmark/bench.js";
 import { GradeSchema, gateOf, packetsForRun, renderChat } from "../scripts/life-benchmark/grading.js";
 import { computeMetrics, factsFound, longestBurst, mentions } from "../scripts/life-benchmark/metrics.js";
+import { maskKeyLike } from "../scripts/life-benchmark/models.js";
 import { evaluateProbes } from "../scripts/life-benchmark/probes.js";
 import { defineScenario, scenarioClock, scenarioTimeMs, type ScenarioInput } from "../scripts/life-benchmark/scenario.js";
 import { SCENARIOS } from "../scripts/life-benchmark/scenarios/index.js";
@@ -524,4 +525,11 @@ describe("the CLI", () => {
     expect(result.stdout).not.toContain("sk-not-real");
     await expect(readdir(outDir)).rejects.toThrow();
   }, 60_000);
+});
+
+describe("failed-call errors in the transcript", () => {
+  it("keep the provider's message readable but mask anything key-like", () => {
+    expect(maskKeyLike("Corrupted thought signature")).toBe("Corrupted thought signature");
+    expect(maskKeyLike("Invalid key sk-or-v1-0123456789abcdef0123456789abcdef")).toBe("Invalid key [masked]");
+  });
 });
