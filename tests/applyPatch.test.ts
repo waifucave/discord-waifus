@@ -277,6 +277,18 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
     expect(lines.slice(1, 4).sort()).toEqual(["line 1", "line 2", "line 3"]);
   });
 
+  it("runs patches called at once one at a time: each one's done line is written before the next begins (review)", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w, { intent: true });
+    await put(w, "n.md", "notes\n");
+    const append = (n: number) => `tools.apply_patch(["*** Begin Patch", "*** Update File: ~/n.md", "@@", "+line ${n}", "*** End Patch"].join("\\n"))`;
+    await runScript("Edit", `await Promise.all([${append(1)}, ${append(2)}, ${append(3)}])`, ctx);
+    // A next change set removes the one before's .applied marker: its done line must be written first.
+    const intents = (await readIntents(w.storage, "ella")).filter((intent) => intent.line !== undefined);
+    expect(intents.map((intent) => `${intent.line}${intent.lineDone ? " done" : ""}`)).toEqual(["1", "1 done", "2", "2 done", "3", "3 done"]);
+    expect((await readFile(home(w, "n.md"), "utf8")).split("\n").slice(1, 4)).toEqual(["line 1", "line 2", "line 3"]);
+  });
+
   it("holds her folder rules: places.md, the checked ~/life/ files, /transcripts, 256 KB, a parse error", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);

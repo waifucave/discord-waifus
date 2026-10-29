@@ -594,9 +594,25 @@ export function patchJournalId(toolCallId: string, n: number): string {
 
 async function editScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   let n = 0;
+  // One patch at a time, in the order she called them: a change set's `.applied` marker stays until
+  // its done intent is written (the next change set removes it), so boot repair never reports a
+  // saved patch unsaved (§32.3a).
+  let queue: Promise<unknown> = Promise.resolve();
   return runScriptTool(input, ctx, {
     tool: "Edit",
-    functions: [{ name: "apply_patch", max: MAX_PATCHES_PER_SCRIPT, maxArgChars: MAX_PATCH_CHARS + 1_024, run: (arg, run) => applyPatchCall(arg, ctx, (n += 1), run) }]
+    functions: [
+      {
+        name: "apply_patch",
+        max: MAX_PATCHES_PER_SCRIPT,
+        maxArgChars: MAX_PATCH_CHARS + 1_024,
+        run: (arg, run) => {
+          const call = (n += 1);
+          const next = queue.then(() => applyPatchCall(arg, ctx, call, run));
+          queue = next.catch(() => undefined);
+          return next;
+        }
+      }
+    ]
   });
 }
 
