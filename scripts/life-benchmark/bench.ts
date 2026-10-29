@@ -15,7 +15,7 @@ import { renderReport, type BenchmarkSummary, type ResummariseRow } from "./repo
 import { Budget, runOne, type RunOutput } from "./runner.js";
 import type { Scenario } from "./scenario.js";
 import type { RunSummary, SummaryCapture } from "./types.js";
-import type { PromptVariant } from "./variants.js";
+import { checkVariants, type PromptVariant } from "./variants.js";
 import { routeId, type ModelPick } from "./world.js";
 
 /** `provider/model[#effort]` → a pick. */
@@ -122,6 +122,8 @@ async function writeSummaryAndReport(outDir: string, summary: BenchmarkSummary):
 
 /** Every run, on a pool of `concurrency`, results written as each finishes; then packets, summary and report. */
 export async function runBenchmark(o: BenchmarkOptions): Promise<BenchmarkSummary> {
+  // A variant edit that matches no paragraph, or several, stops everything before any run.
+  if (o.models[0]) checkVariants(o.variants, o.scenarios, { model: o.models[0], web: o.web });
   await mkdir(o.outDir, { recursive: true });
   const budget = new Budget(o.maxUsd);
   const jobs = o.scenarios.flatMap((scenario) => o.models.flatMap((model) => o.variants.flatMap((variant) => Array.from({ length: o.repeat }, (_, index) => ({ scenario, model, variant, repeat: index + 1 })))));

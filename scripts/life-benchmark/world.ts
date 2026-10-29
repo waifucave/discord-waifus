@@ -124,6 +124,24 @@ export type WorldOptions = {
   tempBase?: string;
 };
 
+/** The waifu under test as the scenario describes her (her config as the run writes it). */
+export function scenarioWaifu(scenario: Scenario, model: ModelPick): WaifuConfig {
+  const waifuId = herSlug({ name: scenario.waifu.name });
+  return WaifuConfigSchema.parse({
+    ...createRevisionedBase(),
+    id: waifuId,
+    name: scenario.waifu.name,
+    displayName: scenario.waifu.displayName ?? scenario.waifu.name,
+    enabled: true,
+    persona: scenario.waifu.persona,
+    customInstructions: scenario.waifu.style,
+    model: { providerId: model.providerId, modelId: model.modelId, ...(model.effort ? { effort: model.effort } : {}) },
+    botId: `${waifuId}-bot`,
+    availability: { bedTime: scenario.waifu.bedTime ? { enabled: true, ...scenario.waifu.bedTime } : { enabled: false, start: "23:00", end: "07:00" } },
+    dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "", sleepNotice: "" }
+  });
+}
+
 export async function buildWorld(o: WorldOptions): Promise<World> {
   const { scenario } = o;
   const root = await mkdtemp(path.join(o.tempBase ?? os.tmpdir(), `life-bench-${scenario.id}-`));
@@ -133,8 +151,7 @@ export async function buildWorld(o: WorldOptions): Promise<World> {
   await rm(path.join(root, "user", "waifus"), { recursive: true, force: true });
   await mkdir(path.join(root, "user", "waifus"), { recursive: true });
   const storage = new StorageService(root);
-  const waifuDraft = { name: scenario.waifu.name };
-  const waifuId = herSlug(waifuDraft);
+  const waifuId = herSlug({ name: scenario.waifu.name });
   const botConfigId = `${waifuId}-bot`;
   const config = runConfig(scenario, o.model, { web: o.web });
   const clock = new SimClock(scenarioStartMs(scenario));
@@ -150,19 +167,7 @@ export async function buildWorld(o: WorldOptions): Promise<World> {
       })
     )
   );
-  const waifu = WaifuConfigSchema.parse({
-    ...createRevisionedBase(),
-    id: waifuId,
-    name: scenario.waifu.name,
-    displayName: scenario.waifu.displayName ?? scenario.waifu.name,
-    enabled: true,
-    persona: scenario.waifu.persona,
-    customInstructions: scenario.waifu.style,
-    model: { providerId: o.model.providerId, modelId: o.model.modelId, ...(o.model.effort ? { effort: o.model.effort } : {}) },
-    botId: botConfigId,
-    availability: { bedTime: scenario.waifu.bedTime ? { enabled: true, ...scenario.waifu.bedTime } : { enabled: false, start: "23:00", end: "07:00" } },
-    dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "", sleepNotice: "" }
-  });
+  const waifu = scenarioWaifu(scenario, o.model);
   await storage.writeJson(`waifu:${waifuId}`, `user/waifus/${waifuId}/waifu.json`, WaifuConfigSchema, waifu);
   if (scenario.server) {
     await storage.writeJson(

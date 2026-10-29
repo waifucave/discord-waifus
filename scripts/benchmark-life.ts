@@ -19,7 +19,7 @@ import { createProviderCredentialsLookup } from "../src/models/credentials.js";
 import { curatedCatalog } from "../src/models/catalog.js";
 import { mergeGradesInto, planEstimate, readSummary, repackSummaries, replayableSummaries, resummariseEstimate, resummariseInto, runBenchmark, selectModels } from "./life-benchmark/bench.js";
 import { SCENARIOS, selectScenarios } from "./life-benchmark/scenarios/index.js";
-import { BUILT_IN_VARIANTS, loadVariants } from "./life-benchmark/variants.js";
+import { BUILT_IN_VARIANTS, checkVariants, loadVariants } from "./life-benchmark/variants.js";
 import { routeId } from "./life-benchmark/world.js";
 
 const args = process.argv.slice(2);
@@ -92,6 +92,8 @@ async function run(): Promise<void> {
     const missing = models.filter((model) => !credentials!(model.providerId));
     if (missing.length > 0) throw new Error(`No key in the data root for: ${missing.map(routeId).join(", ")}`);
   }
+  // Every variant edit is tried on the shipped texts first: a broken one stops here, before the plan.
+  checkVariants(variants, scenarios, { model: models[0]!, web });
   const estimate = planEstimate({ scenarios, models, variants, repeat, concurrency });
   console.log(`${scenarios.length} scenario(s) × ${models.length} model(s) × ${variants.length} variant(s) × ${repeat} = ${scenarios.length * models.length * variants.length * repeat} run(s)${dryRun ? " (dry run: scripted fake model, no network; its dollars are the fake usage at list prices)" : ""}`);
   console.log(`Models: ${models.map(routeId).join(", ")}`);

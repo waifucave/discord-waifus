@@ -6,6 +6,7 @@
 
 import type { ModelTool } from "../../models/client.js";
 import type { AppConfig } from "../../shared/schemas/config.js";
+import { benchmarkTool } from "../benchmarkHook.js";
 import type { LifeDeps } from "../deps.js";
 import { bashTool_ } from "./bash.js";
 import { fileTools } from "./files.js";
@@ -51,12 +52,13 @@ export function modelTools(names: readonly string[], config?: AppConfig): ModelT
   return names.flatMap((name) => {
     const tool = lifeTool(name);
     if (!tool) return [];
+    // The benchmark's seam (spec §33): unset, the definition is returned as built.
     return [
-      {
+      benchmarkTool({
         name: tool.name,
         description: config && tool.describe ? tool.describe(config) : tool.description,
         inputSchema: config && tool.schemaFor ? tool.schemaFor(config) : tool.inputSchema
-      }
+      })
     ];
   });
 }

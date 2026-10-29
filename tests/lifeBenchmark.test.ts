@@ -18,7 +18,13 @@ import { defineScenario, scenarioClock, scenarioTimeMs, type ScenarioInput } fro
 import { SCENARIOS } from "../scripts/life-benchmark/scenarios/index.js";
 import tiny from "../scripts/life-benchmark/scenarios/tiny.js";
 import type { TranscriptEvent } from "../scripts/life-benchmark/types.js";
-import { BASELINE, BUILT_IN_VARIANTS, applyVariant, withVariant } from "../scripts/life-benchmark/variants.js";
+import { BASELINE, BUILT_IN_VARIANTS, PromptVariantSchema, applySummaryEdits, applyToolEdits, applyVariant, checkVariant, checkVariants, shippedTexts, withVariant, type PromptVariant } from "../scripts/life-benchmark/variants.js";
+import { benchmarkSummaryPrompt, benchmarkTool } from "../src/life/benchmarkHook.js";
+import { COMPACTION_INSTRUCTION, compactionInstruction } from "../src/life/compaction.js";
+import { DREAM_INSTRUCTION, dreamSystem } from "../src/life/dream.js";
+import { CACHE_REST_NOTICE, REST_NOTICE, isRestNotice } from "../src/life/rest.js";
+import { ALL_LIFE_TOOLS, lifeTool, modelTools, offerableTool } from "../src/life/tools/index.js";
+import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -311,6 +317,142 @@ describe("prompt variants", () => {
     });
     expect(inside).toContain("Most of your messages are a few words");
     expect(buildBlockA(waifu, { serverNicknames: [], others: [] }, "UTC")).toBe(shipped);
+  });
+
+  const offered = ALL_LIFE_TOOLS.map((tool) => tool.name).filter(offerableTool);
+  const builtIn = (id: string) => BUILT_IN_VARIANTS.find((entry) => entry.id === id)!;
+  const sendDescription = () => modelTools(["SendMessage"], DEFAULT_APP_CONFIG)[0]!.description;
+  const v = (rest: Omit<PromptVariant, "id" | "description">, id = "v"): PromptVariant => ({ id, description: "d", ...rest });
+
+  it("unset seams leave every text exactly as shipped", async () => {
+    // The tools as each LifeTool builds them, without the seam in modelTools.
+    for (const config of [DEFAULT_APP_CONFIG, undefined]) {
+      expect(modelTools(offered, config)).toEqual(
+        offered.map((name) => {
+          const tool = lifeTool(name)!;
+          return { name, description: config && tool.describe ? tool.describe(config) : tool.description, inputSchema: config && tool.schemaFor ? tool.schemaFor(config) : tool.inputSchema };
+        })
+      );
+    }
+    const raw = { name: "X", description: "d", inputSchema: {} };
+    expect(benchmarkTool(raw)).toBe(raw);
+    for (const [prompt, text] of [["rest", REST_NOTICE], ["rest", CACHE_REST_NOTICE], ["compaction", COMPACTION_INSTRUCTION], ["dream", DREAM_INSTRUCTION]] as const) expect(benchmarkSummaryPrompt(prompt, text)).toBe(text);
+    expect(compactionInstruction({ deleted: [], people: [] })).toBe(COMPACTION_INSTRUCTION);
+    // The baseline inside a run: the same texts and tool definitions.
+    const outside = modelTools(offered, DEFAULT_APP_CONFIG);
+    await withVariant(BASELINE, async () => {
+      expect(buildBlockA(waifu, { serverNicknames: [], others: [] }, "UTC")).toBe(shipped);
+      expect(modelTools(offered, DEFAULT_APP_CONFIG)).toEqual(outside);
+      expect(compactionInstruction({ deleted: [], people: [] })).toBe(COMPACTION_INSTRUCTION);
+      expect(benchmarkSummaryPrompt("rest", REST_NOTICE)).toBe(REST_NOTICE);
+    });
+    // A field edit works on a copy: the shipped schema never changes; other tools keep their object.
+    const tool = modelTools(["Bash"], DEFAULT_APP_CONFIG)[0]!;
+    const edited = applyToolEdits(tool, v({ toolSchemas: { Bash: { command: [{ add: "EXTRA" }] } } }));
+    expect((edited.inputSchema["properties"] as Record<string, { description: string }>)["command"]!.description).toBe("The command (a whole script is fine).\nEXTRA");
+    expect(modelTools(["Bash"], DEFAULT_APP_CONFIG)[0]).toEqual(tool);
+    expect(applyToolEdits(tool, v({ tools: { SendMessage: [{ add: "x" }] } }))).toBe(tool);
+  });
+
+  it("tool and summary edits apply only inside the run that carries them, also with runs side by side", async () => {
+    const a = v({ tools: { SendMessage: [{ replace: "Send messages. This is the only way", with: "A-SEND" }] }, summaries: { compaction: [{ add: "A-COMPACT" }], dream: [{ remove: "4. Keep MEMORY.md short" }], dreamSystem: [{ add: "A-KEEPER" }] } }, "a");
+    const b = v({ tools: { Wakeup: [{ add: "B-WAKE", after: "- cancel:" }] }, summaries: { rest: [{ add: "B-REST" }] } }, "b");
+    const seen = async (variant: PromptVariant) =>
+      withVariant(variant, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        const tools = Object.fromEntries(modelTools(offered, DEFAULT_APP_CONFIG).map((tool) => [tool.name, tool.description]));
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return {
+          tools,
+          compaction: compactionInstruction({ deleted: [], people: ["Rosa"] }),
+          rest: benchmarkSummaryPrompt("rest", REST_NOTICE),
+          cacheRest: benchmarkSummaryPrompt("rest", CACHE_REST_NOTICE),
+          dream: benchmarkSummaryPrompt("dream", DREAM_INSTRUCTION),
+          dreamSystem: benchmarkSummaryPrompt("dreamSystem", dreamSystem({ name: "Ella" }))
+        };
+      });
+    const [inA, inB] = await Promise.all([seen(a), seen(b)]);
+    expect(inA.tools["SendMessage"]!.startsWith("A-SEND\ntools.send_message(")).toBe(true);
+    expect(inA.tools["Wakeup"]).toBe(modelTools(["Wakeup"], DEFAULT_APP_CONFIG)[0]!.description);
+    expect(inA.compaction).toBe(`${COMPACTION_INSTRUCTION}\nA-COMPACT\nLeave out everything about these people, who asked to be forgotten: Rosa. Do not mention them at all.`);
+    expect(inA.dream).not.toContain("4. Keep MEMORY.md short");
+    expect(inA.dream.split("\n")).toHaveLength(DREAM_INSTRUCTION.split("\n").length - 1);
+    expect(inA.dreamSystem).toBe(`${dreamSystem({ name: "Ella" })}\nA-KEEPER`);
+    expect(inA.rest).toBe(REST_NOTICE);
+    expect(inB.tools["SendMessage"]).toBe(sendDescription());
+    expect(inB.tools["Wakeup"]).toContain('- cancel: ["w3"]: removes wakeups by id.\nB-WAKE\nYour functions run on their own');
+    expect(inB.compaction).not.toContain("A-COMPACT");
+    expect(inB.rest).toBe(`${REST_NOTICE}\nB-REST`);
+    expect(inB.cacheRest).toBe(`${CACHE_REST_NOTICE}\nB-REST`);
+    // Still a rest notice to the app and the benchmark.
+    expect(isRestNotice(inB.rest)).toBe(true);
+    // Outside both runs: shipped.
+    expect(sendDescription()).toBe(lifeTool("SendMessage")!.describe!(DEFAULT_APP_CONFIG));
+    expect(benchmarkSummaryPrompt("rest", REST_NOTICE)).toBe(REST_NOTICE);
+  });
+
+  it("a tool or summary edit that matches no paragraph, or several, or names no tool is an error before any run", async () => {
+    const texts = shippedTexts([tiny], { model: HAIKU, web: false });
+    expect(() => checkVariant(v({ tools: { SendMessage: [{ remove: "no such line anywhere" }] } }), texts)).toThrow(/variant v tools\.SendMessage edit 1: no paragraph of the SendMessage description contains/u);
+    expect(() => checkVariant(v({ tools: { Edit: [{ replace: "*** End Patch", with: "x" }] } }), texts)).toThrow(/paragraphs of the Edit description contain/u);
+    expect(() => checkVariant(v({ tools: { React: [{ add: "x" }] } }), texts)).toThrow(/no tool called React/u);
+    expect(() => checkVariant(v({ toolSchemas: { Bash: { nope: [{ add: "x" }] } } }), texts)).toThrow(/Bash has no input field nope/u);
+    expect(() => checkVariant(v({ summaries: { dream: [{ add: "x", after: "no such step" }] } }), texts)).toThrow(/summaries\.dream edit 1: no paragraph of the dream instruction/u);
+    expect(() => checkVariant(v({ summaries: { rest: [{ replace: "Your memory is almost full", with: "Time to rest." }] } }), texts)).toThrow(/rest notice must still start with/u);
+    expect(() => applySummaryEdits("compaction", COMPACTION_INSTRUCTION, v({ summaries: { compaction: [{ remove: "nothing like this" }] } }))).toThrow(/no paragraph/u);
+    // Block A too, checked up front against each scenario's block A.
+    expect(() => checkVariant(v({ edits: [{ remove: "no such paragraph here" }] }), texts)).toThrow(/no paragraph of block A/u);
+    // The benchmark refuses before any run: nothing is written.
+    const outDir = path.join(await tempDir(), "out");
+    await expect(
+      runBenchmark({ scenarios: [tiny], models: [HAIKU], variants: [BASELINE, v({ tools: { Read: [{ remove: "no such line anywhere" }] } })], repeat: 1, concurrency: 1, web: false, dryRun: true, outDir, gate: GATE, tempBase: outDir })
+    ).rejects.toThrow(/no paragraph of the Read description/u);
+    await expect(readdir(outDir)).rejects.toThrow();
+    // Variant files: the old shape still parses; a misspelt key does not.
+    expect(PromptVariantSchema.parse({ id: "old", description: "d", edits: [{ add: "x" }] })).toEqual({ id: "old", description: "d", edits: [{ add: "x" }], tools: {}, toolSchemas: {}, summaries: {} });
+    expect(() => PromptVariantSchema.parse({ id: "typo", description: "d", summary: { rest: [{ add: "x" }] } })).toThrow();
+    expect(() => PromptVariantSchema.parse({ id: "typo", description: "d", summaries: { nightly: [{ add: "x" }] } })).toThrow();
+  });
+
+  it("every built-in variant applies cleanly to the current shipped prompts and tools, and changes what it says", async () => {
+    expect(BUILT_IN_VARIANTS.map((variant) => variant.id)).toEqual(["baseline", "brief", "calm", "own-voice", "tool-examples", "calm-voice"]);
+    for (const web of [false, true]) expect(() => checkVariants(BUILT_IN_VARIANTS, SCENARIOS, { model: HAIKU, web })).not.toThrow();
+    for (const variant of BUILT_IN_VARIANTS) {
+      // Only add edits, so they survive rewrites of the shipped paragraphs.
+      const all = [...(variant.edits ?? []), ...Object.values(variant.tools ?? {}).flat(), ...Object.values(variant.summaries ?? {}).flatMap((edits) => edits ?? [])];
+      expect(all.every((edit) => "add" in edit)).toBe(true);
+      const inside = await withVariant(variant, async () => ({
+        blockA: buildBlockA(waifu, { serverNicknames: [], others: [] }, "UTC"),
+        tools: Object.fromEntries(modelTools(offered, DEFAULT_APP_CONFIG).map((tool) => [tool.name, tool.description])),
+        rest: benchmarkSummaryPrompt("rest", REST_NOTICE),
+        compaction: compactionInstruction({ deleted: [], people: [] }),
+        dream: benchmarkSummaryPrompt("dream", DREAM_INSTRUCTION)
+      }));
+      // Each add is a paragraph of its own inside <life>, in order.
+      const life = inside.blockA.slice(0, inside.blockA.indexOf("\n</life>") + 1);
+      for (const edit of variant.edits ?? []) if ("add" in edit) expect(life).toContain(`\n\n${edit.add}\n`);
+      for (const [name, edits] of Object.entries(variant.tools ?? {})) for (const edit of edits) if ("add" in edit) expect(inside.tools[name]!.endsWith(`\n${edit.add}`)).toBe(true);
+      for (const [prompt, edits] of Object.entries(variant.summaries ?? {})) for (const edit of edits ?? []) if ("add" in edit) expect((inside as Record<string, unknown>)[prompt]).toContain(edit.add);
+      expect(isRestNotice(inside.rest)).toBe(true);
+    }
+    expect(builtIn("calm-voice").edits).toEqual([...builtIn("calm").edits!, ...builtIn("own-voice").edits!]);
+    expect(builtIn("calm-voice").summaries).toEqual(builtIn("own-voice").summaries);
+  });
+
+  it("tool-examples adds one new, syntactically valid example to each tool, unlike the one already there", () => {
+    const variant = builtIn("tool-examples");
+    expect(Object.keys(variant.tools ?? {}).sort()).toEqual(["Read", "ReadMessages", "SendMessage", "Wakeup"]);
+    const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (...args: string[]) => unknown;
+    for (const [name, edits] of Object.entries(variant.tools ?? {})) {
+      const shippedDescription = modelTools([name], DEFAULT_APP_CONFIG)[0]!.description;
+      for (const edit of edits) {
+        if (!("add" in edit)) continue;
+        const code = edit.add.slice(edit.add.indexOf(": ") + 2);
+        expect(code).toMatch(/tools\.[a-z_]+\(\{/u);
+        expect(() => new AsyncFunction("tools", "text", code)).not.toThrow();
+        expect(shippedDescription).not.toContain(code);
+      }
+    }
   });
 });
 

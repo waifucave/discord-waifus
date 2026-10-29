@@ -4370,10 +4370,19 @@ only where it is relevant; it targets the §32 tools only.
   as part of `npm run typecheck`; `scripts/` is not in the package's `files`. Results go to
   `bench-results/life-<time>/` (gitignored) unless `--out`. Subcommands: `run` (default), `list`,
   `merge-grades`, `resummarise`.
-- **The app change** is one seam: `src/life/benchmarkHook.ts` `setBenchmarkBlockATransform`, applied
-  at the end of `buildBlockA` (so block A and the harness hash both see it). The app never sets it.
-  The benchmark installs a transform that reads the run's variant from an `AsyncLocalStorage`, so
-  runs with different variants share a process. Nothing else under `src/` changed: summaries,
+- **The app change** is three seams in `src/life/benchmarkHook.ts`, each unset by the app (the shipped
+  text, byte for byte): `setBenchmarkBlockATransform`, applied at the end of `buildBlockA` (so block A
+  and the harness hash both see it); `setBenchmarkToolTransform`, applied to every definition
+  `modelTools` returns (so the epoch snapshot, the harness hash and her maintenance sessions see it);
+  `setBenchmarkSummaryPromptTransform`, applied to the rest notice (`Life.restTurn`, both kinds), to
+  `COMPACTION_INSTRUCTION` in `compactionInstruction` and to the dream's instruction and system block
+  in `runDream`. The benchmark installs transforms that read the run's variant from an
+  `AsyncLocalStorage`, so runs with different variants share a process. A variant edits block A
+  (`edits`), tool descriptions (`tools`), input-field descriptions (`toolSchemas`) and the summary
+  instructions (`summaries`: `rest`, `compaction`, `dream`, `dreamSystem`); every edit is tried on
+  each selected scenario's shipped texts before any run (`checkVariants`), and a rest-notice edit must
+  keep its opening (`isRestNotice`). Built-ins: `baseline`, `brief`, `calm`, `own-voice`,
+  `tool-examples`, `calm-voice` (add edits only). Nothing else under `src/` changed: summaries,
   wakes, maintenance and tool use are captured from outside (a `ModelClient` subclass recording
   every call; a wrapper on the cast's router; the scheduler's `maintain` hook wrapped to diff her
   home; her life log tailed before every model call and after every step).

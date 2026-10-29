@@ -19,6 +19,7 @@
 
 import { isDmPlaceKey, wakeShowsDm } from "./lifeView.js";
 import { availabilityFor, noteSend } from "./busy.js";
+import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { withPlaceRecord } from "./placeRecorder.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { createHash } from "node:crypto";
@@ -683,7 +684,7 @@ export class Life {
       status: "turn",
       currentTurn: { id: turnId, startedAt: deps.now().toISOString(), rounds: 0, wakeIds: [], wakes: [] }
     }));
-    const notice = o.cache ? CACHE_REST_NOTICE : REST_NOTICE;
+    const notice = benchmarkSummaryPrompt("rest", o.cache ? CACHE_REST_NOTICE : REST_NOTICE);
     await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: notice }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
     deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate, ...(o.cache ? { before: "cache_expiry" } : {}) });
     let outcome = await this.rounds(run);

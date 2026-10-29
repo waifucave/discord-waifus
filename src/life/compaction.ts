@@ -14,6 +14,7 @@
 // forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
 
 import { isRestNotice } from "./rest.js";
+import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
 import type { CuratedModel } from "../models/catalog.js";
@@ -382,7 +383,7 @@ export const COMPACTION_INSTRUCTION =
 export type CompactionOmissions = { deleted: string[]; people: string[] };
 
 export function compactionInstruction(omit: CompactionOmissions): string {
-  const lines = [COMPACTION_INSTRUCTION];
+  const lines = [benchmarkSummaryPrompt("compaction", COMPACTION_INSTRUCTION)];
   if (omit.deleted.length > 0) lines.push(`Leave out these deleted messages entirely: ${omit.deleted.join("; ")}.`);
   if (omit.people.length > 0) lines.push(`Leave out everything about these people, who asked to be forgotten: ${omit.people.join(", ")}. Do not mention them at all.`);
   return lines.join("\n");

@@ -106,9 +106,33 @@ see `scenarios/*.ts`. Times are `d<day> HH:MM[:SS]` in the scenario's zone; plac
 appear); `config` overrides the app config for the run (a small `life.maxContextTokens` makes her
 rest within the scenario). `dryRun` rules only drive the scripted fake model.
 
-A variant is JSON (or a module exporting it) with `replace`, `remove` and `add` edits of block A
-paragraphs (`variants.ts`); an edit that matches no paragraph, or several, stops the benchmark before
-any run. Prefer `add` edits: they survive rewrites of the shipped prompt.
+A variant is JSON (or a module exporting it) with `replace`, `remove` and `add` edits
+(`variants.ts`) of:
+
+```json
+{ "id": "mine", "description": "…",
+  "edits": [{ "add": "…" }],
+  "tools": { "SendMessage": [{ "add": "…" }], "Edit": [{ "remove": "…" }] },
+  "toolSchemas": { "Bash": { "command": [{ "replace": "…", "with": "…" }] } },
+  "summaries": { "rest": [{ "add": "…" }], "compaction": [], "dream": [], "dreamSystem": [] } }
+```
+
+- `edits`: block A's paragraphs (blank-line separated; section tags kept; `add` without `after`
+  goes at the end of `<life>`).
+- `tools`: a tool's description, by name (`ReadMessages`, `SendMessage`, `Wakeup`, `Read`, `Edit`,
+  `Bash`, `Web`); `toolSchemas`: the description of one of its input fields. One paragraph is one
+  line there; `add` without `after` goes at the end. A tool's edits apply wherever it is offered (her
+  life and her maintenance sessions).
+- `summaries`: `rest` the rest notice (also the quiet-time one; it must still start like a rest
+  notice), `compaction` the compaction instruction (before any forget lines), `dream` the dream's
+  instruction, `dreamSystem` the memory keeper's system block. One line is one paragraph.
+
+Every edit must match exactly one paragraph: each variant is tried on every selected scenario's
+shipped texts before the plan is printed, so a broken one stops the benchmark before any run. Prefer
+`add` edits: they survive rewrites of the shipped prompt. Built-ins: `baseline`, `brief`, `calm`
+(one gentle follow-up, speak when there's something to add), `own-voice` (summaries and dream notes
+as her own first-person memory), `tool-examples` (a second, differently shaped example call for
+ReadMessages, SendMessage, Read and Wakeup) and `calm-voice` (both); `list` prints them.
 
 ## Caveats
 

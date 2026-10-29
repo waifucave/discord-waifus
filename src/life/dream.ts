@@ -22,6 +22,7 @@ import type { StorageService } from "../storage/storageService.js";
 import { clockText, dayTimeText, timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { availabilityFor } from "./busy.js";
+import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { appendMaintenanceReport } from "./lifeStore.js";
 import { lifeModelOf } from "./lifeLoop.js";
 import { homeListing, runSession, type MaintenanceOutcome } from "./maintenance.js";
@@ -222,9 +223,9 @@ export async function runDream(deps: LifeDeps, o: { waifu: WaifuConfig; signal?:
     const session = await runSession(deps, {
       waifu: o.waifu,
       model: chosen.model,
-      system: dreamSystem(o.waifu),
+      system: benchmarkSummaryPrompt("dreamSystem", dreamSystem(o.waifu)),
       opening: [
-        DREAM_INSTRUCTION,
+        benchmarkSummaryPrompt("dream", DREAM_INSTRUCTION),
         await homeListing(deps, o.waifu, { possessive: "Her" }),
         windowText(chunks, { start: window.start, timeZone: deps.timeZone, more: index < sessions.length - 1 }),
         timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })
