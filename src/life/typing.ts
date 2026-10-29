@@ -26,11 +26,11 @@ export function streamedPlace(argumentsJson: string): string | undefined {
   const script = /"script"\s*:\s*"((?:[^"\\]|\\.)*)/u.exec(argumentsJson);
   if (!script) return undefined;
   // Her script so far, its JSON escapes undone (an escape cut off at the end is left out).
-  const text = decoded(script[1]!.replace(/\\(?:u[0-9a-fA-F]{0,3})?$/u, ""));
+  const text = decoded(script[1]!.replace(/(?<!\\)((?:\\\\)*)\\(?:u[0-9a-fA-F]{0,3})?$/u, "$1"));
   if (text === undefined) return undefined;
   const call = text.indexOf("send_message");
   if (call < 0) return undefined;
-  const place = /\bplace\s*:\s*(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/u.exec(text.slice(call));
+  const place = /\bplace["']?\s*:\s*(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/u.exec(text.slice(call));
   const value = place?.[2]?.trim();
   return value ? value : undefined;
 }
