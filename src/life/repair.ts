@@ -211,6 +211,7 @@ async function recoverSendCalls(
   const doneIds = new Map(intent.lines.flatMap((line) => (line.lineDone && line.line !== undefined && line.resultRef ? [[line.line, line.resultRef] as const] : [])));
   const callsDone = new Set(intent.lines.flatMap((line) => (line.callDone !== undefined ? [line.callDone] : [])));
   const sentParts: string[] = [];
+  const notes: string[] = [];
   const rest: string[] = [];
   let anySent = false;
   let unknown = false;
@@ -227,18 +228,25 @@ async function recoverSendCalls(
       rest.push(...sends.filter((send) => !doneIds.has(send.line)).map((send) => `not sent: ${sendLabel(send)}`));
       continue;
     }
-    const recovered = await recoverScript(deps, waifu, place, sends, intent.lines.filter((line) => line.line === undefined || sends.some((send) => send.line === line.line)));
+    const lines = intent.lines.filter((line) => line.line === undefined || sends.some((send) => send.line === line.line));
+    const recovered = await recoverScript(deps, waifu, place, sends, lines, (send) => JSON.stringify(sendLabel(send).slice(0, 80)));
     if (recovered.text === UNCERTAIN_SEND) unknown = true;
     if (!recovered.isError) {
       anySent = true;
       const [head = "", ...more] = recovered.text.split("\n");
-      sentParts.push(head.replace(/^sent /u, "").replace(/ \(recovered\)/u, ""));
+      const [refs = "", ...said] = head.replace(/^sent /u, "").split("; ");
+      sentParts.push(refs.replace(/ \(recovered\)$/u, ""));
+      notes.push(...said);
       rest.push(...more);
+    } else if (recovered.text === UNCERTAIN_SEND) {
+      const [first, ...after] = sends;
+      if (first) notes.push(`it is unknown whether ${JSON.stringify(sendLabel(first).slice(0, 80))} was sent; read the place before sending it again`);
+      rest.push(...after.map((send) => `not sent: ${sendLabel(send)}`));
     } else rest.push(...sends.map((send) => `not sent: ${sendLabel(send)}`));
     break;
   }
   if (!anySent) return { text: unknown ? UNCERTAIN_SEND : "[interrupted] not sent", isError: true };
-  return { text: [`sent ${sentParts.join(" ")} (recovered)`, ...rest].join("\n"), isError: false };
+  return { text: [[`sent ${sentParts.join(" ")} (recovered)`, ...notes].join("; "), ...rest].join("\n"), isError: false };
 }
 
 /**
@@ -253,7 +261,9 @@ async function recoverScript(
   waifu: NonNullable<Awaited<ReturnType<typeof readWaifu>>>,
   place: NonNullable<Awaited<ReturnType<typeof resolvePlace>>>,
   sends: readonly ScriptSend[],
-  lines: readonly LifeIntent[]
+  lines: readonly LifeIntent[],
+  /** How the message whose fate is unknown is named: a §27 script's line, a §32 message's text. */
+  unknownLabel: (send: ScriptSend) => string = (send) => `line ${send.line}`
 ): Promise<{ text: string; isError: boolean }> {
   // Before §27 a send's one digest line had no `line`: it is the first (and only) message's.
   const ofLine = (send: ScriptSend, index: number) => lines.filter((line) => line.line === send.line || (index === 0 && line.line === undefined && line.contentDigest !== undefined));
@@ -298,7 +308,7 @@ async function recoverScript(
   const refs = await assignConversationRefs(deps.storage, place.placeKey as never, sentIds, deps.now());
   const parts = [`sent ${sentIds.map((id) => `#${refs.get(id) ?? "?"}`).join(" ")} (recovered)`];
   const rest = sends.slice(sentIds.length);
-  if (unknown) parts.push(`it is unknown whether line ${unknown.send.line} was sent; read the place before sending it again`);
+  if (unknown) parts.push(`it is unknown whether ${unknownLabel(unknown.send)} was sent; read the place before sending it again`);
   const notSent = unknown ? rest.slice(1) : rest;
   return { text: [parts.join("; "), ...notSent.map((send) => `not sent: ${sendLabel(send)}`)].join("\n"), isError: false };
 }

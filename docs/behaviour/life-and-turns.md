@@ -91,7 +91,8 @@ All sent: `sent #k9 #ka (recovered)`; part: `sent #k9 (recovered)` then a `not s
 message left (also when the call had finished, stopped part way, and only its result was lost); none:
 `[interrupted] not sent`; Discord can't be checked: `[interrupted] it is unknown whether this was
 sent; read the place before sending it again` (or, after messages that were sent, `it is unknown
-whether line 3 was sent; …`); then `[system] interrupted by a restart` (`src/life/repair.ts`). A
+whether "four" was sent; …`, naming the message by its text; a §27 script says `line 3`); then
+`[system] interrupted by a restart` (`src/life/repair.ts`). A
 pre-§32 call (a §27 script with `place`, or a pre-§27 `text`) is recovered from its own lines as
 before. An `Edit` script: `patches 1, 2 saved (recovered)`, `[interrupted] patch 3 was not saved`, or
 `[interrupted] nothing was changed`. Each `tools.wakeup` call writes, just before saving, a digest of

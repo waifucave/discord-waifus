@@ -205,6 +205,75 @@ describe("crash repair (§5.7)", () => {
     expect(result.content).toMatch(/^sent #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u);
   });
 
+  /**
+   * A §32 SendMessage script crashed in its second tools.send_message call: the first call (lines 1–2)
+   * finished; the second (lines 3–5) sent line 3 and wrote line 4's intent just before its Discord call.
+   */
+  const callsCrash = async (o: { fourthArrived?: boolean; readable?: boolean; firstOnly?: boolean; secondUnsent?: boolean } = {}) => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
+    const input = {
+      script: [
+        'await tools.send_message({ place: "bake-club/#general", messages: [{ text: "one" }, { text: "two" }] });',
+        'await tools.send_message({ place: "bake-club/#general", messages: [{ text: "three" }, { wait: 2 }, { text: "four" }, { text: "five" }] });'
+      ].join("\n")
+    };
+    await crashAfter(w, { id: "call_send", name: "SendMessage", input }, { intent: true });
+    const base = { turnId: "t-crash", toolCallId: "call_send", tool: "SendMessage", argsDigest: digest(input) };
+    const at = () => w.clock.now().toISOString();
+    const sends = (lines: Array<[number, string]>) => lines.map(([line, text]) => ({ line, text, files: [] }));
+    const sent = async (line: number, text: string) => {
+      const message = w.discord.post(ROOM, text, { authorId: ELLA_BOT, authorName: "Ella", bot: true });
+      await appendIntent(w.storage, "ella", { ...base, at: at(), line, contentDigest: contentDigest(text) });
+      await appendIntent(w.storage, "ella", { ...base, at: at(), line, lineDone: true, resultRef: message.id });
+      return message.id;
+    };
+    await appendIntent(w.storage, "ella", { ...base, at: at(), plan: { call: 1, place: "bake-club/#general", sends: sends([[1, "one"], [2, "two"]]) } });
+    if (!o.firstOnly) {
+      const ids = [await sent(1, "one"), await sent(2, "two")];
+      await appendIntent(w.storage, "ella", { ...base, at: at(), callDone: 1, resultRef: ids.join(",") });
+      await appendIntent(w.storage, "ella", { ...base, at: at(), plan: { call: 2, place: "bake-club/#general", sends: sends([[3, "three"], [5, "four"], [6, "five"]]) } });
+      if (o.secondUnsent) await appendIntent(w.storage, "ella", { ...base, at: at(), line: 3, contentDigest: contentDigest("three") });
+      else {
+        await sent(3, "three");
+        await appendIntent(w.storage, "ella", { ...base, at: at(), line: 5, contentDigest: contentDigest("four") });
+      }
+      if (o.fourthArrived) w.discord.post(ROOM, "four", { authorId: ELLA_BOT, authorName: "Ella", bot: true });
+    }
+    if (o.readable === false) {
+      w.discord.fetchContextSince = async () => {
+        throw new Error("503 Service Unavailable");
+      };
+    }
+    const restarted = w.restart();
+    vi.spyOn(restarted.life("ella"), "poke").mockImplementation(() => undefined);
+    await restarted.start();
+    expect(w.discord.sent).toEqual([]);
+    return ((await tail(w)).message as { content: Array<{ content?: string; is_error?: boolean }> }).content[0]!;
+  };
+
+  it("a tool script cut off in its second send_message call: the first call's messages and the second's done ones were sent, the rest not (§32)", async () => {
+    const lost = await callsCrash();
+    expect(lost.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u), "not sent: four", "not sent: five"]);
+    expect(lost.is_error).toBeUndefined();
+  });
+
+  it("a tool script cut off in its second call: the message found on Discord (by its digest) counts as sent (§32)", async () => {
+    const arrived = await callsCrash({ fourthArrived: true });
+    expect(arrived.content!.split("\n")).toEqual([expect.stringMatching(/^sent #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ \(recovered\)$/u), "not sent: five"]);
+  });
+
+  it("a tool script cut off: a conversation it cannot read leaves that message unknown, never sent (§32)", async () => {
+    const unknown = await callsCrash({ readable: false });
+    expect(unknown.content!).toMatch(/^sent #[0-9a-z]+ #[0-9a-z]+ #[0-9a-z]+ \(recovered\); it is unknown whether "four" was sent; read the place before sending it again\nnot sent: five$/u);
+    // The running call sent nothing it knows of: its first message is unknown, the first call's are sent.
+    const first = await callsCrash({ readable: false, secondUnsent: true });
+    expect(first.content!).toMatch(/^sent #[0-9a-z]+ #[0-9a-z]+ \(recovered\); it is unknown whether "three" was sent; read the place before sending it again\nnot sent: four\nnot sent: five$/u);
+  });
+
+  it("a tool script whose first call planned but sent nothing: not sent (§32)", async () => {
+    expect(await callsCrash({ firstOnly: true })).toMatchObject({ content: "[interrupted] not sent", is_error: true });
+  });
+
   it("a crash before the send reached Discord: interrupted, not sent (and not retried by repair)", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing to send)")) });
     await crashAfter(w, { id: "call_send", name: "SendMessage", input: { place: "bake-club/#general", text: "never arrived" } }, { intent: true });
@@ -271,6 +340,29 @@ describe("crash repair of her file tools (review minors)", () => {
     await writeHerFile(v, "life/wakeups.json", '[{"kind": "at", "when": "2026-10-26 09:00", "note": "call mum"}, {"kind": "at", "when": "2026-10-25 18:00", "note": "call mum"}]');
     expect(await repaired(v)).toMatchObject({ content: "set t2 (recovered)" });
   }, 30_000);
+
+  it("an Edit script's patches: done or journalled ones were saved, the first one neither was not (§32)", async () => {
+    const crashedPatches = async (o: { secondJournalled: boolean; noneDone?: boolean }) => {
+      const v = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
+      const input = { script: 'text(await tools.apply_patch("*** Begin Patch\\n*** Add File: ~/a.md\\n+a\\n*** End Patch"));\ntext(await tools.apply_patch("*** Begin Patch\\n*** Add File: ~/b.md\\n+b\\n*** End Patch"));' };
+      await crashAfter(v, { id: "call_e", name: "Edit", input }, { intent: true });
+      const base = { turnId: "t-crash", toolCallId: "call_e", tool: "Edit", argsDigest: digest(input) };
+      if (!o.noneDone) {
+        await appendIntent(v.storage, "ella", { ...base, at: v.clock.now().toISOString(), line: 1, contentDigest: "patch:1" });
+        await appendIntent(v.storage, "ella", { ...base, at: v.clock.now().toISOString(), line: 1, lineDone: true });
+      }
+      await appendIntent(v.storage, "ella", { ...base, at: v.clock.now().toISOString(), line: 2, contentDigest: "patch:2" });
+      if (o.secondJournalled) {
+        const dir = path.join(v.root, "user", "waifus", "ella", "life", "pending-changes");
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, "call_e-patch2.applied"), "{}");
+      }
+      return v;
+    };
+    expect(await repaired(await crashedPatches({ secondJournalled: false }))).toMatchObject({ content: "patch 1 saved (recovered)\n[interrupted] patch 2 was not saved" });
+    expect(await repaired(await crashedPatches({ secondJournalled: true }))).toMatchObject({ content: "patches 1, 2 saved (recovered)" });
+    expect(await repaired(await crashedPatches({ secondJournalled: false, noneDone: true }))).toMatchObject({ content: "[interrupted] nothing was changed", is_error: true });
+  }, 60_000);
 
   it("a Bash change set saved just before the crash (its done line not written yet) is reported as saved", async () => {
     const w = await lifeWorld(roots, { scripts: script(textTurn("hi!"), textTurn("(nothing)")) });
