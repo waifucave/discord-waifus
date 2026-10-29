@@ -6,8 +6,20 @@ import type { ToolContext, ToolOutput } from "../src/life/tools/types.js";
 /** A tool run with one script. */
 export const runScript = (tool: string, script: string, ctx: ToolContext): Promise<ToolOutput> => lifeTool(tool)!.run({ script }, ctx);
 
-/** `text(await tools.<fn>(<arg as JSON>))` for a tool. */
-export const callTool = (tool: string, fn: string, arg: unknown, ctx: ToolContext): Promise<ToolOutput> => runScript(tool, `text(await tools.${fn}(${JSON.stringify(arg)}))`, ctx);
+/**
+ * The output with the host's receipts (§32.3a) taken out of its text and kept on `receipts` (not
+ * enumerable, so `toEqual` against `{ content, isError }` still works).
+ */
+export function receiptsApart(output: ToolOutput): ToolOutput & { receipts?: string[] } {
+  if (typeof output.content !== "string") return output;
+  const apart = { ...output, content: withoutReceipts(output.content) };
+  Object.defineProperty(apart, "receipts", { value: receiptsOf(output.content), enumerable: false });
+  return apart;
+}
+
+/** `text(await tools.<fn>(<arg as JSON>))` for a tool (its receipts apart). */
+export const callTool = async (tool: string, fn: string, arg: unknown, ctx: ToolContext): Promise<ToolOutput & { receipts?: string[] }> =>
+  receiptsApart(await runScript(tool, `text(await tools.${fn}(${JSON.stringify(arg)}))`, ctx));
 
 export const readMessages = (ctx: ToolContext, arg: Record<string, unknown>) => callTool("ReadMessages", "read_messages", arg, ctx);
 export const sendMessage = (ctx: ToolContext, place: string, messages: unknown[]) => callTool("SendMessage", "send_message", { place, messages }, ctx);
@@ -21,6 +33,10 @@ export const addFilePatch = (path: string, content: string) => `*** Begin Patch\
 /** A patch that replaces one file whole: delete it, add it again with the new text. */
 export const replaceFilePatch = (path: string, content: string) =>
   `*** Begin Patch\n*** Delete File: ${path}\n*** Add File: ${path}\n${content.replace(/\n$/u, "").split("\n").map((line) => `+${line}`).join("\n")}\n*** End Patch`;
+
+/** A tool script's output without the host's receipts (§32.3a), and the receipts alone. */
+export const withoutReceipts = (text: string) => text.split("\n").filter((line) => !line.startsWith("[receipt] ")).join("\n");
+export const receiptsOf = (text: string) => text.split("\n").filter((line) => line.startsWith("[receipt] ")).map((line) => line.slice("[receipt] ".length));
 
 /** The text of a tool's output (images as `[image]`). */
 export const outputText = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
@@ -41,11 +57,16 @@ const OLD_WAKEUP_PRELUDE = [
   ""
 ].join(" ");
 
-export const wakeupCalls = (ctx: ToolContext, script: string) =>
-  runScript("Wakeup", `${OLD_WAKEUP_PRELUDE}${script}\n;text(await tools.wakeup(Object.fromEntries(Object.entries(__w).filter(([, v]) => v.length > 0))));`, ctx);
+export const wakeupCalls = async (ctx: ToolContext, script: string): Promise<ToolOutput> => {
+  // What was saved, as §30's result said it (`set w1 (…) (in ~/life/wakeups.json)`): the receipt.
+  const output = await runScript("Wakeup", `${OLD_WAKEUP_PRELUDE}${script}\n;await tools.wakeup(Object.fromEntries(Object.entries(__w).filter(([, v]) => v.length > 0)));`, ctx);
+  if (typeof output.content !== "string") return output;
+  const saved = receiptsOf(output.content).flatMap((receipt) => (receipt.startsWith("wakeup: saved: ") ? [receipt.slice("wakeup: saved: ".length)] : []));
+  return output.isError ? { ...output, content: withoutReceipts(output.content) } : { ...output, content: saved.join("\n") || withoutReceipts(output.content) };
+};
 
 /** `text(await tools.wakeup(<arg as JavaScript source>))`. */
-export const wakeupCall = (ctx: ToolContext, arg: string) => runScript("Wakeup", `text(await tools.wakeup(${arg}))`, ctx);
+export const wakeupCall = async (ctx: ToolContext, arg: string) => receiptsApart(await runScript("Wakeup", `text(await tools.wakeup(${arg}))`, ctx));
 
 /** A tool call's input for a scripted model turn (`toolTurn([{ name, input: scriptInput.readFile(…) }])`). */
 export const scriptInput = {

@@ -12,7 +12,11 @@
 //   doesn't even parse; the calls run inside the tool call's async context, so every place they
 //   resolve is recorded for it;
 // - what she sees: what she passed to `text()` (an image result of `read_file` as the picture), else
-//   her return value, else `done`; then her error with its line. The cap is the tool's own.
+//   her return value, else `done`; then her error with its line. The cap is the tool's own;
+// - receipts (§32.3a): every side effect (messages sent and whether the rest of a list ran, files
+//   saved, wakeups saved or not) is written by the host after all that, whatever her script did
+//   (threw, timed out, never called `text()`, was cut); calls she never waited for are waited for
+//   first. A tool's `finish` runs after the script (Wakeup saves what its calls staged then).
 
 import { AsyncResource } from "node:async_hooks";
 import { z } from "zod";
@@ -66,6 +70,13 @@ export type ScriptRun = {
   images: Map<string, () => Promise<LifeResultBlock[]>>;
   /** Per function, how many calls this script made. */
   counts: Map<string, number>;
+  /**
+   * The host's receipts for what the calls did (§32.3a): messages sent, files saved, wakeups saved or
+   * not. Shown after her own output whatever her script did.
+   */
+  receipts: string[];
+  /** Per function, calls still running (a call the script never waited for is waited for). */
+  running: Map<string, number>;
 };
 
 export type ScriptFunction = {
@@ -86,6 +97,11 @@ export type ScriptToolSpec = {
   maxHostCalls?: number;
   /** A first line for the result (Web: that it is untrusted content), decided once the script ran. */
   header?: () => string | undefined;
+  /**
+   * After the script and its calls ended: `ok` when it ended without an error (Wakeup saves what its
+   * calls staged then). It adds its receipts; a `ScriptError` it throws is shown as her error.
+   */
+  finish?: (run: ScriptRun, ok: boolean) => Promise<void>;
 };
 
 const Input = z.object({ script: z.string().min(1, "script is a short JavaScript program").max(MAX_TOOL_SCRIPT_CHARS) }).strict();
@@ -116,7 +132,7 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
   if (isRecord(input) && namesDm(input)) notePlace(DM_NAMED);
   const parsed = parseInput(Input, input);
   if (!parsed.ok) return parsed.output;
-  const run: ScriptRun = { messageIds: [], resultRefs: [], sentPlaces: new Set(), images: new Map(), counts: new Map() };
+  const run: ScriptRun = { messageIds: [], resultRefs: [], sentPlaces: new Set(), images: new Map(), counts: new Map(), receipts: [], running: new Map() };
   const byName = new Map(spec.functions.map((fn) => [fn.name, fn] as const));
   const maxArgChars = Math.max(...spec.functions.map((fn) => fn.maxArgChars ?? 16_384));
   // Each call runs in this tool call's async context: the places it resolves are this call's (D14).
@@ -128,6 +144,7 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
     if (used >= fn.max) return { ok: false, name: "RangeError", error: `tools.${name}: at most ${fn.max} call${fn.max === 1 ? "" : "s"} in one script` };
     run.counts.set(name, used + 1);
     if (fn.maxArgChars !== undefined && JSON.stringify(arg ?? null).length > fn.maxArgChars) return { ok: false, name: "RangeError", error: `tools.${name}: what you gave it is too long` };
+    run.running.set(name, (run.running.get(name) ?? 0) + 1);
     try {
       return { ok: true, value: await fn.run(arg, run, signal) };
     } catch (error) {
@@ -135,6 +152,8 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
       if (signal.aborted) return { ok: false, error: `tools.${name}: interrupted` };
       ctx.deps.logger?.warn?.("Life tool function failed", { waifuId: ctx.waifu.id, tool: spec.tool, fn: name, message: error instanceof Error ? error.message : String(error) });
       return { ok: false, error: `tools.${name}: that didn't work` };
+    } finally {
+      run.running.set(name, (run.running.get(name) ?? 1) - 1);
     }
   });
   const limits: Partial<ToolScriptLimits> = {
@@ -166,8 +185,23 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
     }
     blocks.push(...(await image()));
   }
-  if (outcome.error !== undefined) blocks.push({ type: "text", text: `error: ${outcome.error}` });
-  else if (outcome.empty) blocks.push({ type: "text", text: "done" });
+  let error = outcome.error;
+  if (spec.finish) {
+    try {
+      await spec.finish(run, error === undefined);
+    } catch (thrown) {
+      if (!(thrown instanceof ScriptError)) throw thrown;
+      error ??= `${thrown.kind}: ${thrown.message}`;
+    }
+  }
+  // A call still running when the run gave up on it (§32.3a): it may yet have done its part.
+  for (const [name, count] of run.running) {
+    if (count > 0) run.receipts.push(`tools.${name}: ${count === 1 ? "a call was" : `${count} calls were`} still running when the script was stopped; what it did is not known yet${name === "send_message" ? " (read the place before sending again)" : ""}`);
+  }
+  if (error !== undefined) blocks.push({ type: "text", text: `error: ${error}` });
+  else if (outcome.empty && run.receipts.length === 0) blocks.push({ type: "text", text: "done" });
+  // The host's receipts, after everything she showed, whatever her script did.
+  for (const receipt of run.receipts) blocks.push({ type: "text", text: `[receipt] ${receipt}` });
   const extras: Partial<ToolOutput> = {
     ...(run.messageIds.length > 0 ? { messageIds: [...new Set(run.messageIds)] } : {}),
     ...(run.resultRefs.length > 0 ? { resultRef: run.resultRefs.join(",") } : {}),
@@ -175,7 +209,7 @@ export async function runScriptTool(input: unknown, ctx: ToolContext, spec: Scri
   };
   const textOnly = blocks.every((block) => block.type === "text");
   const content: ToolOutput["content"] = textOnly ? blocks.map((block) => (block as { text: string }).text).join("\n") : mergeTexts(blocks);
-  return { content, ...(outcome.error !== undefined ? { isError: true } : {}), ...extras };
+  return { content, ...(error !== undefined ? { isError: true } : {}), ...extras };
 }
 
 /** Neighbouring text blocks joined (an image keeps its place between them). */
@@ -254,5 +288,5 @@ export function scriptSchema(description: string): Record<string, unknown> {
 
 /** The family's shared lines for each description (§32.1). */
 export function familyLines(fn: string): string {
-  return `The input is a short JavaScript program (await works): call await tools.${fn}(…) and show what you want to see with text(value) (text as is, anything else as JSON); if you never call text(), what you return is shown. An error shows its line.`;
+  return `The input is a short JavaScript program, the body of an async function (await works; its last line is not returned unless you write return): call await tools.${fn}(…) and show what you want to see with text(value) (text as is, anything else as JSON); if you never call text(), what you return is shown. An error shows its line.`;
 }

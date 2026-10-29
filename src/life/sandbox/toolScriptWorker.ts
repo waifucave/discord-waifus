@@ -118,7 +118,19 @@ const PRELUDE = `(function (host, out, outImage, surfaceJson) {
   var hasOwn = uncurry(Object.prototype.hasOwnProperty);
   var push = uncurry(Array.prototype.push), join = uncurry(Array.prototype.join);
   var surface = parse(surfaceJson);
-  function replacer(key, value) { return typeof value === "function" ? { "$function": sourceOf(value) } : value; }
+  // A real RegExp only (its getters, captured now, throw for anything else): web__run's find.
+  var regexSource = uncurry(Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get);
+  var regexFlags = uncurry(Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get);
+  var regexProto = RegExp.prototype;
+  function regexOf(value) {
+    if (value === null || typeof value !== "object" || value === regexProto) return undefined;
+    try { return { source: regexSource(value), flags: regexFlags(value) }; } catch (e) { return undefined; }
+  }
+  function replacer(key, value) {
+    if (typeof value === "function") return { "$function": sourceOf(value) };
+    var regex = regexOf(this[key]);
+    return regex === undefined ? value : { "$regexp": regex };
+  }
   // The error a failed call rejects with is made here, so its stack has her line.
   function call(fn, arg) {
     var json = stringify(arg === undefined ? null : arg, replacer);
@@ -159,8 +171,9 @@ const PRELUDE = `(function (host, out, outImage, surfaceJson) {
       if (id !== undefined) { outImage(id); return; }
     }
     var parts = [];
-    for (var i = 0; i < arguments.length; i++) { var s = show(arguments[i]); push(parts, s === undefined ? "undefined" : s); }
-    out(join(parts, " "));
+    // text(undefined) shows nothing (§32.3a).
+    for (var i = 0; i < arguments.length; i++) { var s = show(arguments[i]); if (s !== undefined) push(parts, s); }
+    if (parts.length > 0) out(join(parts, " "));
   }
   return {
     tools: tools,

@@ -13,9 +13,10 @@
 // - the whole run: `wallMs` (60 s; SendMessage 150 s), whatever it waits for;
 // - a stop, a pause or a turn's abort ends it at once.
 //
-// When the run ends, for any reason, its calls still going are aborted and the worker is
-// terminated. What comes back from the worker is checked and cut again here: nothing it sends is
-// trusted as it is.
+// When the run ends, for any reason, the worker is terminated; its calls still going are waited for
+// (§32.3a: what they do gets its receipt) up to the wall clock, then told to stop and given
+// `SETTLE_GRACE_MS` to finish what they began (a stop, an abort or the wall clock tells them at once).
+// What comes back from the worker is checked and cut again here: nothing it sends is trusted as it is.
 
 import { Worker } from "node:worker_threads";
 import type { ToolHostReply, ToolScriptDone, ToolScriptError, ToolScriptLimits, ToolScriptSurface, ToolWorkerMessage } from "./toolScriptWorker.js";
@@ -40,7 +41,10 @@ export const BACKSTOP_SLACK_MS = 2_000;
 /** Until her code first runs (the worker loads QuickJS first). */
 const START_MS = 10_000;
 const MAX_ERROR_CHARS = 1_000;
-export const OUTPUT_CUT = "… (cut)";
+/** A call still going once it was told to stop gets this long to finish what it began. */
+export const SETTLE_GRACE_MS = 10_000;
+/** The end of an output cut at its cap (§32.3a: it says so). */
+export const outputCut = (max: number) => `… (cut: at most ${max.toLocaleString("en-US")} characters are shown)`;
 /** At most this many pictures are shown by one script. */
 export const MAX_SHOWN_IMAGES = 10;
 
@@ -52,7 +56,7 @@ export type ToolCall = (fn: string, arg: unknown, signal: AbortSignal) => Promis
 export type ToolScriptShown = { kind: "text"; text: string } | { kind: "image"; id: string };
 export type ToolScriptStop = "time" | "wall" | "memory" | "stack" | "aborted" | "crash" | "start";
 export type ToolScriptOutcome = {
-  /** What she showed with text(), else her return value; texts cut at `maxOutputChars` (`… (cut)`). */
+  /** What she showed with text(), else her return value; texts cut at `maxOutputChars`, the last saying so. */
   shown: ToolScriptShown[];
   /** Nothing was shown or returned. */
   empty: boolean;
@@ -144,6 +148,8 @@ export function runToolScript(
     let used = 0;
     let cpuTimer: ReturnType<typeof setTimeout> | undefined;
     const calls = new AbortController();
+    const inflight = new Set<Promise<unknown>>();
+    const startedAt = Date.now();
     const worker = new Worker(workerUrl(), {
       workerData: { script, limits, surface: o.surface, clock: { nowMs: o.now.getTime(), timeZone: o.timeZone } },
       env: {},
@@ -169,7 +175,6 @@ export function runToolScript(
       clearTimeout(startTimer);
       if (cpuTimer) clearTimeout(cpuTimer);
       o.signal?.removeEventListener("abort", onAbort);
-      calls.abort();
       void worker.terminate().catch(() => undefined);
       let error: string | undefined;
       let stop: ToolScriptStop | undefined;
@@ -215,10 +220,40 @@ export function runToolScript(
       }
       if (cutAny) {
         const last = [...kept].reverse().find((item): item is { kind: "text"; text: string } => item.kind === "text");
-        if (last) last.text = `${last.text}${OUTPUT_CUT}`;
-        else kept.push({ kind: "text", text: OUTPUT_CUT });
+        if (last) last.text = `${last.text}${outputCut(limits.maxOutputChars)}`;
+        else kept.push({ kind: "text", text: outputCut(limits.maxOutputChars) });
       }
-      resolve({ shown: kept, empty: kept.length === 0, ...(error !== undefined ? { error } : {}), ...(stop ? { stop } : {}) });
+      const outcome: ToolScriptOutcome = { shown: kept, empty: kept.length === 0, ...(error !== undefined ? { error } : {}), ...(stop ? { stop } : {}) };
+      // Her calls still going (§32.3a): waited for up to the wall clock (at once stopped by a stop,
+      // an abort or the wall clock itself), then given a short grace to finish what they began.
+      if (inflight.size === 0) {
+        calls.abort();
+        resolve(outcome);
+        return;
+      }
+      const stopNow = () => calls.abort();
+      if (stop === "aborted" || stop === "wall" || o.signal?.aborted) stopNow();
+      o.signal?.addEventListener("abort", stopNow, { once: true });
+      const deadline = setTimeout(stopNow, Math.max(0, startedAt + wallMs - Date.now()));
+      deadline.unref?.();
+      let grace: ReturnType<typeof setTimeout> | undefined;
+      const graceOver = new Promise<void>((done) => {
+        calls.signal.addEventListener("abort", () => {
+          grace = setTimeout(done, SETTLE_GRACE_MS);
+          grace.unref?.();
+        }, { once: true });
+        if (calls.signal.aborted) {
+          grace = setTimeout(done, SETTLE_GRACE_MS);
+          grace.unref?.();
+        }
+      });
+      void Promise.race([Promise.allSettled([...inflight]), graceOver]).then(() => {
+        clearTimeout(deadline);
+        if (grace) clearTimeout(grace);
+        o.signal?.removeEventListener("abort", stopNow);
+        calls.abort();
+        resolve(outcome);
+      });
     };
 
     // The backstop only: her busy time itself comes from the worker's stamps. Messages already
@@ -287,6 +322,8 @@ export function runToolScript(
         const answer: Promise<ToolCallAnswer> = readable
           ? call(fn, arg, calls.signal).catch(() => ({ ok: false as const, error: `tools.${fn}: that didn't work` }))
           : Promise.resolve({ ok: false as const, name: "TypeError" as const, error: `tools.${fn}: what you gave it can't be read` });
+        inflight.add(answer);
+        void answer.finally(() => inflight.delete(answer));
         void answer.then((result) => {
           if (ended) return;
           let reply: ToolHostReply;

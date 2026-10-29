@@ -5,7 +5,7 @@
 // the script ended, unawaited calls, re-entrant calls, huge arguments, a hanging host call, CPU between
 // calls, a host whose event loop blocks, memory, stack, nothing of the host. No tools: fake answers.
 import { describe, expect, it } from "vitest";
-import { runToolScript, type ToolCall, type ToolCallAnswer, type ToolScriptOutcome } from "../src/life/sandbox/toolScript.js";
+import { outputCut, runToolScript, type ToolCall, type ToolCallAnswer, type ToolScriptOutcome } from "../src/life/sandbox/toolScript.js";
 
 const NOW = new Date("2026-10-28T12:00:00Z");
 const TZ = "Europe/Berlin";
@@ -88,16 +88,18 @@ describe("tool script sandbox: errors and the output cap", () => {
     expect(shown(failed)).toBe("first");
   }, 30_000);
 
-  it("cuts what she shows at the tool's cap", async () => {
-    expect(shown(await run(`return "x".repeat(20000)`))).toBe(`${"x".repeat(8_000)}… (cut)`);
+  it("cuts what she shows at the tool's cap, and says so", async () => {
+    const CUT = outputCut(8_000);
+    expect(CUT).toBe("… (cut: at most 8,000 characters are shown)");
+    expect(shown(await run(`return "x".repeat(20000)`))).toBe(`${"x".repeat(8_000)}${CUT}`);
     const many = shown(await run(`for (let i = 0; i < 50; i++) text("y".repeat(1000));`));
-    expect(many.length).toBeLessThanOrEqual(8_000 + 50 + "… (cut)".length);
-    expect(many.endsWith("… (cut)")).toBe(true);
+    expect(many.length).toBeLessThanOrEqual(8_000 + 50 + CUT.length);
+    expect(many.endsWith(CUT)).toBe(true);
     const huge = shown(await run(`text("z".repeat(3000000)); return 1`));
     expect(huge.startsWith("zzz")).toBe(true);
-    expect(huge.length).toBeLessThanOrEqual(8_000 + "… (cut)".length);
+    expect(huge.length).toBeLessThanOrEqual(8_000 + CUT.length);
     const bigger = shown(await run(`return "w".repeat(150000)`, fakeHost(), { limits: { maxOutputChars: 100_000 } }));
-    expect(bigger).toBe(`${"w".repeat(100_000)}… (cut)`);
+    expect(bigger).toBe(`${"w".repeat(100_000)}${outputCut(100_000)}`);
   }, 30_000);
 
   it("waits for nothing that never comes: an error, not a hang", async () => {
@@ -116,18 +118,43 @@ describe("tool script sandbox: abuse of the async host functions", () => {
     expect(host.seen).toEqual([]);
   }, 30_000);
 
-  it("an unawaited call ends with the script: its answer is not waited for and its signal is aborted", async () => {
+  it("an unawaited call is waited for after the script ends (§32.3a), up to the wall clock, then told to stop", async () => {
+    // A call that finishes on its own: the run ends once it has, its signal never aborted before.
+    let finished = false;
+    let abortedEarly = false;
+    const slow: ToolCall = async (_fn, arg, signal) => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      abortedEarly = signal.aborted;
+      finished = true;
+      return { ok: true, value: arg };
+    };
+    const result = await runToolScript(`tools.echo("a"); return "ok"`, slow, { surface: SURFACE, timeZone: TZ, now: NOW });
+    expect(shown(result)).toBe("ok");
+    expect(finished).toBe(true);
+    expect(abortedEarly).toBe(false);
+    // A call that never ends by itself: stopped at the wall clock (it ends when told), never a hang.
     const signals: AbortSignal[] = [];
     const call: ToolCall = (_fn, _arg, signal) => {
       signals.push(signal);
-      return new Promise(() => undefined);
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve({ ok: false, error: "aborted" })));
     };
     const started = Date.now();
-    const result = await runToolScript(`tools.echo("a"); tools.hang("b"); return "ok"`, call, { surface: SURFACE, timeZone: TZ, now: NOW });
-    expect(shown(result)).toBe("ok");
-    expect(Date.now() - started).toBeLessThan(5_000);
-    expect(signals).toHaveLength(2);
+    const hung = await runToolScript(`tools.hang("b"); return "ok"`, call, { surface: SURFACE, timeZone: TZ, now: NOW, wallMs: 1_500 });
+    expect(shown(hung)).toBe("ok");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_200);
+    expect(Date.now() - started).toBeLessThan(6_000);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
+  }, 30_000);
+
+  it("a real RegExp goes to the host as its source and flags; anything that only looks like one stays as it is", async () => {
+    const host = fakeHost();
+    await run(`await tools.echo({ a: /tart(s)?$/im, b: { source: "x", flags: "g" }, c: Object.create(RegExp.prototype) })`, host);
+    expect(host.seen[0]!.arg).toEqual({ a: { $regexp: { source: "tart(s)?$", flags: "im" } }, b: { source: "x", flags: "g" }, c: {} });
+  }, 30_000);
+
+  it("text(undefined) shows nothing (§32.3a)", async () => {
+    const result = await run(`text(undefined); text(); text("a", undefined, "b")`);
+    expect(shown(result)).toBe("a b");
   }, 30_000);
 
   it("a call made while another one's argument is read (re-entrant) is just another call", async () => {
