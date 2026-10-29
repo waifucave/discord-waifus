@@ -141,7 +141,7 @@ text(r);
   as compact JSON, a `read_file` image result as the picture. If she never calls `text()`, her
   return value is shown the same way; nothing at all is `done`. A thrown error ends the result with
   `error: TypeError: … (line 3)` after what she showed (`is_error`); a call that fails rejects with an
-  `Error` made at the call (her line in it), which she may catch. The output cap is the tool's own:
+  `Error` made at the call (her line in it), its message naming the function or the item (`tools.read_file: …`, `watch[0]: …`), which she may catch. The output cap is the tool's own:
   `Read` and `ReadMessages` 100,000 characters, the others 8,000 (`… (cut)`).
 - **Caps per script**: each function's own (`read_messages` 5, `read_file` 10, `apply_patch` 4,
   `wakeup` 4, `send_message` 10, `web__run` 24 operations; the next call throws `tools.wakeup: at most
@@ -171,7 +171,7 @@ wakeup to `~/life/wakeups.json` (or cancels one). Up to 40 items per call, 4 cal
 |---|---|---|
 | `at: [{ when, note }]` | `t<n>`, once | `"2026-10-30 18:00"`, `"18:00"` (today, else tomorrow), `"fri 18:00"`, `"tomorrow 09:00"`, `"in 45m"`, `"in 1h30m"`; 5 minutes to 30 days ahead; saved as a local time |
 | `every: [{ when, note }]` | `t<n>`, repeating | `"day 09:00"`, `"weekday 08:30"`, `"weekend 11:00"`, `"mon,fri 18:30"` or a 5-field cron (`"0 20 1 * *"`); steps of at least 15 minutes; the result shows the next three times |
-| `watch: [{ places, from, words, any, filter, for, once, note }]` | `w<n>` | `places`: a handle, a list (≤ 10) or `"everywhere"`; an object filter from `from`, `words` (1–10 whole words, case-insensitive), `any: true` (every field set must match), or her `filter` function `(m, state) => …` (not both, one of them required); `for: "2h"` (≤ 7 days, required), `once` (true). In her file a filter may also be a list of objects, each with its own `place` (`[]` a timer) |
+| `watch: [{ places, from, words, any, filter, for, once, note }]` | `w<n>` | `places`: a handle, a list (≤ 10) or `"everywhere"`; an object filter from `from`, `words` (1–10 whole words, case-insensitive), `any: true` (every field set must match), or her `filter` function `(m, state) => …` (not both; none of them: a timer, saved as the filter `[]`); `for: "2h"` (≤ 7 days, required), `once` (true). In her file a filter may also be a list of objects, each with its own `place` (`[]` a timer) |
 | `page: [{ url, contains \| changes \| check, every, for, note }]` | `p<n>` | `contains: "in stock"` (fires when it appears), `changes: true` (fires when the text changes after a first look) or `check`, her function `(page, state) => …`; `every: "6h"` (≥ 1h), `for: "3d"` (≤ 7 days) |
 | `cancel: ["w3"]` | — | Removes them |
 
@@ -327,7 +327,7 @@ Codex's patch format, exactly.
   256 KiB per file), then the whole patch is one change set through her home store, like a Bash
   command's: journalled under the call, her special files in `~/life/` checked as they would be after
   it (wakeups compiled, ids given), the limits, case collisions, and nothing changed under her since it
-  was read. Any problem throws `apply_patch: …; nothing was changed`. It returns `Updated: M ~/MEMORY.md,
+  was read. Any problem throws `tools.apply_patch: …; nothing was changed`. It returns `Updated: M ~/MEMORY.md,
   A ~/people/mina.md, D ~/old.md` (`M ~/new.md (from ~/old.md)` for a move), plus the notes her day,
   `MEMORY.md` and `profile.json` get (as Bash's).
 - A file whose bytes are a private chat's transcript day she was shown keeps its DM origin; touching a

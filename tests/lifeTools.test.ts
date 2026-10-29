@@ -204,7 +204,7 @@ describe("ReadMessages (§6.2, §32.2) and reactions (§6.4)", () => {
     expect(older).toContain("message 15");
     expect(older).toContain("message 16");
     expect(older).not.toContain("message 13");
-    expect(await readMessages(ctx, { place: "bake-club/#general", before: "#zzzz" })).toEqual({ content: thrown("message too old"), isError: true });
+    expect(await readMessages(ctx, { place: "bake-club/#general", before: "#zzzz" })).toEqual({ content: thrown("tools.read_messages: message too old"), isError: true });
     for (const max of [0, 101]) expect((await readMessages(ctx, { place: "bake-club/#general", max })).isError).toBe(true);
     // The owner forgot Mina: her messages so far read as (removed).
     await recordForgottenPerson(w.storage, MINA_USER, w.clock.now());
@@ -314,11 +314,11 @@ describe("Read, Edit and the path rules (§16.2, §16.3.3, §32.2)", { timeout: 
     }
     // A name that differs only by case is the file or folder already there (case-insensitive disks).
     expect(text(await write(ctx, "~/People/x.md", "x"))).toBe("Updated: A ~/people/x.md");
-    expect(text(await write(ctx, "~/me.MD", "x"))).toBe(thrown("apply_patch: Add File: ~/me.md already exists; change it with *** Update File; nothing was changed"));
+    expect(text(await write(ctx, "~/me.MD", "x"))).toBe(thrown("tools.apply_patch: Add File: ~/me.md already exists; change it with *** Update File; nothing was changed"));
     expect(await herFile(w, "ella", "home/me.md")).toBe("# x\n");
     // No host path leaks into any error.
     const outside = await readFile_(ctx, "/etc/passwd");
-    expect(text(outside)).toBe(thrown("/etc/passwd is outside your folders (your home ~ and /tmp)"));
+    expect(text(outside)).toBe(thrown("tools.read_file: /etc/passwd is outside your folders (your home ~ and /tmp)"));
     expect(text(outside)).not.toContain(w.root);
   });
 
@@ -328,8 +328,8 @@ describe("Read, Edit and the path rules (§16.2, §16.3.3, §32.2)", { timeout: 
     await write(ctx, "~/real.md", "real\n");
     await symlink(hostPath(w, "home/real.md"), hostPath(w, "home/link.md"));
     await symlink(w.root, hostPath(w, "home/rootlink"));
-    expect(text(await readFile_(ctx, "~/link.md"))).toBe(thrown("~/link.md can't be used: it is a link"));
-    expect(text(await applyPatch(ctx, "*** Begin Patch\n*** Update File: ~/link.md\n@@\n-real\n+x\n*** End Patch"))).toBe(thrown("apply_patch: ~/link.md can't be used: it is a link; nothing was changed"));
+    expect(text(await readFile_(ctx, "~/link.md"))).toBe(thrown("tools.read_file: ~/link.md can't be used: it is a link"));
+    expect(text(await applyPatch(ctx, "*** Begin Patch\n*** Update File: ~/link.md\n@@\n-real\n+x\n*** End Patch"))).toBe(thrown("tools.apply_patch: ~/link.md can't be used: it is a link; nothing was changed"));
     expect((await readFile_(ctx, "~/rootlink/user/waifus/ella/home/real.md")).isError).toBe(true);
     expect(await readFile(hostPath(w, "home/real.md"), "utf8")).toBe("real\n");
   });
@@ -341,16 +341,16 @@ describe("Read, Edit and the path rules (§16.2, §16.3.3, §32.2)", { timeout: 
     expect(text(await readFile_(ctx, "people/kevin.md"))).toBe("     1\t# Kevin\n     2\t- likes tea\n     3\t- likes tea a lot");
     expect(text(await readFile_(ctx, { path: "people/kevin.md", offset: 2, limit: 1 }))).toBe("     2\t- likes tea\n(lines 2–2 of 3; pass offset 3 to read on)");
     const patch = (...lines: string[]) => applyPatch(ctx, ["*** Begin Patch", "*** Update File: ~/people/kevin.md", ...lines, "*** End Patch"].join("\n"));
-    expect(text(await patch("@@", "-hates tea", "+x"))).toBe(thrown("apply_patch: Failed to find expected lines in ~/people/kevin.md:\nhates tea; nothing was changed"));
+    expect(text(await patch("@@", "-hates tea", "+x"))).toBe(thrown("tools.apply_patch: Failed to find expected lines in ~/people/kevin.md:\nhates tea; nothing was changed"));
     expect(text(await patch("@@", "-- likes tea a lot", "+- likes coffee now"))).toBe("Updated: M ~/people/kevin.md");
     expect(await herFile(w, "ella", "home/people/kevin.md")).toBe("# Kevin\n- likes tea\n- likes coffee now\n");
     expect(text(await applyPatch(ctx, "*** Begin Patch\n*** Add File: ~/empty.md\n*** End Patch"))).toBe("Updated: A ~/empty.md");
     expect(text(await readFile_(ctx, "~/empty.md"))).toBe("(empty file)");
-    expect(text(await readFile_(ctx, "~/missing.md"))).toBe(thrown("~/missing.md doesn't exist"));
+    expect(text(await readFile_(ctx, "~/missing.md"))).toBe(thrown("tools.read_file: ~/missing.md doesn't exist"));
     await refreshPlacesFile(w.cast.deps, ctx.waifu);
     expect(text(await readFile_(ctx, "~/life/places.md"))).toContain("bake-club/#general");
     for (const places of ["*** Delete File: ~/life/places.md", "*** Update File: ~/life/places.md\n@@\n+x"]) {
-      expect(await applyPatch(ctx, `*** Begin Patch\n${places}\n*** End Patch`)).toEqual({ content: thrown("apply_patch: places.md is kept up to date for you and can't be changed; nothing was changed"), isError: true });
+      expect(await applyPatch(ctx, `*** Begin Patch\n${places}\n*** End Patch`)).toEqual({ content: thrown("tools.apply_patch: places.md is kept up to date for you and can't be changed; nothing was changed"), isError: true });
     }
     expect(text(await run("Bash", { command: "rm ~/life/places.md" }, ctx))).toMatch(/places\.md/u);
     expect(await herFile(w, "ella", "home/life/places.md")).toContain("# Your places");
@@ -360,14 +360,14 @@ describe("Read, Edit and the path rules (§16.2, §16.3.3, §32.2)", { timeout: 
     const w = await lifeWorld(roots, { config: (config) => ({ ...config, life: { ...config.life, home: { ...config.life.home, maxFiles: 10 } } }) });
     const ctx = await ctxFor(w);
     const big = await runScript("Edit", `text(await tools.apply_patch("*** Begin Patch\\n*** Add File: big.md\\n+" + "x".repeat(256 * 1024) + "\\n*** End Patch"))`, ctx);
-    expect(big).toEqual({ content: thrown("apply_patch: ~/big.md would be 256.0 KB; a file can be at most 256 KB, so split it into several files; nothing was changed"), isError: true });
+    expect(big).toEqual({ content: thrown("tools.apply_patch: ~/big.md would be 256.0 KB; a file can be at most 256 KB, so split it into several files; nothing was changed"), isError: true });
     for (let index = 0; index < 10; index += 1) expect((await write(ctx, `n/n${index}.md`, "x")).isError).toBeFalsy();
-    expect(await write(ctx, "one-too-many.md", "x")).toEqual({ content: thrown("apply_patch: your home has 10 files already; merge or delete some first; nothing was changed"), isError: true });
+    expect(await write(ctx, "one-too-many.md", "x")).toEqual({ content: thrown("tools.apply_patch: your home has 10 files already; merge or delete some first; nothing was changed"), isError: true });
     // /tmp has its own size cap, not the home's file count.
     expect((await write(ctx, "/tmp/scratch.md", "x")).isError).toBeFalsy();
     await writeFile(hostPath(w, "tmp/blob.bin"), Buffer.from([0, 1, 2, 3, 0, 255]));
-    expect(text(await readFile_(ctx, "/tmp/blob.bin"))).toBe(thrown("/tmp/blob.bin isn't a text file, an image or a PDF"));
-    expect(text(await applyPatch(ctx, "*** Begin Patch\n*** Update File: /tmp/blob.bin\n@@\n-a\n+b\n*** End Patch"))).toBe(thrown("apply_patch: /tmp/blob.bin isn't a text file; nothing was changed"));
+    expect(text(await readFile_(ctx, "/tmp/blob.bin"))).toBe(thrown("tools.read_file: /tmp/blob.bin isn't a text file, an image or a PDF"));
+    expect(text(await applyPatch(ctx, "*** Begin Patch\n*** Update File: /tmp/blob.bin\n@@\n-a\n+b\n*** End Patch"))).toBe(thrown("tools.apply_patch: /tmp/blob.bin isn't a text file; nothing was changed"));
   });
 
   it("read_file shows a PDF's text with page markers, a page range, and refuses more than 50 pages at once", async () => {
@@ -380,8 +380,8 @@ describe("Read, Edit and the path rules (§16.2, §16.3.3, §32.2)", { timeout: 
     const two = text(await readFile_(ctx, { path: "/tmp/menu.pdf", pages: "2" }));
     expect(two).toContain("--- page 2 ---");
     expect(two).not.toContain("--- page 1 ---");
-    expect(await readFile_(ctx, { path: "/tmp/menu.pdf", pages: "1-51" })).toEqual({ content: thrown("read at most 50 pages at a time"), isError: true });
-    expect(text(await readFile_(ctx, { path: "/tmp/menu.pdf", pages: "9" }))).toBe(thrown("/tmp/menu.pdf has 3 pages; nothing at page 9"));
+    expect(await readFile_(ctx, { path: "/tmp/menu.pdf", pages: "1-51" })).toEqual({ content: thrown("tools.read_file: read at most 50 pages at a time"), isError: true });
+    expect(text(await readFile_(ctx, { path: "/tmp/menu.pdf", pages: "9" }))).toBe(thrown("tools.read_file: /tmp/menu.pdf has 3 pages; nothing at page 9"));
     // At most 10 reads in one script.
     const many = await runScript("Read", 'for (let i = 0; i < 11; i++) await tools.read_file({ path: "/tmp/menu.pdf", pages: "1" })', ctx);
     expect(text(many)).toBe("error: RangeError: tools.read_file: at most 10 calls in one script (line 1)");

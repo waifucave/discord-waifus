@@ -25,7 +25,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { PRIVATE_FILE_NAME } from "../src/shared/constants/files.js";
 import { WakeupSideSchema } from "../src/shared/schemas/life.js";
 import { CHANNEL, closeWorlds, dmOf, GUILD, herEntries, herFile, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
-import { applyPatch, readFile as readFile_, wakeupCalls } from "./toolCalls.js";
+import { readFile as readFile_, wakeupCall, wakeupCalls } from "./toolCalls.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -384,10 +384,8 @@ describe("pages and watch ends (re-review 2 and 3)", () => {
         ].join("\n")
       )
     ).toMatch(/^set w1 /u);
-    // A [] timer is written in her file (tools.wakeup's watch always has a filter).
-    const line = (await herFile(w, "ella", "home/life/wakeups.json"))!.split("\n").find((entry) => entry.includes('"room"'))!;
-    const timer = JSON.stringify({ kind: "watch", places: "everywhere", filter: [], options: { for: "30m" }, note: "tea" });
-    expect(text(await applyPatch(await ctxFor(w), `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n ${line}\n+,${timer}\n*** End Patch`))).toBe("Updated: M ~/life/wakeups.json");
+    // A timer: a watch with no filter.
+    expect(text(await wakeupCall(await ctxFor(w), '{ watch: [{ places: "everywhere", for: "30m", note: "tea" }] }'))).toMatch(/^set w4 \(timer, /u);
     w.clock.advance(31 * 60_000);
     await w.cast.scheduler.tick();
     const ends = (await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout");

@@ -302,7 +302,7 @@ describe("/transcripts in her computer", () => {
 
   it("refuses every write to /transcripts", async () => {
     const w = await seeded();
-    const refused = (file: string) => ({ text: `error: Error: apply_patch: ${file}: transcripts are read-only; nothing was changed (line 1)`, isError: true });
+    const refused = (file: string) => ({ text: `error: Error: tools.apply_patch: ${file}: transcripts are read-only; nothing was changed (line 1)`, isError: true });
     expect(await run(w, "Edit", scriptInput.applyPatch(addFilePatch("/transcripts/x.md", "x")))).toEqual(refused("/transcripts/x.md"));
     const day = "/transcripts/bake-club/general/2026-10-24.md";
     expect(await run(w, "Edit", scriptInput.applyPatch(updateFilePatch(day, ["hi", "bye"])))).toEqual(refused(day));

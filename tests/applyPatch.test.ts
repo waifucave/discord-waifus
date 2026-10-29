@@ -203,7 +203,7 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
     const start = await before();
     const missing = await applyPatch(ctx, patch("*** Update File: ~/a.md", "@@", "-one", "+ONE", "*** Update File: ~/b.md", "@@", "-nothere", "+z"));
     expect(missing.isError).toBe(true);
-    expect(outputText(missing)).toBe("error: Error: apply_patch: Failed to find expected lines in ~/b.md:\nnothere; nothing was changed (line 1)");
+    expect(outputText(missing)).toBe("error: Error: tools.apply_patch: Failed to find expected lines in ~/b.md:\nnothere; nothing was changed (line 1)");
     const duplicate = await applyPatch(ctx, patch("*** Add File: ~/c.md", "+new", "*** Update File: ~/b.md", "@@", "-same", "+other"));
     expect(outputText(duplicate)).toMatch(/the lines to change in ~\/b\.md match in 2 places \(lines 2 and 4\); add a line above or below to say which; nothing was changed/u);
     const exists = await applyPatch(ctx, patch("*** Update File: ~/a.md", "@@", "-one", "+ONE", "*** Add File: ~/b.md", "+replaced"));

@@ -1462,7 +1462,7 @@ async function readMessagesCall(arg: unknown, ctx: ToolContext, run: ScriptRun):
     query.search = alternatives;
   }
   const result = await readMessagesQuery(ctx, handles.join(","), query);
-  if (result.isError) failed(result);
+  if (result.isError) failed(result, "read_messages");
   if (result.messageIds?.length) run.messageIds.push(...result.messageIds);
   return outputText(result);
 }

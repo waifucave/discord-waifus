@@ -190,7 +190,6 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     expect(await call(w, '{ every: [{ when: "*/5 * * * *", note: "spam" }] }')).toMatch(/^error: Error: every\[0\]: .*repeats too often/u);
     // Shapes are checked before anything runs.
     expect(await call(w, '{ at: [{ when: "fri 18:00", note: "x", extra: 1 }] }')).toBe('error: TypeError: at[0]: unknown field "extra" (it takes when, note) (line 1)');
-    expect(await call(w, '{ watch: [{ places: "bake-club/#general", for: "1h" }] }')).toBe("error: TypeError: watch[0] needs from, words, any: true (any message) or a filter function (line 1)");
     expect(await call(w, '{ watch: [{ places: "bake-club/#general", from: "Kevin", filter: (m) => true, for: "1h" }] }')).toBe("error: TypeError: watch[0]: give a filter function or from/words/any, not both (line 1)");
     expect(await call(w, '{ watch: [{ places: "bake-club/#general", filter: "(m) => true", for: "1h" }] }')).toMatch(/^error: TypeError: watch\[0\]: filter is your function/u);
     expect(await call(w, '{ watch: [{ places: "bake-club/#general", any: true, for: () => "1h" }] }')).toBe("error: TypeError: watch[0].for can't be a function (line 1)");
@@ -206,6 +205,8 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     // At most 4 calls in one script.
     const five = text(await runScript("Wakeup", 'for (let i = 0; i < 5; i++) await tools.wakeup({ at: [{ when: "in " + (i + 2) + "h", note: "n" }] })', await ctxFor(w)));
     expect(five).toMatch(/tools\.wakeup: at most 4 calls in one script/u);
+    // A watch with no filter at all is a timer.
+    expect(await call(w, '{ watch: [{ places: "everywhere", for: "1h", note: "tea" }] }')).toMatch(/^set w\d+ \(timer, until /u);
   });
 
   it("refuses filters that use the script's variables, and her code's syntax errors with their line", async () => {
@@ -269,7 +270,7 @@ describe("~/life/wakeups.json: every write is checked (§30.3)", () => {
     const file = (await herFile(w, "ella", "home/life/wakeups.json"))!;
     const line = file.split("\n")[1]!;
     const edit = (from: string, to: string) => applyPatch(ctx, `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n-${line}\n+${line.replace(from, to)}\n*** End Patch`);
-    expect(text(await edit('"id": "w1",', '"id": "w1",,'))).toMatch(/^error: Error: apply_patch: wakeups\.json line 2, column \d+: .*; nothing was changed/u);
+    expect(text(await edit('"id": "w1",', '"id": "w1",,'))).toMatch(/^error: Error: tools.apply_patch: wakeups\.json line 2, column \d+: .*; nothing was changed/u);
     expect(text(await edit('"until": "2026-10-24 16:00"', '"until": "2026-10-20 10:00"'))).toMatch(/wakeups\.json entry w1: options\.until is in the past; nothing was changed/u);
     expect(text(await edit('{"words": ["cake"]}', '"(msg) => msg.text.includes(\\"cake\\") &&"'))).toMatch(/wakeups\.json entry w1: its filter: SyntaxError/u);
     expect(text(await edit('{"words": ["cake"]}', '"(msg) => msg.text === cake"'))).toMatch(new RegExp(`wakeups\\.json entry w1: its filter: ${CLOSURE_REFUSED.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")} \\(it uses cake\\)`, "u"));
@@ -445,7 +446,7 @@ describe("the scheduler: timed wakeups, ends, state (§30.2, §30.3)", () => {
   it("a watch that ends is a watch_timeout wake (a timer); her code's state is saved at most once a minute", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    // A [] timer is written in her file (tools.wakeup's watch always has a filter).
+    // A [] timer written in her file, and a counting watch.
     const timers = [
       { kind: "watch", places: "bake-club/#general", filter: [], options: { for: "30m" }, note: "tea's ready" },
       { kind: "watch", places: "bake-club/#general", filter: "(msg, state) => { state.n = (state.n || 0) + 1; return false }", options: { for: "1d" }, note: "count" }

@@ -416,7 +416,7 @@ async function readFileCall(arg: unknown, ctx: ToolContext, run: ScriptRun, budg
     const about = result.image.header.startsWith(`${result.image.display}: `) ? result.image.header.slice(result.image.display.length + 2) : result.image.header;
     return { path: result.image.display, kind: "image", about, image_id: id };
   }
-  if (result.isError) failed(result);
+  if (result.isError) failed(result, "read_file");
   const text = outputText(result);
   budget.left -= text.length;
   return text;
@@ -443,7 +443,7 @@ const NOTHING_CHANGED = "; nothing was changed";
 type Simulated = { path: HerPath; original: string | undefined; current: string | undefined; base: { kind: "file"; size: number; mtimeMs: number } | undefined };
 
 const patchError = (message: string): never => {
-  throw new ScriptError(`apply_patch: ${message.replace(/^error:\s*/u, "")}${NOTHING_CHANGED}`);
+  throw new ScriptError(`tools.apply_patch: ${message.replace(/^error:\s*/u, "")}${NOTHING_CHANGED}`);
 };
 
 /**

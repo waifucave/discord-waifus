@@ -88,8 +88,9 @@ function itemsOf(arg: unknown): Item[] {
         if (item["filter"] !== undefined && source === undefined) throw new ScriptError(`${label}: filter is your function (m, state) => true | "a line" | false; for names and words use from, words and any`, "TypeError");
         const objectFilter = Object.fromEntries((["from", "words", "any"] as const).filter((key) => item[key] !== undefined).map((key) => [key, plain(item[key], `${label}.${key}`)]));
         if (source !== undefined && Object.keys(objectFilter).length > 0) throw new ScriptError(`${label}: give a filter function or from/words/any, not both`, "TypeError");
-        if (source === undefined && Object.keys(objectFilter).length === 0) throw new ScriptError(`${label} needs from, words, any: true (any message) or a filter function`, "TypeError");
-        items.push({ label, add: { kind: "watch", places: plain(item["places"], `${label}.places`), filter: source ?? objectFilter, options, ...withNote } });
+        // No filter at all: a timer (§30's `[]`), nothing matches and its end wakes her.
+        const filter = source ?? (Object.keys(objectFilter).length > 0 ? objectFilter : []);
+        items.push({ label, add: { kind: "watch", places: plain(item["places"], `${label}.places`), filter, options, ...withNote } });
         return;
       }
       if (item["every"] !== undefined) options["every"] = plain(item["every"], `${label}.every`);
@@ -215,11 +216,11 @@ export const WAKEUP_DESCRIPTION = [
   "tools.wakeup({ at, every, watch, page, cancel }), each a list (one item adds one wakeup; many, for many places, are fine); it returns what was set:",
   '- at: [{ when, note }]: once, at "fri 18:00", "2026-10-30 18:00", "18:00" (today, else tomorrow), "in 45m" or "in 2h" (5 minutes to 30 days ahead).',
   '- every: [{ when, note }]: repeating, "day 09:00", "weekday 08:30", "weekend 11:00", "mon,fri 18:30" or a cron like "0 20 1 * *" (steps of at least 15 minutes).',
-  '- watch: [{ places, from, words, any, filter, for, once, note }]: when a message in places (a place handle, a list of them, or "everywhere") is from that person, has those words (any: true for any message; every field you set must match), or passes your own filter function (m, state) => true | "a line to show" | false, where m is { place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files }. for: "2h" (at most 7 days, required); once (default true). When it ends without firing you are told, so it also works as a timer.',
+  '- watch: [{ places, from, words, any, filter, for, once, note }]: when a message in places (a place handle, a list of them, or "everywhere") is from that person, has those words (any: true for any message; every field you set must match), or passes your own filter function (m, state) => true | "a line to show" | false, where m is { place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files }. for: "2h" (at most 7 days, required); once (default true). When it ends without firing you are told, so it also works as a timer (leave out from, words, any and filter for a plain timer).',
   '- page: [{ url, contains, changes, check, every, for, note }]: checks a web page: contains: "in stock", changes: true, or check: (page, state) => …, page is { url, status, title, text }; every: "6h" (at least 1h), for: "3d" (at most 7 days).',
   '- cancel: ["w3"]: removes wakeups by id.',
   "Your functions run on their own for each message or check: they can't use variables from outside them, only their arguments; state is an object they may change to remember things between runs. They get 50 ms each; one that fails three times in a row stops and you are told.",
-  "Use it whenever you ask something or wait for news (watch for the answer, with a sensible for), when someone mentions plans (a wakeup to ask how it went), and now and then to check back in rooms you like. All of them are in ~/life/wakeups.json: look there before adding one you have, and edit that file to change them.",
+  "Use it whenever you ask something or wait for news (watch for the answer, with a sensible for), when someone mentions plans (a wakeup to ask how it went), and now and then to check back in rooms you like. All of them are in ~/life/wakeups.json: look there before adding one you have, and change them there with Edit.",
   'Example: text(await tools.wakeup({ watch: [{ places: "bake-club/#general", from: "Kevin", for: "3h", note: "asked Kevin about saturday" }], at: [{ when: "fri 19:00", note: "ask Kevin how his exam went" }] }))'
 ].join("\n");
 

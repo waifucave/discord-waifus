@@ -500,7 +500,7 @@ describe("dreaming leaves ~/life/ alone (§21.6)", () => {
     await writeHerFile(w, "life/schedule.json", plan("2026-10-24"));
     await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "at", when: "2026-10-24 18:00", note: "flyer" }]));
     const dream = await ctxFor(w, { mode: "session", session: "dream" });
-    const refused = { content: `error: Error: apply_patch: ${DREAM_LIFE_REFUSED.replace(/^error:\s*/u, "")}; nothing was changed (line 1)`, isError: true };
+    const refused = { content: `error: Error: tools.apply_patch: ${DREAM_LIFE_REFUSED.replace(/^error:\s*/u, "")}; nothing was changed (line 1)`, isError: true };
     expect(await applyPatch(dream, replaceFilePatch("~/life/schedule.json", plan("2026-10-25")))).toEqual(refused);
     const wakeups = (await homeOf(w).read("life/wakeups.json"))!;
     expect(await applyPatch(dream, lineEditPatch("~/Life/Wakeups.json", wakeups, "flyer", "poster"))).toEqual(refused);

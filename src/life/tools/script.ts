@@ -231,10 +231,10 @@ export function numberArg(where: string, value: unknown, min: number, max: numbe
   return value;
 }
 
-/** A tool error's text as her script's error (no `error:` prefix). */
-export function failed(output: ToolOutput): never {
+/** A tool error's text as her script's error, named by its function (no `error:` prefix). */
+export function failed(output: ToolOutput, fn: string): never {
   const text = typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "")).join("\n");
-  throw new ScriptError(text);
+  throw new ScriptError(`tools.${fn}: ${text.replace(/^error:\s*/u, "")}`);
 }
 
 /** The text of a tool output (its text blocks). */
