@@ -1,31 +1,37 @@
-// `Read`, `Write`, `Edit` over her own folders (Living cast spec §16.3.3, §16.3.4), like Claude
-// Code's file tools. Paths are absolute (`/home/aria/people/kevin.md`, `/tmp/x.png`), `~`-based or
-// relative to her home; the path rules, limits and her special-file checks are the home store's.
+// `Read`, `Edit` (and the retired `Write`) over her own folders (Living cast spec §16.3.3, §16.3.4,
+// §32.2). Since §32 both take a script: `tools.read_file({ path, offset, limit, pages })` and
+// `tools.apply_patch(patch)` (Codex's patch format, applyPatch.ts). Paths are absolute
+// (`/home/aria/people/kevin.md`, `/tmp/x.png`), `~`-based or relative to her home; the path rules,
+// limits and her special-file checks are the home store's.
 //
-// Read shows text with line numbers, an image (on a route with image input, within the epoch's
-// image caps; the bytes go into the image cache under their hash, pinned for the epoch, so replay
-// never depends on the file) or its OCR text, or a PDF's text with page markers; its output is cut
-// at READ_MAX_OUTPUT_CHARS. A file from a DM is recorded as a DM call (D14), so the owner's views
-// hide it. Outside her life (maintenance, a forget's scrub: `ctx.mode` "session") an image is always
-// its OCR text and her life's image state is never touched. A whole-file Write of wakeups.json or
-// profile.json (in ~/life/) needs a Read of it this turn that is still current (spec §16.14, §30.3).
+// read_file gives text with line numbers, a PDF's text with page markers, or an image result: shown
+// when she shows it (on a route with image input, within the epoch's image caps; the bytes go into
+// the image cache under their hash, pinned for the epoch, so replay never depends on the file),
+// else its OCR text; a script's reads are cut at READ_MAX_OUTPUT_CHARS together. A file from a DM is
+// recorded as a DM call (D14), so the owner's views hide it. Outside her life (maintenance, a
+// forget's scrub: `ctx.mode` "session") an image is always its OCR text and her life's image state
+// is never touched. apply_patch checks every file, then saves the whole patch as one change set
+// (all or nothing, like Bash's). A whole-file Write of wakeups.json or profile.json (in ~/life/)
+// needs a Read of it this turn that is still current (spec §16.14, §30.3).
 
 import { z } from "zod";
 import { MAX_INLINE_IMAGE_BYTES } from "../../orchestration/context/images.js";
 import type { LifeImageBlock } from "../../shared/schemas/life.js";
-import { readLifeState, updateLifeState } from "../lifeStore.js";
+import { appendIntent, readLifeState, updateLifeState } from "../lifeStore.js";
 import { checkEnvFor, homeStoreFor } from "../home/index.js";
-import { HomeError, isTextBytes, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
+import { HomeError, homeLimitsOf, isTextBytes, PLACES_REFUSED, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
 import { PLAN_WAKE_TEXT } from "../home/daySchedule.js";
-import { herSlug, isLifeDirPath, isMemoryFile, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
+import { deleteReachesPlaces, herSlug, isLifeDirPath, isMemoryFile, parseVirtual, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
 import { wakeupsDmOrigin } from "../wakeups/privacy.js";
 import { imageSize } from "../bash/imageCommand.js";
 import { PROFILE_TIDY_REFUSED, profileSavedNote } from "./profileNote.js";
 import { parseInput, toolError, type LifeResultBlock, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
+import { parsePatch, updateContents } from "./applyPatch.js";
+import { failed, familyLines, objectArg, outputText, runScriptTool, scriptSchema, ScriptError, type ScriptRun } from "./script.js";
 
 export const READ_DEFAULT_LINES = 2_000;
 export const READ_MAX_LINE_CHARS = 2_000;
@@ -50,7 +56,7 @@ function transcriptsArg(ctx: Pick<ToolContext, "deps" | "waifu">, input: string)
 }
 
 /** Read of a transcript day file (rendered from the store; a private chat's is a DM call, D14). */
-async function readTranscript(ctx: ToolContext, segments: string[], offset: number, limit: number): Promise<ToolOutput> {
+async function readTranscript(ctx: ToolContext, segments: string[], offset: number, limit: number, maxChars: number): Promise<ToolOutput> {
   const view = transcriptViewOf(ctx);
   const display = transcriptsVirtual(segments);
   if (await view.isPrivate(segments)) notePlace((await view.conversationOf(segments))?.key ?? "dm_file");
@@ -62,7 +68,7 @@ async function readTranscript(ctx: ToolContext, segments: string[], offset: numb
     const placeKey = (await view.conversationOf(segments))?.key ?? "dm_file";
     rememberTranscriptText(ctx, Buffer.from(text, "utf8"), placeKey);
   }
-  return { content: capReadOutput(numbered(text, offset, limit), "offset and limit") };
+  return { content: capReadOutput(numbered(text, offset, limit), "offset and limit", maxChars) };
 }
 
 /** A private chat's transcript text she was shown this turn (§18.3, D14). */
@@ -90,10 +96,10 @@ export async function pathArg(store: HomeStore, input: string, o: { allowRoot?: 
 }
 
 /** Cuts a Read result at READ_MAX_OUTPUT_CHARS, on a line break when there is one near. */
-export function capReadOutput(text: string, more: string): string {
-  if (text.length <= READ_MAX_OUTPUT_CHARS) return text;
-  const lineEnd = text.lastIndexOf("\n", READ_MAX_OUTPUT_CHARS);
-  const cut = lineEnd > READ_MAX_OUTPUT_CHARS * 0.8 ? lineEnd : READ_MAX_OUTPUT_CHARS;
+export function capReadOutput(text: string, more: string, max: number = READ_MAX_OUTPUT_CHARS): string {
+  if (text.length <= max) return text;
+  const lineEnd = text.lastIndexOf("\n", max);
+  const cut = lineEnd > max * 0.8 ? lineEnd : max;
   return `${text.slice(0, cut)}\n(cut at ${cut.toLocaleString("en-US")} characters; pass ${more} to read on)`;
 }
 
@@ -169,7 +175,15 @@ async function ocrMode(ctx: ToolContext, attachment: Parameters<NonNullable<Tool
   return { text: clean ? `[image: ${clean}]` : "[image: no text found]" };
 }
 
-async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: string, dmOrigin: string | undefined): Promise<ToolOutput> {
+/** A picture she read: its header line, and `show` (decides inline or its text, and notes it shown). */
+type PreparedImage = { header: string; display: string; show: () => Promise<LifeResultBlock[]> };
+
+/**
+ * The picture's bytes go into the image cache now; whether it is shown inline (her epoch's image caps,
+ * the route) and that she has seen it are decided only when it is shown (§32.1: `text()` of a
+ * `read_file` image result, or the script's return value).
+ */
+async function prepareImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: string, dmOrigin: string | undefined): Promise<PreparedImage> {
   const { deps } = ctx;
   const key = `file:${sha256(data)}`;
   // A picture from a DM is indexed under that DM, so a forget of it purges the cached bytes and
@@ -181,12 +195,23 @@ async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: s
   const header = size ? `${p.display}: ${size.format} ${size.width}x${size.height}, ${sizeText(data.length)}` : `${p.display}: image (${sizeText(data.length)})`;
   const cache = deps.images;
   if (cache?.put) await cache.put(key, { mimeType, data }, conversationKey ? { conversationKey } : {}).catch(() => undefined);
+  return { header, display: p.display, show: () => showImage(ctx, { key, header, attachment, data, display: p.display }) };
+}
+
+async function showImage(
+  ctx: ToolContext,
+  o: { key: string; header: string; attachment: Extract<LifeResultBlock, { type: "life_image" }>["attachment"]; data: Buffer; display: string }
+): Promise<LifeResultBlock[]> {
+  const { deps } = ctx;
+  const { key, header, attachment, data } = o;
+  const p = { display: o.display };
+  const cache = deps.images;
   // Outside her life (maintenance, a scrub) a picture is only its text: her life's image state,
   // caps and pins stay as they are.
-  if (ctx.mode === "session") return { content: [{ type: "text", text: header }, { type: "life_image", file: p.display, attachment, mode: await ocrMode(ctx, attachment) }] };
+  if (ctx.mode === "session") return [{ type: "text", text: header }, { type: "life_image", file: p.display, attachment, mode: await ocrMode(ctx, attachment) }];
   const state = await readLifeState(deps.storage, ctx.waifu.id, deps.now());
   // A picture already shown this epoch is not shown again (it is still in her log above).
-  if (state.shownImageKeys.includes(key)) return { content: [{ type: "text", text: header }, { type: "life_image", file: p.display, attachment, mode: await ocrMode(ctx, attachment, { seen: true }) }] };
+  if (state.shownImageKeys.includes(key)) return [{ type: "text", text: header }, { type: "life_image", file: p.display, attachment, mode: await ocrMode(ctx, attachment, { seen: true }) }];
   const life = deps.config().life;
   const inline =
     ctx.route.imageInput &&
@@ -206,8 +231,7 @@ async function readImage(ctx: ToolContext, p: HerPath, data: Buffer, mimeType: s
     ...(inline ? { inlineImageCount: current.inlineImageCount + 1, inlineImageBytes: current.inlineImageBytes + data.length } : {})
   }));
   const block: LifeImageBlock = { type: "life_image", file: p.display, attachment, mode };
-  const blocks: LifeResultBlock[] = [{ type: "text", text: header }, block];
-  return { content: blocks };
+  return [{ type: "text", text: header }, block];
 }
 
 function pageRange(pages: string | undefined): { first: number; last: number } {
@@ -217,7 +241,7 @@ function pageRange(pages: string | undefined): { first: number; last: number } {
   return { first, last: Math.max(first, b ?? first) };
 }
 
-async function readPdf(ctx: ToolContext, p: HerPath, data: Buffer, pages: string | undefined): Promise<ToolOutput> {
+async function readPdf(ctx: ToolContext, p: HerPath, data: Buffer, pages: string | undefined, maxChars: number): Promise<ToolOutput> {
   const range = pageRange(pages);
   if (range.last - range.first + 1 > 50) return toolError("read at most 50 pages at a time");
   const result = await extractPdfText(data, { ...range, signal: ctx.signal });
@@ -228,14 +252,19 @@ async function readPdf(ctx: ToolContext, p: HerPath, data: Buffer, pages: string
   if (result.pages.every((page) => !page.text)) parts.push("(no text found: it is probably scanned images)");
   const last = result.pages[result.pages.length - 1]!.page;
   if (last < result.totalPages) parts.push(`(pages ${range.first}–${last} of ${result.totalPages}; pass pages like "${last + 1}-${Math.min(result.totalPages, last + PDF_DEFAULT_PAGES)}" to read on)`);
-  return { content: capReadOutput(parts.join("\n"), "pages") };
+  return { content: capReadOutput(parts.join("\n"), "pages", maxChars) };
 }
 
-async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const parsed = parseInput(ReadInput, input);
-  if (!parsed.ok) return parsed.output;
+type ReadArgs = z.infer<typeof ReadInput>;
+
+/**
+ * One read (§16.3.3): text with line numbers, a PDF's text, a transcript day, or a picture (prepared:
+ * shown when she shows it). `maxChars`: what is left of the output for this script.
+ */
+async function readFile(args: ReadArgs, ctx: ToolContext, maxChars: number): Promise<ToolOutput | { image: PreparedImage }> {
+  const parsed = { value: args };
   const transcript = transcriptsArg(ctx, parsed.value.file_path);
-  if (transcript) return readTranscript(ctx, transcript, parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES);
+  if (transcript) return readTranscript(ctx, transcript, parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES, maxChars);
   const store = storeOf(ctx);
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
@@ -256,10 +285,18 @@ async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   const dmOrigin = await noteDmFile(store, p);
   if (specialJsonFile(p)) rememberRead(ctx, p, sha256(data));
   const kind = sniff(data);
-  if (kind.kind === "image") return readImage(ctx, p, data, kind.mimeType, dmOrigin);
-  if (kind.kind === "pdf") return readPdf(ctx, p, data, parsed.value.pages);
-  if (kind.kind === "text") return { content: capReadOutput(numbered(data.toString("utf8"), parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES), "offset and limit") };
+  if (kind.kind === "image") return { image: await prepareImage(ctx, p, data, kind.mimeType, dmOrigin) };
+  if (kind.kind === "pdf") return readPdf(ctx, p, data, parsed.value.pages, maxChars);
+  if (kind.kind === "text") return { content: capReadOutput(numbered(data.toString("utf8"), parsed.value.offset ?? 1, parsed.value.limit ?? READ_DEFAULT_LINES), "offset and limit", maxChars) };
   return toolError(`${p.display} isn't a text file, an image or a PDF`);
+}
+
+/** Read as one call with its old arguments (`file_path`, …): the image shown at once. */
+export async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  const parsed = parseInput(ReadInput, input);
+  if (!parsed.ok) return parsed.output;
+  const result = await readFile(parsed.value, ctx, READ_MAX_OUTPUT_CHARS);
+  return "image" in result ? { content: await result.image.show() } : result;
 }
 
 /** Dreaming tidies her notes and MEMORY.md only (§21.6): `~/life/` is left alone. */
@@ -355,67 +392,273 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   }
 }
 
-// ---- Edit ------------------------------------------------------------------------------------------
+// ---- Read: tools.read_file (§32.2) ----------------------------------------------------------------------
 
-const EditInput = z.object({
-  file_path: z.string().min(1).max(2000),
-  old_string: z.string(),
-  new_string: z.string(),
-  replace_all: z.boolean().optional()
-});
+/** read_file calls in one script, and their output together. */
+export const MAX_READS_PER_SCRIPT = 10;
 
-async function editTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const parsed = parseInput(EditInput, input);
-  if (!parsed.ok) return parsed.output;
-  if (transcriptsArg(ctx, parsed.value.file_path)) return toolError(TRANSCRIPTS_READ_ONLY);
-  const store = storeOf(ctx);
-  const target = await pathArg(store, parsed.value.file_path);
-  if (!target.ok) return target.output;
-  if (ctx.session === "dream" && isLifeDirPath(target.path)) return toolError(DREAM_LIFE_REFUSED);
-  if (specialJsonFile(target.path) === "profile" && ctx.mode === "session") return toolError(PROFILE_TIDY_REFUSED);
-  await noteDmFile(store, target.path);
-  try {
-    const result = await store.editText(target.path, parsed.value.old_string, parsed.value.new_string, parsed.value.replace_all === true, checkEnvFor(ctx.deps, ctx.waifu.id));
-    // Her view of the file now includes her edit (an earlier stale Read stays stale).
-    const key = pathKey(target.path.virtual);
-    if (specialJsonFile(target.path) && ctx.turn.readHashes?.has(key)) rememberRead(ctx, target.path, result.hash);
-    await keepTranscriptOrigin(ctx, store, target.path, result.hash);
-    const extra = [result.count > 1 ? `${result.count} replacements` : undefined, result.rewritten ? "new entries got ids" : undefined].filter(Boolean);
-    const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
-    const canonical = await store.files.canonical(target.path);
-    const notes = [promptCopyNote(ctx, canonical), await planWakeNote(ctx, store, canonical)].filter(Boolean);
-    return { content: `edited ${target.path.display}${extra.length > 0 ? ` (${extra.join("; ")})` : ""}${profile}${notes.map((note) => `\n${note}`).join("")}` };
-  } catch (error) {
-    return failure(error);
+const READ_FILE_FIELDS = ["path", "offset", "limit", "pages"] as const;
+
+/** One `tools.read_file({ path, offset?, limit?, pages? })`: text as a string, a picture as an image result. */
+async function readFileCall(arg: unknown, ctx: ToolContext, run: ScriptRun, budget: { left: number }): Promise<unknown> {
+  const o = objectArg("read_file", arg, READ_FILE_FIELDS, '{ path: "~/MEMORY.md" }');
+  const args = ReadInput.safeParse({ file_path: o["path"], offset: o["offset"], limit: o["limit"], pages: o["pages"] });
+  if (!args.success) {
+    const issue = args.error.issues[0];
+    const field = issue?.path[0] === "file_path" ? "path" : String(issue?.path[0] ?? "path");
+    throw new ScriptError(`tools.read_file: ${field}: ${field === "path" ? "a path in your folders, like ~/MEMORY.md" : (issue?.message ?? "invalid")}`, "TypeError");
   }
+  if (budget.left <= 0) throw new ScriptError(`tools.read_file: this script has shown ${READ_MAX_OUTPUT_CHARS.toLocaleString("en-US")} characters of files already; read the rest in another call`, "RangeError");
+  const result = await readFile(args.data, ctx, budget.left);
+  if ("image" in result) {
+    const id = `img${run.images.size + 1}`;
+    run.images.set(id, result.image.show);
+    const about = result.image.header.startsWith(`${result.image.display}: `) ? result.image.header.slice(result.image.display.length + 2) : result.image.header;
+    return { path: result.image.display, kind: "image", about, image_id: id };
+  }
+  if (result.isError) failed(result, "read_file");
+  const text = outputText(result);
+  budget.left -= text.length;
+  return text;
 }
 
-const pathSchema = { type: "string", description: "A path in your folders: ~/people/kevin.md, /tmp/bake-club/general/k3-cake.png, or relative to your home." };
+async function readScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  const budget = { left: READ_MAX_OUTPUT_CHARS };
+  return runScriptTool(input, ctx, {
+    tool: "Read",
+    functions: [{ name: "read_file", max: MAX_READS_PER_SCRIPT, run: (arg, run) => readFileCall(arg, ctx, run, budget) }],
+    outputChars: READ_MAX_OUTPUT_CHARS
+  });
+}
+
+// ---- Edit: tools.apply_patch (§32.2) ---------------------------------------------------------------------
+
+/** apply_patch calls in one script. */
+export const MAX_PATCHES_PER_SCRIPT = 4;
+/** One patch (her script is at most 20,000 characters; a patch she builds in it can be longer). */
+export const MAX_PATCH_CHARS = 300 * 1024;
+const NOTHING_CHANGED = "; nothing was changed";
+
+/** What one file is while the patch is checked: as on disk at first, then after each hunk. */
+/** A file of the patch: `tooLarge` when it is over the write limit (never read: only deleted or named). */
+type Simulated = { path: HerPath; original: string | undefined; current: string | undefined; base: { kind: "file"; size: number; mtimeMs: number } | undefined; tooLarge?: boolean };
+
+const patchError = (message: string): never => {
+  throw new ScriptError(`tools.apply_patch: ${message.replace(/^error:\s*/u, "")}${NOTHING_CHANGED}`);
+};
+
+/**
+ * One `tools.apply_patch(patch)`: Codex's grammar and matching (applyPatch.ts), safer: every hunk is
+ * checked against her files first (paths by her folder rules, /transcripts read-only, Add File only
+ * for a new file, Update and Delete only for an existing text file, 256 KB per file), then the whole
+ * patch is saved as one change set through her home store, like a Bash command's (journalled, her
+ * special files in ~/life/ checked as they would be after it, places.md untouched, nothing changed
+ * under her since it was read): all of it or nothing. Returns `Updated: M ~/MEMORY.md, A ~/x.md`.
+ */
+async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number, run: ScriptRun): Promise<string> {
+  if (typeof arg !== "string") throw new ScriptError('tools.apply_patch takes the patch as one string: "*** Begin Patch\\n*** Update File: ~/MEMORY.md\\n@@\\n-old line\\n+new line\\n*** End Patch"', "TypeError");
+  if (arg.length > MAX_PATCH_CHARS) patchError(`a patch is at most ${MAX_PATCH_CHARS / 1024} KB`);
+  const parsed = parsePatch(arg);
+  if (!parsed.ok) return patchError(parsed.error);
+  if (parsed.hunks.length === 0) patchError("the patch changes nothing (add *** Add File, *** Update File or *** Delete File)");
+  const { deps } = ctx;
+  const store = storeOf(ctx);
+  const maxBytes = homeLimitsOf(deps.config().life).writeMaxBytes;
+  // Checks, matching and the commit under her home lock (§32.3a): what was matched is what is saved.
+  type Committed = { unchanged: string } | { marks: string[]; writes: Array<{ path: string; data: Uint8Array }>; deletes: string[]; applied: Awaited<ReturnType<HomeStore["applyChanges"]>> };
+  const committed = await store.transaction<Committed>(async (commit) => {
+    const files = new Map<string, Simulated>();
+    /** Her path, checked by her folder rules (spelled as on disk), its file read once. */
+    const fileAt = async (input: string, verb: string): Promise<Simulated> => {
+      const name = input.trim();
+      if (transcriptsArg(ctx, name)) patchError(`${name}: ${TRANSCRIPTS_READ_ONLY.replace(/^error:\s*/u, "")}`);
+      const target = await pathArg(store, name);
+      if (!target.ok) return patchError(`${verb} ${name}: ${outputText(target.output)}`);
+      const p = target.path;
+      if (deleteReachesPlaces(p)) patchError(PLACES_REFUSED);
+      if (ctx.session === "dream" && isLifeDirPath(p)) patchError(DREAM_LIFE_REFUSED);
+      if (specialJsonFile(p) === "profile" && ctx.mode === "session") patchError(PROFILE_TIDY_REFUSED);
+      // A file from a DM she reads or changes makes the call a DM call (D14).
+      await noteDmFile(store, p);
+      const key = pathKey(p.virtual);
+      const known = files.get(key);
+      if (known) return known;
+      const info = await store.files.inspect(p);
+      if (info.kind === "link") patchError(`${p.display} can't be used: it is a link`);
+      if (info.kind === "dir") patchError(`${p.display} is a folder`);
+      if (info.kind === "other") patchError(`${p.display} can't be used`);
+      let original: string | undefined;
+      // A file over the write limit (a big download in /tmp, say) is never read here: matching it
+      // would hold her home lock for seconds. It can still be deleted or named; an Update refuses it.
+      const tooLarge = info.kind === "file" && info.size > maxBytes;
+      if (info.kind === "file" && !tooLarge) {
+        const bytes = await store.files.readBytes(p, { maxBytes });
+        if (!isTextBytes(bytes)) patchError(`${p.display} isn't a text file`);
+        original = bytes.toString("utf8");
+      } else if (tooLarge) original = "";
+      const entry: Simulated = { path: p, original, current: original, base: info.kind === "file" ? { kind: "file", size: info.size, mtimeMs: info.mtimeMs } : undefined, ...(tooLarge ? { tooLarge } : {}) };
+      files.set(key, entry);
+      return entry;
+    };
+    const marks: string[] = [];
+    const updatedPaths = new Set<string>();
+    for (const hunk of parsed.hunks) {
+      if (hunk.kind === "add") {
+        const file = await fileAt(hunk.path, "Add File:");
+        if (file.current !== undefined) patchError(`Add File: ${file.path.display} already exists; change it with *** Update File`);
+        file.current = hunk.contents;
+        marks.push(`A ${file.path.display}`);
+      } else if (hunk.kind === "delete") {
+        const file = await fileAt(hunk.path, "Delete File:");
+        if (file.current === undefined) patchError(`Delete File: ${file.path.display} doesn't exist`);
+        file.current = undefined;
+        marks.push(`D ${file.path.display}`);
+      } else {
+        const file = await fileAt(hunk.path, "Update File:");
+        // One Update per file in a patch: put all its chunks under one header, in file order.
+        const key = pathKey(file.path.virtual);
+        if (updatedPaths.has(key)) patchError(`${file.path.display} is updated twice in this patch; put all its changes under one *** Update File, in file order`);
+        updatedPaths.add(key);
+        if (file.current === undefined) patchError(`Update File: ${file.path.display} doesn't exist (a new file is *** Add File)`);
+        if (file.tooLarge) patchError(`${file.path.display} is too large to patch (over ${maxBytes / 1024} KB); use Bash`);
+        const updated = updateContents(file.current!, hunk.chunks, file.path.display);
+        if (!updated.ok) return patchError(updated.error);
+        if (hunk.movePath !== undefined && hunk.movePath.trim()) {
+          const to = await fileAt(hunk.movePath, "Move to:");
+          if (to.path.virtual !== file.path.virtual) {
+            if (to.current !== undefined) patchError(`Move to: ${to.path.display} already exists`);
+            file.current = undefined;
+            to.current = updated.contents;
+            marks.push(`M ${to.path.display} (from ${file.path.display})`);
+            continue;
+          }
+        }
+        file.current = updated.contents;
+        marks.push(`M ${file.path.display}`);
+      }
+    }
+    // The change set: what differs from her files as they were.
+    const writes: Array<{ path: string; data: Uint8Array }> = [];
+    const deletes: string[] = [];
+    const base = new Map<string, { kind: "file" | "dir"; size: number; mtimeMs: number }>();
+    for (const file of files.values()) {
+      if (file.base) base.set(file.path.virtual, file.base);
+      if (file.current === file.original) continue;
+      if (file.current === undefined) {
+        deletes.push(file.path.virtual);
+        continue;
+      }
+      const data = Buffer.from(file.current, "utf8");
+      if (data.length > maxBytes) patchError(`${file.path.display} would be ${sizeText(data.length)}; a file can be at most ${maxBytes / 1024} KB, so split it into several files`);
+      writes.push({ path: file.path.virtual, data });
+    }
+    if (writes.length + deletes.length === 0) return { unchanged: `No change: ${marks.join(", ")} (the files already read like that)` };
+    // Intent first, its line done after (boot repair, §5.7): the change set is journalled under this id.
+    if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: deps.now().toISOString(), line: n, contentDigest: `patch:${n}` });
+    let applied: Awaited<ReturnType<HomeStore["applyChanges"]>>;
+    try {
+      applied = await commit({ writes, deletes, dirs: [] }, base, checkEnvFor(deps, ctx.waifu.id), { journalId: patchJournalId(ctx.toolCallId, n) });
+    } catch (error) {
+      if (error instanceof HomeError) return patchError(error.message);
+      throw error;
+    }
+    return { marks, writes, deletes, applied };
+  });
+  if ("unchanged" in committed) return committed.unchanged;
+  const { marks, writes, deletes, applied } = committed;
+  run.receipts.push(`apply_patch ${n}: saved ${marks.join(", ")}`);
+  if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: deps.now().toISOString(), line: n, lineDone: true });
+  const lines = [`Updated: ${marks.join(", ")}`];
+  for (const write of writes) {
+    const p = parseVirtual(write.path, store.slug);
+    if (!p) continue;
+    // A file whose bytes are a private chat's transcript day she was shown keeps its DM origin (§18.3).
+    await keepTranscriptOrigin(ctx, store, p, sha256(write.data));
+    await noteDmFile(store, p);
+  }
+  // Her special files changed under her own hand: what she read of them is current again.
+  for (const virtual of [...writes.map((write) => write.path), ...deletes]) ctx.turn.readHashes?.delete(pathKey(virtual));
+  if (applied.profileChanged !== undefined) lines.push(`profile.json: ${await profileSavedNote(deps, ctx.waifu.id, applied.profileChanged)}`);
+  for (const virtual of [...writes.map((write) => write.path), ...deletes]) {
+    const p = parseVirtual(virtual, store.slug);
+    if (!p) continue;
+    const canonical = await store.files.canonical(p);
+    const note = promptCopyNote(ctx, canonical);
+    if (note) lines.push(note);
+    const plans = await planWakeNote(ctx, store, canonical);
+    if (plans) lines.push(plans);
+  }
+  return lines.join("\n");
+}
+
+/** The journal id of a script's n-th patch (boot repair finds it by this). */
+export function patchJournalId(toolCallId: string, n: number): string {
+  return `${toolCallId}-patch${n}`;
+}
+
+async function editScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  let n = 0;
+  // One patch at a time, in the order she called them: a change set's `.applied` marker stays until
+  // its done intent is written (the next change set removes it), so boot repair never reports a
+  // saved patch unsaved (§32.3a).
+  let queue: Promise<unknown> = Promise.resolve();
+  return runScriptTool(input, ctx, {
+    tool: "Edit",
+    functions: [
+      {
+        name: "apply_patch",
+        max: MAX_PATCHES_PER_SCRIPT,
+        maxArgChars: MAX_PATCH_CHARS + 1_024,
+        run: (arg, run, signal) => {
+          const call = (n += 1);
+          // Once the script is stopped, a patch still queued never starts.
+          const next = queue.then(() => {
+            if (signal.aborted || ctx.signal.aborted) throw new ScriptError("tools.apply_patch: the script was stopped before this call started");
+            return applyPatchCall(arg, ctx, call, run);
+          });
+          queue = next.catch(() => undefined);
+          return next;
+        }
+      }
+    ]
+  });
+}
+
 const textPathSchema = { type: "string", description: "A path in your folders: ~/people/kevin.md, /tmp/notes.txt, or relative to your home." };
+
+export const READ_DESCRIPTION = [
+  `Read a file from your folders or /transcripts. ${familyLines("read_file")}`,
+  "tools.read_file({ path, offset, limit, pages }): text comes back with line numbers (the first 2,000 lines; offset and limit for more); a PDF as text with page markers (the first 20 pages; pages like \"3\" or \"1-5\" for others); a picture as an image result: text() it to see it (when it can't be shown you get any text in it).",
+  `At most ${MAX_READS_PER_SCRIPT} reads and ${READ_MAX_OUTPUT_CHARS.toLocaleString("en-US")} characters in one script.`,
+  'Example: text(await tools.read_file({ path: "~/MEMORY.md" }))'
+].join("\n");
+
+export const EDIT_DESCRIPTION = [
+  `Change files in your folders with a patch. ${familyLines("apply_patch")}`,
+  "tools.apply_patch(patch) takes one string:",
+  "*** Begin Patch",
+  "*** Add File: <path> — a new file: each line starts with +",
+  "*** Delete File: <path>",
+  "*** Update File: <path> — optionally *** Move to: <path>, then chunks: a line @@ (or @@ followed by a line of the file just above, to say where), then the lines around the change starting with a space, removed lines with -, added lines with +",
+  "*** End Patch",
+  "Copy the lines as they are in the file (Read it first; leave out the line numbers). A chunk without an @@ line that is in the file twice is refused: add a line above or below, or put an @@ line (a line once in the file) above it; under an @@ line the chunk is the first match after it. An @@ line that is in the file twice is refused. A chunk with only + lines is added at the end of the file, even under an @@ line: to insert after a line, include that line as context (a space and the line), then the + lines. One *** Update File per file, its chunks in file order. Everything in the patch is saved, or nothing is (what was saved is listed after your output either way). ~/life/places.md can't be changed, the other files in ~/life/ are checked, /transcripts can't be changed; a file is at most 256 KB. A whole file longer than your script can be is written with Bash.",
+  "Write the patch as a list of lines joined, so quotes, backticks and ${…} in your notes stay as they are:",
+  'Example: return await tools.apply_patch(["*** Begin Patch", "*** Update File: ~/people/kevin.md", "@@", " likes: brownies", "-exam: friday", "+exam: friday (passed!)", "*** End Patch"].join("\\n"))'
+].join("\n");
 
 export const fileTools: LifeTool[] = [
   {
     name: "Read",
-    description:
-      "Read a file from your folders or /transcripts. Text comes back with line numbers (the first 2000 lines; use offset and limit for more). Images are shown to you; when they can't be, you get any text in them. PDFs come back as text with page markers (the first 20 pages; use pages for others).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_path: pathSchema,
-        offset: { type: "integer", minimum: 1, description: "Text: the line to start at." },
-        limit: { type: "integer", minimum: 1, maximum: READ_DEFAULT_LINES, description: "Text: how many lines." },
-        pages: { type: "string", description: 'PDF: a page or a range, like "3" or "1-5".' }
-      },
-      required: ["file_path"],
-      additionalProperties: false
-    },
+    description: READ_DESCRIPTION,
+    inputSchema: scriptSchema("JavaScript calling tools.read_file({ path }) and text()."),
     sideEffect: false,
-    run: readTool
+    run: readScriptTool
   },
   {
+    // Not offered since §32 (Edit's apply_patch adds files); kept so old log lines still read.
     name: "Write",
     description:
-      "Create or replace a text file in your folders (folders are made as needed). For changes to an existing file, Edit is usually better. ~/life/places.md can't be changed; the other files in ~/life/ are checked before they are saved, and wakeups.json and profile.json need a fresh Read before Write replaces them.",
+      "Create or replace a text file in your folders (folders are made as needed). ~/life/places.md can't be changed; the other files in ~/life/ are checked before they are saved, and wakeups.json and profile.json need a fresh Read before Write replaces them.",
     inputSchema: {
       type: "object",
       properties: { file_path: textPathSchema, content: { type: "string", description: "The whole file (at most 256 KB)." } },
@@ -427,20 +670,9 @@ export const fileTools: LifeTool[] = [
   },
   {
     name: "Edit",
-    description:
-      "Replace text in a file: old_string must appear exactly once (include enough around it), unless replace_all is true. Read the file first so you match it exactly. Leave out the line numbers Read shows.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_path: textPathSchema,
-        old_string: { type: "string", description: "The exact text to replace." },
-        new_string: { type: "string", description: "What replaces it." },
-        replace_all: { type: "boolean", description: "Replace every occurrence (default false)." }
-      },
-      required: ["file_path", "old_string", "new_string"],
-      additionalProperties: false
-    },
+    description: EDIT_DESCRIPTION,
+    inputSchema: scriptSchema("JavaScript calling tools.apply_patch(\"*** Begin Patch\\n…\\n*** End Patch\") and text()."),
     sideEffect: true,
-    run: editTool
+    run: editScriptTool
   }
 ];

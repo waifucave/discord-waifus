@@ -134,7 +134,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | GET | `/api/waifus/:waifuId/files` | List a folder of her home, /tmp or her read-only /transcripts (?root=home\|tmp\|transcripts&dir; files and transcripts from private chats are named only with a local includePrivate=1). | `life` |
 | DELETE | `/api/waifus/:waifuId/files/*` | Delete one of her files (?expectedHash). | `life` |
 | GET | `/api/waifus/:waifuId/files/*` | One of her files or transcript days: JSON with the text for a text file, ?raw=1 for the bytes (a DM file or transcript needs a local includePrivate=1). | `life` |
-| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Write tool's checks; life/places.md and /transcripts refused). | `life` |
+| PUT | `/api/waifus/:waifuId/files/*` | Write a text file in her folders ({text, expectedHash?}; her Edit tool's checks; life/places.md and /transcripts refused). | `life` |
 | GET | `/api/waifus/:waifuId/life` | Her life: status, current turn, queue, epoch, today's cost (?includePrivate=1 locally). | `life` |
 | POST | `/api/waifus/:waifuId/life/compact` | Summarise her life now (between turns). | `life` |
 | GET | `/api/waifus/:waifuId/life/log` | Her life log, paged (?epoch&before&limit; DM content only with a local includePrivate=1). | `life` |
@@ -201,7 +201,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   `GET` answers JSON `{path, display, kind: text|image|pdf|binary, contentType, size, modified,
   hash, text?, tooLarge?, readOnly?, special?, private?}` (`text` for a UTF-8 file up to 1 MiB);
   `?raw=1` answers the bytes (images by their magic bytes, inline; anything else as an attachment;
-  `nosniff`, sandboxed). `PUT {text, expectedHash?}` writes a text file under her Write tool's checks:
+  `nosniff`, sandboxed). `PUT {text, expectedHash?}` writes a text file under her Edit tool's checks:
   `life/places.md` 400 `ReadOnlyFile`, a broken `life/schedule.json`, `life/wakeups.json`
   (her functions compiled too) or `life/profile.json` 400 `InvalidFile` with
   the line and column (nothing saved), over 256 KiB or a full home 413 `HomeLimit`, a binary file

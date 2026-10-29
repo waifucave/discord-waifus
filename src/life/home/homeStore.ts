@@ -491,9 +491,10 @@ export class HomeStore {
    * The Wakeup tool's changes (§30.2), all or nothing: `cancel` ids are removed, `add` entries (no
    * ids) appended, and the result is checked like any write of the file, under one hold of her home
    * lock (nothing the app rewrites in between is lost). Returns the new entries with their ids, in
-   * order. A cancel of an unknown id is refused.
+   * order. A cancel of an unknown id is refused. `dryRun` checks it all and gives the ids it would
+   * give without saving anything (a tool script's wakeups are staged until it ends, §32.3a).
    */
-  async applyWakeups(o: { add: ReadonlyArray<Record<string, unknown>>; cancel: readonly string[] }, env: CheckEnv): Promise<{ added: WakeupEntry[]; cancelled: string[]; entries: WakeupEntry[] }> {
+  async applyWakeups(o: { add: ReadonlyArray<Record<string, unknown>>; cancel: readonly string[]; dryRun?: boolean }, env: CheckEnv): Promise<{ added: WakeupEntry[]; cancelled: string[]; entries: WakeupEntry[] }> {
     return this.locked(async () => {
       const p = this.life(WAKEUPS_FILE);
       const text = await this.files.readText(p).catch(() => undefined);
@@ -515,8 +516,10 @@ export class HomeStore {
       const special = await this.checkSpecial(p, raw, env);
       const data = special.data ?? raw;
       this.checkPlan([{ path: p, data, kind: "write" }], await this.snapshot());
-      await this.files.writeBytes(p, data);
-      await this.saveSpecialSide(special);
+      if (!o.dryRun) {
+        await this.files.writeBytes(p, data);
+        await this.saveSpecialSide(special);
+      }
       const entries = readWakeupEntries(data.toString("utf8"));
       return { added: entries.filter((entry) => !before.has(entry.id)), cancelled: [...o.cancel], entries };
     });
@@ -586,7 +589,7 @@ export class HomeStore {
    * untouched, her special files checked, the limits and names checked on the result, and nothing
    * changed under her since the command started. Journalled first (`journalId`, the tool call id).
    */
-  async applyChanges(changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string; deadlineMs?: number }): Promise<AppliedChanges & { profileChanged?: boolean }> {
+  async applyChanges(changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string; deadlineMs?: number; held?: boolean }): Promise<AppliedChanges & { profileChanged?: boolean }> {
     const entries = changes.writes.length + changes.deletes.length + changes.dirs.length;
     if (entries > MAX_CHANGE_SET_ENTRIES) {
       throw new HomeError(`error: the command changed ${entries} files and folders; at most ${MAX_CHANGE_SET_ENTRIES} can be saved at once`, "limit");
@@ -595,7 +598,7 @@ export class HomeStore {
     const inTime = () => {
       if (Date.now() > deadline) throw new HomeError("error: the changes took too long to check; save fewer files at once", "limit");
     };
-    return this.locked(async () => {
+    const body = async (): Promise<AppliedChanges & { profileChanged?: boolean }> => {
       const plan: Planned[] = [];
       const baseByKey = new Map([...base].map(([virtual, entry]) => [pathKey(virtual), entry] as const));
       const parse = async (virtual: string): Promise<HerPath> => {
@@ -677,7 +680,18 @@ export class HomeStore {
       // tells boot repair the changes were saved.
       await rename(journalFile, `${journalFile.slice(0, -".json".length)}${APPLIED_SUFFIX}`).catch(() => rm(journalFile, { force: true }));
       return applied;
-    });
+    };
+    // Inside `transaction` the lock is already held (it is not re-entrant).
+    return o.held ? body() : this.locked(body);
+  }
+
+  /**
+   * Runs `work` holding her home lock; its `commit` applies a change set under that same hold, so what
+   * `work` read, matched and checked is what is saved (`apply_patch`, §32.3a). `work` must not call
+   * anything else that takes the lock.
+   */
+  transaction<T>(work: (commit: (changes: ChangeSet, base: ChangeBase, env: CheckEnv, o: { journalId: string }) => Promise<AppliedChanges & { profileChanged?: boolean }>) => Promise<T>): Promise<T> {
+    return this.locked(() => work((changes, base, env, o) => this.applyChanges(changes, base, env, { ...o, held: true })));
   }
 
   /** A journal's path under her current slug (she may have been renamed between a crash and boot). */

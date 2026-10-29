@@ -28,6 +28,7 @@ import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { errorTurn, hangingTurn, textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { closeWorlds, homeOf, lifeWorld, ROOM_KEY, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, scriptInput } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -83,10 +84,10 @@ describe("the rest notice (§19.2, §19.3)", () => {
     const w = await lifeWorld(roots, {
       scripts: [
         // Her turn: one tool round, then a reply; a wake arrives while she writes it.
-        play(toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }])),
+        play(toolTurn([{ name: "Read", input: scriptInput.readFile("~/MEMORY.md") }])),
         queueingWake(() => world!, "second", textTurn("done here")),
         // The rest turn: she saves a note, tries to message someone, then writes her summary.
-        play(toolTurn([{ name: "Write", input: { file_path: "~/saturday.md", content: "Saturday: lemon tarts\n" } }, { name: "SendMessage", input: { place: "bake-club/#general", text: "brb" } }, { name: "Web", input: { script: 'return await search("lemon tarts")' } }])),
+        play(toolTurn([{ name: "Edit", input: scriptInput.applyPatch(addFilePatch("~/saturday.md", "Saturday: lemon tarts\n")) }, { name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "brb" }]) }, { name: "Web", input: scriptInput.web({ search_query: [{ q: "lemon tarts" }] }) }])),
         thenSmall(textTurn(SUMMARY)),
         // The wake's turn, in the new epoch.
         play(textTurn("hello again"))

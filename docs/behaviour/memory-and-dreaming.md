@@ -70,10 +70,10 @@ to its waifu and to nobody else.
   here while you were in this room)".
 - Folders follow her handles; a conversation she has no handle for reads `server-xxxx/channel-xxxx`
   or `dm/user-xxxx`.
-- Read-only for every tool: `Write`/`Edit` answer `error: transcripts are read-only`; Bash writes fail
+- Read-only for every tool: an `Edit` patch answers `transcripts are read-only`; Bash writes fail
   with `EROFS`; `SendMessage` refuses a transcript path. `cp` out of `/transcripts` into her folders
   works (a copy of a DM day stays private).
-- She searches it with `Read`, Bash (`grep -r`, `cat`, Python) or `ReadMessages` `people:`/`search:`
+- She searches it with `Read`, Bash (`grep -r`, `cat`, Python) or `read_messages` `people`/`search`
   ([messages-and-refs.md](messages-and-refs.md)).
 
 Known limitations (spec §18.9): after a host time-zone change, lines near midnight stay in the old
@@ -125,7 +125,7 @@ The instruction, verbatim in substance:
 4. keep MEMORY.md short with valid links; merge duplicates;
 5. reply with one short line saying what changed. Leave `~/life/` alone.
 
-**Tools**: `Read`, `Write`, `Edit`, `Bash` over her home with `/transcripts` read-only; no messaging,
+**Tools**: `Read`, `Edit` (`apply_patch`), `Bash` over her home with `/transcripts` read-only; no messaging,
 no web. Every change under `~/life/` is refused (`DREAM_LIFE_REFUSED`) and so is `profile.json`.
 Images are always OCR text. Round cap `life.dreamMaxRounds` (60).
 

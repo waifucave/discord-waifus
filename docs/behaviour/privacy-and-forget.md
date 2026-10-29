@@ -10,10 +10,12 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 - A **DM turn**: a turn whose wakes include a DM place (`dmWakes`, also a morning batch that shows
   anything from a DM: `wake.dm`, and a `wakeup_error` or `watch_timeout` wake of a watch on a DM or
   on "everywhere" (not a plain `[]` timer), whose error or note may quote one), or in which any tool call resolved to a DM place (`dmCalls`,
-  recorded while the tools ran). Outside DM turns, a single call that touched a DM stays hidden with
+  recorded while the tools ran; a tool script (§32) is also one when it names a DM anywhere in its
+  text or in any call's argument, even when it then fails or doesn't parse; a call that throws keeps
+  the places it touched before it threw). Outside DM turns, a single call that touched a DM stays hidden with
   its result. Older lines without the records fall back to matching any string argument that names
   `dm/…` or `dm_…`.
-- "Touched a DM" includes reading/sending/reacting in a DM, reading/writing/attaching a DM-origin file,
+- "Touched a DM" includes reading/sending/reacting in a DM (any call of the script, also one before a later error), reading/writing/attaching a DM-origin file,
   a Bash command that listed, read, moved or named anything under `/tmp/dm/` or `/transcripts/dm/` or
   a DM file's path, an `everywhere` search whose result includes a DM, a `Wakeup` that watches a DM,
   and a `Read` or Bash read of `~/life/wakeups.json` while it holds a wakeup watching a DM (or an

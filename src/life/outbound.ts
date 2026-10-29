@@ -7,6 +7,8 @@ import { stripLeakedContextHeader } from "../discord/normalization.js";
 const MS_PER_CHAR = 30;
 const MIN_DELAY_MS = 600;
 const MAX_DELAY_MS = 4500;
+/** The longest typing before one message. */
+export const MAX_TYPING_DELAY_MS = MAX_DELAY_MS;
 
 /** How long to show "typing…" before sending `text`: 30 ms per character, 0.6–4.5 s. */
 export function typingDelayMs(text: string): number {

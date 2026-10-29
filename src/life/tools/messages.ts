@@ -22,7 +22,7 @@ import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
 import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
-import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
+import { isOnlyToolCallSyntax, MAX_TYPING_DELAY_MS, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
 import { placeLabel, placesWithHandles, refreshPlaces, resolvePlace, type ResolvedPlace } from "../places.js";
 import { notePlace } from "../placeRecorder.js";
@@ -43,12 +43,13 @@ import {
 import { forgottenLine } from "../transcripts/forget.js";
 import { transcriptChatLine, transcriptFolders, type TranscriptFolder } from "../transcripts/view.js";
 import { transcriptText } from "../transcripts/writer.js";
-import { DEFAULT_MAX, DEFAULT_RANGE_MAX, fold, matchesSearch, MAX_MESSAGES, parseAnchor, parseReadQuery, QUERY_SYNTAX, type ReadQuery } from "./readQuery.js";
+import { anchorBounds, DEFAULT_MAX, DEFAULT_RANGE_MAX, fold, matchesSearch, MAX_MESSAGES, parseAnchor, parseReadQuery, QUERY_SYNTAX, wordsOf, type ReadQuery } from "./readQuery.js";
 import type { LifeDeps } from "../deps.js";
 import { noteDmFile, pathArg, storeOf } from "./files.js";
 import { transcriptsSegments } from "../transcripts/view.js";
 import { messagePreview } from "../notifications.js";
-import { legacySteps, parseSendScript, scriptSends, sendLabel, type ScriptReact, type ScriptSend, type ScriptStep, type ScriptTyping, type ScriptWait } from "./sendScript.js";
+import { legacySteps, MAX_MESSAGE_CHARS, MAX_TYPING_SECONDS, MAX_WAIT_SECONDS, MAX_WAIT_TOTAL_SECONDS, parseSendScript, scriptSends, sendLabel, type ScriptReact, type ScriptSend, type ScriptStep, type ScriptTyping, type ScriptWait } from "./sendScript.js";
+import { failed, familyLines, intArg, numberArg, objectArg, outputText, runScriptTool, scriptSchema, ScriptError, textArg, type ScriptRun } from "./script.js";
 import { CANNOT_POST, MESSAGE_TOO_OLD, parseInput, toolError, UNKNOWN_PLACE, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
 
 /** At most this many attachments are downloaded by one ReadMessages call (§16.3.1). */
@@ -175,15 +176,26 @@ export async function readMessagesTool(input: unknown, ctx: ToolContext): Promis
     query.before = anchor;
   }
   const filtered = query.people !== undefined || query.search !== undefined;
-  const wanted = args.place.trim();
+  if (args.place.trim().toLowerCase() === EVERYWHERE && !filtered) return toolError(`error: "everywhere" needs people: or search: in the query\n${QUERY_SYNTAX}`);
+  return readMessagesQuery(ctx, args.place, query);
+}
+
+/**
+ * The read itself (§22.2): `wanted` is a handle, handles separated by commas (at most 5) or
+ * `everywhere` (with people or search).
+ */
+async function readMessagesQuery(ctx: ToolContext, wantedPlaces: string, query: ReadQuery): Promise<ToolOutput> {
+  const { deps, waifu } = ctx;
+  const filtered = query.people !== undefined || query.search !== undefined;
+  const wanted = wantedPlaces.trim();
   let places: ResolvedPlace[];
   const everywhere = wanted.toLowerCase() === EVERYWHERE;
   if (everywhere) {
-    if (!filtered) return toolError(`error: "everywhere" needs people: or search: in the query\n${QUERY_SYNTAX}`);
+    if (!filtered) return toolError(`error: "everywhere" needs people or search`);
     places = await placesWithHandles(deps.storage, waifu.id);
   } else {
     const handles = wanted.split(",").map((handle) => handle.trim()).filter((handle) => handle.length > 0);
-    if (handles.length > MAX_READ_PLACES) return toolError(`error: at most ${MAX_READ_PLACES} places at once (or "everywhere" with people: or search:)`);
+    if (handles.length > MAX_READ_PLACES) return toolError(`error: at most ${MAX_READ_PLACES} places at once (or "everywhere" with people or search)`);
     places = [];
     for (const handle of handles) {
       const place = await resolvePlace(deps.storage, waifu.id, handle);
@@ -964,76 +976,103 @@ export function sendCallSteps(input: unknown, maxFiles: number): ScriptStep[] | 
   return steps.ok ? steps.steps : undefined;
 }
 
+type SendStop =
+  | { at: number; line: number; kind: "wait"; seconds: number; came: RawDiscordMessage[] }
+  | { at: number; line: number; kind: "failed"; reason: string }
+  | { at: number; line: number; kind: "interrupted" };
+
+/** What one send ran to (§27.1): what went out, why it stopped, what was left. */
+export type SendOutcome = {
+  place: ResolvedPlace;
+  sentIds: string[];
+  refs: Map<string, string>;
+  reacted: string[];
+  stop?: SendStop;
+  /** What came in during the wait that stopped it, as notification lines. */
+  cameLines: string[];
+  /** The sends and reactions left after the stop (`not sent: …`, `not done: react #k2 👍`). */
+  left: string[];
+  nudge?: string;
+  /** How many steps the send had (one step alone reports an error without its line). */
+  steps: number;
+};
+
 /**
- * SendMessage (§27): the whole script is checked first (place, permission, caps, every line's text,
- * refs, files and emoji); any error refuses it with its line number and nothing is sent. Then the
- * lines run in order: typing before each message as a person would take, a wait that someone else
- * cuts short stops the rest. Each send has its own intent line and done line (boot repair, §5.7).
+ * One send to one place (§27, §32.2): the whole of it is checked first (permission, caps, every
+ * message's text, refs, files and emoji); any error refuses it (`where(line)` names the step) and
+ * nothing is sent. Then the steps run in order: typing before each message as a person would take, a
+ * wait that someone else cuts short stops the rest. Each send has its own intent line and done line
+ * (boot repair, §5.7); `beforeSending` runs once everything is checked, before the first Discord call.
  */
-export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
-  const parsed = parseInput(SendInput, input);
-  if (!parsed.ok) return parsed.output;
+export async function runSend(
+  ctx: ToolContext,
+  placeArg: string,
+  place: ResolvedPlace,
+  steps: readonly ScriptStep[],
+  o: {
+    where: (line: number) => string;
+    beforeSending?: (ready: ReadonlyArray<{ step: ScriptStep }>) => Promise<void>;
+    /** Each message Discord took, at once (so a failure after it never loses it). */
+    onSent?: (messageId: string) => void;
+  }
+): Promise<SendOutcome | { error: string }> {
   const { deps, waifu, turn } = ctx;
   const life = deps.config().life;
-  // The place first: a refused DM script is still a DM call (D14: resolving it records the place).
-  const place = await resolvePlace(deps.storage, waifu.id, parsed.value.place);
-  if (!place) return toolError(UNKNOWN_PLACE);
-  const script = stepsOf(parsed.value, life.send.maxFiles);
-  if (!script.ok) return lineError(script.line, script.error);
-  const steps = script.steps;
+  const stepError = (line: number, message: string) => ({ error: `error: ${o.where(line)}: ${message.replace(/^error:\s*/u, "")}; nothing was sent` });
   // Without a bot of her own she cannot post at all (never through the House bot): she is told,
   // and so is the owner (review M12).
   if (!waifu.botId) {
     deps.notices?.set(`no-bot:${waifu.id}`, `${waifu.displayName} has no Discord bot of her own, so she cannot post; link one on the Cast page.`);
-    return toolError(NO_BOT);
+    return { error: `error: ${NO_BOT}` };
   }
   const sends = scriptSends(steps);
-  if (sends.length > 0 ? (place.kind === "dm" ? !(await dmSendAllowed(deps, ctx, place)) : place.paused === true) : place.paused === true) return toolError(CANNOT_POST);
+  if (sends.length > 0 ? (place.kind === "dm" ? !(await dmSendAllowed(deps, ctx, place)) : place.paused === true) : place.paused === true) return { error: CANNOT_POST };
   const maxPlaces = life.maxSendPlacesPerTurn;
-  if (sends.length > 0 && !turn.sentPlaces.has(place.placeKey) && turn.sentPlaces.size >= maxPlaces) return toolError(`you've already written in ${maxPlaces} places this turn`);
+  if (sends.length > 0 && !turn.sentPlaces.has(place.placeKey) && turn.sentPlaces.size >= maxPlaces) return { error: `error: you've already written in ${maxPlaces} places this turn` };
   const sentSoFar = turn.sends ?? 0;
-  if (sends.length > 0 && sentSoFar >= life.maxSendsPerTurn) return toolError(`you've already sent ${life.maxSendsPerTurn} messages this turn; wait for replies`);
+  if (sends.length > 0 && sentSoFar >= life.maxSendsPerTurn) return { error: `error: you've already sent ${life.maxSendsPerTurn} messages this turn; wait for replies` };
   if (sentSoFar + sends.length > life.maxSendsPerTurn) {
     const left = life.maxSendsPerTurn - sentSoFar;
-    return toolError(`this script sends ${sends.length} messages, and you can send ${left} more this turn; nothing was sent`);
+    return { error: `error: this script sends ${sends.length} messages, and you can send ${left} more this turn; nothing was sent` };
   }
-  // Every line checked before anything goes out.
+  // Every step checked before anything goes out.
   const ready: ReadyStep[] = [];
   for (const step of steps) {
     if (step.kind === "send") {
       const text = step.text ? stripCopiedHeader(step.text, [waifu.name, waifu.displayName]) : "";
-      if (step.text && !text && step.files.length === 0) return lineError(step.line, "there is nothing left to send on that line");
-      if (text && isOnlyToolCallSyntax(text, ctx.toolNames)) return lineError(step.line, "that looks like a tool call, not a message; write what you want to say");
+      if (step.text && !text && step.files.length === 0) return stepError(step.line, "there is nothing left to send on that line");
+      if (text && isOnlyToolCallSyntax(text, ctx.toolNames)) return stepError(step.line, "that looks like a tool call, not a message; write what you want to say");
       let replyToId: string | undefined;
       if (step.replyTo) {
         replyToId = await messageIdForRef(deps, place, step.replyTo.ref);
-        if (!replyToId) return lineError(step.replyTo.line, `#${step.replyTo.ref}: message too old`);
+        if (!replyToId) return stepError(step.replyTo.line, `#${step.replyTo.ref}: message too old`);
       }
       const attached = step.files.length > 0 ? await attachments(ctx, step.files.map((file) => file.path)) : { files: [] };
-      if (attached.refused) return lineError(step.files[attached.refused.index]!.line, `can't attach ${attached.refused.reason}`);
+      if (attached.refused) return stepError(step.files[attached.refused.index]!.line, `can't attach ${attached.refused.reason}`);
       ready.push({ step, text, ...(replyToId ? { replyToId } : {}), files: attached.files });
     } else if (step.kind === "react") {
       const messageId = await messageIdForRef(deps, place, step.ref);
-      if (!messageId) return lineError(step.line, `#${step.ref}: message too old`);
+      if (!messageId) return stepError(step.line, `#${step.ref}: message too old`);
       const emoji = await reactionEmoji(deps, place, step.emoji);
-      if (!emoji.ok) return lineError(step.line, emoji.error);
+      if (!emoji.ok) return stepError(step.line, emoji.error);
       ready.push({ step, messageId, emoji: emoji.emoji });
     } else ready.push({ step });
   }
   const discord = deps.discord();
-  if (!discord) return toolError("you can't reach Discord right now");
-  if (ready.some((item) => item.step.kind === "react") && !discord.addReaction) return toolError("you can't react right now");
+  if (!discord) return { error: "error: you can't reach Discord right now" };
+  if (ready.some((item) => item.step.kind === "react") && !discord.addReaction) return { error: "error: you can't react right now" };
+  await o.beforeSending?.(ready);
   const sentIds: string[] = [];
   const sentTexts: string[] = [];
   const reacted: string[] = [];
-  let stop: { at: number; line: number; kind: "wait"; seconds: number; came: RawDiscordMessage[] } | { at: number; line: number; kind: "failed"; reason: string } | { at: number; line: number; kind: "interrupted" } | undefined;
+  let stop: SendStop | undefined;
   // After a wait or a typing line, the place is looked at again before the next send or reaction:
   // a server paused, a DM closed or a place no longer hers meanwhile stops the rest (§27.4).
   let recheck = false;
   const stillOpen = async (forSend: boolean): Promise<boolean> => {
     if (deps.isPaused()) return false;
     refreshPlaces(deps.storage, waifu.id);
-    const current = await resolvePlace(deps.storage, waifu.id, parsed.value.place).catch(() => undefined);
+    const current = await resolvePlace(deps.storage, waifu.id, placeArg).catch(() => undefined);
     if (!current || current.placeKey !== place.placeKey) return false;
     if (current.kind === "dm") return !forSend || (await dmSendAllowed(deps, ctx, current).catch(() => false));
     return current.paused !== true;
@@ -1144,98 +1183,353 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
       break;
     }
     const now = deps.now();
-    if (place.kind === "dm") {
-      const userId = place.userId!;
-      // One reply per turn per user counts toward the rate limit (§4.4 guard 2).
-      if (!turn.dmUsersSent.has(userId)) {
-        await updateDmLimit(deps.storage, userId, waifu.id, (limits) => {
-          const assessed = assessDmLimit([...limits.replyTimestamps, now.toISOString()], waifu.dm.rateLimit, now);
-          return { ...limits, replyTimestamps: assessed.pruned };
-        });
-      }
-      turn.dmUsersSent.add(userId);
-      await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
-    }
+    // Discord took it: it is sent, whatever the bookkeeping after it does (a failure there is logged,
+    // never a lost send that she might send again).
     turn.sentPlaces.add(place.placeKey);
     turn.sends = (turn.sends ?? 0) + 1;
     sentIds.push(messageId);
     sentTexts.push(send.text);
-    if (ctx.intent) await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: now.toISOString(), line: step.line, lineDone: true, resultRef: messageId });
-    deps.notices?.clear(`no-bot:${waifu.id}`);
-    // Her message gets its ref after the messages before it get theirs (refs stay in message order, §4.7).
-    await refsThrough(deps, place, [messageId]);
-    await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
+    o.onSent?.(messageId);
+    try {
+      if (place.kind === "dm") {
+        const userId = place.userId!;
+        // One reply per turn per user counts toward the rate limit (§4.4 guard 2).
+        if (!turn.dmUsersSent.has(userId)) {
+          turn.dmUsersSent.add(userId);
+          await updateDmLimit(deps.storage, userId, waifu.id, (limits) => {
+            const assessed = assessDmLimit([...limits.replyTimestamps, now.toISOString()], waifu.dm.rateLimit, now);
+            return { ...limits, replyTimestamps: assessed.pruned };
+          });
+        }
+        await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
+      }
+      if (ctx.intent) await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: now.toISOString(), line: step.line, lineDone: true, resultRef: messageId });
+      deps.notices?.clear(`no-bot:${waifu.id}`);
+      // Her message gets its ref after the messages before it get theirs (refs stay in message order, §4.7).
+      await refsThrough(deps, place, [messageId]);
+      await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
+    } catch (error) {
+      deps.logger.warn("Life send bookkeeping failed", { waifuId: waifu.id, placeKey: place.placeKey, messageId, message: error instanceof Error ? error.message : String(error) });
+    }
     // A room's handle lets the dashboard name the place; a DM's handle would name the person.
     deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });
   }
   const refs = sentIds.length > 0 ? await refsThrough(deps, place, sentIds).catch(() => new Map<string, string>()) : new Map<string, string>();
+  const left: string[] = [];
+  if (stop) {
+    for (const item of ready.slice(stop.at)) {
+      if (item.step.kind === "send") left.push(`not sent: ${sendLabel(item.step)}`);
+      else if (item.step.kind === "react") left.push(`not done: react #${item.step.ref} ${item.step.emoji}`);
+    }
+  }
+  const cameLines = stop?.kind === "wait" ? await cameInLines(ctx, place, stop.came).catch(() => stop.came.map(() => "- (a message)")) : [];
+  const nudge = sentTexts.length > 0 ? await lengthNudge(ctx, place, sentTexts).catch(() => undefined) : undefined;
+  return { place, sentIds, refs, reacted, ...(stop ? { stop } : {}), cameLines, left, ...(nudge ? { nudge } : {}), steps: ready.length };
+}
+
+/** Whether a send did nothing and stopped for a reason other than a wait (an error for her). */
+function sendFailed(outcome: SendOutcome): string | undefined {
+  const { stop } = outcome;
+  if (outcome.sentIds.length > 0 || outcome.reacted.length > 0 || !stop || stop.kind === "wait") return undefined;
+  return stop.kind === "interrupted" ? "interrupted before sending" : stop.reason;
+}
+
+/**
+ * SendMessage with its pre-§32 arguments (`place` and a §27 script of lines, or `text`/`reply_to`/
+ * `files`): a log line from before, run and reported as then.
+ */
+export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  const parsed = parseInput(SendInput, input);
+  if (!parsed.ok) return parsed.output;
+  // The place first: a refused DM script is still a DM call (D14: resolving it records the place).
+  const place = await resolvePlace(ctx.deps.storage, ctx.waifu.id, parsed.value.place);
+  if (!place) return toolError(UNKNOWN_PLACE);
+  const script = stepsOf(parsed.value, ctx.deps.config().life.send.maxFiles);
+  if (!script.ok) return lineError(script.line, script.error);
+  const outcome = await runSend(ctx, parsed.value.place, place, script.steps, { where: (line) => `line ${line}` });
+  if ("error" in outcome) return toolError(outcome.error);
+  const failedReason = sendFailed(outcome);
+  if (failedReason !== undefined) {
+    if (outcome.stop?.kind === "interrupted") return toolError(failedReason);
+    // One line alone says just what happened; in a longer script, which line and that nothing went out.
+    return toolError(outcome.steps === 1 ? failedReason : `line ${outcome.stop!.line}: ${failedReason}; nothing was sent`);
+  }
   const done: string[] = [];
-  if (sentIds.length > 0) done.push(`sent ${sentIds.map((id) => (refs.get(id) ? `#${refs.get(id)}` : "a message")).join(" ")}`);
-  if (reacted.length > 0) done.push(`reacted to ${reacted.map((ref) => `#${ref}`).join(" ")}`);
+  if (outcome.sentIds.length > 0) done.push(`sent ${outcome.sentIds.map((id) => (outcome.refs.get(id) ? `#${outcome.refs.get(id)}` : "a message")).join(" ")}`);
+  if (outcome.reacted.length > 0) done.push(`reacted to ${outcome.reacted.map((ref) => `#${ref}`).join(" ")}`);
   const lines: string[] = [];
-  const came = stop?.kind === "wait" ? stop.came : [];
+  const stop = outcome.stop;
   if (stop) {
     const head = done.join(", ");
     const what = stop.kind === "wait" ? `stopped at line ${stop.line} (wait ${stop.seconds}):` : stop.kind === "failed" ? `line ${stop.line} failed: ${stop.reason}` : `interrupted at line ${stop.line}`;
     lines.push(head ? `${head}; ${what}` : what);
-    if (stop.kind === "wait") lines.push(...(await cameInLines(ctx, place, stop.came)));
-    for (const item of ready.slice(stop.at)) {
-      if (item.step.kind === "send") lines.push(`not sent: ${sendLabel(item.step)}`);
-      else if (item.step.kind === "react") lines.push(`not done: react #${item.step.ref} ${item.step.emoji}`);
-    }
+    lines.push(...outcome.cameLines, ...outcome.left);
   } else lines.push(done.join(", "));
-  const nudge = sentTexts.length > 0 ? await lengthNudge(ctx, place, sentTexts) : undefined;
-  if (nudge) lines.push(nudge);
-  const nothingDone = sentIds.length === 0 && reacted.length === 0;
-  if (nothingDone && stop && stop.kind !== "wait") {
-    // One line alone says just what happened; in a longer script, which line and that nothing went out.
-    if (stop.kind === "interrupted") return toolError("interrupted before sending");
-    return toolError(ready.length === 1 ? stop.reason : `line ${stop.line}: ${stop.reason}; nothing was sent`);
-  }
+  if (outcome.nudge) lines.push(outcome.nudge);
+  const came = stop?.kind === "wait" ? stop.came : [];
   return {
     content: lines.join("\n"),
-    ...(sentIds.length > 0 ? { resultRef: sentIds.join(",") } : {}),
-    messageIds: [...sentIds, ...came.map((message) => message.id)]
+    ...(outcome.sentIds.length > 0 ? { resultRef: outcome.sentIds.join(","), sentPlaces: [place.placeKey] } : {}),
+    messageIds: [...outcome.sentIds, ...came.map((message) => message.id)]
   };
 }
 
-function readMessagesDescription(retentionDays: number): string {
-  return [
-    `Read messages in your places (a room, thread or private chat; up to 5 handles separated by commas, or everywhere with people: or search:). Lines look like \`[14:02 #k3] Kevin ↩#k1: text\`; \`#k3\` is the message's ref. Files people sent are saved in /tmp ${keptForText(retentionDays)} and shown by their path; open them with Read.`,
-    "query (optional; empty = the latest messages), terms in any order:",
-    "before|after|around <#ref | 2026-10-25 17:02 | 2026-10-25 | 17:02 | yesterday 17:02> (a #ref is included; before + after = a range) · max:N (1–100, default 15)",
-    "people:Name, Name (you = yourself) · search:words, other words (any one of them; every word of it must appear)",
-    "Examples: query \"around #k3 max:10\"; place \"everywhere\" with query \"people:Kevin search:exam, test after 2026-10-20\"."
-  ].join("\n");
+// ---- SendMessage: tools.send_message (§32.2) ------------------------------------------------------------
+
+/** send_message calls in one script (several places within the per-turn place cap). */
+export const MAX_SEND_CALLS = 10;
+const SEND_FIELDS = ["place", "messages"] as const;
+/**
+ * A SendMessage script's wall clock: its 120 s of waits and typing, the typing before each message the
+ * turn may still send (up to 4.5 s each), and 30 s for Discord itself (217.5 s at the default 15), so
+ * a script that keeps to its caps is never cut off part way.
+ */
+export function sendScriptWallMs(maxSends: number): number {
+  return (MAX_WAIT_TOTAL_SECONDS * 1000) + Math.max(0, maxSends) * MAX_TYPING_DELAY_MS + 30_000;
 }
 
-const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to and the files in ~/life/ can't be attached.";
-
-/** SendMessage's description (§27.1); the attach line only when attaching is on. */
-function sendDescription(maxFiles: number): string {
-  return [
-    "Send messages to one place. This is the only way anyone sees what you write. The script is one command per line:",
-    "m: <text> — one message (an indented line after it continues it, for the rare poem or list)",
-    "reply #k3 — the next message replies to #k3",
-    ...(maxFiles > 0 ? [`attach <path> — right after an m: line, a file from your folders for that message (at most ${maxFiles}); on its own, a message with just the file. ${PRIVATE_ATTACH_TEXT} To post something you write as a file, save it with Write first.`] : []),
-    "react #k3 <emoji> — a reaction (a unicode emoji or :server_emoji:)",
-    "wait <1-60> — pause that many seconds; if anyone else writes here meanwhile, the rest isn't sent and you see what came in",
-    "typing <1-10> — show typing for that many seconds (waits and typing: at most 120 seconds in one script)",
-    "Keep each message as short as a chat line and use several m: lines instead of one long one. Use <@Name> to mention someone who is there. If a line is wrong, nothing is sent."
-  ].join("\n");
+/** Her `messages` items as steps (§27's), numbered across the whole script for the intents. */
+function stepsOfItems(items: unknown, firstLine: number, maxFiles: number): { steps: ScriptStep[]; labels: Map<number, string>; waited: number } {
+  if (!Array.isArray(items) || items.length === 0) throw new ScriptError('tools.send_message: messages is a list, like [{ text: "hi" }]', "TypeError");
+  if (items.length > 40) throw new ScriptError("tools.send_message: at most 40 items in messages", "RangeError");
+  const steps: ScriptStep[] = [];
+  const labels = new Map<number, string>();
+  let waited = 0;
+  items.forEach((raw, index) => {
+    const label = `messages[${index}]`;
+    const line = firstLine + index;
+    labels.set(line, label);
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ScriptError(`${label} is an object: { text }, { attach }, { react, to }, { wait } or { typing }`, "TypeError");
+    const item = Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([, value]) => value !== null && value !== undefined));
+    const keys = Object.keys(item);
+    const only = (allowed: readonly string[]) => {
+      const extra = keys.find((key) => !allowed.includes(key));
+      if (extra !== undefined) throw new ScriptError(`${label}: unknown field ${JSON.stringify(extra.slice(0, 40))} here (it takes ${allowed.join(", ")})`, "TypeError");
+    };
+    if ("text" in item || ("attach" in item && !("react" in item))) {
+      only(["text", "reply_to", "attach"]);
+      const text = item["text"] === undefined ? "" : textArg(`${label}.text`, item["text"], MAX_MESSAGE_CHARS)!.trim();
+      const attach = item["attach"] === undefined ? [] : item["attach"];
+      if (!Array.isArray(attach) || !attach.every((path) => typeof path === "string" && path.trim() !== "" && path.length <= 2_000)) throw new ScriptError(`${label}.attach is a list of paths in your folders, like ["~/cake.png"]`, "TypeError");
+      if (attach.length > 0 && maxFiles <= 0) throw new ScriptError(`${label}: files can't be attached`, "TypeError");
+      if (attach.length > maxFiles) throw new ScriptError(`${label}: at most ${maxFiles} file${maxFiles === 1 ? "" : "s"} per message`, "RangeError");
+      if (!text && attach.length === 0) throw new ScriptError(`${label}: text is the message`, "TypeError");
+      let replyTo: { ref: string; line: number } | undefined;
+      if (item["reply_to"] !== undefined) {
+        const ref = typeof item["reply_to"] === "string" ? refOfArg(item["reply_to"]) : undefined;
+        if (!ref) throw new ScriptError(`${label}.reply_to is a message's ref, like "#k3"`, "TypeError");
+        replyTo = { ref, line };
+      }
+      steps.push({ kind: "send", line, text, files: (attach as string[]).map((path) => ({ path: path.trim(), line })), ...(replyTo ? { replyTo } : {}) });
+      return;
+    }
+    if ("react" in item) {
+      only(["react", "to"]);
+      const ref = typeof item["to"] === "string" ? refOfArg(item["to"]) : undefined;
+      if (!ref) throw new ScriptError(`${label}.to is the ref of the message to react to, like "#k3"`, "TypeError");
+      const emoji = textArg(`${label}.react`, item["react"], 100)!;
+      steps.push({ kind: "react", line, ref, emoji: emoji.trim() });
+      return;
+    }
+    if ("wait" in item) {
+      only(["wait"]);
+      const seconds = numberArg(`${label}.wait (seconds)`, item["wait"], 1, MAX_WAIT_SECONDS)!;
+      waited += seconds;
+      steps.push({ kind: "wait", line, seconds });
+      return;
+    }
+    if ("typing" in item) {
+      only(["typing"]);
+      const seconds = numberArg(`${label}.typing (seconds)`, item["typing"], 1, MAX_TYPING_SECONDS)!;
+      waited += seconds;
+      steps.push({ kind: "typing", line, seconds });
+      return;
+    }
+    throw new ScriptError(`${label} is { text, reply_to, attach }, { attach }, { react, to }, { wait } or { typing }`, "TypeError");
+  });
+  if (!steps.some((step) => step.kind === "send" || step.kind === "react")) throw new ScriptError('tools.send_message: there is nothing to send: add { text: "…" }', "TypeError");
+  return { steps, labels, waited };
 }
 
-/** SendMessage's input schema (§27.1); attach only when attaching is on. */
-function sendSchema(maxFiles: number): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: {
-      place: { type: "string", description: "A place handle." },
-      script: { type: "string", description: `One command per line: m: <text>, reply #ref, ${maxFiles > 0 ? "attach <path>, " : ""}react #ref <emoji>, wait <seconds>, typing <seconds>.` }
-    },
-    required: ["place", "script"],
-    additionalProperties: false
-  };
+function refOfArg(raw: string): string | undefined {
+  const ref = raw.trim().replace(/^#/u, "");
+  return /^[0-9a-z]{1,12}$/iu.test(ref) ? ref.toLowerCase() : undefined;
+}
+
+/** The script's send state: its calls run one at a time, numbered, its waits and typing counted together. */
+type SendScript = { queue: Promise<unknown>; calls: number; started: number; nextLine: number; waited: number };
+
+/** One `tools.send_message({ place, messages })` (§32.2). */
+async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, script: SendScript): Promise<Record<string, unknown>> {
+  const o = objectArg("send_message", arg, SEND_FIELDS, '{ place: "bake-club/#general", messages: [{ text: "hi" }] }');
+  const placeArg = textArg("tools.send_message: place", o["place"], 200)!.trim();
+  // A call after the first looks again: the cast or a server paused, a DM closed meanwhile.
+  const later = (script.started += 1) > 1;
+  if (later) refreshPlaces(ctx.deps.storage, ctx.waifu.id);
+  // The place first: a refused DM call is still a DM call (D14: resolving it records the place).
+  const place = await resolvePlace(ctx.deps.storage, ctx.waifu.id, placeArg);
+  if (!place) throw new ScriptError(`tools.send_message: unknown place ${placeArg.slice(0, 80)}; see ~/life/places.md`);
+  if (later && ctx.deps.isPaused()) throw new ScriptError(`tools.send_message: ${CANNOT_POST.replace(/^error:\s*/u, "")}`);
+  const life = ctx.deps.config().life;
+  const firstLine = script.nextLine;
+  const { steps, labels, waited } = stepsOfItems(o["messages"], firstLine, life.send.maxFiles);
+  script.nextLine += steps.length;
+  // Waits and typing share one budget across the script (§27.1): it never holds her turn longer.
+  if (script.waited + waited > MAX_WAIT_TOTAL_SECONDS) throw new ScriptError(`tools.send_message: waiting and typing add up to ${script.waited + waited} seconds in this script; at most ${MAX_WAIT_TOTAL_SECONDS}`, "RangeError");
+  script.waited += waited;
+  const call = (script.calls += 1);
+  const where = (line: number) => labels.get(line) ?? "messages";
+  // What went out is recorded as it goes: a failure later never loses a sent message (§32.3a).
+  const sentSoFar: string[] = [];
+  let outcome: Awaited<ReturnType<typeof runSend>>;
+  try {
+    outcome = await runSend(ctx, placeArg, place, steps, {
+      where,
+      // Before the first Discord call: what this call means to send, for boot repair (§5.7).
+      beforeSending: async (ready) => {
+        if (!ctx.intent) return;
+        const sends = ready.flatMap((item) => (item.step.kind === "send" ? [{ line: item.step.line, text: item.step.text, files: item.step.files.map((file) => file.path) }] : []));
+        await appendIntent(ctx.deps.storage, ctx.waifu.id, { ...ctx.intent, at: ctx.deps.now().toISOString(), plan: { call, place: placeArg, sends } });
+      },
+      onSent: (id) => {
+        sentSoFar.push(id);
+        run.messageIds.push(id);
+        run.resultRefs.push(id);
+        run.sentPlaces.add(place.placeKey);
+      }
+    });
+  } catch (error) {
+    if (sentSoFar.length > 0) run.receipts.push(`send_message to ${placeArg}: sent ${sentSoFar.length} message${sentSoFar.length === 1 ? "" : "s"}, then something went wrong; the rest of that list was not sent`);
+    throw error;
+  }
+  if ("error" in outcome) throw new ScriptError(`tools.send_message: ${outcome.error.replace(/^error:\s*/u, "")}`);
+  if (ctx.intent && outcome.steps > 0) {
+    await appendIntent(ctx.deps.storage, ctx.waifu.id, { ...ctx.intent, at: ctx.deps.now().toISOString(), callDone: call, ...(outcome.sentIds.length > 0 ? { resultRef: outcome.sentIds.join(",") } : {}) }).catch((error: unknown) =>
+      ctx.deps.logger.warn("Life send intent failed", { waifuId: ctx.waifu.id, message: error instanceof Error ? error.message : String(error) })
+    );
+  }
+  const came = outcome.stop?.kind === "wait" ? outcome.stop.came : [];
+  run.messageIds.push(...came.map((message) => message.id));
+  const failedReason = sendFailed(outcome);
+  if (failedReason !== undefined) {
+    if (outcome.stop?.kind === "interrupted") throw new ScriptError(`tools.send_message: ${failedReason}`);
+    throw new ScriptError(`tools.send_message: ${outcome.steps === 1 ? failedReason : `${where(outcome.stop!.line)}: ${failedReason}; nothing was sent`}`);
+  }
+  const sent = outcome.sentIds.map((id) => (outcome.refs.get(id) ? `#${outcome.refs.get(id)}` : "a message"));
+  const reactions = outcome.reacted.map((ref) => `#${ref}`);
+  const result: Record<string, unknown> = { sent, reactions };
+  const stop = outcome.stop;
+  /** The item of this call's list at a script line (0-based). */
+  const indexOf = (line: number) => line - firstLine;
+  let ran = "the whole list ran";
+  if (stop) {
+    // A stopped wait ends this list only; the next item is where it stopped.
+    const next = stop.kind === "wait" ? indexOf(stop.line) + 1 : indexOf(stop.line);
+    if (stop.kind === "wait") result["stopped"] = { reason: "new_message", next_index: next, incoming: outcome.cameLines };
+    else if (stop.kind === "failed") result["stopped"] = { reason: "send_failed", next_index: next, error: stop.reason };
+    else result["stopped"] = { reason: "interrupted", next_index: next };
+    const why = stop.kind === "wait" ? "someone wrote during the wait" : stop.kind === "failed" ? stop.reason : "interrupted";
+    ran = next < steps.length ? `stopped (${why}): messages[${next}] and after were not sent` : `stopped (${why}) at its end`;
+  }
+  if (outcome.nudge) result["note"] = outcome.nudge;
+  const did = [sent.length > 0 ? `sent ${sent.join(" ")}` : "", reactions.length > 0 ? `reacted to ${reactions.join(" ")}` : ""].filter(Boolean).join(", ");
+  run.receipts.push(`send_message to ${placeArg}: ${did || "nothing sent"}; ${ran}`);
+  return result;
+}
+
+async function sendScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  // A call with a place is one from before §32 (a §27 script of lines, or one message).
+  if (input !== null && typeof input === "object" && "place" in input) return sendMessageTool(input, ctx);
+  const script: SendScript = { queue: Promise.resolve(), calls: 0, started: 0, nextLine: 1, waited: 0 };
+  return runScriptTool(input, ctx, {
+    tool: "SendMessage",
+    functions: [
+      {
+        name: "send_message",
+        max: MAX_SEND_CALLS,
+        maxArgChars: 128 * 1024,
+        // One at a time, in the order she called them (her sends, intents and waits stay in order).
+        // Each runs on the script's signal too: once the script is stopped, the call in progress
+        // stops before its next item and the ones still queued never start.
+        run: (arg, run, signal) => {
+          const callCtx: ToolContext = { ...ctx, signal: AbortSignal.any([ctx.signal, signal]) };
+          const next = script.queue.then(() => {
+            if (callCtx.signal.aborted) throw new ScriptError("tools.send_message: the script was stopped before this call started");
+            return sendMessageCall(arg, callCtx, run, script);
+          });
+          script.queue = next.catch(() => undefined);
+          return next;
+        }
+      }
+    ],
+    wallMs: sendScriptWallMs(ctx.deps.config().life.maxSendsPerTurn)
+  });
+}
+
+// ---- ReadMessages: tools.read_messages (§32.2) ----------------------------------------------------------
+
+/** read_messages calls in one script. */
+export const MAX_READ_CALLS = 5;
+/** What one ReadMessages script shows, at most (five calls of up to 100 messages in 5 places each). */
+export const READ_MESSAGES_OUTPUT_CHARS = 100_000;
+const READ_FIELDS = ["place", "around", "before", "after", "max", "people", "search"] as const;
+
+/** A list field given as one text or a list of texts. */
+function textList(where: string, value: unknown, max: number): string[] | undefined {
+  if (value === undefined) return undefined;
+  const list = typeof value === "string" ? [value] : value;
+  if (!Array.isArray(list) || list.length === 0 || list.length > max || !list.every((item) => typeof item === "string" && item.trim() !== "" && item.length <= 300)) {
+    throw new ScriptError(`${where} is text or a list of at most ${max} texts`, "TypeError");
+  }
+  return list as string[];
+}
+
+/** One `tools.read_messages({ place, around | before | after, max, people, search })`: the §22 lines. */
+async function readMessagesCall(arg: unknown, ctx: ToolContext, run: ScriptRun): Promise<string> {
+  const o = objectArg("read_messages", arg, READ_FIELDS, '{ place: "bake-club/#general" }');
+  const at = "tools.read_messages";
+  const now = ctx.deps.now();
+  const placeValue = o["place"];
+  const handles = typeof placeValue === "string" ? placeValue.split(",").map((handle) => handle.trim()).filter(Boolean) : textList(`${at}: place`, placeValue, MAX_READ_PLACES)?.map((handle) => handle.trim());
+  if (!handles || handles.length === 0) throw new ScriptError(`${at}: place is a place handle (like "bake-club/#general" or "dm/kevin"), a list of up to ${MAX_READ_PLACES}, or "everywhere"`, "TypeError");
+  const query: ReadQuery = {};
+  for (const key of ["around", "before", "after"] as const) {
+    const raw = o[key];
+    if (raw === undefined) continue;
+    const anchor = typeof raw === "string" ? parseAnchor(raw, { now, timeZone: ctx.deps.timeZone }) : undefined;
+    if (!anchor) throw new ScriptError(`${at}: ${key} is a #ref or a time, like "#k3", "2026-10-25 17:02", "2026-10-25", "17:02" or "yesterday 17:02"`, "TypeError");
+    query[key] = anchor;
+  }
+  if (query.around && (query.before || query.after)) throw new ScriptError(`${at}: around can't be combined with before or after`, "TypeError");
+  if (query.before && query.after) {
+    const lo = anchorBounds(query.after).from;
+    const hi = anchorBounds(query.before).to;
+    if (lo !== undefined && hi !== undefined && lo >= hi) throw new ScriptError(`${at}: the range is empty: after must be earlier than before`, "RangeError");
+  }
+  const max = intArg(`${at}: max`, o["max"], 1, MAX_MESSAGES);
+  if (max !== undefined) query.max = max;
+  const people = textList(`${at}: people`, o["people"], 20);
+  if (people) query.people = people.map((name) => fold(name.trim().replace(/^@/u, "")));
+  const search = textList(`${at}: search`, o["search"], 20);
+  if (search) {
+    const alternatives = search.map(wordsOf).filter((words) => words.length > 0);
+    if (alternatives.length === 0) throw new ScriptError(`${at}: search needs at least one word`, "TypeError");
+    query.search = alternatives;
+  }
+  const result = await readMessagesQuery(ctx, handles.join(","), query);
+  if (result.isError) failed(result, "read_messages");
+  if (result.messageIds?.length) run.messageIds.push(...result.messageIds);
+  return outputText(result);
+}
+
+async function readScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
+  // A call with a place is one from before §32 (`place` and a `query`).
+  if (input !== null && typeof input === "object" && "place" in input) return readMessagesTool(input, ctx);
+  return runScriptTool(input, ctx, {
+    tool: "ReadMessages",
+    functions: [{ name: "read_messages", max: MAX_READ_CALLS, run: (arg, run) => readMessagesCall(arg, ctx, run) }],
+    outputChars: READ_MESSAGES_OUTPUT_CHARS
+  });
 }
 
 // ---- react --------------------------------------------------------------------------------------
@@ -1270,34 +1564,54 @@ export async function reactTool(input: unknown, ctx: ToolContext): Promise<ToolO
   return { content: "reacted", resultRef: messageId };
 }
 
+function readMessagesDescription(retentionDays: number): string {
+  return [
+    `Read messages in your places (a room, thread or private chat). ${familyLines("read_messages")}`,
+    `tools.read_messages({ place, around, before, after, max, people, search }) returns the lines as text. Lines look like \`[14:02 #k3] Kevin ↩#k1: text\`; \`#k3\` is the message's ref. Files people sent are saved in /tmp ${keptForText(retentionDays)} and shown by their path; open them with Read.`,
+    '- place: a handle like "bake-club/#general" or "dm/kevin", a list of up to 5, or "everywhere" (with people or search).',
+    '- around, before or after: a #ref (included) or a time: "2026-10-25 17:02", "2026-10-25" (that day), "17:02", "yesterday 17:02"; before and after together are a range. Nothing: the latest messages.',
+    '- max: how many per place (1–100, default 15). people: names (you = yourself). search: words, or a list of alternatives (any one; every word of it must appear).',
+    `At most ${MAX_READ_CALLS} reads in one script.`,
+    'Example: return await tools.read_messages({ place: "bake-club/#general", around: "#k3", max: 10 })'
+  ].join("\n");
+}
+
+const PRIVATE_ATTACH_TEXT = "MEMORY.md, the notes it links to and the files in ~/life/ can't be attached.";
+
+/** SendMessage's description (§27.1, §32.2); attach only when attaching is on. */
+function sendDescription(maxFiles: number): string {
+  return [
+    `Send messages. This is the only way anyone sees what you write. ${familyLines("send_message")}`,
+    "tools.send_message({ place, messages }) sends to one place (call it again for another); messages is a list, in order:",
+    '- { text } — one message; add reply_to: "#k3" to reply to a message',
+    ...(maxFiles > 0 ? [`- attach: ["~/cake.png"] — a list of files from your folders with a message (at most ${maxFiles}); { attach } alone sends just the files. ${PRIVATE_ATTACH_TEXT} To post something you write as a file, add it with Edit first.`] : []),
+    '- { react: "😂", to: "#k4" } — a reaction (a unicode emoji or :server_emoji:)',
+    "- { wait: 5 } — pause 1–60 seconds; if anyone else writes there meanwhile, the rest isn't sent and you see what came in",
+    "- { typing: 3 } — show typing for 1–10 seconds (waits and typing: at most 120 seconds in one script)",
+    "Each item is exactly one of these. It returns { sent: [refs], reactions: [refs], stopped?: { reason, next_index, incoming } } (a wait someone cut short ends that list only). Keep each message as short as a chat line and send several instead of one long one. Use <@Name> to mention someone who is there. The whole list is checked first: if something is wrong, nothing of that call is sent. What was sent is listed after your output either way.",
+    'Example: return await tools.send_message({ place: "bake-club/#general", messages: [{ text: "wait what" }, { text: "kevin you said saturday" }, { wait: 5 }, { text: "ok fine i\'m in", reply_to: "#k3" }, { react: "😂", to: "#k4" }] })'
+  ].join("\n");
+}
+
 export const messageTools: LifeTool[] = [
   {
     name: "ReadMessages",
-    description:
-      readMessagesDescription(7),
+    description: readMessagesDescription(7),
     describe: (config) => readMessagesDescription(config.life.tmp.retentionDays),
-    inputSchema: {
-      type: "object",
-      properties: {
-        place: { type: "string", description: "A place handle from ~/life/places.md, like bake-club/#general or dm/kevin; several separated by commas (at most 5), or everywhere (with people: or search:)." },
-        query: { type: "string", description: "Optional: before|after|around an anchor, max:N, people:Names, search:words (see the description)." }
-      },
-      required: ["place"],
-      additionalProperties: false
-    },
+    inputSchema: scriptSchema("JavaScript calling tools.read_messages({ place, … }) and text()."),
     sideEffect: false,
-    run: readMessagesTool
+    run: readScriptTool
   },
   {
     name: "SendMessage",
     description: sendDescription(4),
     describe: (config) => sendDescription(config.life.send.maxFiles),
-    schemaFor: (config) => sendSchema(config.life.send.maxFiles),
-    inputSchema: sendSchema(4),
+    inputSchema: scriptSchema("JavaScript calling tools.send_message({ place, messages: [ … ] })."),
     sideEffect: true,
-    run: sendMessageTool
+    run: sendScriptTool
   },
   {
+    // Not offered since §32 (send_message reacts); kept so old log lines still read.
     name: "React",
     description: "Add a reaction to a message.",
     inputSchema: {

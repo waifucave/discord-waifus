@@ -4,8 +4,8 @@
 
 /** A place argument (or any string input) that names a DM: `dm/kevin`, ` DM/Kevin `, `<dm/kevin>`, `dm_<key>`. */
 export function isDmPlaceRef(value: unknown): boolean {
-  // Up to a SendMessage script's size (§27: 40,000 characters).
-  return typeof value === "string" && value.length <= 40_000 && /dm[/_]/iu.test(value);
+  // The whole of any string (§32: a script names its places anywhere in it; the search is linear).
+  return typeof value === "string" && /dm[/_]/iu.test(value);
 }
 
 /** A placeKey a tool resolved to: a DM conversation (`dm_<user>_<waifu>`). */

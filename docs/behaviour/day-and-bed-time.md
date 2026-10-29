@@ -18,7 +18,7 @@ All times are in the host's time zone (`src/life/clock.ts`).
 }
 ```
 
-Checked on every write (her Write/Edit/Bash, the API), refused with the exact problem and nothing
+Checked on every write (her Edit patches, Bash, the API), refused with the exact problem and nothing
 saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
 
 | Field | Rule |
@@ -34,13 +34,12 @@ saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
 - Strict JSON with line and column errors. An empty file is "no plan". A file whose `date` is not
   today counts as **no plan today** (no busy blocks); it is never deleted, she overwrites it.
 - A saved file that fails the checks reads as no plan (`readDayPlan`).
-- She may delete it (no plan). Unlike wakeups.json and profile.json, a `Write` needs no earlier `Read`;
-  if she did read it this turn, a stale Write is refused ("changed since you read it (it was changed
-  for you)").
+- She may delete it (no plan). She writes it with an `Edit` patch (`*** Add File` for a new day's
+  file after deleting the old one, or `*** Update File`), whose lines must match the file as it is.
 - **Live readers**: the wake router (busy holds), Jev's "around" check and her time line read the
   file on every use. The `<schedule>` copy in her system prompt is from her epoch start and
   refreshes at the next compaction; a midday edit never forces one (the harness hash leaves the plan
-  out). A Write/Edit/Bash change in her life adds the stale-copy note when `scheduleInPrompt` is on,
+  out). An Edit or Bash change in her life adds the stale-copy note when `scheduleInPrompt` is on,
   and, once per turn when the saved file has a plan with `at`, "Plans with a time wake you then."
   (`tools/files.ts` `planWakeNote`). The errors for the `plans` field end with the same sentence.
 - The scheduler reads it every tick for her timed plans (below).

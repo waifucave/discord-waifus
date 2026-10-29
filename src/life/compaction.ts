@@ -35,7 +35,7 @@ import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import { selfAuthorIds } from "./people.js";
 import { placesWithHandles, renderPlacesBlock } from "./places.js";
 import { buildLifeRequest, lifeBudget } from "./request.js";
-import { lifeTool, modelTools, offeredToolNames } from "./tools/index.js";
+import { modelTools, offerableTool, offeredToolNames } from "./tools/index.js";
 
 export const KEPT_TURNS = 3;
 
@@ -328,7 +328,7 @@ function flatResult(content: unknown): string {
  * text, its result too (`[used read_note people/kevin.md]`, `[read_note result: …]`): a provider
  * refuses a history that calls tools the request does not define.
  */
-export function flattenRetiredCalls(lines: readonly LifeLogLine[], isKnown: (name: string) => boolean = (name) => lifeTool(name) !== undefined): LifeLogLine[] {
+export function flattenRetiredCalls(lines: readonly LifeLogLine[], isKnown: (name: string) => boolean = offerableTool): LifeLogLine[] {
   const retired = new Map<string, string>();
   return lines.map((line) => {
     const message = line.message as unknown as ProviderMessageLike | null;
@@ -352,13 +352,14 @@ export function flattenRetiredCalls(lines: readonly LifeLogLine[], isKnown: (nam
 }
 
 /**
- * Her epoch offers a tool the app no longer has (§31: `WebSearch` and `WebFetch` became `Web`), so
- * its kept turns may call it: the next cycle summarises it like a tool-surface change, without a
- * migration step (and whatever retires a tool next).
+ * Her epoch offers a tool the app no longer offers (§31: `WebSearch` and `WebFetch` became `Web`;
+ * §32: `React` and `Write` are kept in the code, never offered), so its kept turns may call it: the
+ * next cycle summarises it like a tool-surface change, without a migration step (and whatever retires
+ * a tool next).
  */
 export function offersRetiredTools(state: Pick<LifeState, "systemSnapshot">): boolean {
   const tools = state.systemSnapshot?.tools;
-  return Array.isArray(tools) && tools.some((name) => lifeTool(name) === undefined);
+  return Array.isArray(tools) && tools.some((name) => !offerableTool(name));
 }
 
 /**

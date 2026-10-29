@@ -15,15 +15,30 @@ const WARN_EVERY_MS = 60_000;
 
 /**
  * The `place` of a streaming SendMessage, once its string is complete in the arguments JSON so far
- * (undefined until then). Only a top-level-looking `"place": "…"` pair is read; the text that may
- * follow is never needed.
+ * (undefined until then). Since §32 the place is inside her script (`tools.send_message({ place:
+ * "bake-club/#general", …`): the script string so far is decoded and its first `place: "…"` read;
+ * a top-level `"place": "…"` pair (a call from before) still counts. The text that may follow is
+ * never needed.
  */
 export function streamedPlace(argumentsJson: string): string | undefined {
   const match = /"place"\s*:\s*"((?:[^"\\]|\\.)*)"/u.exec(argumentsJson);
-  if (!match) return undefined;
+  if (match) return decoded(match[1]!);
+  const script = /"script"\s*:\s*"((?:[^"\\]|\\.)*)/u.exec(argumentsJson);
+  if (!script) return undefined;
+  // Her script so far, its JSON escapes undone (an escape cut off at the end is left out).
+  const text = decoded(script[1]!.replace(/(?<!\\)((?:\\\\)*)\\(?:u[0-9a-fA-F]{0,3})?$/u, "$1"));
+  if (text === undefined) return undefined;
+  const call = text.indexOf("send_message");
+  if (call < 0) return undefined;
+  const place = /\bplace["']?\s*:\s*(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/u.exec(text.slice(call));
+  const value = place?.[2]?.trim();
+  return value ? value : undefined;
+}
+
+function decoded(raw: string): string | undefined {
   try {
-    const place = JSON.parse(`"${match[1]}"`) as string;
-    return place.trim() ? place : undefined;
+    const value = JSON.parse(`"${raw}"`) as string;
+    return value.trim() ? value : undefined;
   } catch {
     return undefined;
   }

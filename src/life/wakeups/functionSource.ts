@@ -263,6 +263,17 @@ export function checkFunctionSource(source: string): SourceCheck {
   }
   if (expression["async"] || expression["generator"]) return { ok: false, error: "the function can't be async or a generator" };
   const outside = [...freeNames(expression)].filter((name) => !SANDBOX_GLOBALS.has(name));
-  if (outside.length > 0) return { ok: false, error: `${CLOSURE_REFUSED} (it uses ${outside.slice(0, 3).join(", ")})` };
+  if (outside.length > 0) return { ok: false, error: `${CLOSURE_REFUSED} (it uses ${outside.slice(0, 3).join(", ")}); write the value into it, like ${correctedFilter(source, outside)}` };
   return { ok: true };
+}
+
+/** Her function with each outside name replaced by a placeholder for its value (§32.3a: one corrected filter). */
+function correctedFilter(source: string, names: readonly string[]): string {
+  let fixed = source;
+  for (const name of names) {
+    const escaped = name.replace(/[$]/gu, "\\$&");
+    fixed = fixed.replace(new RegExp(`(?<![.\\w$])${escaped}(?![\\w$])`, "gu"), JSON.stringify(`<the value of ${name}>`));
+  }
+  fixed = fixed.replace(/\s+/gu, " ").trim();
+  return fixed.length > 300 ? `${fixed.slice(0, 299)}…` : fixed;
 }

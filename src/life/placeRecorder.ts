@@ -12,9 +12,12 @@ export function notePlace(placeKey: string): void {
   current.getStore()?.add(placeKey);
 }
 
-/** Runs one tool call and returns the placeKeys it touched. */
-export async function withPlaceRecord<T>(run: () => Promise<T>): Promise<{ value: T; places: ReadonlySet<string> }> {
-  const places = new Set<string>();
+/**
+ * Runs one tool call and returns the placeKeys it touched. They are noted into `places` as it runs,
+ * so a caller that passes its own set still has them when the call throws (D14: a failed DM call is
+ * a DM call).
+ */
+export async function withPlaceRecord<T>(run: () => Promise<T>, places: Set<string> = new Set()): Promise<{ value: T; places: ReadonlySet<string> }> {
   const value = await current.run(places, run);
   return { value, places };
 }

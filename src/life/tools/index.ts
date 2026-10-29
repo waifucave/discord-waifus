@@ -1,6 +1,8 @@
-// The tools a life is offered (Living cast spec §16.3, §30, §31): nine, in a fixed order so the tool
-// list is part of the epoch's stable prefix. `Web` is offered while search or page fetching is (a cap
-// above 0), `Bash` only while `life.bash.enabled` is on.
+// The tools a life is offered (Living cast spec §16.3, §30, §31, §32): seven, in a fixed order so the
+// tool list is part of the epoch's stable prefix. All but Bash take one JavaScript `script` calling
+// their own `tools.*` function (§32). `Web` is offered while search or page fetching is (a cap above
+// 0), `Bash` only while `life.bash.enabled` is on. `React` and `Write` are kept (old log lines still
+// read) but no longer offered: `send_message` reacts and `apply_patch` adds files.
 
 import type { ModelTool } from "../../models/client.js";
 import type { AppConfig } from "../../shared/schemas/config.js";
@@ -14,12 +16,21 @@ import { webTool } from "./web.js";
 
 export const ALL_LIFE_TOOLS: readonly LifeTool[] = [...messageTools, wakeupTool, ...fileTools, bashTool_, webTool];
 
-/** The tools nightly maintenance and a forget's notes scrub get (§16.8): her files only. */
-export const MAINTENANCE_TOOL_NAMES = ["Read", "Write", "Edit", "Bash"] as const;
+/** The tools nightly maintenance and a forget's notes scrub get (§16.8, §32.3): her files only. */
+export const MAINTENANCE_TOOL_NAMES = ["Read", "Edit", "Bash"] as const;
+
+/** Tools kept in the code but never offered since §32. */
+export const UNOFFERED_TOOL_NAMES: ReadonlySet<string> = new Set(["React", "Write"]);
+
+/** A tool a life can be offered now (an epoch offering any other is summarised first, §31.4). */
+export function offerableTool(name: string): boolean {
+  return lifeTool(name) !== undefined && !UNOFFERED_TOOL_NAMES.has(name);
+}
 
 /** The tool names offered to a life right now. */
 export function offeredToolNames(deps: Pick<LifeDeps, "web" | "config">): string[] {
   return ALL_LIFE_TOOLS.filter((tool) => {
+    if (UNOFFERED_TOOL_NAMES.has(tool.name)) return false;
     if (tool.name === "Web") return deps.web !== undefined && (deps.web.searchOffered() || deps.web.fetchOffered());
     if (tool.name === "Bash") return deps.config().life.bash.enabled;
     return true;

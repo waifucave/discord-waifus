@@ -30,6 +30,7 @@ import { parseStrictJson } from "./home/specialFiles.js";
 import { specialJsonFile } from "./home/pathRules.js";
 import { wakeupChangeDigest } from "./tools/wakeup.js";
 import { safeJournalName } from "./home/homeStore.js";
+import { patchJournalId } from "./tools/files.js";
 import { stripCopiedHeader } from "./outbound.js";
 import { selfAuthorIds } from "./people.js";
 import { resolvePlace } from "./places.js";
@@ -66,6 +67,8 @@ async function recoverCall(
   const input = (call.input ?? {}) as Record<string, unknown>;
   const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
   if (intent.done) {
+    if (call.name === "SendMessage" && typeof input["script"] === "string" && input["place"] === undefined && waifu) return recoverSendCalls(deps, waifu, intent);
+    if (call.name === "Edit" && typeof input["script"] === "string") return recoverPatches(call, intent, recoveredChanges);
     if ((call.name === "SendMessage" || call.name === "send_message") && intent.done.resultRef && typeof input["place"] === "string") {
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
       // A script's done line names every message it sent (§27.1).
@@ -105,6 +108,7 @@ async function recoverCall(
   switch (call.name) {
     case "SendMessage":
     case "send_message": {
+      if (typeof input["script"] === "string" && input["place"] === undefined && waifu) return recoverSendCalls(deps, waifu, intent);
       if (typeof input["place"] !== "string" || !waifu) return { text: "[interrupted] not sent", isError: true };
       const steps = sendCallSteps(input, deps.config().life.send.maxFiles);
       const place = await resolvePlace(deps.storage, waifuId, input["place"]);
@@ -121,6 +125,7 @@ async function recoverCall(
       return done ? { text: `wrote ${String(input["file_path"])} (recovered)`, isError: false } : { text: "[interrupted] not written", isError: true };
     }
     case "Edit": {
+      if (typeof input["script"] === "string") return recoverPatches(call, intent, recoveredChanges);
       const current = await fileText(input["file_path"]);
       const oldText = input["old_string"];
       const newText = input["new_string"];
@@ -130,17 +135,27 @@ async function recoverCall(
     case "Wakeup": {
       // The digest it wrote just before saving: what it added (kind and note) and cancelled. Nothing
       // else changes her file before boot repair, so the file shows whether the save went through.
-      const digest = intent.lines.find((line) => line.contentDigest?.startsWith("add:"))?.contentDigest;
-      if (!digest || !store) return { text: "[interrupted] not saved", isError: true };
+      // A script's calls (§32: up to 4) each wrote one; they ran in order, so the first not saved
+      // is where it stopped.
+      const digests = intent.lines.flatMap((line) => (line.contentDigest?.startsWith("add:") ? [line.contentDigest] : []));
+      if (digests.length === 0 || !store) return { text: "[interrupted] not saved", isError: true };
       const { entries } = await store.readWakeups();
-      const [addPart = "", cancelPart = ""] = digest.split(";");
-      const wanted = addPart.slice("add:".length).split(",").filter(Boolean);
-      const cancelled = cancelPart.slice("cancel:".length).split(",").filter(Boolean);
       const have = new Map(entries.map((entry) => [wakeupChangeDigest([entry], []).slice("add:".length, "add:".length + 16), entry.id] as const));
-      const saved = wanted.every((hash) => have.has(hash)) && cancelled.every((id) => !entries.some((entry) => entry.id === id));
-      if (!saved) return { text: "[interrupted] not saved", isError: true };
-      const ids = wanted.map((hash) => have.get(hash)!);
-      return { text: `${[ids.length > 0 ? `set ${ids.join(", ")}` : "", cancelled.length > 0 ? `cancelled ${cancelled.join(", ")}` : ""].filter(Boolean).join("; ")} (recovered)`, isError: false };
+      const parts: string[] = [];
+      for (const digest of digests) {
+        const [addPart = "", cancelPart = ""] = digest.split(";");
+        const wanted = addPart.slice("add:".length).split(",").filter(Boolean);
+        const cancelled = cancelPart.slice("cancel:".length).split(",").filter(Boolean);
+        const saved = wanted.every((hash) => have.has(hash)) && cancelled.every((id) => !entries.some((entry) => entry.id === id));
+        if (!saved) {
+          parts.push("[interrupted] the rest was not saved");
+          break;
+        }
+        const ids = wanted.map((hash) => have.get(hash)!);
+        parts.push([ids.length > 0 ? `set ${ids.join(", ")}` : "", cancelled.length > 0 ? `cancelled ${cancelled.join(", ")}` : ""].filter(Boolean).join("; "));
+      }
+      if (parts[0]?.startsWith("[interrupted]")) return { text: "[interrupted] not saved", isError: true };
+      return { text: `${parts.filter((part) => !part.startsWith("[interrupted]")).join("; ")} (recovered)${parts.some((part) => part.startsWith("[interrupted]")) ? "\n[interrupted] the rest was not saved" : ""}`, isError: false };
     }
     case "ScheduleWake":
     case "WatchFor": {
@@ -158,6 +173,105 @@ async function recoverCall(
 }
 
 /**
+ * An Edit script a crash cut off (§32.2): each `apply_patch` wrote `patch:<n>` before its change set
+ * and its line done after; a change set journalled under its id and finished at boot was saved too.
+ * The patches run one after another, so nothing after the first one not saved was tried.
+ */
+function recoverPatches(call: Call, intent: { lines: LifeIntent[] }, recoveredChanges: ReadonlySet<string>): { text: string; isError: boolean } {
+  const started = intent.lines.flatMap((line) => (line.line !== undefined && line.contentDigest === `patch:${line.line}` ? [line.line] : []));
+  const done = new Set(intent.lines.flatMap((line) => (line.lineDone && line.line !== undefined ? [line.line] : [])));
+  const saved: number[] = [];
+  let notSaved: number | undefined;
+  for (const n of started) {
+    if (done.has(n) || recoveredChanges.has(safeJournalName(patchJournalId(call.id, n)))) saved.push(n);
+    else {
+      notSaved = n;
+      break;
+    }
+  }
+  if (saved.length === 0) return { text: "[interrupted] nothing was changed", isError: true };
+  const head = `patch${saved.length === 1 ? "" : "es"} ${saved.join(", ")} saved (recovered)`;
+  return { text: notSaved !== undefined ? `${head}\n[interrupted] patch ${notSaved} was not saved` : head, isError: false };
+}
+
+/**
+ * A SendMessage script a crash cut off (§32.2): each `tools.send_message` call wrote its plan (place
+ * and sends, lines numbered across the script) before its first Discord call, and `callDone` after
+ * it. A finished call sent the messages with a done line and nothing else; the call that was running
+ * is recovered message by message like a §27 script (digest, else loose text; unknown when Discord
+ * can't be read, or when its place no longer resolves). Calls ran one at a time, but a call that threw
+ * part way (her script caught it and went on) has no done line either: every call is looked at.
+ */
+async function recoverSendCalls(
+  deps: LifeDeps,
+  waifu: NonNullable<Awaited<ReturnType<typeof readWaifu>>>,
+  intent: { done?: LifeIntent; lines: LifeIntent[] }
+): Promise<{ text: string; isError: boolean }> {
+  const plans = intent.lines.flatMap((line) => (line.plan ? [line.plan] : [])).sort((a, b) => a.call - b.call);
+  if (plans.length === 0) return { text: "[interrupted] not sent", isError: true };
+  const doneIds = new Map(intent.lines.flatMap((line) => (line.lineDone && line.line !== undefined && line.resultRef ? [[line.line, line.resultRef] as const] : [])));
+  const callsDone = new Set(intent.lines.flatMap((line) => (line.callDone !== undefined ? [line.callDone] : [])));
+  const callRefs = new Map(intent.lines.flatMap((line) => (line.callDone !== undefined && line.resultRef ? [[line.callDone, line.resultRef.split(",").filter(Boolean)] as const] : [])));
+  const sentParts: string[] = [];
+  const notes: string[] = [];
+  const rest: string[] = [];
+  let anySent = false;
+  let unknown = false;
+  for (const plan of plans) {
+    const sends: ScriptSend[] = plan.sends.map((send) => ({ kind: "send", line: send.line, text: send.text, files: send.files.map((path) => ({ path, line: send.line })) }));
+    const place = await resolvePlace(deps.storage, waifu.id, plan.place);
+    if (intent.done || callsDone.has(plan.call)) {
+      // The call's done line lists every message it sent, in order (a message's own done line may be
+      // missing when the bookkeeping after Discord took it failed).
+      const listed = callRefs.get(plan.call) ?? [];
+      const byDone = sends.flatMap((send) => (doneIds.has(send.line) ? [doneIds.get(send.line)!] : []));
+      const ids = listed.length > byDone.length ? listed : byDone;
+      const sentLines = new Set(listed.length > byDone.length ? sends.slice(0, listed.length).map((send) => send.line) : sends.filter((send) => doneIds.has(send.line)).map((send) => send.line));
+      if (ids.length > 0) {
+        anySent = true;
+        const refs = place ? await assignConversationRefs(deps.storage, place.placeKey as never, ids, deps.now()) : new Map<string, string>();
+        sentParts.push(ids.every((id) => refs.has(id)) ? ids.map((id) => `#${refs.get(id)}`).join(" ") : `${ids.length} message${ids.length === 1 ? "" : "s"}`);
+      }
+      rest.push(...sends.filter((send) => !sentLines.has(send.line)).map((send) => `not sent: ${sendLabel(send)}`));
+      continue;
+    }
+    if (!place) {
+      // A running call whose place is gone can't be looked for: its done messages were sent, the first
+      // one after them whose digest was written (just before its Discord call) may have been.
+      const ids = sends.flatMap((send) => (doneIds.has(send.line) ? [doneIds.get(send.line)!] : []));
+      if (ids.length > 0) {
+        anySent = true;
+        sentParts.push(`${ids.length} message${ids.length === 1 ? "" : "s"}`);
+      }
+      const [first, ...after] = sends.filter((send) => !doneIds.has(send.line));
+      if (first && intent.lines.some((line) => line.line === first.line && line.contentDigest !== undefined)) {
+        unknown = true;
+        notes.push(`it is unknown whether ${JSON.stringify(sendLabel(first).slice(0, 80))} was sent; read the place before sending it again`);
+        rest.push(...after.map((send) => `not sent: ${sendLabel(send)}`));
+      } else if (first) rest.push(...[first, ...after].map((send) => `not sent: ${sendLabel(send)}`));
+      continue;
+    }
+    const lines = intent.lines.filter((line) => line.line === undefined || sends.some((send) => send.line === line.line));
+    const recovered = await recoverScript(deps, waifu, place, sends, lines, (send) => JSON.stringify(sendLabel(send).slice(0, 80)));
+    if (recovered.text === UNCERTAIN_SEND) unknown = true;
+    if (!recovered.isError) {
+      anySent = true;
+      const [head = "", ...more] = recovered.text.split("\n");
+      const [refs = "", ...said] = head.replace(/^sent /u, "").split("; ");
+      sentParts.push(refs.replace(/ \(recovered\)$/u, ""));
+      notes.push(...said);
+      rest.push(...more);
+    } else if (recovered.text === UNCERTAIN_SEND) {
+      const [first, ...after] = sends;
+      if (first) notes.push(`it is unknown whether ${JSON.stringify(sendLabel(first).slice(0, 80))} was sent; read the place before sending it again`);
+      rest.push(...after.map((send) => `not sent: ${sendLabel(send)}`));
+    } else rest.push(...sends.map((send) => `not sent: ${sendLabel(send)}`));
+  }
+  if (!anySent) return { text: unknown ? UNCERTAIN_SEND : "[interrupted] not sent", isError: true };
+  return { text: [[`sent ${sentParts.join(" ")} (recovered)`, ...notes].join("; "), ...rest].join("\n"), isError: false };
+}
+
+/**
  * A SendMessage call a crash cut off (§5.7, §27.1): each message of its script on its own. A line with
  * a done line was sent; a line whose intent (its final content's digest, written just before the
  * Discord call) is there is looked for among her messages since (else by its text with mentions and
@@ -169,7 +283,9 @@ async function recoverScript(
   waifu: NonNullable<Awaited<ReturnType<typeof readWaifu>>>,
   place: NonNullable<Awaited<ReturnType<typeof resolvePlace>>>,
   sends: readonly ScriptSend[],
-  lines: readonly LifeIntent[]
+  lines: readonly LifeIntent[],
+  /** How the message whose fate is unknown is named: a §27 script's line, a §32 message's text. */
+  unknownLabel: (send: ScriptSend) => string = (send) => `line ${send.line}`
 ): Promise<{ text: string; isError: boolean }> {
   // Before §27 a send's one digest line had no `line`: it is the first (and only) message's.
   const ofLine = (send: ScriptSend, index: number) => lines.filter((line) => line.line === send.line || (index === 0 && line.line === undefined && line.contentDigest !== undefined));
@@ -214,7 +330,7 @@ async function recoverScript(
   const refs = await assignConversationRefs(deps.storage, place.placeKey as never, sentIds, deps.now());
   const parts = [`sent ${sentIds.map((id) => `#${refs.get(id) ?? "?"}`).join(" ")} (recovered)`];
   const rest = sends.slice(sentIds.length);
-  if (unknown) parts.push(`it is unknown whether line ${unknown.send.line} was sent; read the place before sending it again`);
+  if (unknown) parts.push(`it is unknown whether ${unknownLabel(unknown.send)} was sent; read the place before sending it again`);
   const notSent = unknown ? rest.slice(1) : rest;
   return { text: [parts.join("; "), ...notSent.map((send) => `not sent: ${sendLabel(send)}`)].join("\n"), isError: false };
 }

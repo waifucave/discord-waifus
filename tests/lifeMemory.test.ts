@@ -20,6 +20,7 @@ import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { errorTurn, textTurn } from "./modelFakes.js";
 import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herEntries, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, toolTurn, writeHerFile, writeWaifuConfig, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { scriptInput, updateFilePatch } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -27,7 +28,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await removeTempRoot(root);
 });
 
-const FILE_TOOLS = ["Read", "Write", "Edit", "Bash"];
+const FILE_TOOLS = ["Read", "Edit", "Bash"];
 
 /** Members of Bake Club: Kevin (also called Sam elsewhere) and another Sam. */
 async function seedMembers(w: LifeWorld): Promise<void> {
@@ -62,8 +63,8 @@ describe("nightly dreaming (§18.4, replacing §7.3 and §16.8)", () => {
   it("is a separate session with only her file tools, purpose maintenance, and one report line", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }]),
-        toolTurn([{ name: "Write", input: { file_path: "~/MEMORY.md", content: "# Memory\n- [Kevin](people/kevin.md) — chemistry student\n" } }]),
+        toolTurn([{ name: "Read", input: scriptInput.readFile("~/MEMORY.md") }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(updateFilePatch("~/MEMORY.md", ["- Kevin studies chemistry\n- Kevin is a chemistry student", "- [Kevin](people/kevin.md) — chemistry student"])) }]),
         textTurn("merged two Kevin lines")
       )
     });
@@ -96,8 +97,8 @@ describe("forget (§7.5)", () => {
     const w = await lifeWorld(roots, {
       scripts: script(
         // Her turn about Kevin.
-        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
+        toolTurn([{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general" }) }]),
+        toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "congrats Kevin!!" }]) }]),
         textTurn("so happy for him"),
         // Step 2: the summary (the model slips; verification catches it).
         textTurn("We celebrated in Bake Club.\nKevin passed his exam."),
@@ -170,8 +171,8 @@ describe("forget (§7.5)", () => {
   it("an owner forget with no cast runtime is queued and runs when her life next starts, before any turn", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats Kevin!!" } }]),
+        toolTurn([{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general" }) }]),
+        toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "congrats Kevin!!" }]) }]),
         textTurn("so happy for him"),
         textTurn("We celebrated in Bake Club."),
         textTurn("nothing about him in my notes"),
@@ -499,7 +500,7 @@ describe("a queued forget never wipes her summary for want of a model (§7.5 ste
     return epoch;
   }
 
-  const TURN = [toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]), toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "congrats!!" } }]), textTurn("so happy")];
+  const TURN = [toolTurn([{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general" }) }]), toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "congrats!!" }]) }]), textTurn("so happy")];
 
   it("her model missing: life.dreamModel rewrites the summary", async () => {
     const w = await lifeWorld(roots, { scripts: script(...TURN, textTurn("Mina baked lemon tarts."), textTurn("nothing else about him")) });

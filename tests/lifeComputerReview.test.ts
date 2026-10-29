@@ -20,8 +20,9 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { textTurn } from "./modelFakes.js";
 import { FakeImageFetcher } from "./contextFixtures.js";
-import { CHANNEL, closeWorlds, GUILD, herEntries, herFile, homeOf, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { CHANNEL, closeWorlds, dmOf, GUILD, herEntries, herFile, homeOf, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, applyPatch, readFile as readFile_, readMessages, replaceFilePatch, runScript, sendMessage, wakeupCalls } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -106,23 +107,22 @@ describe("names as the disk compares them (review S1, S2)", () => {
       "~/life/Wakeups.json"
     ];
     for (const file of tries) {
-      const sent = await run("SendMessage", { place: "bake-club/#general", script: `m: try ${file}\nattach ${file}` }, { ...ctx, turn: { id: "t", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
-      expect(text(sent), file).toMatch(/^error: line 2: can't attach .*private and can't be attached\); nothing was sent$/u);
+      const sent = await sendMessage({ ...ctx, turn: { id: "t", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } }, "bake-club/#general", [{ text: `try ${file}`, attach: [file] }]);
+      expect(text(sent), file).toMatch(/^error: Error: tools\.send_message: messages\[0\]: can't attach .*private and can't be attached\); nothing was sent \(line 1\)$/u);
     }
     expect(w.discord.sent).toEqual([]);
     // A note MEMORY.md does not link to is hers to share.
-    const shared = await run("SendMessage", { place: "bake-club/#general", script: "m: my note\nattach ~/people/shared.md" }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
-    expect(text(shared)).toMatch(/^sent #[0-9a-z]+$/u);
+    const shared = await sendMessage({ ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } }, "bake-club/#general", [{ text: "my note", attach: ["~/people/shared.md"] }]);
+    expect(text(shared)).toMatch(/^\{"sent":\["#[0-9a-z]+"\],"reactions":\[\]\}$/u);
 
-    // A broken wakeups file written as ~/Life/Wakeups.json by Bash, or ~/LIFE/WAKEUPS.json by Write, is checked.
-    expect(text(await run("Wakeup", { script: 'at("in 1h", "legit")' }, ctx))).toMatch(/^set t1 /u);
+    // A broken wakeups file written as ~/Life/Wakeups.json by Bash, or ~/LIFE/WAKEUPS.json by an Edit patch, is checked.
+    expect(text(await wakeupCalls(ctx, 'at("in 1h", "legit")'))).toMatch(/^set t1 /u);
     const bash = await run("Bash", { command: `rm ~/life/wakeups.json; printf '%s' '[{"kind":"at","when":"1999-01-01 00:00","note":"old"}]' > ~/Life/Wakeups.json` }, ctx);
     expect(text(bash)).toContain("error: changes not saved: wakeups.json entry 1: 1999-01-01 00:00 is in the past");
     expect(await readdir(path.join(w.root, "user/waifus/ella/home/life"))).toContain("wakeups.json");
     expect((await herEntries(w)).map((entry) => entry["note"])).toEqual(["legit"]);
-    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/LIFE/WAKEUPS.json", content: '[{"kind": "watch", "places": "everywhere", "filter": [], "options": {"until": "1990-01-01 00:00"}, "note": "x"}]' }, ctx))).toBe("error: wakeups.json entry 1: options.until is in the past");
-    expect(text(await run("Write", { file_path: "~/life/Places.md", content: "x" }, ctx))).toMatch(/^error: places\.md /u);
+    expect(text(await applyPatch(ctx, replaceFilePatch("~/LIFE/WAKEUPS.json", '[{"kind": "watch", "places": "everywhere", "filter": [], "options": {"until": "1990-01-01 00:00"}, "note": "x"}]')))).toMatch(/apply_patch: wakeups\.json entry 1: options\.until is in the past; nothing was changed/u);
+    expect(text(await applyPatch(ctx, addFilePatch("~/life/Places.md", "x")))).toMatch(/apply_patch: places\.md is kept up to date for you/u);
   });
 
   it("a Bash change set that would make two names differing only by case says so", async () => {
@@ -200,8 +200,30 @@ describe("DM files touched by Bash or Write are DM calls (review S5)", () => {
     }
     expect([...(await recorded("Bash", { command: "cd /tmp; mkdir keep; mv d? keep/x" }))].some((place) => place.startsWith("dm_"))).toBe(true);
     expect([...(await recorded("Write", { file_path: "/tmp/keep/x/kevin/a8-note.txt", content: "overwritten" }))].some((place) => place.startsWith("dm_"))).toBe(true);
+    // Tool scripts (§32): paths and places her code computes, so no DM handle is in the script's text.
+    const dmKey = (places: Set<string>) => [...places].some((place) => place === DM_KEY || place.startsWith(`dm_${KEVIN}`));
+    await store.saveDownload(store.path("tmp", ["dm", "kevin", "a9-list.txt"]), Buffer.from("milk\n"), meta("3"));
+    const patch = 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: /tmp/d" + "m/kevin/a9-list.txt\\n@@\\n-milk\\n+oat milk\\n*** End Patch"))';
+    const edited = await withPlaceRecord(() => run("Edit", { script: patch }, ctx));
+    expect(text(edited.value)).toBe("Updated: M /tmp/dm/kevin/a9-list.txt\n[receipt] apply_patch 1: saved M /tmp/dm/kevin/a9-list.txt");
+    expect(dmKey(edited.places)).toBe(true);
+    // A copy of a DM file in her home (same bytes) is one too: patching it is a DM call.
+    await store.saveDownload(store.path("tmp", ["dm", "kevin", "a10-plan.txt"]), Buffer.from("saturday\n"), meta("4"));
+    await run("Bash", { command: "cp /tmp/dm/kevin/a10-plan.txt ~/plan.txt" }, ctx);
+    expect(await store.dmOrigin((await store.resolveExisting("~/plan.txt")).path!)).toBe(DM_KEY);
+    const copied = await withPlaceRecord(() => run("Edit", { script: 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: ~/plan.txt\\n@@\\n-saturday\\n+sunday\\n*** End Patch"))' }, ctx));
+    expect(dmKey(copied.places)).toBe(true);
+    expect(dmKey(await recorded("Read", { script: 'text(await tools.read_file({ path: "/tmp/keep/x/kevin/" + "a7-results.pdf" }))' }))).toBe(true);
+    // Kevin DMs her, so dm/kevin is one of her places.
+    const dm = w.discord.post(dmOf("ella"), "hi ella");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.close();
+    expect(dmKey(await recorded("ReadMessages", { script: 'text(await tools.read_messages({ place: "d" + "m/kevin" }))' }))).toBe(true);
+    // A script that fails after reading one records it too.
+    expect(dmKey(await recorded("ReadMessages", { script: 'await tools.read_messages({ place: "d" + "m/kevin" }); throw new Error("x")' }))).toBe(true);
     // A command that touches nothing of a DM records nothing.
     expect([...(await recorded("Bash", { command: "echo hi" }))]).toEqual([]);
+    expect([...(await recorded("Read", { script: 'text(await tools.read_file({ path: "~/MEMORY.md" }))' }))]).toEqual([]);
   });
 });
 
@@ -243,13 +265,13 @@ describe("Bash's memory watchdog (review C1)", () => {
   }, 90_000);
 });
 
-describe("a whole-file Write needs a current Read (review B1)", () => {
-  it("refuses a stale Write after a watch matched; the matched once-watch never comes back", async () => {
+describe("her change never brings back what the app changed since she read it (review B1)", () => {
+  it("refuses a stale patch after a watch matched; the matched once-watch never comes back", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const ctx = await ctxFor(w);
-    expect(text(await run("Wakeup", { script: 'watch("bake-club/#general", {words: ["exam"]}, {for: "2h"}, "Kevin\'s answer")' }, ctx))).toMatch(/^set w1 /u);
-    const read = text(await run("Read", { file_path: "~/life/wakeups.json" }, ctx));
+    expect(text(await wakeupCalls(ctx, 'watch("bake-club/#general", {words: ["exam"]}, {for: "2h"}, "Kevin\'s answer")'))).toMatch(/^set w1 /u);
+    const read = text(await readFile_(ctx, "~/life/wakeups.json"));
     expect(read).toContain("Kevin's answer");
     const stale = (await herFile(w, "ella", "home/life/wakeups.json"))!;
     const m = w.discord.post(ROOM, "the exam went fine");
@@ -259,12 +281,17 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     w.cast.intake.flushDetector();
     await w.cast.settle();
     expect(await herEntries(w)).toEqual([]);
-    // She writes back what she read, plus a timer: refused, the file changed since her Read.
+    // She patches what she read, adding a timer after the watch: refused, the watch's line is gone.
+    const watchLine = stale.split("\n").find((line) => line.includes("Kevin's answer"))!;
+    const tea = JSON.stringify({ kind: "at", when: later(w, 30), note: "tea" });
+    const stalePatch = await applyPatch(ctx, `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n ${watchLine}\n+, ${tea}\n*** End Patch`);
+    expect(text(stalePatch)).toMatch(/apply_patch: Failed to find expected lines in ~\/life\/wakeups\.json/u);
+    // Writing the whole file back does not make the stale entry acceptable: it fired once and is gone for good.
     const entries = JSON.parse(stale) as unknown[];
     const content = JSON.stringify([...entries, { kind: "at", when: later(w, 30), note: "tea" }]);
-    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content }, ctx))).toBe("error: wakeups.json changed since you read it (a wakeup fired, ran or ended); Read it again");
-    // A fresh Read does not make the stale entry acceptable: it fired once and is gone for good.
-    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
+    expect(text(await applyPatch(ctx, replaceFilePatch("~/life/wakeups.json", content)))).toMatch(/apply_patch: wakeups\.json entry w1: it already fired once and was removed; leave it out; nothing was changed/u);
+    // The retired Write (old log lines) still refuses a stale whole-file write.
+    await readFile_(ctx, "~/life/wakeups.json");
     expect(text(await run("Write", { file_path: "~/life/wakeups.json", content }, ctx))).toBe("error: wakeups.json entry w1: it already fired once and was removed; leave it out");
     // And a timeout of a once-watch that already matched never wakes her.
     w.clock.ms += 3 * 3_600_000;
@@ -272,16 +299,17 @@ describe("a whole-file Write needs a current Read (review B1)", () => {
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout")).toEqual([]);
   });
 
-  it("an owner's DELETE of a wakeup sticks against her stale Write", async () => {
+  it("an owner's DELETE of a wakeup sticks against her stale patch", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
-    await run("Wakeup", { script: 'at("in 60m", "one")\nat("in 90m", "two")' }, ctx);
-    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
+    await wakeupCalls(ctx, 'at("in 60m", "one")\nat("in 90m", "two")');
     const stale = (await herFile(w, "ella", "home/life/wakeups.json"))!;
     const store = homeStoreFor(w.cast.deps, ctx.waifu);
     await store.rewriteWakeups((entries, side) => ({ entries: entries.filter((entry) => entry.id !== "t1"), side }));
-    const result = await run("Write", { file_path: "~/life/wakeups.json", content: stale.replace('"two"', '"two!"') }, ctx);
-    expect(text(result)).toBe("error: wakeups.json changed since you read it (a wakeup fired, ran or ended); Read it again");
+    // Her patch keeps the deleted line as context: it no longer matches.
+    const [, one, two] = stale.split("\n");
+    const result = await applyPatch(ctx, `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n ${one}\n-${two}\n+${two!.replace('"two"', '"two!"')}\n*** End Patch`);
+    expect(text(result)).toMatch(/apply_patch: Failed to find expected lines in ~\/life\/wakeups\.json/u);
     expect((await herEntries(w)).map((entry) => entry["id"])).toEqual(["t2"]);
   });
 
@@ -313,9 +341,13 @@ describe("Read's output and images (review B2, B3)", () => {
     const w = await lifeWorld(roots);
     const line = "x".repeat(1_900);
     await put(w, "long.md", `${Array.from({ length: 200 }, () => line).join("\n")}\n`);
-    const result = text(await run("Read", { file_path: "~/long.md" }, await ctxFor(w)));
+    const result = text(await readFile_(await ctxFor(w), "~/long.md"));
     expect(result.length).toBeLessThan(READ_MAX_OUTPUT_CHARS + 200);
     expect(result).toMatch(/\n\(cut at [\d,]+ characters; pass offset and limit to read on\)$/u);
+    // A script's reads share the 100,000 characters: past them a read_file throws.
+    const twice = text(await runScript("Read", 'for (let i = 0; i < 3; i++) text(await tools.read_file({ path: "~/long.md" }))', await ctxFor(w)));
+    expect(twice.length).toBeLessThan(READ_MAX_OUTPUT_CHARS + 400);
+    expect(twice).toMatch(/error: RangeError: tools\.read_file: this script has shown 100,000 characters of files already/u);
   });
 
   it("outside her life (maintenance, a scrub) an image is its text and her life's image state is untouched", async () => {
@@ -324,7 +356,7 @@ describe("Read's output and images (review B2, B3)", () => {
     await put(w, "cake.png", tinyPng());
     const before = await readLifeState(w.storage, "ella");
     const session = await ctxFor(w, { mode: "session" });
-    const result = await run("Read", { file_path: "~/cake.png" }, session);
+    const result = await readFile_(session, "~/cake.png");
     expect(JSON.stringify(result.content)).toContain("[image: a lemon tart]");
     const after = await readLifeState(w.storage, "ella");
     expect(after.shownImageKeys).toEqual(before.shownImageKeys);
@@ -335,7 +367,7 @@ describe("Read's output and images (review B2, B3)", () => {
     const fetcher = new FakeImageFetcher();
     const w = await lifeWorld(roots, {
       options: { images: fetcher, ocr: { cachedText: async () => "a lemon tart" } },
-      scripts: script(toolTurn([{ name: "Read", input: { file_path: "~/cake.png" } }]), textTurn("tidied"))
+      scripts: script(toolTurn([{ name: "Read", input: { script: 'return await tools.read_file({ path: "~/cake.png" })' } }]), textTurn("tidied"))
     });
     for (let index = 0; index < MAINTENANCE_LISTING_MAX + 5; index += 1) await homeOf(w).write(`notes/n${String(index).padStart(3, "0")}.md`, "x\n");
     await put(w, "cake.png", tinyPng());
@@ -380,7 +412,7 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
     const w = await lifeWorld(roots, { options: { images: fetcher } });
     w.discord.post(ROOM, "older", { attachments: Array.from({ length: 8 }, (_, index) => attachment(String(7000 + index), `old${index}.txt`, "text/plain", 5)) });
     w.discord.post(ROOM, "newer", { attachments: [...Array.from({ length: 5 }, (_, index) => attachment(String(7100 + index), `new${index}.txt`, "text/plain", 5)), attachment("7200", "clip.mp4", "video/mp4", 2_000_000)] });
-    const body = text(await run("ReadMessages", { place: "bake-club/#general" }, await ctxFor(w)));
+    const body = text(await readMessages(await ctxFor(w), { place: "bake-club/#general" }));
     const fetched = fetcher.fileCalls.map((ref) => ref.attachmentId);
     expect(fetched).toHaveLength(10);
     for (let index = 0; index < 5; index += 1) expect(fetched).toContain(String(7100 + index));
@@ -393,13 +425,13 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
     await put(w, "a.bin", Buffer.alloc(6 * 1024 * 1024, 1));
     await put(w, "b.bin", Buffer.alloc(6 * 1024 * 1024, 2));
     const ctx = await ctxFor(w);
-    const sent = text(await run("SendMessage", { place: "bake-club/#general", script: "m: files\nattach ~/a.bin\nattach ~/b.bin" }, ctx));
-    expect(sent).toBe("error: line 3: can't attach ~/b.bin (the files together would be over 10 MB, Discord's limit for one message); nothing was sent");
+    const sent = text(await sendMessage(ctx, "bake-club/#general", [{ text: "files", attach: ["~/a.bin", "~/b.bin"] }]));
+    expect(sent).toBe("error: Error: tools.send_message: messages[0]: can't attach ~/b.bin (the files together would be over 10 MB, Discord's limit for one message); nothing was sent (line 1)");
     // In two messages they go.
-    expect(text(await run("SendMessage", { place: "bake-club/#general", script: "m: files\nattach ~/a.bin\nm: and\nattach ~/b.bin" }, ctx))).toMatch(/^sent #\w+ #\w+$/u);
+    expect(text(await sendMessage(ctx, "bake-club/#general", [{ text: "files", attach: ["~/a.bin"] }, { text: "and", attach: ["~/b.bin"] }]))).toMatch(/^\{"sent":\["#\w+","#\w+"\],"reactions":\[\]\}$/u);
     w.discord.sendErrors.push(Object.assign(new Error("Request entity too large"), { code: 40005 }));
-    const refused = await run("SendMessage", { place: "bake-club/#general", script: "m: again\nattach ~/a.bin" }, { ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
-    expect(refused).toEqual({ content: "error: the message could not be sent: the files are too large for Discord here; send fewer or smaller ones", isError: true });
+    const refused = await sendMessage({ ...ctx, turn: { id: "t2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } }, "bake-club/#general", [{ text: "again", attach: ["~/a.bin"] }]);
+    expect(refused).toEqual({ content: "error: Error: tools.send_message: the message could not be sent: the files are too large for Discord here; send fewer or smaller ones (line 1)", isError: true });
   });
 
   it("states configured limits in the tool text: /tmp retention, SendMessage's files (none at 0), Bash's timeout", async () => {
@@ -408,11 +440,10 @@ describe("ReadMessages and SendMessage files (review minors)", () => {
     const { modelTools } = await import("../src/life/tools/index.js");
     const tools = Object.fromEntries(modelTools(["ReadMessages", "SendMessage", "Bash"], tuned).map((tool) => [tool.name, tool]));
     expect(tools["ReadMessages"]!.description).toContain("saved in /tmp for 3 days");
-    expect(JSON.stringify(tools["SendMessage"]!.inputSchema)).not.toContain("attach");
     expect(tools["SendMessage"]!.description).not.toContain("attach");
     expect(JSON.stringify(tools["Bash"]!.inputSchema)).toContain("(default 10000, at most 30000)");
     const defaults = Object.fromEntries(modelTools(["SendMessage"], config).map((tool) => [tool.name, tool]));
-    expect(defaults["SendMessage"]!.description).toContain("a file from your folders for that message (at most 4)");
+    expect(defaults["SendMessage"]!.description).toContain('attach: ["~/cake.png"] — a list of files from your folders with a message (at most 4)');
     expect(defaults["SendMessage"]!.description).toContain("MEMORY.md, the notes it links to and the files in ~/life/ can't be attached.");
   });
 

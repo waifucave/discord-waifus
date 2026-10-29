@@ -929,6 +929,8 @@ export class Life {
       } else {
         const argsDigest = createHash("sha256").update(JSON.stringify(call.input ?? {})).digest("hex").slice(0, 32);
         if (tool.sideEffect) await appendIntent(deps.storage, this.waifuId, { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest, at: deps.now().toISOString() });
+        // Its own set: the places it touched are kept when it throws, too (D14).
+        const touched = new Set<string>();
         try {
           const recorded = await withPlaceRecord(() => tool.run(call.input, {
             deps,
@@ -940,12 +942,14 @@ export class Life {
             selfAuthorIds: run.selfIds,
             toolNames: run.state.systemSnapshot?.tools ?? [],
             ...(tool.sideEffect ? { intent: { turnId: run.turnId, toolCallId: call.id, tool: call.name, argsDigest } } : {})
-          }));
+          }), touched);
           output = recorded.value;
           places = recorded.places;
           // D14 (spec §14.4): the owner's views hide a call that resolved to (or named) a DM place.
           if ([...recorded.places].some(isDmPlaceKey)) dmCalls.push(call.id);
         } catch (error) {
+          places = touched;
+          if ([...touched].some(isDmPlaceKey)) dmCalls.push(call.id);
           if (error instanceof ImageBuildAbortedError || run.signal.aborted) {
             interrupted = true;
             results.push({ type: "tool_result", tool_use_id: call.id, content: INTERRUPTED_RESULT, is_error: true });
@@ -966,15 +970,17 @@ export class Life {
           });
         }
       }
-      // A script that sent anything (even one stopped part way, §27.1) counts as a send.
+      // A script that sent anything (even one stopped part way, §27.1) counts as a send, in each
+      // place it sent to (§32: one script may send to several).
       const sent = tool !== undefined && call.name === "SendMessage" && (run.scratch.sends ?? 0) > sendsBefore;
+      const sentPlaces = sent ? (output.sentPlaces ?? []) : [];
       if (run.typing && sent) {
-        for (const place of places) run.typing.keeper.sent(place);
+        for (const place of sentPlaces) run.typing.keeper.sent(place);
       }
       // Her last send starts her bed time clock again (§21.6c); while she is busy, a place she answers
       // in after a wake that got through stays open (§21.4).
       if (sent) {
-        for (const place of places) {
+        for (const place of sentPlaces) {
           await noteSend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
             deps.logger.warn("Could not note a send", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
           });

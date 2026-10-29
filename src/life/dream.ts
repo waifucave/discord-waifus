@@ -11,7 +11,7 @@
 // conversations' days first, each moving the cursor for what it covered.
 //
 // Model: `life.dreamModel` when it is set and offered, else her own model (and her effort). Tools:
-// her file tools (Read, Write, Edit, Bash) in session mode: `/transcripts` read-only, `~/life/` refused (§21.6),
+// her file tools (Read, Edit, Bash) in session mode: `/transcripts` read-only, `~/life/` refused (§21.6),
 // profile.json included. Round cap `life.dreamMaxRounds`. One report line per dream in `maintenance.jsonl`.
 
 import { readFile } from "node:fs/promises";

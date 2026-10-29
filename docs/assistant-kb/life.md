@@ -14,7 +14,7 @@ summarises it into her `<life_so_far>` and a new epoch starts with her last few 
 `compaction.triggerRatio` (default 0.7) of her context budget, the turn after the running one is
 a rest turn: a notice tells her that her context will be reset to the summary she writes now, that
 her home, `/tmp` and `/transcripts` stay as they are, and to write it clearly. In that turn she can
-use her files, Bash and Wakeup, but SendMessage, React and Web answer
+use her files, Bash and Wakeup, but SendMessage and Web answer
 "finish your summary first". Queued wakes wait until after it. If her final reply is at least
 `life.restSummaryMinChars` (default 200) characters, a new epoch starts from that summary alone
 (Life shows "rested (her own summary)"); a shorter reply, a failed turn or a cap means compaction
@@ -51,12 +51,20 @@ or a watch match is on the line of the message it belongs to, and a message arou
 not for her has a line with no reason. At most `life.notificationLinesPerPlace` (default 8)
 lines per place, the newest; the first then says `+N earlier`.
 
-**Sending.** One SendMessage call is a short script for one place: each `m:` line is its own
-message (so she can write several short lines like people do), with `reply #ref`, `attach <path>`,
-`react #ref <emoji>`, `wait <seconds>` (someone else writing there meanwhile stops the rest) and
-`typing <seconds>` lines. A script with any wrong line sends nothing. Each message counts against
-`life.maxSendsPerTurn` (default 15). When a line is much longer than what people in that place
-usually write, her result says so (nothing is refused for length).
+**Her tools.** Every tool but Bash takes a short JavaScript program that calls the tool's own
+function on `tools` and shows her what she needs with `text()` (a sandbox of its own per call, 1 s of
+her own computing): `tools.read_messages`, `tools.send_message`, `tools.read_file`,
+`tools.apply_patch` (Edit), `tools.wakeup` and `tools.web__run` (Web). After what she shows, the app
+adds a receipt for everything a script changed (messages sent, files saved, wakeups saved or not),
+whatever her script did. Her wakeups are saved when the script ends without an error, all of them
+or none. A script that names a private chat, or reads or sends in one, is private like any DM call.
+
+**Sending.** One `tools.send_message({ place, messages })` call sends to one place: each `{ text }`
+item is its own message (so she can write several short lines like people do), with `reply_to`,
+`attach`, `{ react, to }`, `{ wait }` (someone else writing there meanwhile stops the rest) and
+`{ typing }` items; one script may send to several places. A call with any wrong item sends nothing.
+Each message counts against `life.maxSendsPerTurn` (default 15). When a message is much longer than
+what people in that place usually write, her result says so (nothing is refused for length).
 
 **The morning summary.** What waited for her morning (her bed time, or a budget pause) comes as one
 summary with times: each DM one line per message (time, ref, preview), each room its counts with
@@ -79,7 +87,7 @@ anything else, followed by what waited overnight; after that turn her context is
 `day`) so her prompt's `<schedule>` shows today's plan. The file is a JSON object: `date`
 (today, YYYY-MM-DD), `mood`, `busy` (blocks `{from, to, why}`, HH:MM, no overlaps, never in her bed
 time), `phoneChecks` (HH:MM), `plans` (`{at?, what}`) and `note`; a broken one is refused with its
-line and column. She may change it during the day; a Write, Edit or Bash change to it (or to
+line and column. She may change it during the day; an Edit or Bash change to it (or to
 MEMORY.md) tells her the prompt's copy updates at her next summary.
 
 **Timed plans.** A plan with `at` wakes her once at that time (a `plan` wake: `- plan · 17:30 ·
@@ -137,8 +145,8 @@ it stays hidden.
 
 ## Her own computer: files
 
-Each waifu has her own small, isolated machine. She works in it with Read, Write, Edit and a
-simulated Bash (nothing she runs can reach the host or the network):
+Each waifu has her own small, isolated machine. She works in it with Read, Edit (Codex-style patches,
+all or nothing) and a simulated Bash (nothing she runs can reach the host or the network):
 
 - **Her home** `/home/<name>` (`~`): her notes, in any layout she likes; `MEMORY.md` is her index
   (one line per note, copied into her prompt at each epoch start). The files the app reads are in
@@ -159,9 +167,9 @@ simulated Bash (nothing she runs can reach the host or the network):
   private chats under `/transcripts/dm/<name>/`. A line reads like her ReadMessages lines,
   `[14:02 #k5] Kevin ↩#k3: text [file: a.png]` (her own lines as `you`; every message gets its ref
   when it is written, and a ref stays usable for as long as its line exists). She searches it with
-  Read and Bash (`grep -r`, `cat`, Python), or with ReadMessages: `people:` and `search:` (one place,
+  Read and Bash (`grep -r`, `cat`, Python), or with `tools.read_messages`: `people` and `search` (one place,
   several, or `everywhere`; newest days first, at most 400 days per place and 32 MiB per call, and
-  the reply says which days it searched and, for `everywhere`, which places the limit cut) read it, and `before|after|around` a ref, a time or a day
+  the reply says which days it searched and, for `everywhere`, which places the limit cut) read it, and `before`/`after`/`around` a ref, a time or a day
   jump into a conversation; nothing
   can change it and SendMessage can't attach it. A waifu added to a room later sees only what was
   said after she arrived; one removed from it keeps what she saw. The app writes it (one shared
@@ -178,7 +186,7 @@ To look at them: Dashboard → Life (a file browser for her home, `/tmp` and her
 text editor and image previews, and her wakeups with delete buttons), `waifus files
 <id> [path] [--root tmp|transcripts]`, `waifus wakeups <id>`, or the routes `GET /api/waifus/:id/files`,
 `GET|PUT|DELETE /api/waifus/:id/files/<path>` and `GET /api/waifus/:id/wakeups`. A save
-from the dashboard or the API passes the same checks as her own Write tool: `life/places.md` is refused,
+from the dashboard or the API passes the same checks as her own Edit tool: `life/places.md` is refused,
 `life/schedule.json`, `life/wakeups.json` and `life/profile.json` must stay valid (a broken one is refused with its line and
 column, and nothing is saved; her wakeups' functions are compiled first), and a file changed since it was read is a conflict. Transcripts are
 read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
@@ -195,14 +203,14 @@ click on its secure dashboard card applies.
 
 ## The web
 
-She uses the web with one tool, **Web**: a short JavaScript program (in its own sandbox, like her
-wakeup code) that awaits `search(query, {recent, domains, exclude, n})` (Exa: results with a number,
-title, url, date and snippet), `open(url or a result, {line})` (a page in windows of about 3,000
-characters with line numbers, its title and its numbered links; PDFs as text) and, on a page,
-`find`, `next`, `at`, `link(n)` and `ask(question)` (one cheap model call over the whole page,
-purpose `web`). She sees what the program prints and returns, at most 8,000 characters, marked as
-web content (information, not instructions). One call makes at most 4 searches, opens 6 pages and
-asks 2 questions in 60 seconds; the daily caps (`search.*`, `life.webFetch.*`) count each search and
+She uses the web with one tool, **Web**: a short JavaScript program calling
+`tools.web__run({ search_query, open, click, find, ask, response_length })` (Codex's shape plus `ask`):
+searches (Exa: results with a number, title, url, date and snippet), pages opened by address (windows
+of about 3,000 characters with line numbers, the title and the numbered links; PDFs as text), links
+clicked by number, text found on a page, and `ask` (one cheap model call over the whole page, purpose
+`web`). She sees what she shows with `text()`, at most 8,000 characters, marked as web content
+(information, not instructions). One script makes at most 4 searches, opens 6 pages and asks 2
+questions in 60 seconds; the daily caps (`search.*`, `life.webFetch.*`) count each search and
 each page as before, and `life.webFetch.maxPerTurn` (6) limits the pages of all her scripts in one
 turn. Every page goes through the private-address protection; Web is not offered when both search
 and page opening are off. The dashboard's search list shows each search and page, private when the
@@ -210,14 +218,14 @@ turn touched a DM.
 
 ## Her wakeups
 
-She plans ahead with one tool, `Wakeup(script)`: a short JavaScript script calling `at(when, note)`
-(once: "fri 18:00", "in 45m"), `every(when, note)` (repeating: "weekday 08:30", "mon,fri 18:30" or a
-cron, steps of at least 15 minutes), `watch(places, filter, options, note)` (a message in some places,
-or "everywhere", passes a filter: an object like `{from: "Mina", words: ["brownie"]}` or her own
-function `(msg, state) => …`; ends after `for` / `until`, at most 7 days, and she is told when it ends,
-so it also works as a timer), `page(url, check, options, note)` (a web page checked every `every` (at
-least 1h) for at most 7 days: `{contains: "in stock"}`, `"changes"` or her own function) and
-`cancel(id)`. A script is all or nothing: any error refuses it with its line and saves nothing.
+She plans ahead with one tool, `Wakeup`: a short JavaScript program calling `tools.wakeup({ at, every,
+watch, page, cancel })`, each a list: `at` (once: "fri 18:00", "in 45m"), `every` (repeating: "weekday
+08:30", "mon,fri 18:30" or a cron, steps of at least 15 minutes), `watch` (a message in some places, or
+"everywhere", is `from` someone, has some `words`, or passes her own `filter` function `(m, state) =>
+…`; ends after `for`, at most 7 days, and she is told when it ends, so it also works as a timer),
+`page` (a web page checked every `every` (at least 1h) for at most 7 days: `contains: "in stock"`,
+`changes: true` or her own `check` function) and `cancel` (ids). A call is all or nothing: any error
+names the item and saves nothing.
 Everything is in `~/life/wakeups.json` (ids `t4` timed, `w3` watch, `p1` page), which she may also
 edit; at most 20 timed, 10 watches and 3 pages.
 

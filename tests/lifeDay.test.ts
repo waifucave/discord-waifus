@@ -30,6 +30,7 @@ import type { Wake } from "../src/shared/schemas/life.js";
 import { textTurn, type ScriptedTurn } from "./modelFakes.js";
 import { CHANNEL_2, closeWorlds, dmOf, GUILD, homeOf, KEVIN, lifeWorld, ROOM_KEY, script, toolTurn, writeHerFile, type LifeWorld, type WaifuSeed } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, applyPatch, lineEditPatch, replaceFilePatch, scriptInput, updateFilePatch } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -64,7 +65,7 @@ describe("the morning wake (§21.3)", () => {
       waifus: [SLEEPER],
       scripts: script(
         textTurn("hi"),
-        toolTurn([{ name: "Write", input: { file_path: "~/life/schedule.json", content: plan("2026-10-24") } }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(addFilePatch("~/life/schedule.json", plan("2026-10-24"))) }]),
         textTurn("planned")
       )
     });
@@ -207,7 +208,7 @@ describe("the morning wake (§21.3)", () => {
         await enqueueWake(world!.storage, "ella", dayWake);
         for (const event of events) yield event;
       })();
-    const w = await lifeWorld(roots, { scripts: [queueing(toolTurn([{ name: "Read", input: { file_path: "~/MEMORY.md" } }])), () => textTurn("done"), () => textTurn("good morning to me"), () => textTurn("Summary.")] });
+    const w = await lifeWorld(roots, { scripts: [queueing(toolTurn([{ name: "Read", input: scriptInput.readFile("~/MEMORY.md") }])), () => textTurn("done"), () => textTurn("good morning to me"), () => textTurn("Summary.")] });
     world = w;
     await homeOf(w).write("MEMORY.md", "# Memory\n");
     await beginLife(w);
@@ -341,7 +342,7 @@ describe("held wakes at the edges (§21.4, §21.6c)", () => {
 });
 
 describe("staying in a conversation while busy (§21.4, owner addition)", () => {
-  const SEND = toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "on shift, but sure" } }]);
+  const SEND = toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "on shift, but sure" }]) }]);
 
   /** A mention reaches her while busy and she answers in the room. */
   async function answered(w: LifeWorld): Promise<void> {
@@ -462,52 +463,60 @@ const DAY_NOTE = promptCopyText("~/life/schedule.json");
 const MEMORY_NOTE = promptCopyText("~/MEMORY.md");
 
 describe("her prompt's copy of her day and MEMORY.md (§21.2)", () => {
-  it("Write, Edit and Bash say once per turn that the copy is old; other files and unchanged writes say nothing", async () => {
+  it("Edit and Bash say once per turn that the copy is old; other files and unchanged writes say nothing", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
-    const first = await run("Write", { file_path: "~/life/schedule.json", content: plan("2026-10-24") }, ctx);
+    const first = await applyPatch(ctx, addFilePatch("~/life/schedule.json", plan("2026-10-24")));
     // Her day has a plan with a time: the write also says those wake her (§29).
-    expect(text(first)).toBe(`wrote ~/life/schedule.json (${Buffer.byteLength(plan("2026-10-24"))} B)\n${DAY_NOTE}\n${PLAN_WAKE_TEXT}`);
-    expect(text(await run("Edit", { file_path: "~/life/schedule.json", old_string: "slow morning", new_string: "sleepy" }, ctx))).toBe("edited ~/life/schedule.json");
-    expect(text(await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n" }, ctx))).toContain(MEMORY_NOTE);
-    expect(text(await run("Write", { file_path: "~/people/kevin.md", content: "# Kevin\n" }, ctx))).not.toContain("system prompt");
+    expect(text(first)).toBe(`Updated: A ~/life/schedule.json\n${DAY_NOTE}\n${PLAN_WAKE_TEXT}`);
+    const day = (await homeOf(w).read("life/schedule.json"))!;
+    expect(text(await applyPatch(ctx, lineEditPatch("~/life/schedule.json", day, "slow morning", "sleepy")))).toBe("Updated: M ~/life/schedule.json");
+    expect(text(await applyPatch(ctx, addFilePatch("~/MEMORY.md", "# Memory\n")))).toContain(MEMORY_NOTE);
+    expect(text(await applyPatch(ctx, addFilePatch("~/people/kevin.md", "# Kevin\n")))).not.toContain("system prompt");
     // A new turn: Edit and Bash say it again.
     const next = await ctxFor(w, { turn: { id: "turn-2", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
-    expect(text(await run("Edit", { file_path: "~/MEMORY.md", old_string: "# Memory", new_string: "# My memory" }, next))).toBe(`edited ~/MEMORY.md\n${MEMORY_NOTE}`);
+    expect(text(await applyPatch(next, updateFilePatch("~/MEMORY.md", ["# Memory", "# My memory"])))).toBe(`Updated: M ~/MEMORY.md\n${MEMORY_NOTE}`);
     const third = await ctxFor(w, { turn: { id: "turn-3", sentPlaces: new Set(), dmUsersSent: new Set(), fetches: 0 } });
     const bash = await run("Bash", { command: "sed -i 's/sleepy/rested/' ~/life/schedule.json && echo '- [Kevin](people/kevin.md)' >> ~/MEMORY.md" }, third);
     expect(text(bash)).toContain(DAY_NOTE);
     expect(text(bash)).toContain(MEMORY_NOTE);
     // Rewriting the same bytes changes nothing to tell.
     const same = await homeOf(w).read("people/kevin.md");
-    expect(text(await run("Write", { file_path: "~/people/kevin.md", content: same! }, third))).not.toContain("system prompt");
+    expect(text(await applyPatch(third, replaceFilePatch("~/people/kevin.md", same!)))).toBe("No change: D ~/people/kevin.md, A ~/people/kevin.md (the files already read like that)");
   });
 
   it("is never said outside her life (dreaming), and not for her day when it is kept out of her prompt", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", scheduleInPrompt: false }] });
     const ctx = await ctxFor(w);
-    expect(text(await run("Write", { file_path: "~/life/schedule.json", content: plan("2026-10-24") }, ctx))).not.toContain("system prompt");
+    expect(text(await applyPatch(ctx, addFilePatch("~/life/schedule.json", plan("2026-10-24"))))).not.toContain("system prompt");
     const dream = await ctxFor(w, { mode: "session", session: "dream" });
-    expect(text(await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n" }, dream))).not.toContain("system prompt");
+    expect(text(await applyPatch(dream, addFilePatch("~/MEMORY.md", "# Memory\n")))).not.toContain("system prompt");
   });
 });
 
 describe("dreaming leaves ~/life/ alone (§21.6)", () => {
-  it("Write, Edit and Bash refuse to change anything there; notes and MEMORY.md are fine", async () => {
+  it("Edit and Bash refuse to change anything there; notes and MEMORY.md are fine", async () => {
     const w = await lifeWorld(roots);
     await writeHerFile(w, "life/schedule.json", plan("2026-10-24"));
     await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "at", when: "2026-10-24 18:00", note: "flyer" }]));
     const dream = await ctxFor(w, { mode: "session", session: "dream" });
+    const refused = { content: `error: Error: tools.apply_patch: ${DREAM_LIFE_REFUSED.replace(/^error:\s*/u, "")}; nothing was changed (line 1)`, isError: true };
+    expect(await applyPatch(dream, replaceFilePatch("~/life/schedule.json", plan("2026-10-25")))).toEqual(refused);
+    const wakeups = (await homeOf(w).read("life/wakeups.json"))!;
+    expect(await applyPatch(dream, lineEditPatch("~/Life/Wakeups.json", wakeups, "flyer", "poster"))).toEqual(refused);
+    expect(await applyPatch(dream, addFilePatch("~/life/new-note.md", "x"))).toEqual(refused);
+    // The same patch adding a note outside ~/life/ too: all or nothing.
+    expect(await applyPatch(dream, `${addFilePatch("~/ok.md", "fine").replace("\n*** End Patch", "")}\n*** Add File: ~/life/x.md\n+x\n*** End Patch`)).toEqual(refused);
+    expect(await homeOf(w).read("ok.md")).toBeUndefined();
+    // The retired Write still refuses too.
     expect(await run("Write", { file_path: "~/life/schedule.json", content: plan("2026-10-25") }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
-    expect(await run("Edit", { file_path: "~/Life/Wakeups.json", old_string: "flyer", new_string: "poster" }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
-    expect(await run("Write", { file_path: "~/life/new-note.md", content: "x" }, dream)).toEqual({ content: DREAM_LIFE_REFUSED, isError: true });
     const bash = await run("Bash", { command: "rm ~/life/wakeups.json" }, dream);
     expect(text(bash)).toContain(`error: changes not saved: ${DREAM_LIFE_REFUSED.replace(/^error:\s*/u, "")}`);
     expect(await homeOf(w).read("life/wakeups.json")).toContain("flyer");
-    expect(text(await run("Write", { file_path: "~/MEMORY.md", content: "# Memory\n" }, dream))).toMatch(/^wrote ~\/MEMORY\.md/u);
+    expect(text(await applyPatch(dream, addFilePatch("~/MEMORY.md", "# Memory\n")))).toBe("Updated: A ~/MEMORY.md");
     // A forget's notes scrub (another session) may still tidy her wakeups.
     const scrub = await ctxFor(w, { mode: "session", session: "scrub" });
-    expect(text(await run("Edit", { file_path: "~/life/wakeups.json", old_string: "flyer", new_string: "poster" }, scrub))).toBe("edited ~/life/wakeups.json");
+    expect(text(await applyPatch(scrub, lineEditPatch("~/life/wakeups.json", (await homeOf(w).read("life/wakeups.json"))!, "flyer", "poster")))).toBe("Updated: M ~/life/wakeups.json");
   });
 });
 

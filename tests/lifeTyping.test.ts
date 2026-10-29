@@ -7,6 +7,7 @@ import { streamedPlace, TYPING_REFRESH_MS, TypingKeeper } from "../src/life/typi
 import { CHANNEL, closeWorlds, KEVIN, lifeWorld, ROOM, ROOM_KEY, script, toolTurn } from "./lifeFixtures.js";
 import { textTurn } from "./modelFakes.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, scriptInput } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -91,12 +92,29 @@ describe("the typing keeper", () => {
     expect(streamedPlace('{"text":"say \\"place\\": \\"x\\"","place":"dm/kevin"}')).toBe("dm/kevin");
     expect(streamedPlace('{"place":"  "}')).toBeUndefined();
   });
+
+  it("reads the place inside a streaming send_message script (§32) as soon as its string is complete", () => {
+    const code = 'const r = await tools.send_message({ place: "bake-club/#general", messages: [{ text: "say place: \\"x\\"" }] });\ntext(r);';
+    const json = JSON.stringify({ script: code });
+    const complete = JSON.stringify({ script: 'const r = await tools.send_message({ place: "bake-club/#general"' }).slice(0, -2).length;
+    for (let cut = 0; cut < json.length; cut += 1) {
+      const sofar = json.slice(0, cut);
+      expect(streamedPlace(sofar), sofar).toBe(cut >= complete ? "bake-club/#general" : undefined);
+    }
+    // Other quotes and spellings; a place before send_message (a read) is not hers to type in.
+    expect(streamedPlace(JSON.stringify({ script: "await tools.send_message({place:'dm/kevin', messages: []})" }))).toBe("dm/kevin");
+    expect(streamedPlace(JSON.stringify({ script: 'await tools.send_message({ "place": "dm/kevin" })' }))).toBe("dm/kevin");
+    expect(streamedPlace(JSON.stringify({ script: "await tools.send_message({ place: `dm/kevin` })" }))).toBe("dm/kevin");
+    expect(streamedPlace(JSON.stringify({ script: 'const m = await tools.read_messages({ place: "dm/kevin" });\nawait tools.send_message({ place: "bake-club/#general"' }))).toBe("bake-club/#general");
+    expect(streamedPlace(JSON.stringify({ script: 'await tools.read_messages({ place: "dm/kevin" })' }))).toBeUndefined();
+    expect(streamedPlace(JSON.stringify({ script: "await tools.send_message({ place: p })" }))).toBeUndefined();
+  });
 });
 
 describe("typing in a turn", () => {
   it("a mention types only once her message is on its way; it stops once she sent there", async () => {
     const w = await lifeWorld(roots, {
-      scripts: script(toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "hi!" } }]), textTurn("(sent)"))
+      scripts: script(toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "hi!" }]) }]), textTurn("(sent)"))
     });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     const message = w.discord.post(ROOM, "hey ella");
@@ -109,9 +127,9 @@ describe("typing in a turn", () => {
   it("reading, searching and her own thoughts show nothing, even for a mention", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "Web", input: { script: `await search("lemon tart recipe")` } }]),
-        toolTurn([{ name: "Write", input: { file_path: "~/kevin.md", content: "likes tarts" } }]),
+        toolTurn([{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general" }) }]),
+        toolTurn([{ name: "Web", input: scriptInput.web({ search_query: [{ q: "lemon tart recipe" }] }) }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(addFilePatch("~/kevin.md", "likes tarts")) }]),
         textTurn("(nothing to add)")
       )
     });
@@ -125,9 +143,9 @@ describe("typing in a turn", () => {
   it("types again for her next message after a send, but not while she only writes notes", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "hi!" } }]),
-        toolTurn([{ name: "Write", input: { file_path: "~/kevin.md", content: "likes tarts" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", text: "also, lemon" } }]),
+        toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "hi!" }]) }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(addFilePatch("~/kevin.md", "likes tarts")) }]),
+        toolTurn([{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "also, lemon" }]) }]),
         textTurn("(sent)")
       )
     });

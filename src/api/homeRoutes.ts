@@ -1,7 +1,7 @@
 // Her own computer over HTTP (Living cast spec §16.11, §30.3): her files in `/home/<slug>` and `/tmp`,
 // and her wakeups (`~/life/wakeups.json`, with their sources). Every write goes through her
 // HomeStore, so the API's PUT and DELETE are held to the same path rules, limits and checks as her
-// Write tool (`~/life/places.md` refused, the JSON files in `~/life/` checked with line and column).
+// Edit tool (`~/life/places.md` refused, the JSON files in `~/life/` checked with line and column).
 //
 // Paths in URLs are her paths without the leading slash: `files/home/aria/people/kevin.md`,
 // `files/tmp/bake-club/general/k3-cake.png` (or `files/~/people/kevin.md`). A file answers as JSON

@@ -31,6 +31,7 @@ import { ServerConfigSchema } from "../src/shared/schemas/domain.js";
 import type { RawDiscordMessage } from "../src/shared/schemas/discordMessage.js";
 import { CHANNEL, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, scriptInput, updateFilePatch } from "./toolCalls.js";
 
 const roots: string[] = [];
 
@@ -292,7 +293,7 @@ describe("/transcripts in her computer", () => {
     expect((await run(w, "Bash", { command: "grep -rn Lianne /transcripts" })).text).toContain("/transcripts/bake-club/general/2026-10-24.md:3:[14:00 #a1] Lianne: Lianne says hi");
     expect((await run(w, "Bash", { command: "cat /transcripts/bake-club/general/2026-10-24.md | wc -l" })).text).toBe("3\nexit 0");
     expect((await run(w, "Bash", { command: "python3 -c \"print(open('/transcripts/bake-club/general/2026-10-24.md').read().count('kingdom'))\"" }, "ella")).text).toBe("1\nexit 0");
-    const read = await run(w, "Read", { file_path: "/transcripts/bake-club/general/2026-10-24.md" });
+    const read = await run(w, "Read", scriptInput.readFile("/transcripts/bake-club/general/2026-10-24.md"));
     expect(read.isError).toBe(false);
     expect(read.text).toContain("Lianne says hi");
     // A copy into her home is hers.
@@ -301,8 +302,16 @@ describe("/transcripts in her computer", () => {
 
   it("refuses every write to /transcripts", async () => {
     const w = await seeded();
+    const refused = (file: string) => ({ text: `error: Error: tools.apply_patch: ${file}: transcripts are read-only; nothing was changed (line 1)`, isError: true });
+    expect(await run(w, "Edit", scriptInput.applyPatch(addFilePatch("/transcripts/x.md", "x")))).toEqual(refused("/transcripts/x.md"));
+    const day = "/transcripts/bake-club/general/2026-10-24.md";
+    expect(await run(w, "Edit", scriptInput.applyPatch(updateFilePatch(day, ["hi", "bye"])))).toEqual(refused(day));
+    expect(await run(w, "Edit", scriptInput.applyPatch(`*** Begin Patch\n*** Delete File: ${day}\n*** End Patch`))).toEqual(refused(day));
+    // Moving a file of hers there is refused too.
+    expect(await run(w, "Edit", scriptInput.applyPatch(`${addFilePatch("~/n.md", "x").replace("\n*** End Patch", "")}\n*** End Patch`))).toEqual({ text: "Updated: A ~/n.md\n[receipt] apply_patch 1: saved A ~/n.md", isError: false });
+    expect(await run(w, "Edit", scriptInput.applyPatch("*** Begin Patch\n*** Update File: ~/n.md\n*** Move to: /transcripts/n.md\n@@\n-x\n+y\n*** End Patch"))).toEqual(refused("/transcripts/n.md"));
+    // The retired Write still refuses.
     expect(await run(w, "Write", { file_path: "/transcripts/x.md", content: "x" })).toEqual({ text: "error: transcripts are read-only", isError: true });
-    expect(await run(w, "Edit", { file_path: "/transcripts/bake-club/general/2026-10-24.md", old_string: "hi", new_string: "bye" })).toEqual({ text: "error: transcripts are read-only", isError: true });
     for (const command of ["echo x > /transcripts/x.md", "rm /transcripts/bake-club/general/2026-10-24.md", "mv /transcripts/bake-club ~/x", "mkdir /transcripts/new", "touch /transcripts/bake-club/general/2026-10-24.md"]) {
       const result = await run(w, "Bash", { command });
       expect(result.text, command).toContain("transcripts are read-only");
@@ -314,7 +323,7 @@ describe("/transcripts in her computer", () => {
 
   it("is never attached by SendMessage", async () => {
     const w = await seeded();
-    const result = await run(w, "SendMessage", { place: "bake-club/#general", text: "look", files: ["/transcripts/bake-club/general/2026-10-24.md"] });
+    const result = await run(w, "SendMessage", scriptInput.sendMessage("bake-club/#general", [{ text: "look", attach: ["/transcripts/bake-club/general/2026-10-24.md"] }]));
     expect(result.text).toContain("transcripts can't be attached");
     expect(w.discord.sent.at(-1)?.files).toBeUndefined();
   }, 60_000);
@@ -329,16 +338,17 @@ describe("/transcripts in her computer", () => {
     await run(w, "Bash", { command: `cp ${day} ~/copy.md && cat ${day} > ~/cat.md` });
     expect(await store.dmOrigin((await store.resolveExisting("~/copy.md")).path!)).toBe(key);
     expect(await store.dmOrigin((await store.resolveExisting("~/cat.md")).path!)).toBe(key);
-    // Read, then a Write of exactly what it showed, in one turn.
+    // Read, then a patch adding exactly what it showed, in one turn.
     const ctx = await toolCtx(w);
-    await lifeTool("Read")!.run({ file_path: day }, ctx);
+    await lifeTool("Read")!.run(scriptInput.readFile(day), ctx);
     const text = (await new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: "UTC", now: w.clock.now }).read(["dm", "user-0003", "2026-10-24.md"]))!;
-    await lifeTool("Write")!.run({ file_path: "~/written.md", content: text }, ctx);
+    expect(text.endsWith("\n")).toBe(true);
+    expect((await lifeTool("Edit")!.run(scriptInput.applyPatch(addFilePatch("~/written.md", text)), ctx)).isError).toBeFalsy();
     expect(await store.dmOrigin((await store.resolveExisting("~/written.md")).path!)).toBe(key);
     // Her own words about it are hers.
-    await run(w, "Write", { file_path: "~/mine.md", content: "Kevin told me something" });
+    await run(w, "Edit", scriptInput.applyPatch(addFilePatch("~/mine.md", "Kevin told me something")));
     expect(await store.dmOrigin((await store.resolveExisting("~/mine.md")).path!)).toBeUndefined();
-    const sent = await run(w, "SendMessage", { place: "bake-club/#general", text: "look", files: ["~/copy.md", "~/written.md"] });
+    const sent = await run(w, "SendMessage", scriptInput.sendMessage("bake-club/#general", [{ text: "look", attach: ["~/copy.md", "~/written.md"] }]));
     expect(sent.text).toContain(TRANSCRIPT_COPY_REASON);
     expect(w.discord.sent.at(-1)?.files).toBeUndefined();
   }, 60_000);

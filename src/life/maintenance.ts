@@ -1,6 +1,6 @@
 // Sessions outside her life (Living cast spec §7.3, §16.8, §18.4): nightly dreaming (`dream.ts`) and
 // the notes-scrub session of a forget (§7.5 step 4). Each is a separate short session, never her life
-// log: an instruction, only her file tools (Read, Write, Edit, Bash with /transcripts read-only; no
+// log: an instruction, only her file tools (Read, Edit, Bash with /transcripts read-only; no
 // messaging, no web), purpose `maintenance`. The scrub session keeps her identity and persona; the
 // dream is a memory keeper with neither (T3).
 
@@ -12,7 +12,7 @@ import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { homeStoreFor } from "./home/index.js";
 import { availabilityFor } from "./busy.js";
-import { LIFE_DIR, PLACES_FILE } from "./home/pathRules.js";
+import { LIFE_DIR, PLACES_FILE, PROFILE_FILE } from "./home/pathRules.js";
 import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
 
@@ -76,7 +76,7 @@ export async function runSession(
   const toolNames = maintenanceToolNames(deps.config());
   const messages: ProviderMessageLike[] = [{ role: "user", content: o.opening.map((text) => ({ type: "text" as const, text })) }];
   const tools = modelTools(toolNames, deps.config());
-  // One scratch for the whole session (a Read earlier in it lets a later Write replace a special file).
+  // One scratch for the whole session (what she read of her special files stays known across it).
   const turn = { id: `${o.kind}-${deps.now().getTime()}`, sentPlaces: new Set<string>(), dmUsersSent: new Set<string>(), fetches: 0 };
   let rounds = 0;
   let summary = "";
@@ -155,8 +155,12 @@ export async function runNotesSession(
   });
 }
 
-/** What she changed: places.md is the app's to rewrite (she can't), so a refresh during the session isn't hers. */
+/**
+ * What she changed: places.md and profile.json are the app's to rewrite (a session can't change
+ * either), so the scheduler's refresh during the session isn't hers.
+ */
+const APP_REWRITTEN = new Set([`${LIFE_DIR}/${PLACES_FILE}`, `${LIFE_DIR}/${PROFILE_FILE}`]);
 function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
-  return [...paths].filter((path) => path !== `${LIFE_DIR}/${PLACES_FILE}` && before.get(path) !== after.get(path)).sort();
+  return [...paths].filter((path) => !APP_REWRITTEN.has(path) && before.get(path) !== after.get(path)).sort();
 }

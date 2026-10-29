@@ -14,6 +14,7 @@ import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import type { BotProfileHandle } from "../src/discord/profileSync.js";
 import { closeWorlds, GUILD, lifeWorld, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, applyPatch, readFile as readFile_, replaceFilePatch, updateFilePatch } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -65,34 +66,29 @@ describe("profile.json (§17.1)", () => {
     expect(await readProfile(w)).toEqual({ name: "Ella", username: "Ari", bio: null, nicknames: { "bake-club": "Ari the Baker" } });
   });
 
-  it("her Write becomes her config, starts the sync and tells her what happens", async () => {
+  it("her Edit becomes her config, starts the sync and tells her what happens", async () => {
     const sync = { syncWaifu: vi.fn(async () => undefined) };
     const w = await world({ sync });
     const ctx = await ctxFor(w);
-    expect(text(await run("Write", { file_path: "~/life/profile.json", content: "{}" }, ctx))).toMatch(/already exists; Read it first/u);
-    await run("Read", { file_path: "~/life/profile.json" }, ctx);
+    expect(text(await applyPatch(ctx, addFilePatch("~/life/profile.json", "{}")))).toMatch(/Add File: ~\/life\/profile\.json already exists/u);
     const content = JSON.stringify({ name: "Ella", username: "Ari ✨", bio: "Sunny baker. Ask me about lemon tarts.", nicknames: { "bake-club": "Ari" } }, null, 2);
-    const result = text(await run("Write", { file_path: "~/life/profile.json", content }, ctx));
+    const result = text(await applyPatch(ctx, replaceFilePatch("~/life/profile.json", content)));
     // The fake Discord has no bot of hers online: Discord shows it later.
-    expect(result).toMatch(/^wrote ~\/life\/profile\.json \(.*\); saved; Discord shows it once you're back online$/u);
+    expect(result).toBe("Updated: D ~/life/profile.json, A ~/life/profile.json\nprofile.json: saved; Discord shows it once you're back online");
     expect(sync.syncWaifu).toHaveBeenCalledWith("ella");
     expect(await readWaifu(w.storage, "ella")).toMatchObject({ name: "Ella", username: "Ari ✨", bio: "Sunny baker. Ask me about lemon tarts.", nicknames: { [GUILD]: "Ari" } });
-    // An Edit too; the same values again change nothing.
-    expect(text(await run("Edit", { file_path: "~/life/profile.json", old_string: "lemon tarts", new_string: "brownies" }, ctx))).toMatch(/saved/u);
+    // A one-line change too; the same values again (another layout) change nothing.
+    expect(text(await applyPatch(ctx, updateFilePatch("~/life/profile.json", ['  "bio": "Sunny baker. Ask me about lemon tarts.",', '  "bio": "Sunny baker. Ask me about brownies.",'])))).toMatch(/profile\.json: saved/u);
     expect((await readWaifu(w.storage, "ella")).bio).toBe("Sunny baker. Ask me about brownies.");
-    const same = await readFile(profilePath(w), "utf8");
-    await run("Read", { file_path: "~/life/profile.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/life/profile.json", content: same }, ctx))).toMatch(/your profile is the same as before/u);
+    const same = JSON.stringify(JSON.parse(await readFile(profilePath(w), "utf8")));
+    expect(text(await applyPatch(ctx, replaceFilePatch("~/life/profile.json", same)))).toMatch(/profile\.json: your profile is the same as before/u);
   });
 
   it("refuses invalid edits with a clear error and changes nothing", async () => {
     const w = await world();
     const ctx = await ctxFor(w);
     const before = await readFile(profilePath(w), "utf8");
-    const attempt = async (content: string) => {
-      await run("Read", { file_path: "~/life/profile.json" }, ctx);
-      return run("Write", { file_path: "~/life/profile.json", content }, ctx);
-    };
+    const attempt = (content: string) => applyPatch(ctx, replaceFilePatch("~/life/profile.json", content));
     const cases: Array<[string, RegExp]> = [
       ['{"name": "Ella", "username": "discord queen"}', /username: A Discord username cannot contain "discord"/u],
       ['{"name": "Ella", "username": "A"}', /2 to 32 characters/u],
@@ -118,13 +114,15 @@ describe("profile.json (§17.1)", () => {
     expect(text(rm)).toMatch(/profile\.json can't be deleted/u);
   });
 
-  it("a stale Write after a dashboard edit gets 'changed since you read it'", async () => {
+  it("a stale patch after a dashboard edit no longer matches; the retired Write still says 'changed since you read it'", async () => {
     const w = await world();
     const ctx = await ctxFor(w);
-    await run("Read", { file_path: "~/life/profile.json" }, ctx);
+    await readFile_(ctx, "~/life/profile.json");
     const waifu = await readWaifu(w.storage, "ella");
     await w.storage.writeJson("waifu:ella", "user/waifus/ella/waifu.json", WaifuConfigSchema, { ...waifu, bio: "Set from the dashboard." });
     await rewriteProfileFile(w.storage, "ella");
+    const patched = await applyPatch(ctx, updateFilePatch("~/life/profile.json", ['  "bio": null,', '  "bio": "mine",']));
+    expect(text(patched)).toMatch(/apply_patch: Failed to find expected lines in ~\/life\/profile\.json/u);
     const result = await run("Write", { file_path: "~/life/profile.json", content: '{"name": "Ella", "bio": "mine"}' }, ctx);
     expect(text(result)).toBe("error: profile.json changed since you read it (your profile was changed for you); Read it again");
     expect((await readWaifu(w.storage, "ella")).bio).toBe("Set from the dashboard.");
@@ -137,9 +135,8 @@ describe("profile.json (§17.1)", () => {
     expect(text(bash)).toMatch(/profile\.json: saved/u);
     expect((await readWaifu(w.storage, "ella")).bio).toBe("from bash");
     const tidy = await ctxFor(w, { mode: "session" });
-    await run("Read", { file_path: "~/life/profile.json" }, tidy);
-    expect(text(await run("Write", { file_path: "~/life/profile.json", content: '{"name":"Ella"}' }, tidy))).toMatch(/isn't changed while tidying/u);
-    expect(text(await run("Edit", { file_path: "~/life/profile.json", old_string: "from bash", new_string: "tidied" }, tidy))).toMatch(/isn't changed while tidying/u);
+    expect(text(await applyPatch(tidy, replaceFilePatch("~/life/profile.json", '{"name":"Ella"}')))).toMatch(/isn't changed while tidying/u);
+    expect(text(await applyPatch(tidy, updateFilePatch("~/life/profile.json", ["from bash", "tidied"])))).toMatch(/isn't changed while tidying/u);
     expect(text(await run("Bash", { command: "sed -i 's/from bash/tidied/' ~/life/profile.json" }, tidy))).toMatch(/isn't changed while tidying/u);
     expect((await readWaifu(w.storage, "ella")).bio).toBe("from bash");
   });

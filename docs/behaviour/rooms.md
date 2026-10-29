@@ -33,7 +33,7 @@ observed, but nothing replies"):
 
 - messages there never reach intake: no wakes, no watch matches, no detector (`CastRuntime.handleDiscordMessage`);
 - room wakes for that server are dropped by guard 1; catch-up skips the server;
-- `SendMessage` and `React` there answer `error: you can't post there` (`place.paused`);
+- `SendMessage` there (messages and reactions) answers `you can't post there` (`place.paused`);
 - active participants are still recorded; she can still read the room.
 
 Pausing the whole app (`runtime.paused`, Settings → App → Controls) stops everything; resume catches

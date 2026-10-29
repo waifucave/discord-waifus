@@ -191,8 +191,15 @@ describe("the morning summary (§23)", () => {
   it("the refs in her morning resolve: she replies to the mention and reacts to the DM", async () => {
     const w = await sleeperWorld(
       toolTurn([
-        { name: "SendMessage", input: { place: "bake-club/#general", text: "saving you the best one", reply_to: "#a0" } },
-        { name: "React", input: { place: "dm/kevin", ref: "#a0", emoji: "👍" } }
+        {
+          name: "SendMessage",
+          input: {
+            script: [
+              'await tools.send_message({ place: "bake-club/#general", messages: [{ text: "saving you the best one", reply_to: "#a0" }] });',
+              'await tools.send_message({ place: "dm/kevin", messages: [{ react: "👍", to: "#a0" }] });'
+            ].join("\n")
+          }
+        }
       ]),
       textTurn("(morning done)")
     );

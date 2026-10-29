@@ -26,6 +26,7 @@ import { removeTempRoot } from "../testUtils.js";
 import { AnthropicCacheSim, ONE_HOUR_MS, readRatio, tally, type CacheUsage, type WireBlock, type WireBody } from "./anthropicCacheSim.js";
 import type { Exchange, FakeAnthropic } from "./fakeAnthropic.js";
 import { dmWake, isCompaction, isMaintenance, lifeTurn, realAnthropicWorld, roomWake } from "./lifeWire.js";
+import { addFilePatch, scriptInput } from "../toolCalls.js";
 
 const roots: string[] = [];
 const servers: FakeAnthropic[] = [];
@@ -119,7 +120,7 @@ describe("the rest turn (§19.3)", { timeout: 120_000 }, () => {
     const turn = lifeTurn(() => "bake-club/#general");
     server.next = (body) => {
       if (!isRest(body) && !JSON.stringify(body.messages.slice(-1)).includes("saturday.md")) return turn(body);
-      if (isRest(body)) return { thinking: "Let me keep the plan.", toolCalls: [{ name: "Write", input: { file_path: "~/saturday.md", content: "Saturday: lemon tarts\n" } }] };
+      if (isRest(body)) return { thinking: "Let me keep the plan.", toolCalls: [{ name: "Edit", input: scriptInput.applyPatch(addFilePatch("~/saturday.md", "Saturday: lemon tarts\n")) }] };
       estimate.value = undefined;
       return { text: "Bake Club #general: Kevin asked what to bake next; I said lemon tarts. ".repeat(6) };
     };
