@@ -308,7 +308,7 @@ describe("/transcripts in her computer", () => {
     expect(await run(w, "Edit", scriptInput.applyPatch(updateFilePatch(day, ["hi", "bye"])))).toEqual(refused(day));
     expect(await run(w, "Edit", scriptInput.applyPatch(`*** Begin Patch\n*** Delete File: ${day}\n*** End Patch`))).toEqual(refused(day));
     // Moving a file of hers there is refused too.
-    expect(await run(w, "Edit", scriptInput.applyPatch(`${addFilePatch("~/n.md", "x").replace("\n*** End Patch", "")}\n*** End Patch`))).toEqual({ text: "Updated: A ~/n.md", isError: false });
+    expect(await run(w, "Edit", scriptInput.applyPatch(`${addFilePatch("~/n.md", "x").replace("\n*** End Patch", "")}\n*** End Patch`))).toEqual({ text: "Updated: A ~/n.md\n[receipt] apply_patch 1: saved A ~/n.md", isError: false });
     expect(await run(w, "Edit", scriptInput.applyPatch("*** Begin Patch\n*** Update File: ~/n.md\n*** Move to: /transcripts/n.md\n@@\n-x\n+y\n*** End Patch"))).toEqual(refused("/transcripts/n.md"));
     // The retired Write still refuses.
     expect(await run(w, "Write", { file_path: "/transcripts/x.md", content: "x" })).toEqual({ text: "error: transcripts are read-only", isError: true });
@@ -323,7 +323,7 @@ describe("/transcripts in her computer", () => {
 
   it("is never attached by SendMessage", async () => {
     const w = await seeded();
-    const result = await run(w, "SendMessage", scriptInput.sendMessage("bake-club/#general", [{ text: "look", attach: "/transcripts/bake-club/general/2026-10-24.md" }]));
+    const result = await run(w, "SendMessage", scriptInput.sendMessage("bake-club/#general", [{ text: "look", attach: ["/transcripts/bake-club/general/2026-10-24.md"] }]));
     expect(result.text).toContain("transcripts can't be attached");
     expect(w.discord.sent.at(-1)?.files).toBeUndefined();
   }, 60_000);

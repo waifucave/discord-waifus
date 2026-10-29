@@ -233,7 +233,7 @@ describe("refs at ingest, resolving after refs.json pruned them (§22.1)", () =>
     await w.storage.writeJson(`refs:${ROOM_KEY}`, refsFile, ConversationRefsSchema, { ...refs, refs: {} });
     expect(bodies(text(await read(w, "bake-club/#general", "around #a0")))).toEqual(["Kevin: we won the bake-off!"]);
     const ctx = await ctxFor(w);
-    expect(text(await sendMessage(ctx, "bake-club/#general", [{ react: "🎉", to: "#a0" }]))).toBe('{"sent":[],"reacted":["#a0"]}');
+    expect(text(await sendMessage(ctx, "bake-club/#general", [{ react: "🎉", to: "#a0" }]))).toBe('{"sent":[],"reactions":["#a0"]}');
     const sent = await sendMessage(ctx, "bake-club/#general", [{ text: "congrats!!", reply_to: "#a0" }]);
     expect(sent.isError).not.toBe(true);
     // The retired React (old log lines) still finds it.

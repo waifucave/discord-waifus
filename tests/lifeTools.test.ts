@@ -165,7 +165,7 @@ describe("SendMessage (§6.3, §16.3.2, §32.2, D11)", () => {
       { name: "kevin-copy.md", size: 20 }
     ]);
     // Files only ({ attach } alone) is a message; so is an old call with files and no text.
-    expect(sentRefs(await send(await ctxFor(w), "bake-club/#general", [{ attach: "~/flyer.txt" }]))).toHaveLength(1);
+    expect(sentRefs(await send(await ctxFor(w), "bake-club/#general", [{ attach: ["~/flyer.txt"] }]))).toHaveLength(1);
     expect(w.discord.sent[1]).toMatchObject({ content: "", files: [{ name: "flyer.txt" }] });
     expect(text(await run("SendMessage", { place: "bake-club/#general", files: ["~/flyer.txt"] }, await ctxFor(w)))).toMatch(/^sent #/u);
     expect(w.discord.sent).toHaveLength(3);
@@ -179,10 +179,10 @@ describe("SendMessage (§6.3, §16.3.2, §32.2, D11)", () => {
     await writeFile(hostPath(w, "tmp/a.txt"), "a");
     await writeFile(hostPath(w, "tmp/b.txt"), "b");
     const files = (messages: unknown[]) => send(ctx, "bake-club/#general", messages);
-    expect(text(await files([{ text: "files", attach: "/tmp/big/huge.bin" }]))).toBe(thrown("tools.send_message: messages[0]: can't attach /tmp/big/huge.bin (larger than 10 MB); nothing was sent"));
+    expect(text(await files([{ text: "files", attach: ["/tmp/big/huge.bin"] }]))).toBe(thrown("tools.send_message: messages[0]: can't attach /tmp/big/huge.bin (larger than 10 MB); nothing was sent"));
     expect(text(await files([{ text: "files", attach: ["/tmp/a.txt", "/tmp/b.txt"] }]))).toBe(thrown("messages[0]: at most 1 file per message", "RangeError"));
-    expect(text(await files([{ text: "files", attach: "/tmp/big" }]))).toBe(thrown("tools.send_message: messages[0]: can't attach /tmp/big (it is a folder); nothing was sent"));
-    expect(sentRefs(await files([{ text: "files", attach: "/tmp/a.txt" }, { text: "and", attach: "/tmp/b.txt" }]))).toHaveLength(2);
+    expect(text(await files([{ text: "files", attach: ["/tmp/big"] }]))).toBe(thrown("tools.send_message: messages[0]: can't attach /tmp/big (it is a folder); nothing was sent"));
+    expect(sentRefs(await files([{ text: "files", attach: ["/tmp/a.txt"] }, { text: "and", attach: ["/tmp/b.txt"] }]))).toHaveLength(2);
     expect(w.discord.sent.map((entry) => entry.files)).toEqual([[{ name: "a.txt", size: 1 }], [{ name: "b.txt", size: 1 }]]);
   });
 });
@@ -221,7 +221,7 @@ describe("ReadMessages (§6.2, §32.2) and reactions (§6.4)", () => {
     const ctx = await ctxFor(w);
     const read = text(await readMessages(ctx, { place: "bake-club/#general", max: 1 }));
     const ref = /#([0-9a-z]+)\]/u.exec(read)![1]!;
-    expect(JSON.parse(text(await send(ctx, "bake-club/#general", [{ react: "🎉", to: `#${ref}` }])))).toEqual({ sent: [], reacted: [`#${ref}`] });
+    expect(JSON.parse(text(await send(ctx, "bake-club/#general", [{ react: "🎉", to: `#${ref}` }])))).toEqual({ sent: [], reactions: [`#${ref}`] });
     expect(w.discord.reactions).toMatchObject([{ placeKey: ROOM_KEY, emoji: "🎉", botId: "ella-bot" }]);
     expect(await send(ctx, "bake-club/#general", [{ react: ":partyblob:", to: `#${ref}` }])).toEqual({ content: thrown("tools.send_message: messages[0]: there is no :partyblob: emoji here; nothing was sent"), isError: true });
     expect(await send(ctx, "bake-club/#general", [{ react: "🎉", to: "#nope" }])).toEqual({ content: thrown("tools.send_message: messages[0]: #nope: message too old; nothing was sent"), isError: true });

@@ -16,7 +16,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
 import { CHANNEL, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, script, seedTranscript, tinyPng, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
-import { readMessages, runScript, sendMessage } from "./toolCalls.js";
+import { readMessages, receiptsOf, runScript, sendMessage, withoutReceipts } from "./toolCalls.js";
 
 const roots: string[] = [];
 // Several tests build more than one world: slow under full-suite load.
@@ -45,8 +45,9 @@ async function ctxFor(w: LifeWorld, o: { signal?: AbortSignal; intent?: boolean 
 
 const send = (items: unknown[], ctx: ToolContext, place = "bake-club/#general"): Promise<ToolOutput> => sendMessage(ctx, place, items);
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
-/** What a send_message call returned (its JSON). */
-const result = (output: ToolOutput) => JSON.parse(text(output)) as { sent: string[]; reacted?: string[]; stopped?: string; not_sent?: string[]; note?: string };
+/** What a send_message call returned (its JSON, the receipts set aside). */
+const result = (output: ToolOutput) =>
+  JSON.parse(withoutReceipts(text(output))) as { sent: string[]; reactions: string[]; stopped?: { reason: string; next_index: number; incoming?: string[]; error?: string }; note?: string };
 /** Her script's error, thrown by the call on line `line`. */
 const thrown = (message: string, line = 1) => ({ content: `error: Error: tools.send_message: ${message} (line ${line})`, isError: true });
 
@@ -78,7 +79,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     const kevinRef = /\[\d\d:\d\d #([0-9a-z]+)\] Kevin/u.exec(before)![1]!;
     w.discord.typing.length = 0;
     const out = result(await send([{ text: "brownies are ready" }, { text: "come get them" }, { text: "you asked", reply_to: `#${kevinRef}` }, { react: "🎉", to: `#${kevinRef}` }], ctx));
-    expect(out).toEqual({ sent: [expect.stringMatching(/^#/u), expect.stringMatching(/^#/u), expect.stringMatching(/^#/u)], reacted: [`#${kevinRef}`] });
+    expect(out).toEqual({ sent: [expect.stringMatching(/^#/u), expect.stringMatching(/^#/u), expect.stringMatching(/^#/u)], reactions: [`#${kevinRef}`] });
     expect(w.discord.sent.slice(1).map((entry) => entry.content)).toEqual(["brownies are ready", "come get them", "you asked"]);
     expect(w.discord.sent[3]!.replyToMessageId).toBe(kevin.id);
     expect(w.discord.typing).toEqual([CHANNEL, CHANNEL, CHANNEL]);
@@ -86,12 +87,38 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     expect(ctx.turn.sends).toBe(4);
   });
 
+  it("writes a receipt after her output for what went out, whatever her script did (§32.3a)", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w);
+    // No text(), then a throw: the receipt still says what was sent.
+    const output = await runScript("SendMessage", 'await tools.send_message({ place: "bake-club/#general", messages: [{ text: "hi" }, { text: "again" }] });\nthrow new Error("oops")', ctx);
+    expect(text(output).split("\n")).toEqual(["error: Error: oops (line 2)", expect.stringMatching(/^\[receipt\] send_message to bake-club\/#general: sent #\w+ #\w+; the whole list ran$/u)]);
+    // An unawaited send is waited for: it goes out and gets its receipt.
+    const unawaited = await runScript("SendMessage", 'tools.send_message({ place: "bake-club/#general", messages: [{ text: "later" }] }); return "bye"', ctx);
+    expect(text(unawaited).split("\n")).toEqual(["bye", expect.stringMatching(/^\[receipt\] send_message to bake-club\/#general: sent #\w+; the whole list ran$/u)]);
+    expect(w.discord.sent.map((entry) => entry.content)).toEqual(["hi", "again", "later"]);
+    // Sends to one place started together go out in call order.
+    const together = await runScript("SendMessage", 'await Promise.all(["one", "two", "three"].map((t) => tools.send_message({ place: "bake-club/#general", messages: [{ text: t }] })))', ctx);
+    expect(receiptsOf(text(together))).toHaveLength(3);
+    expect(w.discord.sent.slice(3).map((entry) => entry.content)).toEqual(["one", "two", "three"]);
+  });
+
+  it("takes exactly one variant per item; attach is always a list", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w);
+    expect(text(await send([{ text: "hi", wait: 2 }], ctx))).toBe('error: TypeError: messages[0]: unknown field "wait" here (it takes text, reply_to, attach) (line 1)');
+    expect(text(await send([{}], ctx))).toBe("error: TypeError: messages[0] is { text, reply_to, attach }, { attach }, { react, to }, { wait } or { typing } (line 1)");
+    expect(text(await send([{ react: "👍", to: "#a0", wait: 1 }], ctx))).toBe('error: TypeError: messages[0]: unknown field "wait" here (it takes react, to) (line 1)');
+    expect(text(await send([{ text: "hi", attach: "~/cat.png" }], ctx))).toBe('error: TypeError: messages[0].attach is a list of paths in your folders, like ["~/cake.png"] (line 1)');
+    expect(w.discord.sent).toEqual([]);
+  });
+
   it("checks the whole call first: any error refuses it with its item and nothing of it is sent", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w);
     expect(await send([{ text: "one" }, { text: "two" }, { text: "three", reply_to: "#zz9" }], ctx)).toEqual(thrown("messages[2]: #zz9: message too old; nothing was sent"));
-    expect(await send([{ text: "one" }, { attach: "~/nothing-here.png" }], ctx)).toEqual(thrown("messages[1]: can't attach ~/nothing-here.png (it doesn't exist); nothing was sent"));
-    expect(text(await send([{ text: "one", attach: "~/MEMORY.md" }], ctx))).toMatch(/^error: Error: tools\.send_message: messages\[0\]: can't attach ~\/MEMORY\.md \(your notes/u);
+    expect(await send([{ text: "one" }, { attach: ["~/nothing-here.png"] }], ctx)).toEqual(thrown("messages[1]: can't attach ~/nothing-here.png (it doesn't exist); nothing was sent"));
+    expect(text(await send([{ text: "one", attach: ["~/MEMORY.md"] }], ctx))).toMatch(/^error: Error: tools\.send_message: messages\[0\]: can't attach ~\/MEMORY\.md \(your notes/u);
     expect(await send([{ text: "one" }, { react: "👍", to: "#zz9" }], ctx)).toEqual(thrown("messages[1]: #zz9: message too old; nothing was sent"));
     expect(await send([{ text: "one" }, { text: 'SendMessage({"place": "x"})' }], ctx)).toEqual(thrown("messages[1]: that looks like a tool call, not a message; write what you want to say; nothing was sent"));
     expect(await send([{ text: "hi" }, { wave: true }], ctx)).toEqual({ content: "error: TypeError: messages[1] is { text, reply_to, attach }, { attach }, { react, to }, { wait } or { typing } (line 1)", isError: true });
@@ -102,7 +129,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     expect(w.discord.sent.map((entry) => entry.content)).toEqual(["hello again"]);
     // A later call's error leaves an earlier call's sends sent; her script sees both.
     const both = await runScript("SendMessage", 'const a = await tools.send_message({ place: "bake-club/#general", messages: [{ text: "first" }] });\ntext(a);\nawait tools.send_message({ place: "bake-club/#general", messages: [{ text: "x", reply_to: "#zz9" }] });', ctx);
-    expect(text(both)).toMatch(/^\{"sent":\["#\w+"\]\}\nerror: Error: tools\.send_message: messages\[0\]: #zz9: message too old; nothing was sent \(line 3\)$/u);
+    expect(text(both)).toMatch(/^\{"sent":\["#\w+"\],"reactions":\[\]\}\nerror: Error: tools\.send_message: messages\[0\]: #zz9: message too old; nothing was sent \(line 3\)\n\[receipt\] send_message to bake-club\/#general: sent #\w+; the whole list ran$/u);
     expect(w.discord.sent.map((entry) => entry.content)).toEqual(["hello again", "first"]);
   });
 
@@ -129,7 +156,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     const v = await lifeWorld(roots, { config: (config) => ({ ...config, life: { ...config.life, maxSendsPerTurn: 2 } }) });
     const vctx = await ctxFor(v);
     const many = text(await runScript("SendMessage", 'for (const t of ["a", "b", "c"]) text(await tools.send_message({ place: "bake-club/#general", messages: [{ text: t }] }));', vctx));
-    expect(many).toMatch(/error: Error: tools\.send_message: you've already sent 2 messages this turn; wait for replies \(line 1\)$/u);
+    expect(withoutReceipts(many)).toMatch(/error: Error: tools\.send_message: you.ve already sent 2 messages this turn; wait for replies \(line 1\)$/u);
     expect(v.discord.sent).toHaveLength(2);
   });
 
@@ -142,8 +169,8 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     expect(output.isError).toBeUndefined();
     const out = result(output);
     expect(out.sent).toHaveLength(1);
-    expect(out.stopped!.split("\n")).toEqual(["messages[1] (wait 5): someone wrote", expect.stringMatching(/^- bake-club\/#general · from Mina · #[0-9a-z]+ "wait what"$/u)]);
-    expect(out.not_sent).toEqual(["Anyone here?", "hello?"]);
+    expect(out.stopped).toEqual({ reason: "new_message", next_index: 2, incoming: [expect.stringMatching(/^- bake-club\/#general · from Mina · #[0-9a-z]+ "wait what"$/u)] });
+    expect(output.receipts).toEqual([expect.stringMatching(/^send_message to bake-club\/#general: sent #\w+; stopped \(someone wrote during the wait\): messages\[2\] and after were not sent$/u)]);
     expect(w.discord.sent.map((entry) => entry.content)).toEqual(["so"]);
     expect(sleeps).toContain(5000);
     expect(output.messageIds).toHaveLength(2);
@@ -174,7 +201,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
         ctx
       )
     );
-    expect(twoCalls).toMatch(/^\{"sent":\["#\w+"\]\}\nerror: RangeError: tools\.send_message: waiting and typing add up to 121 seconds in this script; at most 120 \(line 2\)$/u);
+    expect(withoutReceipts(twoCalls)).toMatch(/^\{"sent":\["#\w+"\],"reactions":\[\]\}\nerror: RangeError: tools\.send_message: waiting and typing add up to 121 seconds in this script; at most 120 \(line 2\)$/u);
     expect(w.discord.sent.map((entry) => entry.content)).toEqual(["a"]);
     expect(sleeps.filter((ms) => ms === 60_000)).toHaveLength(1);
   });
@@ -195,7 +222,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     await writeFile(path.join(home, "cat.png"), tinyPng());
     const kevin = w.discord.post(ROOM, "show me");
     const ref = /#([0-9a-z]+)\] Kevin/u.exec(text(await readMessages(ctx, { place: "bake-club/#general" })))![1]!;
-    const out = result(await send([{ attach: "~/cat.png" }, { wait: 5 }, { text: "Anyone here?", reply_to: `#${ref}`, attach: ["~/cat.png"] }], ctx));
+    const out = result(await send([{ attach: ["~/cat.png"] }, { wait: 5 }, { text: "Anyone here?", reply_to: `#${ref}`, attach: ["~/cat.png"] }], ctx));
     expect(out.sent).toHaveLength(2);
     expect(w.discord.sent).toMatchObject([
       { content: "", files: [{ name: "cat.png" }] },
@@ -210,7 +237,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     w.discord.sendErrors.push(undefined, new Error("boom"));
     const output = await send([{ text: "first" }, { text: "second" }, { text: "third" }], ctx);
     expect(output.isError).toBeUndefined();
-    expect(result(output)).toEqual({ sent: [expect.stringMatching(/^#\w+$/u)], stopped: "messages[1] failed: the message could not be sent", not_sent: ["second", "third"] });
+    expect(result(output)).toEqual({ sent: [expect.stringMatching(/^#\w+$/u)], reactions: [], stopped: { reason: "send_failed", next_index: 1, error: "the message could not be sent" } });
     const intents = await readIntents(w.storage, "ella");
     expect(intents.map((intent) => ({ plan: intent.plan?.sends.map((send) => [send.line, send.text]), line: intent.line, lineDone: intent.lineDone, callDone: intent.callDone }))).toEqual([
       { plan: [[1, "first"], [2, "second"], [3, "third"]], line: undefined, lineDone: undefined, callDone: undefined },
@@ -256,7 +283,7 @@ describe("tools.send_message (§27.1, §32.2)", () => {
       await pending;
     };
     const out = result(await send([{ text: "one" }, { wait: 3 }, { text: "two" }, { text: "three" }], ctx));
-    expect(out).toEqual({ sent: [expect.stringMatching(/^#\w+$/u)], stopped: "messages[2] failed: you can't post there", not_sent: ["two", "three"] });
+    expect(out).toEqual({ sent: [expect.stringMatching(/^#\w+$/u)], reactions: [], stopped: { reason: "send_failed", next_index: 2, error: "you can't post there" } });
     expect(w.discord.sent.map((entry) => entry.content)).toEqual(["one"]);
 
     // Nothing sent before the pause: an error, nothing went out.

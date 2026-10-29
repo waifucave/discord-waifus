@@ -1291,8 +1291,8 @@ function stepsOfItems(items: unknown, firstLine: number, maxFiles: number): { st
     if ("text" in item || ("attach" in item && !("react" in item))) {
       only(["text", "reply_to", "attach"]);
       const text = item["text"] === undefined ? "" : textArg(`${label}.text`, item["text"], MAX_MESSAGE_CHARS)!.trim();
-      const attach = item["attach"] === undefined ? [] : typeof item["attach"] === "string" ? [item["attach"]] : item["attach"];
-      if (!Array.isArray(attach) || !attach.every((path) => typeof path === "string" && path.trim() !== "" && path.length <= 2_000)) throw new ScriptError(`${label}.attach is a path or a list of paths in your folders`, "TypeError");
+      const attach = item["attach"] === undefined ? [] : item["attach"];
+      if (!Array.isArray(attach) || !attach.every((path) => typeof path === "string" && path.trim() !== "" && path.length <= 2_000)) throw new ScriptError(`${label}.attach is a list of paths in your folders, like ["~/cake.png"]`, "TypeError");
       if (attach.length > 0 && maxFiles <= 0) throw new ScriptError(`${label}: files can't be attached`, "TypeError");
       if (attach.length > maxFiles) throw new ScriptError(`${label}: at most ${maxFiles} file${maxFiles === 1 ? "" : "s"} per message`, "RangeError");
       if (!text && attach.length === 0) throw new ScriptError(`${label}: text is the message`, "TypeError");
@@ -1349,7 +1349,8 @@ async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, s
   const place = await resolvePlace(ctx.deps.storage, ctx.waifu.id, placeArg);
   if (!place) throw new ScriptError(`tools.send_message: unknown place ${placeArg.slice(0, 80)}; see ~/life/places.md`);
   const life = ctx.deps.config().life;
-  const { steps, labels, waited } = stepsOfItems(o["messages"], script.nextLine, life.send.maxFiles);
+  const firstLine = script.nextLine;
+  const { steps, labels, waited } = stepsOfItems(o["messages"], firstLine, life.send.maxFiles);
   script.nextLine += steps.length;
   // Waits and typing share one budget across the script (§27.1): it never holds her turn longer.
   if (script.waited + waited > MAX_WAIT_TOTAL_SECONDS) throw new ScriptError(`tools.send_message: waiting and typing add up to ${script.waited + waited} seconds in this script; at most ${MAX_WAIT_TOTAL_SECONDS}`, "RangeError");
@@ -1376,15 +1377,25 @@ async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, s
     if (outcome.stop?.kind === "interrupted") throw new ScriptError(`tools.send_message: ${failedReason}`);
     throw new ScriptError(`tools.send_message: ${outcome.steps === 1 ? failedReason : `${where(outcome.stop!.line)}: ${failedReason}; nothing was sent`}`);
   }
-  const result: Record<string, unknown> = { sent: outcome.sentIds.map((id) => (outcome.refs.get(id) ? `#${outcome.refs.get(id)}` : "a message")) };
-  if (outcome.reacted.length > 0) result["reacted"] = outcome.reacted.map((ref) => `#${ref}`);
+  const sent = outcome.sentIds.map((id) => (outcome.refs.get(id) ? `#${outcome.refs.get(id)}` : "a message"));
+  const reactions = outcome.reacted.map((ref) => `#${ref}`);
+  const result: Record<string, unknown> = { sent, reactions };
   const stop = outcome.stop;
+  /** The item of this call's list at a script line (0-based). */
+  const indexOf = (line: number) => line - firstLine;
+  let ran = "the whole list ran";
   if (stop) {
-    const what = stop.kind === "wait" ? `${where(stop.line)} (wait ${stop.seconds}): someone wrote` : stop.kind === "failed" ? `${where(stop.line)} failed: ${stop.reason}` : `interrupted at ${where(stop.line)}`;
-    result["stopped"] = [what, ...outcome.cameLines].join("\n");
-    if (outcome.left.length > 0) result["not_sent"] = outcome.left.map((line) => line.replace(/^not (?:sent|done): /u, ""));
+    // A stopped wait ends this list only; the next item is where it stopped.
+    const next = stop.kind === "wait" ? indexOf(stop.line) + 1 : indexOf(stop.line);
+    if (stop.kind === "wait") result["stopped"] = { reason: "new_message", next_index: next, incoming: outcome.cameLines };
+    else if (stop.kind === "failed") result["stopped"] = { reason: "send_failed", next_index: next, error: stop.reason };
+    else result["stopped"] = { reason: "interrupted", next_index: next };
+    const why = stop.kind === "wait" ? "someone wrote during the wait" : stop.kind === "failed" ? stop.reason : "interrupted";
+    ran = next < steps.length ? `stopped (${why}): messages[${next}] and after were not sent` : `stopped (${why}) at its end`;
   }
   if (outcome.nudge) result["note"] = outcome.nudge;
+  const did = [sent.length > 0 ? `sent ${sent.join(" ")}` : "", reactions.length > 0 ? `reacted to ${reactions.join(" ")}` : ""].filter(Boolean).join(", ");
+  run.receipts.push(`send_message to ${placeArg}: ${did || "nothing sent"}; ${ran}`);
   return result;
 }
 
@@ -1517,7 +1528,7 @@ function readMessagesDescription(retentionDays: number): string {
     '- around, before or after: a #ref (included) or a time: "2026-10-25 17:02", "2026-10-25" (that day), "17:02", "yesterday 17:02"; before and after together are a range. Nothing: the latest messages.',
     '- max: how many per place (1–100, default 15). people: names (you = yourself). search: words, or a list of alternatives (any one; every word of it must appear).',
     `At most ${MAX_READ_CALLS} reads in one script.`,
-    'Example: text(await tools.read_messages({ place: "bake-club/#general", around: "#k3", max: 10 }))'
+    'Example: return await tools.read_messages({ place: "bake-club/#general", around: "#k3", max: 10 })'
   ].join("\n");
 }
 
@@ -1529,12 +1540,12 @@ function sendDescription(maxFiles: number): string {
     `Send messages. This is the only way anyone sees what you write. ${familyLines("send_message")}`,
     "tools.send_message({ place, messages }) sends to one place (call it again for another); messages is a list, in order:",
     '- { text } — one message; add reply_to: "#k3" to reply to a message',
-    ...(maxFiles > 0 ? [`- attach: [paths] — files from your folders with a message (at most ${maxFiles}); { attach } alone sends just the files. ${PRIVATE_ATTACH_TEXT} To post something you write as a file, add it with Edit first.`] : []),
+    ...(maxFiles > 0 ? [`- attach: ["~/cake.png"] — a list of files from your folders with a message (at most ${maxFiles}); { attach } alone sends just the files. ${PRIVATE_ATTACH_TEXT} To post something you write as a file, add it with Edit first.`] : []),
     '- { react: "😂", to: "#k4" } — a reaction (a unicode emoji or :server_emoji:)',
     "- { wait: 5 } — pause 1–60 seconds; if anyone else writes there meanwhile, the rest isn't sent and you see what came in",
     "- { typing: 3 } — show typing for 1–10 seconds (waits and typing: at most 120 seconds in one script)",
-    "It returns { sent: [refs], stopped?, not_sent? }. Keep each message as short as a chat line and send several instead of one long one. Use <@Name> to mention someone who is there. If something is wrong, nothing of that call is sent.",
-    'Example: text(await tools.send_message({ place: "bake-club/#general", messages: [{ text: "wait what" }, { text: "kevin you said saturday" }, { wait: 5 }, { text: "ok fine i\'m in", reply_to: "#k3" }, { react: "😂", to: "#k4" }] }))'
+    "Each item is exactly one of these. It returns { sent: [refs], reactions: [refs], stopped?: { reason, next_index, incoming } } (a wait someone cut short ends that list only). Keep each message as short as a chat line and send several instead of one long one. Use <@Name> to mention someone who is there. The whole list is checked first: if something is wrong, nothing of that call is sent. What was sent is listed after your output either way.",
+    'Example: return await tools.send_message({ place: "bake-club/#general", messages: [{ text: "wait what" }, { text: "kevin you said saturday" }, { wait: 5 }, { text: "ok fine i\'m in", reply_to: "#k3" }, { react: "😂", to: "#k4" }] })'
   ].join("\n");
 }
 
