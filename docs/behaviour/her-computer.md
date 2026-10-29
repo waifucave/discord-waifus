@@ -335,15 +335,18 @@ a whole file longer than the 20,000-character script is written with Bash.
   exact, else ignoring trailing whitespace, else both ends', else with Unicode dashes, quotes and odd
   spaces made ASCII. A chunk with only `+` lines appends at the end of the file. Lines keep their
   endings (CRLF too); inserted lines take the file's first ending; the file ends with a newline.
-- **Safer than Codex**: a chunk whose lines match in two places (in the first pass that finds them,
-  after the anchor and End of File; one exact match is taken even when a copy with other spacing is
-  elsewhere) is refused (`the lines to change in ~/x.md match in 2 places (lines 4 and 19); add a line
+- **Safer than Codex**: a chunk without an `@@` anchor whose lines match in two places (in the first
+  pass that finds them, after the previous chunk and End of File; one exact match is taken even when a
+  copy with other spacing is elsewhere) is refused (under an anchor the chunk is the first match after
+  it, as in Codex: the anchor says which one) (`the lines to change in ~/x.md match in 2 places (lines 4 and 19); add a line
   above or below to say which`), and so is an `@@` line that is in the file twice (`the @@ line '##
   Notes' is in ~/x.md twice (lines 1 and 3); use a line that is there once`); a second `*** Update
   File` of one path in a patch is refused (`put all its changes under one *** Update File`), as are
   overlapping chunks; `*** Add File` on an existing file is refused (`change it with *** Update File`),
   and so is a Move onto an existing file, or from or to a protected path; Update and Delete need an
-  existing text file.
+  existing text file. Finding the chunks makes at most 2,000,000 line comparisons per file (each line
+  normalised once per pass, only positions where the chunk's first line is are tried); a chunk past
+  that is refused (`that chunk of ~/x.md is too long to find; use fewer lines`).
 - **All or nothing**: every file is checked first (her path rules, `/transcripts` read-only,
   `places.md` never, dreaming leaves `~/life/` alone, a tidy session never changes `profile.json`,
   256 KiB per file), then the whole patch is one change set through her home store, like a Bash

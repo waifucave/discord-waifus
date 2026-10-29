@@ -142,6 +142,28 @@ describe("apply_patch: matching (seek_sequence) and the updated file", () => {
     // An anchor line that is in the file twice (after the last change) is refused like a chunk.
     expect(update("## Notes\na\n## Notes\nb\n", "@@ ## Notes", "-b", "+c")).toEqual({ ok: false, error: "the @@ line '## Notes' is in f.txt twice (lines 1 and 3); use a line that is there once" });
   });
+
+  it("under an @@ line the chunk is the first match after it, as in Codex: the anchor says which one (§32.3a)", () => {
+    expect(update("## A\nx\n## B\nx\nx\n", "@@ ## B", "-x", "+y")).toEqual({ ok: true, contents: "## A\nx\n## B\ny\nx\n" });
+    // Without an anchor the same chunk is still refused.
+    expect(update("## A\nx\n## B\nx\nx\n", "@@", "-x", "+y")).toMatchObject({ ok: false, error: expect.stringContaining("match in 2 places (lines 2 and 4)") });
+  });
+
+  it("finds a chunk in a big file quickly, and refuses a chunk too long to find (review)", () => {
+    // A 4,000-line chunk at the end of a 60,000-line file of other lines.
+    const big = Array.from({ length: 60_000 }, (_, i) => `line ${i}`);
+    const chunk = big.slice(-4_000);
+    let started = performance.now();
+    expect(update(`${big.join("\n")}\n`, "@@", ...chunk.map((line) => ` ${line}`), "+end")).toMatchObject({ ok: true });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    // The adversarial case: a 256 KB file of one line repeated, a 40,000-line chunk of it then a line
+    // that isn't there (every position matches all the way down before failing).
+    const same = "a\n".repeat(128 * 1024);
+    started = performance.now();
+    expect(update(same, "@@", ...Array.from({ length: 40_000 }, () => " a"), " b", "+c")).toEqual({ ok: false, error: "that chunk of f.txt is too long to find; use fewer lines" });
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(seekSequence(Array.from({ length: 1_000 }, () => "a"), [...Array.from({ length: 999 }, () => "a"), "b"], 0, false)).toEqual({ none: true });
+  });
 });
 
 async function ctxFor(w: LifeWorld, o: { intent?: boolean; mode?: ToolContext["mode"]; session?: ToolContext["session"] } = {}): Promise<ToolContext> {

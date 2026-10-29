@@ -240,42 +240,97 @@ export function normalisePunctuation(text: string): string {
 }
 
 // JavaScript's trim() also takes U+FEFF and a few more than Rust's (Unicode White_Space): close enough
-// for lines of text.
-const PASSES: Array<(a: string, b: string) => boolean> = [
-  (a, b) => a === b,
-  (a, b) => a.trimEnd() === b.trimEnd(),
-  (a, b) => a.trim() === b.trim(),
-  (a, b) => normalisePunctuation(a) === normalisePunctuation(b)
-];
-
-export type Seek = { found: number } | { none: true } | { ambiguous: [number, number] };
+// for lines of text. Each pass is a normal form of a line: two lines match in a pass when theirs are equal.
+const PASSES: Array<(line: string) => string> = [(line) => line, (line) => line.trimEnd(), (line) => line.trim(), normalisePunctuation];
 
 /**
- * Where `pattern` is in `lines`, at or after `start` (0-based), by the first pass that finds it; an
- * End of File chunk only at the end. Two places in that pass: ambiguous (both, 0-based).
+ * Line comparisons one Update may make while looking for its chunks, all passes together (a chunk of
+ * many repeated lines in a file of them is quadratic, and this runs on the main thread under the
+ * home lock). Far over any real patch: a 4,000-line chunk in a 128,000-line file takes ~128,000.
  */
-export function seekSequence(lines: readonly string[], pattern: readonly string[], start: number, eof: boolean, o: { unique?: boolean } = {}): Seek {
-  if (pattern.length === 0) return { found: start };
-  if (pattern.length > lines.length) return { none: true };
-  const searchStart = eof ? Math.max(lines.length - pattern.length, start) : start;
-  for (const same of PASSES) {
-    const hits: number[] = [];
-    for (let i = searchStart; i <= lines.length - pattern.length; i += 1) {
-      let ok = true;
-      for (let p = 0; p < pattern.length; p += 1) {
-        if (!same(lines[i + p]!, pattern[p]!)) {
-          ok = false;
-          break;
-        }
+export const MAX_SEEK_COMPARISONS = 2_000_000;
+
+export type Seek = { found: number } | { none: true } | { ambiguous: [number, number] } | { tooLong: true };
+
+/**
+ * A file's lines, normalised once per pass (when a pass is first needed) and indexed by line, so a
+ * chunk is tried only where its first line is; the comparisons it made are counted against `budget`.
+ */
+export class LineIndex {
+  private readonly forms: Array<{ lines: string[]; at: Map<string, number[]> } | undefined> = [];
+  private used = 0;
+
+  constructor(
+    readonly lines: readonly string[],
+    private readonly budget = MAX_SEEK_COMPARISONS
+  ) {}
+
+  private form(pass: number): { lines: string[]; at: Map<string, number[]> } {
+    let form = this.forms[pass];
+    if (!form) {
+      const lines = this.lines.map(PASSES[pass]!);
+      const at = new Map<string, number[]>();
+      for (const [index, line] of lines.entries()) {
+        const list = at.get(line);
+        if (list) list.push(index);
+        else at.set(line, [index]);
       }
-      if (!ok) continue;
-      hits.push(i);
-      if (!o.unique || hits.length > 1) break;
+      form = { lines, at };
+      this.forms[pass] = form;
     }
-    if (hits.length > 1) return { ambiguous: [hits[0]!, hits[1]!] };
-    if (hits.length === 1) return { found: hits[0]! };
+    return form;
   }
-  return { none: true };
+
+  /**
+   * Where `pattern` is, at or after `start` (0-based), by the first pass that finds it; an End of File
+   * chunk only at the end. With `unique`, two places in that pass: ambiguous (both, 0-based).
+   */
+  seek(pattern: readonly string[], start: number, eof: boolean, o: { unique?: boolean } = {}): Seek {
+    const lines = this.lines;
+    if (pattern.length === 0) return { found: start };
+    if (pattern.length > lines.length) return { none: true };
+    const searchStart = eof ? Math.max(lines.length - pattern.length, start) : start;
+    const last = lines.length - pattern.length;
+    for (let pass = 0; pass < PASSES.length; pass += 1) {
+      const norm = PASSES[pass]!;
+      const want = pattern.map(norm);
+      const form = this.form(pass);
+      const candidates = form.at.get(want[0]!) ?? [];
+      const hits: number[] = [];
+      // The first candidate at or after searchStart (the list is in line order).
+      let lo = 0;
+      let hi = candidates.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (candidates[mid]! < searchStart) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let c = lo; c < candidates.length; c += 1) {
+        const i = candidates[c]!;
+        if (i > last) break;
+        let ok = true;
+        for (let p = 1; p < want.length; p += 1) {
+          this.used += 1;
+          if (form.lines[i + p] !== want[p]) {
+            ok = false;
+            break;
+          }
+        }
+        if (this.used > this.budget) return { tooLong: true };
+        if (!ok) continue;
+        hits.push(i);
+        if (!o.unique || hits.length > 1) break;
+      }
+      if (hits.length > 1) return { ambiguous: [hits[0]!, hits[1]!] };
+      if (hits.length === 1) return { found: hits[0]! };
+    }
+    return { none: true };
+  }
+}
+
+/** `LineIndex.seek` over lines indexed for this one call. */
+export function seekSequence(lines: readonly string[], pattern: readonly string[], start: number, eof: boolean, o: { unique?: boolean } = {}): Seek {
+  return new LineIndex(lines).seek(pattern, start, eof, o);
 }
 
 // ---- the file (text_file.rs) ---------------------------------------------------------------------------
@@ -316,12 +371,15 @@ export type UpdateResult = { ok: true; contents: string } | { ok: false; error: 
 export function updateContents(original: string, chunks: readonly PatchChunk[], path: string): UpdateResult {
   const source = parseSource(original);
   const lines = source.lines.map((line) => line.text);
+  const index = new LineIndex(lines);
+  const tooLong = { ok: false as const, error: `that chunk of ${path} is too long to find; use fewer lines` };
   const replacements: Replacement[] = [];
   let lineIndex = 0;
   for (const chunk of chunks) {
     if (chunk.context !== undefined) {
       // Ours: an anchor line found twice (in the pass that found it) is refused like a chunk (§32.3a).
-      const anchor = seekSequence(lines, [chunk.context], lineIndex, false, { unique: true });
+      const anchor = index.seek([chunk.context], lineIndex, false, { unique: true });
+      if ("tooLong" in anchor) return tooLong;
       if ("ambiguous" in anchor) {
         const [a, b] = anchor.ambiguous;
         return { ok: false, error: `the @@ line '${chunk.context}' is in ${path} twice (lines ${a + 1} and ${b + 1}); use a line that is there once` };
@@ -335,13 +393,17 @@ export function updateContents(original: string, chunks: readonly PatchChunk[], 
     }
     let pattern = chunk.oldLines;
     let newSlice = chunk.newLines;
-    let found = seekSequence(lines, pattern, lineIndex, chunk.endOfFile, { unique: true });
+    // Under its @@ line a chunk is the first match after it, as in Codex (the anchor says which one);
+    // a chunk without one is refused when it matches in two places (§32.3a).
+    const unique = chunk.context === undefined;
+    let found = index.seek(pattern, lineIndex, chunk.endOfFile, { unique });
     if ("none" in found && pattern[pattern.length - 1] === "") {
       // The final empty line stands for the file's last newline (SourceFile keeps it on the line before).
       pattern = pattern.slice(0, -1);
       if (newSlice[newSlice.length - 1] === "") newSlice = newSlice.slice(0, -1);
-      found = seekSequence(lines, pattern, lineIndex, chunk.endOfFile, { unique: true });
+      found = index.seek(pattern, lineIndex, chunk.endOfFile, { unique });
     }
+    if ("tooLong" in found) return tooLong;
     if ("ambiguous" in found) {
       const [a, b] = found.ambiguous;
       return { ok: false, error: `the lines to change in ${path} match in 2 places (lines ${a + 1} and ${b + 1}); add a line above or below to say which` };

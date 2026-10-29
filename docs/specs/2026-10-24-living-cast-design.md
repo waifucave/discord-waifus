@@ -4150,7 +4150,10 @@ waits, closures, budgets) stay.
   an open only through a second call (the description's example shows it).
 - **apply_patch matching.** A chunk is ambiguous only at the first strictness pass that finds it,
   counted after the anchor and End of File constraints (one exact match is accepted even when a
-  normalised copy exists elsewhere). A repeated `@@` anchor is refused like a repeated chunk;
+  normalised copy exists elsewhere). Under an `@@ anchor` the chunk is the first match after the
+  (unique) anchor, as Codex does: the anchor is how she says which one (lead's decision after the
+  independent review, 2026-10-29); only a chunk without an anchor is refused for matching twice.
+  A repeated `@@` anchor is refused like a repeated chunk;
   overlapping chunks, a second Update of the same path in one patch, Move onto an existing file, and a
   protected source or destination are refused. The description shows the line-list idiom
   (`["*** Begin Patch", …, "*** End Patch"].join("\n")`) so backticks and `${…}` in her notes are safe.
@@ -4221,7 +4224,12 @@ waits, closures, budgets) stay.
 - **Read**: as §32.2; the 100,000 characters are shared by a script's reads (a read past them throws).
 - **Edit**: as §32.2 and §32.3a: `*** Move to:` onto an existing file, a second `*** Update File` of
   one path in a patch, an `@@` anchor line found twice (in the first pass that finds it, after the
-  previous chunk) and overlapping chunks are refused (chunks are found in file order, each after the
+  previous chunk) and overlapping chunks are refused; under a (unique) anchor a chunk is the first
+  match after it, as in Codex, and only an anchorless chunk is refused for matching twice. Matching
+  normalises each line once per pass, tries only the positions of the chunk's first line, and counts
+  its comparisons (2,000,000 per Update, `MAX_SEEK_COMPARISONS`): over that, `that chunk of ~/x.md is
+  too long to find; use fewer lines` (a repeated-line file with a long chunk was quadratic, seconds on
+  the main thread under the home lock) (chunks are found in file order, each after the
   one before, so they can't overlap: the refusal is a backstop); a patch that changes nothing says
   `No change: …`; the duplicate refusal reads `tools.apply_patch: the lines to change in ~/x.md match
   in 2 places (lines 4 and 19); add a line above or below to say which; nothing was changed`. The
