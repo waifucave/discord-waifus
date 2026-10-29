@@ -11,7 +11,8 @@ import { DiscordImageFetcher } from "../src/discord/attachments.js";
 import { COMPACTION_INSTRUCTION } from "../src/life/compaction.js";
 import { readLifeLog, readLifeState } from "../src/life/lifeStore.js";
 import { selfAuthorIds } from "../src/life/people.js";
-import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
+import { offeredToolNames } from "../src/life/tools/index.js";
+import { readFile as readFile_, readMessages } from "./toolCalls.js";
 import type { ToolContext } from "../src/life/tools/types.js";
 import { dmForget } from "../src/orchestration/dm/dmForget.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
@@ -77,11 +78,11 @@ describe("ReadMessages never inlines images (§16.3.1)", () => {
     const w = await lifeWorld(roots, { options: { images: fetcher } });
     w.discord.post(ROOM, "cake!", { attachments: [image("9001")] });
     const ctx = await ctxFor(w);
-    const read = await lifeTool("ReadMessages")!.run({ place: "bake-club/#general" }, ctx);
+    const read = await readMessages(ctx, { place: "bake-club/#general" });
     expect(kinds(read.content)).toEqual(["text"]);
     const line = /\[image: (\/tmp\/bake-club\/general\/[0-9a-z]+-cake-9001\.png)\]/u.exec(textOf(read.content));
     expect(line).not.toBeNull();
-    const look = await lifeTool("Read")!.run({ file_path: line![1] }, ctx);
+    const look = await readFile_(ctx, line![1]);
     expect(kinds(look.content)).toEqual(["text", "life_image"]);
     expect(textOf(look.content)).toMatch(/^\/tmp\/bake-club\/general\/[0-9a-z]+-cake-9001\.png: png 4x4, \d+ B$/u);
     expect(modes(look.content)).toEqual(["inline"]);
@@ -98,12 +99,12 @@ describe("Read of an image (§16.3.3)", () => {
     const ctx = await ctxFor(w);
     expect(ctx.route.imageInput).toBe(true);
     const [a, b, c] = await pictures(w, 3);
-    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual(["inline"]);
+    expect(modes((await readFile_(ctx, a)).content)).toEqual(["inline"]);
     // A picture already shown this epoch is not shown again: she is told so, with its text.
-    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual([{ text: "[image: you've already seen this picture; the text in it: a lemon tart]" }]);
-    expect(modes((await lifeTool("Read")!.run({ file_path: b }, ctx)).content)).toEqual(["inline"]);
+    expect(modes((await readFile_(ctx, a)).content)).toEqual([{ text: "[image: you've already seen this picture; the text in it: a lemon tart]" }]);
+    expect(modes((await readFile_(ctx, b)).content)).toEqual(["inline"]);
     // The epoch's count cap (2): the third image is its OCR text.
-    expect(modes((await lifeTool("Read")!.run({ file_path: c }, ctx)).content)).toEqual([{ text: "[image: a lemon tart]" }]);
+    expect(modes((await readFile_(ctx, c)).content)).toEqual([{ text: "[image: a lemon tart]" }]);
     const state = await readLifeState(w.storage, "ella");
     expect(state.inlineImageCount).toBe(2);
     expect(state.shownImageKeys).toHaveLength(3);
@@ -120,11 +121,11 @@ describe("Read of an image (§16.3.3)", () => {
     });
     const ctx = await ctxFor(w);
     const [a, b] = await pictures(w, 2, 6);
-    expect(modes((await lifeTool("Read")!.run({ file_path: a }, ctx)).content)).toEqual(["inline"]);
-    expect(modes((await lifeTool("Read")!.run({ file_path: b }, ctx)).content)).toEqual([{ text: "[image: no text found]" }]);
+    expect(modes((await readFile_(ctx, a)).content)).toEqual(["inline"]);
+    expect(modes((await readFile_(ctx, b)).content)).toEqual([{ text: "[image: no text found]" }]);
     const textOnly: ToolContext = { ...ctx, route: { ...ctx.route, imageInput: false } };
     const [fresh] = await pictures(w, 1, 9);
-    expect(modes((await lifeTool("Read")!.run({ file_path: fresh }, textOnly)).content)).toEqual([{ text: "[image: no text found]" }]);
+    expect(modes((await readFile_(textOnly, fresh)).content)).toEqual([{ text: "[image: no text found]" }]);
   });
 
   it("replay never depends on the file: after it expired, her next request still carries the picture", async () => {
@@ -132,7 +133,7 @@ describe("Read of an image (§16.3.3)", () => {
     const w = await lifeWorld(roots, {
       options: { images: fetcher },
       scripts: script(
-        toolTurn([{ name: "Read", input: { file_path: "/tmp/pics/p4-0.png" } }]),
+        toolTurn([{ name: "Read", input: { script: 'text(await tools.read_file({ path: "/tmp/pics/p4-0.png" }))' } }]),
         textTurn("cute"),
         textTurn("(nothing to send)"),
         textTurn("still cute"),
@@ -165,8 +166,8 @@ describe("pinned images (§5.3)", () => {
     const w = await lifeWorld(roots, {
       options: { images: fetcher, ocr: { cachedText: async (ref) => (ref.key.startsWith("file:") ? "a chocolate cake with candles" : undefined) } },
       scripts: script(
-        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "Read", input: { file_path: "/tmp/bake-club/general/a0-cake-9301.png" } }]),
+        toolTurn([{ name: "ReadMessages", input: { script: 'text(await tools.read_messages({ place: "bake-club/#general" }))' } }]),
+        toolTurn([{ name: "Read", input: { script: 'text(await tools.read_file({ path: "/tmp/bake-club/general/a0-cake-9301.png" }))' } }]),
         textTurn("cute cake"),
         // The unsent-reply check of that direct wake.
         textTurn("(nothing to send)"),
@@ -229,9 +230,9 @@ describe("forget purges what the life cached (real fetcher)", () => {
     await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: message.id, createdAt: message.createdAt });
     w.cast.intake.close();
     const ctx = await ctxFor(w);
-    const read = await lifeTool("ReadMessages")!.run({ place: "dm/kevin" }, ctx);
+    const read = await readMessages(ctx, { place: "dm/kevin" });
     const saved = /\[image: (\/tmp\/dm\/kevin\/[0-9a-z]+-cake-9401\.png)\]/u.exec(textOf(read.content))![1]!;
-    const look = await lifeTool("Read")!.run({ file_path: saved }, ctx);
+    const look = await readFile_(ctx, saved);
     expect(kinds(look.content)).toContain("life_image");
     const conversation = path.join(w.root, "user/conversations", `dm_${KEVIN}_ella`);
     const indexed = JSON.parse(await readFile(path.join(conversation, "images.json"), "utf8")) as { keys: string[] };

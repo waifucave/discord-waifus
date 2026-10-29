@@ -12,6 +12,7 @@ import { errorTurn, textTurn } from "./modelFakes.js";
 import { closeWorlds, homeOf, lifeWorld, MINA_USER, ROOM_KEY, script, seedTranscript, toolTurn, writeWaifuConfig } from "./lifeFixtures.js";
 import { queuePendingScrub, readPendingScrubs } from "../src/orchestration/dm/forgotten.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, scriptInput, updateFilePatch } from "./toolCalls.js";
 
 const roots: string[] = [];
 
@@ -76,7 +77,7 @@ describe("the dream window (§18.4)", () => {
     expect(request.messages).toHaveLength(1);
     expect(openingText(request)).toContain(DREAM_INSTRUCTION.slice(0, 60));
     expect(openingText(request)).toContain("/transcripts/bake-club/general/2026-10-24.md (the whole file, 1 line)");
-    expect(request.tools?.map((tool) => tool.name)).toEqual(["Read", "Write", "Edit", "Bash"]);
+    expect(request.tools?.map((tool) => tool.name)).toEqual(["Read", "Edit", "Bash"]);
   });
 });
 
@@ -84,10 +85,10 @@ describe("what the dream does to her notes (T4)", () => {
   it("adds a memory from the window, patches a contradicted fact, and leaves an unmentioned note byte-identical", async () => {
     const w = await lifeWorld(roots, {
       scripts: script(
-        toolTurn([{ name: "Read", input: { file_path: "/transcripts/bake-club/general/2026-10-24.md" } }]),
-        toolTurn([{ name: "Edit", input: { file_path: "~/me.md", old_string: "favourite food: sushi", new_string: "favourite food: lasagna" } }]),
-        toolTurn([{ name: "Write", input: { file_path: "~/people/lianne.md", content: "# Lianne\n- in kingdom-16062's #secret-room\n" } }]),
-        toolTurn([{ name: "Edit", input: { file_path: "~/MEMORY.md", old_string: "- [Me](me.md)\n", new_string: "- [Me](me.md)\n- [Lianne](people/lianne.md) — in kingdom-16062's #secret-room\n" } }]),
+        toolTurn([{ name: "Read", input: scriptInput.readFile("/transcripts/bake-club/general/2026-10-24.md") }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(updateFilePatch("~/me.md", ["- favourite food: sushi", "- favourite food: lasagna"])) }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(addFilePatch("~/people/lianne.md", "# Lianne\n- in kingdom-16062's #secret-room\n")) }]),
+        toolTurn([{ name: "Edit", input: scriptInput.applyPatch(updateFilePatch("~/MEMORY.md", ["- [Me](me.md)", "- [Me](me.md)\n- [Lianne](people/lianne.md) — in kingdom-16062's #secret-room"])) }]),
         textTurn("lasagna now; met Lianne")
       )
     });

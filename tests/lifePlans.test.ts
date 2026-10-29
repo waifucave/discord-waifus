@@ -19,6 +19,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { Wake } from "../src/shared/schemas/life.js";
 import { closeWorlds, homeOf, KEVIN, lifeWorld, writeHerFile, type LifeWorld, type WaifuSeed } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, applyPatch, lineEditPatch, replaceFilePatch } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -245,19 +246,20 @@ describe("what she is told about timed plans (§29)", () => {
   const run = (name: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> => lifeTool(name)!.run(input, { ...ctx, toolCallId: `call_${(calls += 1)}` });
   const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
 
-  it("a schedule write with a timed plan says so once per turn (Write, Edit, Bash); without one it does not; the plans field's help says it", async () => {
+  it("a schedule write with a timed plan says so once per turn (Edit, Bash); without one it does not; the plans field's help says it", async () => {
     const w = await planWorld();
     const untimed = JSON.stringify({ date: "2026-10-24", plans: [{ what: "finish the rain poem" }] });
-    expect(text(await run("Write", { file_path: "~/life/schedule.json", content: untimed }, await ctxFor(w)))).not.toContain(PLAN_WAKE_TEXT);
+    expect(text(await applyPatch(await ctxFor(w), addFilePatch("~/life/schedule.json", untimed)))).not.toContain(PLAN_WAKE_TEXT);
     const ctx = await ctxFor(w, "turn-2");
     const timed = JSON.stringify({ date: "2026-10-24", plans: [{ at: "21:00", what: "movie night" }] });
-    expect(text(await run("Write", { file_path: "~/life/schedule.json", content: timed }, ctx))).toContain(`\n${PLAN_WAKE_TEXT}`);
-    expect(text(await run("Edit", { file_path: "~/life/schedule.json", old_string: "movie night", new_string: "movie night!" }, ctx))).not.toContain(PLAN_WAKE_TEXT);
-    expect(text(await run("Edit", { file_path: "~/life/schedule.json", old_string: "movie night!", new_string: "movie night" }, await ctxFor(w, "turn-3")))).toContain(PLAN_WAKE_TEXT);
+    expect(text(await applyPatch(ctx, replaceFilePatch("~/life/schedule.json", timed)))).toContain(`\n${PLAN_WAKE_TEXT}`);
+    const day = async () => (await homeOf(w).read("life/schedule.json"))!;
+    expect(text(await applyPatch(ctx, lineEditPatch("~/life/schedule.json", await day(), "movie night", "movie night!")))).not.toContain(PLAN_WAKE_TEXT);
+    expect(text(await applyPatch(await ctxFor(w, "turn-3"), lineEditPatch("~/life/schedule.json", await day(), "movie night!", "movie night")))).toContain(PLAN_WAKE_TEXT);
     expect(text(await run("Bash", { command: "sed -i 's/movie/film/' ~/life/schedule.json" }, await ctxFor(w, "turn-4")))).toContain(PLAN_WAKE_TEXT);
     // Other files never say it.
-    expect(text(await run("Write", { file_path: "~/plans.md", content: "21:00 movie night\n" }, await ctxFor(w, "turn-5")))).not.toContain(PLAN_WAKE_TEXT);
-    const bad = await run("Write", { file_path: "~/life/schedule.json", content: JSON.stringify({ date: "2026-10-24", plans: [{ at: "9pm", what: "movie night" }] }) }, await ctxFor(w, "turn-6"));
+    expect(text(await applyPatch(await ctxFor(w, "turn-5"), addFilePatch("~/plans.md", "21:00 movie night\n")))).not.toContain(PLAN_WAKE_TEXT);
+    const bad = await applyPatch(await ctxFor(w, "turn-6"), replaceFilePatch("~/life/schedule.json", JSON.stringify({ date: "2026-10-24", plans: [{ at: "9pm", what: "movie night" }] })));
     expect(text(bad)).toContain(`at is a local time like "21:00" (or left out). ${PLAN_WAKE_TEXT}`);
     expect(await homeOf(w).read("life/schedule.json")).toContain("film night");
   }, 30_000);

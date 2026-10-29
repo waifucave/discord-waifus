@@ -46,3 +46,25 @@ export const wakeupCalls = (ctx: ToolContext, script: string) =>
 
 /** `text(await tools.wakeup(<arg as JavaScript source>))`. */
 export const wakeupCall = (ctx: ToolContext, arg: string) => runScript("Wakeup", `text(await tools.wakeup(${arg}))`, ctx);
+
+/** A tool call's input for a scripted model turn (`toolTurn([{ name, input: scriptInput.readFile(…) }])`). */
+export const scriptInput = {
+  readMessages: (arg: Record<string, unknown>) => ({ script: `text(await tools.read_messages(${JSON.stringify(arg)}))` }),
+  sendMessage: (place: string, messages: unknown[]) => ({ script: `text(await tools.send_message(${JSON.stringify({ place, messages })}))` }),
+  readFile: (arg: Record<string, unknown> | string) => ({ script: `text(await tools.read_file(${JSON.stringify(typeof arg === "string" ? { path: arg } : arg)}))` }),
+  applyPatch: (patch: string) => ({ script: `text(await tools.apply_patch(${JSON.stringify(patch)}))` }),
+  web: (arg: Record<string, unknown>) => ({ script: `text(await tools.web__run(${JSON.stringify(arg)}))` })
+};
+
+/** A patch that changes one file: each `[old, new]` pair is one chunk (old lines out, new lines in). */
+export const updateFilePatch = (path: string, ...changes: Array<[string, string]>) =>
+  `*** Begin Patch\n*** Update File: ${path}\n${changes
+    .map(([from, to]) => ["@@", ...from.replace(/\n$/u, "").split("\n").map((line) => `-${line}`), ...to.replace(/\n$/u, "").split("\n").map((line) => `+${line}`)].join("\n"))
+    .join("\n")}\n*** End Patch`;
+
+/** A patch that changes `from` to `to` on the first line of `content` (her file as it is) holding it. */
+export const lineEditPatch = (path: string, content: string, from: string, to: string) => {
+  const line = content.split("\n").find((entry) => entry.includes(from));
+  if (line === undefined) throw new Error(`no line of ${path} holds ${from}`);
+  return updateFilePatch(path, [line, line.replace(from, to)]);
+};
