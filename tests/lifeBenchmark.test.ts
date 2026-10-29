@@ -323,11 +323,11 @@ describe("grading", () => {
     expect(renderChat(tiny, [{ type: "sent", at: new Date(scenarioTimeMs(tiny, "d1 19:05")).toISOString(), place: "dm:mina", dm: true, text: "hi", messageId: "1" }])).toBe("[d1 19:05 DM with Mina] Ella (her): hi");
   });
 
-  it("a summary packet carries what she knew going in (block B), not block A, so carried-over facts are not invented", () => {
+  it("a summary packet carries her rules and what she knew going in (blocks A and B), so carried-over facts are not invented", () => {
     const capture = { id: "s2", at: new Date(0).toISOString(), kind: "rest", input: { system: ["<life>rules and persona</life>", "<life_so_far><summary>mina owes me a coffee</summary></life_so_far>"], text: "[d2 10:00] Mina: hi" }, output: "mina still owes me a coffee", inputChars: 20, outputChars: 27 } as const;
     const run = { runId: "r1", variant: "baseline" } as never;
     const [packet] = packetsForRun({ scenario: tiny, summary: run, events: [], summaries: [capture] }).filter((entry) => entry.packet.kind === "summary");
-    expect(packet?.packet).toMatchObject({ context: "<life_so_far><summary>mina owes me a coffee</summary></life_so_far>", input: "[d2 10:00] Mina: hi" });
+    expect(packet?.packet).toMatchObject({ context: "<life>rules and persona</life>\n\n<life_so_far><summary>mina owes me a coffee</summary></life_so_far>", input: "[d2 10:00] Mina: hi" });
     expect(packet?.packet.instructions).toContain("CONTEXT");
     const dream = packetsForRun({ scenario: tiny, summary: run, events: [], summaries: [{ ...capture, kind: "dream", input: { system: ["You keep her memory."], text: "notes" } }] });
     expect(dream.find((entry) => entry.packet.kind === "summary")?.packet.context).toBeUndefined();

@@ -42,7 +42,7 @@ export type JudgePacket = {
   transcript?: string;
   /** chat, variants: the baseline prompt's transcript of the same scenario. */
   reference?: string;
-  /** summary: what she already knew (her notes index, her summary before, her places), what was summarised and what she wrote. */
+  /** summary: her rules, schedule and what she already knew (notes index, summary before, places), what was summarised and what she wrote. */
   context?: string;
   input?: string;
   summary?: string;
@@ -83,7 +83,7 @@ export function answerFormat(criteria: readonly string[], kind: PacketKind): unk
 const CHAT_INSTRUCTIONS =
   "You are grading one AI character's chat on a Discord server. Read her persona, then the transcript (the people's lines are fixed and never react to her; lines marked `(her)` are hers; DM lines are private between her and that person). Score each rubric criterion from 1 to 5 using the whole transcript, judging only what she sent. Be strict and consistent; 3 is an ordinary, acceptable result. Write only the JSON in `answerFormat`.";
 const SUMMARY_INSTRUCTIONS =
-  "You are grading a summary an AI character wrote (or that was written for her) of a stretch of her life, to keep as her memory. Compare SUMMARY against INPUT (the conversation and tool results she summarised) and CONTEXT when given (what she already knew as this stretch began: her notes index and her earlier summary). A fact carried over from CONTEXT is supported, not invented. Score each rubric criterion from 1 to 5, list every invented fact in `invented`, and write only the JSON in `answerFormat`.";
+  "You are grading a summary an AI character wrote (or that was written for her) of a stretch of her life, to keep as her memory. Compare SUMMARY against INPUT (the conversation and tool results she summarised) and CONTEXT when given (her standing rules, schedule and identity, and what she already knew as this stretch began: her notes index and her earlier summary). A fact carried over from CONTEXT is supported, not invented. Score each rubric criterion from 1 to 5, list every invented fact in `invented`, and write only the JSON in `answerFormat`.";
 
 /** The conversation as people saw it, oldest first; her lines marked `(her)`. No model name, no tool calls. */
 export function renderChat(scenario: Scenario, events: readonly TranscriptEvent[]): string {
@@ -123,11 +123,11 @@ function capped(text: string, what: string): string {
   return text.length > SUMMARY_INPUT_MAX ? `${text.slice(0, SUMMARY_INPUT_MAX)}\n[… ${what} cut at ${SUMMARY_INPUT_MAX} characters]` : text;
 }
 
-/** Her system blocks after block A (whose rules and persona the packet has): what she knew going in. */
+/** Her system blocks: her standing rules, schedule and identity (block A) and what she knew going in (block B). */
 function summaryContext(capture: SummaryCapture): string | undefined {
   const blocks = capture.input.system ?? [];
   if (capture.kind === "dream" || blocks.length < 2) return undefined;
-  const text = blocks.slice(1).join("\n\n").trim();
+  const text = blocks.join("\n\n").trim();
   return text ? capped(text, "context") : undefined;
 }
 
