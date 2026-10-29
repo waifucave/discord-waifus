@@ -385,7 +385,7 @@ describe("pages and watch ends (re-review 2 and 3)", () => {
       )
     ).toMatch(/^set w1 /u);
     // A timer: a watch with no filter.
-    expect(text(await wakeupCall(await ctxFor(w), '{ watch: [{ places: "everywhere", for: "30m", note: "tea" }] }'))).toMatch(/^set w4 \(timer, /u);
+    expect(text(await wakeupCall(await ctxFor(w), '{ watch: [{ places: "everywhere", for: "30m", note: "tea" }] }'))).toMatch(/"id":"w4","kind":"watch","about":"timer, /u);
     w.clock.advance(31 * 60_000);
     await w.cast.scheduler.tick();
     const ends = (await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout");

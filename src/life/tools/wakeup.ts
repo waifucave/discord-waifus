@@ -9,9 +9,11 @@
 //   cancel: [ids]
 //
 // Each item adds one wakeup to `~/life/wakeups.json` (or cancels one). A call is checked whole (her
-// functions for closures, then compiled) and saved through her HomeStore all or nothing: any error
-// throws in her script naming the item (`watch[1]: …; nothing was saved`). Its result names what was
-// set and, for `every`, the next three times. At most 4 calls in one script.
+// functions for closures, then compiled, then her file as it would be with everything the script
+// staged): any error throws in her script naming the item (`watch[1]: …; nothing was saved`). §30's
+// promise holds for the whole script (§32.3a): its calls are staged and saved once, through her
+// HomeStore, when it ends without an error; a script that fails saves none, and its receipt says so.
+// A call's result lists each new wakeup's id, kind and next times. At most 4 calls in one script.
 
 import { createHash } from "node:crypto";
 import { checkEnvFor } from "../home/index.js";
@@ -21,11 +23,11 @@ import { appendIntent } from "../lifeStore.js";
 import { sharedSandbox } from "../sandbox/index.js";
 import { checkEntry, entryRecord, summaryOf, type WakeupCheckContext, type WakeupEntry } from "../wakeups/file.js";
 import { nextTimes } from "../wakeups/schedule.js";
-import { occurrencesText } from "../wakeups/when.js";
 import { resolvePlace } from "../places.js";
 import { DREAM_LIFE_REFUSED, storeOf } from "./files.js";
 import { toolError, type LifeTool, type ToolContext, type ToolOutput } from "./types.js";
-import { familyLines, listArg, objectArg, runScriptTool, scriptSchema, ScriptError } from "./script.js";
+import { familyLines, listArg, objectArg, runScriptTool, scriptSchema, ScriptError, type ScriptRun } from "./script.js";
+import { dayTimeText } from "../clock.js";
 
 /** Most items (adds and cancels) one call may have. */
 export const MAX_SCRIPT_CALLS = 40;
@@ -130,8 +132,33 @@ export function wakeupChangeDigest(add: ReadonlyArray<Pick<WakeupEntry, "kind" |
   return `add:${add.map(hash).join(",")};cancel:${cancel.join(",")}`;
 }
 
-/** One `tools.wakeup(…)` call: checked whole, then saved all or nothing. Returns what was set. */
-async function wakeupCall(arg: unknown, ctx: ToolContext): Promise<string> {
+/** What a script's `tools.wakeup` calls staged: saved together when it ends without an error (§32.3a). */
+type WakeupStage = { adds: Array<{ label: string; record: Record<string, unknown>; entry: WakeupEntry }>; cancels: string[] };
+
+/** A wakeup as her call's result shows it: its id, kind, what it is and its next times. */
+function described(entry: WakeupEntry, now: Date, timeZone: string): Record<string, unknown> {
+  const summary = summaryOf(entry, timeZone);
+  const about = summary.startsWith(`${entry.id} (`) && summary.endsWith(")") ? summary.slice(entry.id.length + 2, -1) : summary;
+  const next = nextTimes(entry, now, timeZone).map((date) => dayTimeText(date, timeZone));
+  return { id: entry.id, kind: entry.kind, about, ...(next.length > 0 ? { next } : {}) };
+}
+
+/** `wakeups.json entry 7: …` of the combined file, named by the item it came from. */
+function itemError(message: string, kept: number, adds: ReadonlyArray<{ label: string }>): string {
+  return message
+    .replace(/^error: wakeups\.json entry (\d+): /u, (_match, n: string) => {
+      const label = adds[Number(n) - kept - 1]?.label;
+      return label ? `${label}: ` : `wakeup ${n}: `;
+    })
+    .replace(/^error: wakeups\.json has /u, "you'd have ");
+}
+
+/**
+ * One `tools.wakeup(…)` call: checked whole (with what the script's earlier calls staged: the caps,
+ * the ids), and staged; nothing is saved until the script ends without an error. Returns what it
+ * will set, with the ids it gets.
+ */
+async function wakeupCall(arg: unknown, ctx: ToolContext, stage: WakeupStage): Promise<Record<string, unknown>> {
   const { deps } = ctx;
   const now = deps.now();
   const sandbox = sharedSandbox();
@@ -149,17 +176,21 @@ async function wakeupCall(arg: unknown, ctx: ToolContext): Promise<string> {
     compile: (sources) => sandbox.compile(sources, { timeZone: deps.timeZone, now }),
     ...(env.pagesOff ? { pagesOff: true } : {})
   };
-  const adds: Array<{ label: string; entry: WakeupEntry }> = [];
+  const adds: Array<{ label: string; record: Record<string, unknown>; entry: WakeupEntry }> = [];
   const cancels: string[] = [];
   for (const item of items) {
     if (item.cancel !== undefined) {
+      if (cancels.includes(item.cancel) || stage.cancels.includes(item.cancel)) refused(item.label, `${item.cancel} is already cancelled in this script`);
       if (!current.some((entry) => entry.id === item.cancel)) refused(item.label, `there is no wakeup ${item.cancel}; see ~/life/wakeups.json`);
-      if (!cancels.includes(item.cancel)) cancels.push(item.cancel);
+      cancels.push(item.cancel);
       continue;
     }
     const checked = await checkEntry(item.add, checkCtx, undefined);
     if (!checked.ok) refused(item.label, checked.problem);
-    else adds.push({ label: item.label, entry: checked.entry });
+    else {
+      const { id: _id, ...record } = entryRecord(checked.entry);
+      adds.push({ label: item.label, record, entry: checked.entry });
+    }
   }
   // Her functions compile (their own syntax errors, with lines).
   const coded = adds.filter((item) => typeof item.entry.filter === "string" || (typeof item.entry.check === "string" && item.entry.check !== "changes"));
@@ -172,56 +203,77 @@ async function wakeupCall(arg: unknown, ctx: ToolContext): Promise<string> {
       refused(item.label, `its ${item.entry.kind === "watch" ? "filter" : "check"}: ${result.error.name}: ${result.error.message}${where}`);
     }
   }
-  const records = adds.map((item) => {
-    const { id: _id, ...rest } = entryRecord(item.entry);
-    return rest;
-  });
-  if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: now.toISOString(), contentDigest: wakeupChangeDigest(adds.map((item) => item.entry), cancels) });
-  let saved: Awaited<ReturnType<typeof store.applyWakeups>>;
+  // Checked as her file would be with everything the script staged (cancels first, so replacing one
+  // at a cap works), without saving: its ids are the ones the save gives.
+  const allAdds = [...stage.adds, ...adds];
+  const allCancels = [...stage.cancels, ...cancels];
+  let dry: Awaited<ReturnType<typeof store.applyWakeups>>;
   try {
-    saved = await store.applyWakeups({ add: records, cancel: cancels }, { ...env, sandbox });
+    dry = await store.applyWakeups({ add: allAdds.map((item) => item.record), cancel: allCancels, dryRun: true }, { ...env, sandbox });
   } catch (error) {
     if (!(error instanceof HomeError)) throw error;
-    // The combined file is her kept wakeups, then the new ones: a new one's entry number is its item.
-    const kept = current.length - cancels.length;
-    const message = error.message
-      .replace(/^error: wakeups\.json entry (\d+): /u, (_match, n: string) => {
-        const label = adds[Number(n) - kept - 1]?.label;
-        return label ? `${label}: ` : `wakeup ${n}: `;
-      })
-      .replace(/^error: wakeups\.json has /u, "you'd have ");
-    return refused(undefined, message);
+    return refused(undefined, itemError(error.message, current.length - allCancels.length, allAdds));
+  }
+  stage.adds.push(...adds);
+  stage.cancels.push(...cancels);
+  const mine = adds.length > 0 ? dry.added.slice(-adds.length) : [];
+  return {
+    ...(mine.length > 0 ? { set: mine.map((entry) => described(entry, now, deps.timeZone)) } : {}),
+    ...(cancels.length > 0 ? { cancelled: cancels } : {}),
+    saved: `when your script ends without an error (in ${lifeDisplay(WAKEUPS_FILE)})`
+  };
+}
+
+/** Saves what the script's calls staged, once, when it ended without an error; says what happened either way. */
+async function saveStaged(ctx: ToolContext, stage: WakeupStage, run: ScriptRun, ok: boolean): Promise<void> {
+  if (stage.adds.length === 0 && stage.cancels.length === 0) return;
+  if (!ok) {
+    run.receipts.push("wakeup: nothing saved (your script ended with an error, so none of its tools.wakeup calls were saved)");
+    return;
+  }
+  const { deps } = ctx;
+  const now = deps.now();
+  const sandbox = sharedSandbox();
+  const store = storeOf(ctx);
+  const env = checkEnvFor(deps, ctx.waifu.id);
+  const kept = (await store.readWakeups()).entries.length - stage.cancels.length;
+  if (ctx.intent) await appendIntent(deps.storage, ctx.waifu.id, { ...ctx.intent, at: now.toISOString(), contentDigest: wakeupChangeDigest(stage.adds.map((item) => item.entry), stage.cancels) });
+  let saved: Awaited<ReturnType<typeof store.applyWakeups>>;
+  try {
+    saved = await store.applyWakeups({ add: stage.adds.map((item) => item.record), cancel: stage.cancels }, { ...env, sandbox });
+  } catch (error) {
+    if (!(error instanceof HomeError)) throw error;
+    const message = itemError(error.message, kept, stage.adds).replace(/^error:\s*/u, "");
+    run.receipts.push(`wakeup: nothing saved (${message})`);
+    throw new ScriptError(`tools.wakeup: ${message}; nothing was saved`);
   }
   const parts: string[] = [];
   if (saved.added.length > 0) parts.push(`set ${saved.added.map((entry) => summaryOf(entry, deps.timeZone)).join(", ")}`);
   if (saved.cancelled.length > 0) parts.push(`cancelled ${saved.cancelled.join(", ")}`);
-  const lines = [`${parts.join("; ")} (in ${lifeDisplay(WAKEUPS_FILE)})`];
-  for (const entry of saved.added) {
-    const next = nextTimes(entry, now, deps.timeZone);
-    if (next.length > 0) lines.push(`${entry.id} next: ${occurrencesText(next, deps.timeZone)}`);
-  }
-  return lines.join("\n");
+  run.receipts.push(`wakeup: saved: ${parts.join("; ")} (in ${lifeDisplay(WAKEUPS_FILE)})`);
 }
 
 async function wakeup(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   if (ctx.session === "dream") return toolError(DREAM_LIFE_REFUSED);
+  const stage: WakeupStage = { adds: [], cancels: [] };
   return runScriptTool(input, ctx, {
     tool: "Wakeup",
-    functions: [{ name: "wakeup", max: MAX_WAKEUP_CALLS, maxArgChars: 128 * 1024, run: (arg) => wakeupCall(arg, ctx) }]
+    functions: [{ name: "wakeup", max: MAX_WAKEUP_CALLS, maxArgChars: 128 * 1024, run: (arg) => wakeupCall(arg, ctx, stage) }],
+    finish: (run, ok) => saveStaged(ctx, stage, run, ok)
   });
 }
 
 export const WAKEUP_DESCRIPTION = [
   `Set wakeups: moments that wake you later. ${familyLines("wakeup")}`,
-  "tools.wakeup({ at, every, watch, page, cancel }), each a list (one item adds one wakeup; many, for many places, are fine); it returns what was set:",
+  "tools.wakeup({ at, every, watch, page, cancel }), each a list you may leave out (one item adds one wakeup; many, for many places, are fine; cancels come first, so you can replace one). It returns each new wakeup's id, kind and next times; everything is saved together when your script ends without an error (an error saves none of it), and what was saved is listed after your output:",
   '- at: [{ when, note }]: once, at "fri 18:00", "2026-10-30 18:00", "18:00" (today, else tomorrow), "in 45m" or "in 2h" (5 minutes to 30 days ahead).',
   '- every: [{ when, note }]: repeating, "day 09:00", "weekday 08:30", "weekend 11:00", "mon,fri 18:30" or a cron like "0 20 1 * *" (steps of at least 15 minutes).',
-  '- watch: [{ places, from, words, any, filter, for, once, note }]: when a message in places (a place handle, a list of them, or "everywhere") is from that person, has those words (any: true for any message; every field you set must match), or passes your own filter function (m, state) => true | "a line to show" | false, where m is { place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files }. for: "2h" (at most 7 days, required); once (default true). When it ends without firing you are told, so it also works as a timer (leave out from, words, any and filter for a plain timer).',
-  '- page: [{ url, contains, changes, check, every, for, note }]: checks a web page: contains: "in stock", changes: true, or check: (page, state) => …, page is { url, status, title, text }; every: "6h" (at least 1h), for: "3d" (at most 7 days).',
+  '- watch: [{ places, from, words, any, filter, for, once, note }]: when a message in places (a place handle, a list of them, or "everywhere") is from that person, has those words (any: true for any message; every field you set must match), or instead passes your own filter function (m, state) => true | "a line to show" | false, where m is { place, from, fromId, isWaifu, text, mentionsMe, repliesToMe, ref, at, files }. for: "2h" (at most 7 days, required); once (default true). When it ends without firing you are told, so it also works as a timer (leave out from, words, any and filter for a plain timer).',
+  '- page: [{ url, contains, changes, check, every, for, note }]: checks a web page, with one of contains: "in stock", changes: true, or check: (page, state) => …, page is { url, status, title, text }; every: "6h" (at least 1h), for: "3d" (at most 7 days).',
   '- cancel: ["w3"]: removes wakeups by id.',
   "Your functions run on their own for each message or check: they can't use variables from outside them, only their arguments; state is an object they may change to remember things between runs. They get 50 ms each; one that fails three times in a row stops and you are told.",
   "Use it whenever you ask something or wait for news (watch for the answer, with a sensible for), when someone mentions plans (a wakeup to ask how it went), and now and then to check back in rooms you like. All of them are in ~/life/wakeups.json: look there before adding one you have, and change them there with Edit.",
-  'Example: text(await tools.wakeup({ watch: [{ places: "bake-club/#general", from: "Kevin", for: "3h", note: "asked Kevin about saturday" }], at: [{ when: "fri 19:00", note: "ask Kevin how his exam went" }] }))'
+  'Example: return await tools.wakeup({ watch: [{ places: "bake-club/#general", from: "Kevin", for: "3h", note: "asked Kevin about saturday" }], at: [{ when: "fri 19:00", note: "ask Kevin how his exam went" }] })'
 ].join("\n");
 
 export const wakeupTool: LifeTool = {

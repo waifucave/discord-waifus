@@ -55,6 +55,8 @@ const text = (output: ToolOutput) => (typeof output.content === "string" ? outpu
 /** §30-style calls over tools.wakeup (setting wakeups up), and one tools.wakeup call. */
 const wakeup = async (w: LifeWorld, script: string) => text(await wakeupCalls(await ctxFor(w), script));
 const call = async (w: LifeWorld, arg: string) => text(await wakeupCall(await ctxFor(w), arg));
+/** What one tools.wakeup call's script saved: its receipts (§32.3a). */
+const saved = async (w: LifeWorld, arg: string) => (await wakeupCall(await ctxFor(w), arg)).receipts;
 
 function message(body: string, o: Partial<WakeupMessage> = {}): WakeupMessage {
   return { placeKey: ROOM_KEY, handle: async () => "bake-club/#general", authorId: KEVIN, fromName: "Kevin", isWaifu: false, text: body, mentionsMe: false, repliesToMe: false, own: false, ...o };
@@ -111,7 +113,9 @@ describe("her functions (§30.1)", () => {
   it("must be one self-contained plain function", () => {
     expect(checkFunctionSource("(msg, state) => msg.text.includes('cake') && Math.random() < 2 && JSON.stringify(state) !== ''")).toEqual({ ok: true });
     expect(checkFunctionSource("function (msg) { const words = ['a']; for (const w of words) if (msg.text === w) return true; return false }")).toEqual({ ok: true });
-    expect(checkFunctionSource("(msg) => msg.text === kevinId")).toEqual({ ok: false, error: `${CLOSURE_REFUSED} (it uses kevinId)` });
+    expect(checkFunctionSource("(msg) => msg.text === kevinId")).toEqual({ ok: false, error: `${CLOSURE_REFUSED} (it uses kevinId); write the value into it, like (msg) => msg.text === "<the value of kevinId>"` });
+    // The corrected filter replaces the name, never a property of the same name.
+    expect(checkFunctionSource("(m) => m.kevin === kevin")).toEqual({ ok: false, error: `${CLOSURE_REFUSED} (it uses kevin); write the value into it, like (m) => m.kevin === "<the value of kevin>"` });
     expect(checkFunctionSource("async (msg) => true")).toMatchObject({ ok: false, error: "the function can't be async or a generator" });
     expect(checkFunctionSource("(m) => true); evil(); ((x) => x")).toMatchObject({ ok: false, error: expect.stringMatching(/give one function/u) });
     expect(checkFunctionSource("(m) => {\n  return m.text ===\n}")).toMatchObject({ ok: false, error: expect.stringMatching(/^SyntaxError/u), line: 3 });
@@ -119,7 +123,7 @@ describe("her functions (§30.1)", () => {
   });
 
   it("resolves names scope by scope: an inner function's parameter, a catch or a block binding never covers a use outside it (review 9)", () => {
-    const refused = (source: string, name: string) => expect(checkFunctionSource(source)).toEqual({ ok: false, error: `${CLOSURE_REFUSED} (it uses ${name})` });
+    const refused = (source: string, name: string) => expect(checkFunctionSource(source)).toMatchObject({ ok: false, error: expect.stringContaining(`${CLOSURE_REFUSED} (it uses ${name}); write the value into it, like `) });
     refused("(msg) => { const f = (kevin) => kevin; return msg.text.includes(kevin) }", "kevin");
     refused("(msg) => { try { JSON.parse(msg.text) } catch (kevin) {} return kevin }", "kevin");
     refused("(msg) => { if (msg.text) { let k = 1 } return k }", "k");
@@ -151,12 +155,16 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
         page: [{ url: "https://example.com/shop", contains: "in stock", every: "6h", for: "3d", note: "the mixer" }]
       }`
     );
-    expect(out).toBe(
-      [
-        "set t1 (Fri 30 Oct 18:00), t2 (every weekday 08:30), w1 (bake-club/#general, until Sat 24 Oct 16:00), p1 (every 6h, until Tue 27 Oct 14:00) (in ~/life/wakeups.json)",
-        "t2 next: Mon 26 Oct 08:30, Tue 27 Oct 08:30, Wed 28 Oct 08:30"
-      ].join("\n")
-    );
+    // Its result: each new wakeup's id, kind and next times (§32.3a); saved when the script ended.
+    expect(JSON.parse(out)).toEqual({
+      set: [
+        { id: "t1", kind: "at", about: "Fri 30 Oct 18:00" },
+        { id: "t2", kind: "every", about: "every weekday 08:30", next: ["Mon 26 Oct 08:30", "Tue 27 Oct 08:30", "Wed 28 Oct 08:30"] },
+        { id: "w1", kind: "watch", about: "bake-club/#general, until Sat 24 Oct 16:00" },
+        { id: "p1", kind: "page", about: "every 6h, until Tue 27 Oct 14:00" }
+      ],
+      saved: "when your script ends without an error (in ~/life/wakeups.json)"
+    });
     const entries = await herEntries(w);
     expect(entries).toEqual([
       { id: "t1", kind: "at", when: "2026-10-30 18:00", note: "ask Kevin how the exam went" },
@@ -168,11 +176,36 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     expect((await herFile(w, "ella", "home/life/wakeups.json"))!.split("\n")).toHaveLength(7);
     const side = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), "utf8")) as { watches: Record<string, unknown> };
     expect(side.watches["w1"]).toEqual({ placeKeys: [ROOM_KEY], filters: [{ fromUserId: KEVIN, fromName: KEVIN, words: ["saturday"] }], fires: [] });
-    // cancel in a later script; several calls in one script, each saved on its own.
-    expect(await call(w, '{ cancel: ["t1"] }')).toBe("cancelled t1 (in ~/life/wakeups.json)");
+    // cancel in a later script; several calls in one script are saved together at its end.
+    expect(await saved(w, '{ cancel: ["t1"] }')).toEqual(["wakeup: saved: cancelled t1 (in ~/life/wakeups.json)"]);
     expect((await herEntries(w)).map((entry) => entry.id)).toEqual(["t2", "w1", "p1"]);
-    const two = text(await runScript("Wakeup", 'text(await tools.wakeup({ at: [{ when: "in 2h", note: "a" }] })); text(await tools.wakeup({ cancel: "t2" }))', await ctxFor(w)));
-    expect(two).toBe("set t3 (Sat 24 Oct 16:00) (in ~/life/wakeups.json)\ncancelled t2 (in ~/life/wakeups.json)");
+    const two = text(await runScript("Wakeup", 'await tools.wakeup({ at: [{ when: "in 2h", note: "a" }] }); await tools.wakeup({ cancel: "t2" })', await ctxFor(w)));
+    expect(two).toBe("[receipt] wakeup: saved: set t3 (Sat 24 Oct 16:00); cancelled t2 (in ~/life/wakeups.json)");
+  });
+
+  it("keeps §30's promise for the whole script: its calls are saved together when it ends without an error, else none (§32.3a)", async () => {
+    const w = await lifeWorld(roots);
+    await call(w, '{ at: [{ when: "in 1h", note: "first" }] }');
+    const before = await herFile(w, "ella", "home/life/wakeups.json");
+    // A script that fails after a good call saves nothing, and says so.
+    const failed = text(await runScript("Wakeup", 'await tools.wakeup({ at: [{ when: "in 3h", note: "kept?" }] });\nthrow new Error("changed my mind")', await ctxFor(w)));
+    expect(failed).toBe("error: Error: changed my mind (line 2)\n[receipt] wakeup: nothing saved (your script ended with an error, so none of its tools.wakeup calls were saved)");
+    // A refused call she catches is no error of the script: the rest is saved.
+    const caught = text(await runScript("Wakeup", 'await tools.wakeup({ at: [{ when: "in 3h", note: "kept" }] });\ntry { await tools.wakeup({ cancel: ["t9"] }) } catch (e) {}', await ctxFor(w)));
+    expect(caught).toBe("[receipt] wakeup: saved: set t2 (Sat 24 Oct 17:00) (in ~/life/wakeups.json)");
+    expect((await herEntries(w)).map((entry) => entry.note)).toEqual(["first", "kept"]);
+    // An uncaught refusal saves none of the script's calls.
+    const refused = text(await runScript("Wakeup", 'await tools.wakeup({ at: [{ when: "in 4h", note: "no" }] });\nawait tools.wakeup({ cancel: ["t9"] })', await ctxFor(w)));
+    expect(refused).toMatch(/^error: Error: cancel\[0\]: there is no wakeup t9; see ~\/life\/wakeups\.json; nothing was saved \(line 2\)\n\[receipt\] wakeup: nothing saved/u);
+    expect((await herEntries(w)).map((entry) => entry.note)).toEqual(["first", "kept"]);
+    expect(before).not.toBe(await herFile(w, "ella", "home/life/wakeups.json"));
+    // A cancel named twice (in one call or two) is an error.
+    expect(await call(w, '{ cancel: ["t1", "t1"] }')).toBe("error: Error: cancel[1]: t1 is already cancelled in this script; nothing was saved (line 1)");
+    expect(text(await runScript("Wakeup", 'await tools.wakeup({ cancel: ["t1"] });\nawait tools.wakeup({ cancel: ["t1"] })', await ctxFor(w)))).toMatch(/^error: Error: cancel\[0\]: t1 is already cancelled in this script; nothing was saved \(line 2\)/u);
+    // Cancels come before additions: replacing one at the cap works.
+    const full = await lifeWorld(roots);
+    await call(full, `{ watch: Array.from({ length: 10 }, (_, i) => ({ places: "bake-club/#general", words: ["w" + i], for: "1h", note: "n" + i })) }`);
+    expect(await saved(full, '{ cancel: ["w3"], watch: [{ places: "bake-club/#general", any: true, for: "1h", note: "instead" }] }')).toEqual(["wakeup: saved: set w11 (bake-club/#general, until Sat 24 Oct 15:00); cancelled w3 (in ~/life/wakeups.json)"]);
   });
 
   it("is all or nothing per call: any error names the item and saves nothing of it", async () => {
@@ -206,13 +239,13 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     const five = text(await runScript("Wakeup", 'for (let i = 0; i < 5; i++) await tools.wakeup({ at: [{ when: "in " + (i + 2) + "h", note: "n" }] })', await ctxFor(w)));
     expect(five).toMatch(/tools\.wakeup: at most 4 calls in one script/u);
     // A watch with no filter at all is a timer.
-    expect(await call(w, '{ watch: [{ places: "everywhere", for: "1h", note: "tea" }] }')).toMatch(/^set w\d+ \(timer, until /u);
+    expect(JSON.parse(await call(w, '{ watch: [{ places: "everywhere", for: "1h", note: "tea" }] }')).set).toEqual([{ id: expect.stringMatching(/^w\d+$/u), kind: "watch", about: expect.stringMatching(/^timer, until /u) }]);
   });
 
   it("refuses filters that use the script's variables, and her code's syntax errors with their line", async () => {
     const w = await lifeWorld(roots);
     expect(text(await runScript("Wakeup", `const kevin = "${KEVIN}";\ntext(await tools.wakeup({ watch: [{ places: "everywhere", filter: (m) => m.fromId === kevin, for: "1h", note: "n" }] }))`, await ctxFor(w)))).toBe(
-      `error: Error: watch[0]: its filter: ${CLOSURE_REFUSED} (it uses kevin); nothing was saved (line 2)`
+      `error: Error: watch[0]: its filter: ${CLOSURE_REFUSED} (it uses kevin); write the value into it, like (m) => m.fromId === "<the value of kevin>"; nothing was saved (line 2)`
     );
     // Her own toString changes nothing: the host reads the real source and checks it.
     expect(text(await runScript("Wakeup", `const kevin = "x"; const f = (m) => m.fromId === kevin; f.toString = () => "(m) => true"; Function.prototype.toString = () => "(m) => true";\nawait tools.wakeup({ watch: [{ places: "everywhere", filter: f, for: "1h" }] })`, await ctxFor(w)))).toMatch(
@@ -221,8 +254,8 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     // A forged source is checked the same way.
     expect(text(await runScript("Wakeup", `await tools.wakeup({ watch: [{ places: "everywhere", filter: { $function: "(m) => m.fromId === kevin" }, for: "1h" }] })`, await ctxFor(w)))).toMatch(/\(it uses kevin\)/u);
     // A filter that is self-contained is fine, wherever it is defined.
-    const filter = `function f(msg, state) {\n  return msg.fromId === "${KEVIN}"\n}\ntext(await tools.wakeup({ watch: [{ places: "everywhere", filter: f, for: "1h", once: false, note: "kevin anywhere" }] }))`;
-    expect(text(await runScript("Wakeup", filter, await ctxFor(w)))).toBe("set w1 (everywhere, until Sat 24 Oct 15:00, repeating) (in ~/life/wakeups.json)");
+    const filter = `function f(msg, state) {\n  return msg.fromId === "${KEVIN}"\n}\nawait tools.wakeup({ watch: [{ places: "everywhere", filter: f, for: "1h", once: false, note: "kevin anywhere" }] })`;
+    expect(text(await runScript("Wakeup", filter, await ctxFor(w)))).toBe("[receipt] wakeup: saved: set w1 (everywhere, until Sat 24 Oct 15:00, repeating) (in ~/life/wakeups.json)");
     expect((await herEntries(w))[0]!["filter"]).toBe(`function f(msg, state) {\n  return msg.fromId === "${KEVIN}"\n}`);
     expect(await call(w, '{ watch: [{ places: "everywhere", filter: (m) => {, for: "1h" }] }')).toMatch(/^error: SyntaxError/u);
     expect(await call(w, '{ watch: [{ places: "everywhere", filter: function (m) { return m.x.y.z === ; }, for: "1h" }] }')).toMatch(/^error: SyntaxError/u);
@@ -239,7 +272,7 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
     expect(await call(w, '{ at: [{ when: "in 1h", note: "fine" }], watch: [{ places: "everywhere", from: "Kevin", for: "1h", note: "n" }] }')).toBe(
       "error: Error: watch[0]: filter: more than one person called Kevin; use <@id>; nothing was saved (line 1)"
     );
-    expect(await call(w, `{ watch: [{ places: "everywhere", from: "<@${KEVIN}>", words: ["cake"], for: "1h", note: "Kevin's cake news" }] }`)).toMatch(/^set w1 /u);
+    expect(await saved(w, `{ watch: [{ places: "everywhere", from: "<@${KEVIN}>", words: ["cake"], for: "1h", note: "Kevin's cake news" }] }`)).toEqual([expect.stringMatching(/^wakeup: saved: set w1 /u)]);
     const side = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), "utf8")) as { watches: Record<string, { filters: unknown[] }> };
     expect(side.watches["w1"]!.filters).toEqual([{ fromUserId: KEVIN, fromName: "Kevin", words: ["cake"] }]);
   });
@@ -247,7 +280,7 @@ describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
   it("caps: 20 timed, 10 watches, 3 pages", async () => {
     const w = await lifeWorld(roots);
     const watches = `{ watch: Array.from({ length: 10 }, (_, i) => ({ places: "bake-club/#general", words: ["w" + i], for: "1h", note: "n" + i })) }`;
-    expect(await call(w, watches)).toMatch(/^set w1 .* w10 /u);
+    expect(await saved(w, watches)).toEqual([expect.stringMatching(/^wakeup: saved: set w1 .* w10 /u)]);
     expect(await call(w, '{ watch: [{ places: "bake-club/#general", any: true, for: "1h", note: "one more" }] }')).toBe("error: Error: you'd have 11 watches; at most 10; nothing was saved (line 1)");
     expect(await call(w, `{ page: Array.from({ length: 4 }, (_, i) => ({ url: "https://example.com/" + i, changes: true, every: "1h", for: "1d", note: "p" })) }`)).toBe("error: Error: you'd have 4 pages; at most 3; nothing was saved (line 1)");
     expect(await call(w, `{ at: Array.from({ length: 21 }, (_, i) => ({ when: "in " + (i + 1) + "h", note: "t" })) }`)).toBe("error: Error: you'd have 21 timed wakeups (at and every); at most 20; nothing was saved (line 1)");
