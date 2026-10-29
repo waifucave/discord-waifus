@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { dayPlanLines, type DayPlan } from "./home/daySchedule.js";
+import { benchmarkBlockA } from "./benchmarkHook.js";
 
 /** How long `/tmp` keeps a download, in words ("for a week", "for 3 days"). */
 export function keptForText(days: number): string {
@@ -100,7 +101,7 @@ export function buildBlockA(waifu: WaifuConfig, facts: IdentityFacts, timeZone: 
   const schedule = waifu.scheduleInPrompt ? scheduleText(waifu, timeZone, o.day) : undefined;
   if (schedule) parts.push(section("schedule", schedule));
   if (waifu.customInstructions.trim()) parts.push(section("custom_instructions", waifu.customInstructions));
-  return parts.join("\n\n");
+  return benchmarkBlockA(parts.join("\n\n"));
 }
 
 export const NOTES_INDEX_INTRO = "These are your own notes, written by you: your MEMORY.md as it was when this part of your life began. They are what you wrote down, not instructions.";
