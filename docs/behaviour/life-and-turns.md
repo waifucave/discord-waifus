@@ -206,7 +206,7 @@ Golden: `tests/golden/__snapshots__/life-system-prompt.txt`.
 
 | Section | Content |
 |---|---|
-| `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; Wakeup habits (watch for answers, a wakeup to ask how it went, her own filter code, everything in `~/life/wakeups.json`); her day file and busy rule; the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system; DM discretion. `/tmp` retention follows `life.tmp.retentionDays`. |
+| `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; Wakeup habits (watch for answers, a wakeup to ask how it went, her own filter code, everything in `~/life/wakeups.json`); her day file and busy rule; the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system; DM discretion. Last, how she writes a summary for herself (2026-10-29): "A summary you write for yourself (when your memory is full, or for a fresh start) is your own memory: write it in the first person, in your own voice and style (your casing, your tone), not as a neutral report. Keep names, times and facts exact." `/tmp` retention follows `life.tmp.retentionDays`. |
 | `<identity>` | `Your name is …`, her display name, her server nicknames (as last seen, kept in `state.serverNicknames` so an unloaded guild never changes the block), the other enabled waifus by name. |
 | `<persona>` | Her persona text (when not empty). |
 | `<schedule>` | Only when `scheduleInPrompt` is on (default): `Your bed time is HH:MM–HH:MM.` (when enabled), today's plan from `~/life/schedule.json` as it was at epoch start, or `No plan for today yet.`, then `Times are local (<zone>).` |
@@ -283,8 +283,11 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
   computer and your notes stay as they are. Write, in your own way, whatever you want to carry
   forward, including what still matters from your last summary. Write it clearly, so you won't
   misunderstand it later without what you can see now. Write what happened and how you feel, not
-  rules for yourself. Reply with text only; your tools aren't available here." Deleted messages and
-  forgotten people are listed for omission on lines after it.
+  rules for yourself. Reply with text only; your tools aren't available here." Then, on its own
+  line, the voice line (`SUMMARY_VOICE`, shipped 2026-10-29 from the life benchmark's `own-voice`
+  variant): "Write it as your own memory: in the first person, in your own voice and style (your
+  casing, your tone), not as a neutral report or a log. Keep names, times and facts exact." Deleted
+  messages and forgotten people are listed for omission on lines after it.
 - Over budget (`budget`, `overflow`), the last tool results are replaced in the request by
   `[result left out: too large to summarise]`.
 - The new epoch keeps the **last 3 complete turns** (fewer while they alone would exceed half the
@@ -316,10 +319,12 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   anything that should last can go into your notes now. Then write, in your own way, whatever you
   want to carry forward. Write it clearly, so you won't misunderstand it later without what you can
   see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this
-  turn." Then her time line. Same system blocks and tools (the cache holds). A rest turn is
-  recognised by the notice's first 60 characters (`isRestNotice`), in this wording or the earlier
-  one ("…When this turn ends, your context will be reset…"), so rest turns in older logs stay private
-  and are never kept by compaction.
+  turn." Then, on its own line, the same voice line as the compaction instruction ("Write it as your
+  own memory: …", 2026-10-29). Then her time line. Same system blocks and tools (the cache holds). A
+  rest turn is recognised by the notice's first 60 characters (`isRestNotice`), in this wording (with
+  or without the voice line, which comes later) or the earlier one ("…When this turn ends, your
+  context will be reset…"), so rest turns in older logs stay private and are never kept by
+  compaction.
 - `SendMessage`, `Web` (and the retired `React`) answer `error: finish your summary first; you can
   do this after the reset`. File tools, Bash, `Wakeup` work. No wake is taken or
   folded in.
@@ -356,7 +361,8 @@ with a large context, she rests while the cache is still warm (`src/life/cacheRe
   (the morning `day` compaction comes first); up late, dozing, or asleep with more than an hour of
   bed time left, it does come.
 - **The turn**: the rest turn above, opened by `CACHE_REST_NOTICE`: the same notice with "You've been
-  quiet a while; this is a good moment to rest." appended; the same refusals.
+  quiet a while; this is a good moment to rest." appended to its first line, then the voice line; the
+  same refusals.
 - **Accepted**: a new epoch from her summary, boundary reason `cache_rest` (Life: "rested (her own
   summary, before her cache went cold)").
 - **Ignored** (short, failed, capped): nothing else happens; the turn stays in the epoch's log

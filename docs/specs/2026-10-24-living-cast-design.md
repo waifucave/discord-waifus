@@ -2754,6 +2754,33 @@ The owner approved less prescriptive texts; they replace the §19.3 quote and th
 - Goldens `life-rest-notice.txt` and `life-compaction-request.txt` updated (owner rewording: less
   prescriptive).
 
+### 19.8 As built: summaries in her own voice (owner-approved, 2026-10-29)
+
+The life benchmark (§33) showed the `own-voice` variant clearly improves how her summaries keep her
+voice, with no loss of facts; the owner approved shipping it. The shipped texts are byte for byte what
+the benchmark sent under `own-voice` (each sentence where its `add` edit put it):
+
+- **Block A**: a last paragraph of `<life>` (`LIFE_TEXT`, after the private-chats paragraph): "A
+  summary you write for yourself (when your memory is full, or for a fresh start) is your own memory:
+  write it in the first person, in your own voice and style (your casing, your tone), not as a neutral
+  report. Keep names, times and facts exact."
+- **Rest notices and compaction**: `SUMMARY_VOICE` (`src/life/rest.ts`), "Write it as your own memory:
+  in the first person, in your own voice and style (your casing, your tone), not as a neutral report or
+  a log. Keep names, times and facts exact.", is the last line of `REST_NOTICE`, of
+  `CACHE_REST_NOTICE` (after the §25 sentence on the first line) and of `COMPACTION_INSTRUCTION`
+  (before the omission lines `compactionInstruction` appends).
+- **Dream**: the last line of `DREAM_INSTRUCTION`, after step 5: "What you write into her notes is
+  her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or
+  a log. Keep names, times and facts exact." The memory keeper's system block is unchanged.
+- **Old logs**: the voice line comes after the notice's first 60 characters, so `REST_NOTICE_PREFIX`
+  is unchanged and rest turns logged with the 2026-10-27 wording (or the earlier one) are still
+  recognised by `isRestNotice`.
+- **The benchmark**: `own-voice` is the baseline now and left the built-ins; `calm-voice` (calm and
+  own-voice) left with it, being `calm` now. `tests/lifeBenchmark.test.ts` checks that the old variant
+  applied to the texts without the sentences gives the shipped texts.
+- Goldens `life-system-prompt.txt`, `life-rest-notice.txt`, `life-rest-epoch.txt`,
+  `life-compaction-request.txt` and `life-dream.txt` updated (one line each, two in the block A ones).
+
 ## 20. One notification line per message (owner request, 2026-10-26)
 
 A burst (§4.2 holds) or several queued wakes for one place are still **one wake** (guards, the
@@ -4381,8 +4408,9 @@ only where it is relevant; it targets the §32 tools only.
   (`edits`), tool descriptions (`tools`), input-field descriptions (`toolSchemas`) and the summary
   instructions (`summaries`: `rest`, `compaction`, `dream`, `dreamSystem`); every edit is tried on
   each selected scenario's shipped texts before any run (`checkVariants`), and a rest-notice edit must
-  keep its opening (`isRestNotice`). Built-ins: `baseline`, `brief`, `calm`, `own-voice`,
-  `tool-examples`, `calm-voice` (add edits only). Nothing else under `src/` changed: summaries,
+  keep its opening (`isRestNotice`). Built-ins: `baseline`, `brief`, `calm`, `tool-examples` (add
+  edits only); `own-voice` shipped on 2026-10-29 and is part of the baseline (§19.8), and
+  `calm-voice` (calm and own-voice) went with it. Nothing else under `src/` changed: summaries,
   wakes, maintenance and tool use are captured from outside (a `ModelClient` subclass recording
   every call; a wrapper on the cast's router; the scheduler's `maintain` hook wrapped to diff her
   home; her life log tailed before every model call and after every step).

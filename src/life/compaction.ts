@@ -13,7 +13,7 @@
 // provider overflow (mid-turn too), a manual compact, a configuration change (A, tools or model), a
 // forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
 
-import { isRestNotice } from "./rest.js";
+import { isRestNotice, SUMMARY_VOICE } from "./rest.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
@@ -377,8 +377,8 @@ export async function compactRetiredTools(
   return compactLife(deps, { ...o, lines, reason: "tools", keepTurns: 0, shrinkLastResults: false });
 }
 
-export const COMPACTION_INSTRUCTION =
-  "[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.";
+/** The summary request's instruction (owner wording of 2026-10-27), then the voice line (§19.8). */
+export const COMPACTION_INSTRUCTION = `[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.\n${SUMMARY_VOICE}`;
 
 export type CompactionOmissions = { deleted: string[]; people: string[] };
 

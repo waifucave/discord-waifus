@@ -90,7 +90,8 @@ describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
     expect(calls).toHaveLength(3);
     // The §19 notice plus one sentence; same system blocks and tools (the cache holds).
     expect(lastText(calls[1]!)).toContain(JSON.stringify(CACHE_REST_NOTICE).slice(1, -1));
-    expect(CACHE_REST_NOTICE.startsWith(REST_NOTICE)).toBe(true);
+    expect(CACHE_REST_NOTICE.startsWith(REST_NOTICE.split("\n")[0]!)).toBe(true);
+    expect(CACHE_REST_NOTICE.split("\n").at(-1)).toBe(REST_NOTICE.split("\n").at(-1));
     expect(CACHE_REST_NOTICE.startsWith(REST_NOTICE_PREFIX)).toBe(true);
     expect(CACHE_REST_NOTICE).toContain("You've been quiet a while; this is a good moment to rest.");
     expect(calls[1]!.system).toEqual(calls[0]!.system);

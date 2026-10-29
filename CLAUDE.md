@@ -115,7 +115,7 @@ model from an upstream that keeps only 5 minutes) the scheduler's tick pokes her
 request (`lastRequestTokens`, `lastRequestAt`) was at least `life.cacheRestMinRatio` × the trigger,
 and it is `life.cacheRestLeadMinutes` before that request + TTL (not after it expired; not asleep in
 a bed time ending within the TTL). The life loop then runs the rest turn with `CACHE_REST_NOTICE`
-(the notice plus one sentence): accepted, epoch reason `cache_rest`; ignored, nothing else happens
+(the notice's first line plus one sentence, then the voice line `SUMMARY_VOICE` that ends both notices and the compaction instruction): accepted, epoch reason `cache_rest`; ignored, nothing else happens
 (the turn stays in her log). `state.cacheRest` allows one per epoch, apart from `state.restTurn`.
 Any turn whose final reply is only `<summary>…</summary>` (§21.6b, `rest.ts` `selfSummaryOf`) starts
 such an epoch too (reason `self`) when it passes `life.restSummaryMinChars`,

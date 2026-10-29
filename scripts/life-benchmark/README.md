@@ -130,9 +130,14 @@ A variant is JSON (or a module exporting it) with `replace`, `remove` and `add` 
 Every edit must match exactly one paragraph: each variant is tried on every selected scenario's
 shipped texts before the plan is printed, so a broken one stops the benchmark before any run. Prefer
 `add` edits: they survive rewrites of the shipped prompt. Built-ins: `baseline`, `brief`, `calm`
-(one gentle follow-up, speak when there's something to add), `own-voice` (summaries and dream notes
-as her own first-person memory), `tool-examples` (a second, differently shaped example call for
-ReadMessages, SendMessage, Read and Wakeup) and `calm-voice` (both); `list` prints them.
+(one gentle follow-up, speak when there's something to add) and `tool-examples` (a second,
+differently shaped example call for ReadMessages, SendMessage, Read and Wakeup); `list` prints them.
+
+`own-voice` (summaries and dream notes as her own first-person memory) is now the baseline: it
+improved how her summaries keep her voice with no loss of facts, so its wording shipped on
+2026-10-29 (block A, the rest notices, the compaction instruction and the dream's instruction; spec
+§19.8). Results from runs before that compare `own-voice` against the older baseline. `calm-voice`
+(calm and own-voice) went with it: it is now `calm`.
 
 ## Caveats
 

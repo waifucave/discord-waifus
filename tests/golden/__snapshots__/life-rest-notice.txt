@@ -5,5 +5,6 @@
 === 6 user ===
 --- text ---
 [system] Your memory is almost full. When this turn ends your context resets: everything you can see now goes away except what you write as your final reply. Your computer stays exactly as you left it (your home, /tmp and /transcripts), so anything that should last can go into your notes now. Then write, in your own way, whatever you want to carry forward. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this turn.
+Write it as your own memory: in the first person, in your own voice and style (your casing, your tone), not as a neutral report or a log. Keep names, times and facts exact.
 --- text ---
 [Sat 24 Oct 14:00 · awake]

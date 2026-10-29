@@ -125,6 +125,10 @@ The instruction, verbatim in substance:
 4. keep MEMORY.md short with valid links; merge duplicates;
 5. reply with one short line saying what changed. Leave `~/life/` alone.
 
+Its last line (2026-10-29, from the life benchmark's `own-voice` variant): "What you write into her
+notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral
+report or a log. Keep names, times and facts exact."
+
 **Tools**: `Read`, `Edit` (`apply_patch`), `Bash` over her home with `/transcripts` read-only; no messaging,
 no web. Every change under `~/life/` is refused (`DREAM_LIFE_REFUSED`) and so is `profile.json`.
 Images are always OCR text. Round cap `life.dreamMaxRounds` (60).

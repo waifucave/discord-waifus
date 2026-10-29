@@ -42,7 +42,9 @@ export const DREAM_INSTRUCTION = [
   "2. Add memories from the window only: new people, places, facts, plans, how things felt. Write them as her notes, in her voice and the layout her notes already use, and add a line to MEMORY.md for each new note.",
   "3. Check every note against the window. Change a fact only when the window clearly says otherwise (the newest wins) and keep everything else exactly as it is. Never delete or change a note because the window doesn't mention it. You may grep older transcript days to confirm a fact the window touches, but add nothing from before the window.",
   "4. Keep MEMORY.md short and its links valid; merge duplicates you notice.",
-  "5. When you're done, reply with one short line saying what changed."
+  "5. When you're done, reply with one short line saying what changed.",
+  // §19.8: shipped from the life benchmark's `own-voice` variant (2026-10-29).
+  "What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact."
 ].join("\n");
 
 /** The report's summary when the window is empty (no model is called). */

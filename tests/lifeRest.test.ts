@@ -348,6 +348,8 @@ describe("the rest notice's wording (owner rewording 2026-10-27)", () => {
     expect(OLD_NOTICE.startsWith(LEGACY_REST_NOTICE_PREFIX)).toBe(true);
     expect(isRestNotice(OLD_NOTICE)).toBe(true);
     expect(isRestNotice(REST_NOTICE)).toBe(true);
+    // The 2026-10-27 wording without the voice line (§19.8), as logged until 2026-10-29.
+    expect(isRestNotice(REST_NOTICE.split("\n")[0]!)).toBe(true);
     expect(isRestNotice("[system] your last turn failed")).toBe(false);
     // Compaction never keeps it; the owner's views hide her summary in it.
     expect([...restTurnIds(legacyTurn)]).toEqual(["t-old"]);

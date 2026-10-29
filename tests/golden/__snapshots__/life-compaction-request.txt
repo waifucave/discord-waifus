@@ -1,5 +1,6 @@
 (system and the old epoch's turn: see life-system-prompt.txt and life-wake-turn.txt; 6 earlier messages)
 === 6 user ===
 [system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.
+Write it as your own memory: in the first person, in your own voice and style (your casing, your tone), not as a neutral report or a log. Keep names, times and facts exact.
 
 [Sat 24 Oct 14:00 · awake]

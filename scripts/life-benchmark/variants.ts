@@ -70,26 +70,10 @@ export const BASELINE: PromptVariant = { id: "baseline", description: "The shipp
 const CALM_BLOCK_A =
   "When someone hasn't answered you, follow up once, gently, at most; if they still don't answer, let it go and don't set another watch for the same question. In a busy room, speak when you have something to add, not to fill a silence. One or two messages answer most things.";
 
-const OWN_VOICE_BLOCK_A =
-  "A summary you write for yourself (when your memory is full, or for a fresh start) is your own memory: write it in the first person, in your own voice and style (your casing, your tone), not as a neutral report. Keep names, times and facts exact.";
-
-const OWN_VOICE_SUMMARY =
-  "Write it as your own memory: in the first person, in your own voice and style (your casing, your tone), not as a neutral report or a log. Keep names, times and facts exact.";
-
-const OWN_VOICE_DREAM =
-  "What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact.";
-
 const CALM: PromptVariant = {
   id: "calm",
   description: "Fewer follow-up pings and unprompted bursts: one gentle follow-up, speak when there's something to add, one or two messages.",
   edits: [{ add: CALM_BLOCK_A }]
-};
-
-const OWN_VOICE: PromptVariant = {
-  id: "own-voice",
-  description: "Summaries and dream notes written as her own first-person memory in her own voice, facts exact.",
-  edits: [{ add: OWN_VOICE_BLOCK_A }],
-  summaries: { rest: [{ add: OWN_VOICE_SUMMARY }], compaction: [{ add: OWN_VOICE_SUMMARY }], dream: [{ add: OWN_VOICE_DREAM }] }
 };
 
 /**
@@ -108,7 +92,11 @@ const TOOL_EXAMPLES: PromptVariant = {
   }
 };
 
-/** Built-in examples. Only `add` edits, so they survive rewrites of the shipped paragraphs. */
+/**
+ * Built-in examples. Only `add` edits, so they survive rewrites of the shipped paragraphs.
+ * `own-voice` (summaries and dream notes in her own voice) shipped on 2026-10-29 and is now part of
+ * the baseline; `calm-voice` (calm and own-voice) went with it, as it is now `calm`.
+ */
 export const BUILT_IN_VARIANTS: readonly PromptVariant[] = [
   BASELINE,
   {
@@ -121,14 +109,7 @@ export const BUILT_IN_VARIANTS: readonly PromptVariant[] = [
     ]
   },
   CALM,
-  OWN_VOICE,
-  TOOL_EXAMPLES,
-  {
-    id: "calm-voice",
-    description: "calm and own-voice together.",
-    edits: [...(CALM.edits ?? []), ...(OWN_VOICE.edits ?? [])],
-    summaries: OWN_VOICE.summaries
-  }
+  TOOL_EXAMPLES
 ];
 
 // ---- applying edits ------------------------------------------------------------------------------------

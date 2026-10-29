@@ -29,6 +29,7 @@ Example: return await tools.apply_patch(["*** Begin Patch", "*** Update File: ~/
 3. Check every note against the window. Change a fact only when the window clearly says otherwise (the newest wins) and keep everything else exactly as it is. Never delete or change a note because the window doesn't mention it. You may grep older transcript days to confirm a fact the window touches, but add nothing from before the window.
 4. Keep MEMORY.md short and its links valid; merge duplicates you notice.
 5. When you're done, reply with one short line saying what changed.
+What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact.
 --- text ---
 Her files: ~/MEMORY.md, ~/people/kevin.md
 --- text ---

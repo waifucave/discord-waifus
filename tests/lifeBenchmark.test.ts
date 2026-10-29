@@ -415,7 +415,7 @@ describe("prompt variants", () => {
   });
 
   it("every built-in variant applies cleanly to the current shipped prompts and tools, and changes what it says", async () => {
-    expect(BUILT_IN_VARIANTS.map((variant) => variant.id)).toEqual(["baseline", "brief", "calm", "own-voice", "tool-examples", "calm-voice"]);
+    expect(BUILT_IN_VARIANTS.map((variant) => variant.id)).toEqual(["baseline", "brief", "calm", "tool-examples"]);
     for (const web of [false, true]) expect(() => checkVariants(BUILT_IN_VARIANTS, SCENARIOS, { model: HAIKU, web })).not.toThrow();
     for (const variant of BUILT_IN_VARIANTS) {
       // Only add edits, so they survive rewrites of the shipped paragraphs.
@@ -435,8 +435,26 @@ describe("prompt variants", () => {
       for (const [prompt, edits] of Object.entries(variant.summaries ?? {})) for (const edit of edits ?? []) if ("add" in edit) expect((inside as Record<string, unknown>)[prompt]).toContain(edit.add);
       expect(isRestNotice(inside.rest)).toBe(true);
     }
-    expect(builtIn("calm-voice").edits).toEqual([...builtIn("calm").edits!, ...builtIn("own-voice").edits!]);
-    expect(builtIn("calm-voice").summaries).toEqual(builtIn("own-voice").summaries);
+  });
+
+  it("own-voice is shipped: the shipped texts are what the benchmark sent under own-voice (§19.8)", () => {
+    // The variant as it was benchmarked (2026-10-29), applied to the texts as they were before it shipped.
+    const blockA = "A summary you write for yourself (when your memory is full, or for a fresh start) is your own memory: write it in the first person, in your own voice and style (your casing, your tone), not as a neutral report. Keep names, times and facts exact.";
+    const summary = "Write it as your own memory: in the first person, in your own voice and style (your casing, your tone), not as a neutral report or a log. Keep names, times and facts exact.";
+    const dream = "What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact.";
+    const ownVoice: PromptVariant = { id: "own-voice", description: "d", edits: [{ add: blockA }], summaries: { rest: [{ add: summary }], compaction: [{ add: summary }], dream: [{ add: dream }] } };
+    const before = (text: string, line: string, separator: string) => {
+      expect(text).toContain(`${separator}${line}`);
+      return text.replace(`${separator}${line}`, "");
+    };
+    expect(applyVariant(before(shipped, blockA, "\n\n"), ownVoice)).toBe(shipped);
+    expect(applySummaryEdits("rest", before(REST_NOTICE, summary, "\n"), ownVoice)).toBe(REST_NOTICE);
+    expect(applySummaryEdits("rest", before(CACHE_REST_NOTICE, summary, "\n"), ownVoice)).toBe(CACHE_REST_NOTICE);
+    expect(applySummaryEdits("compaction", before(COMPACTION_INSTRUCTION, summary, "\n"), ownVoice)).toBe(COMPACTION_INSTRUCTION);
+    expect(applySummaryEdits("dream", before(DREAM_INSTRUCTION, dream, "\n"), ownVoice)).toBe(DREAM_INSTRUCTION);
+    // Each is one line (one paragraph) of its text.
+    for (const text of [REST_NOTICE, CACHE_REST_NOTICE, COMPACTION_INSTRUCTION]) expect(text.split("\n").at(-1)).toBe(summary);
+    expect(DREAM_INSTRUCTION.split("\n").at(-1)).toBe(dream);
   });
 
   it("tool-examples adds one new, syntactically valid example to each tool, unlike the one already there", () => {
