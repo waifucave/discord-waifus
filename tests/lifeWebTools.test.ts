@@ -12,6 +12,7 @@ import type { CuratedCatalog, CuratedModel } from "../src/models/catalog.js";
 import { ModelClient } from "../src/models/client.js";
 import { WebTools } from "../src/life/search.js";
 import { webTool, WebSession } from "../src/life/tools/web.js";
+import { regexFind, REGEX_FIND_MS } from "../src/life/sandbox/regexFind.js";
 import { createWebBackend, LifeWebFetchCache, type ExaSearchParams, type ExaSearchResult, type WebBackend } from "../src/life/web/index.js";
 import { AppConfigSchema, DEFAULT_APP_CONFIG, type AppConfig } from "../src/shared/schemas/config.js";
 import { StorageService } from "../src/storage/storageService.js";
@@ -158,25 +159,28 @@ describe("Web: tools.web__run and its results", () => {
     const h = await harness();
     const result = await h.web(
       `const r = await tools.web__run({ search_query: [{ q: "lemon tart", n: 3, recency: 30, domains: ["pages.test"] }] });
-       text(r.search[0].results);
-       const url = r.search[0].results[0].url;
+       text(r.search[0].hits);
+       const url = r.search[0].hits[0].url;
        const p = await tools.web__run({ open: [{ ref_id: url }], find: [{ ref_id: url, pattern: "oven" }] });
        const page = p.pages[0];
-       text(page.title, page.url, page.status, page.line, page.total, page.more);
+       text(page.title, page.url, page.status, page.lineno, page.total_lines, page.more);
        text(page.links);
+       text(p.find[0].url, p.find[0].pattern);
        text(p.find[0].matches);`
     );
     expect(result.isError).toBeFalsy();
     const lines = String(result.content).split("\n");
     expect(lines[0]).toBe(LINE);
-    expect(JSON.parse(lines[1]!)).toEqual([{ n: 1, title: "Lemon tart", url: "https://pages.test/recipe", date: "2026-09-01", snippet: "Preheat the oven." }]);
+    expect(JSON.parse(lines[1]!)).toEqual([{ title: "Lemon tart", url: "https://pages.test/recipe", date: "2026-09-01", snippet: "Preheat the oven." }]);
     expect(lines[2]).toMatch(/^Lemon tart \| Bake Club https:\/\/pages\.test\/recipe 200 0 \d+ false$/u);
     expect(JSON.parse(lines[3]!)).toEqual([
-      { n: 1, text: "crust", url: "https://pages.test/crust" },
-      { n: 2, text: "lemon curd", url: "https://other.example/curd" }
+      { id: 1, text: "crust", url: "https://pages.test/crust" },
+      { id: 2, text: "lemon curd", url: "https://other.example/curd" }
     ]);
-    const found = JSON.parse(lines.slice(4).join("\n")) as Array<{ line: number; text: string }>;
+    expect(lines[4]).toBe("https://pages.test/recipe oven");
+    const found = JSON.parse(lines.slice(5).join("\n")) as Array<{ lineno: number; text: string }>;
     expect(found).toHaveLength(1);
+    expect(found[0]!.lineno).toBe(7);
     expect(found[0]!.text).toContain("Preheat the oven to 180C.");
     // The options reached Exa as winter's filters; the page was fetched once for the open and the find.
     expect(h.searches[0]).toMatchObject({ query: "lemon tart", numResults: 3, recentDays: 30, includeDomains: ["pages.test"] });
@@ -189,14 +193,17 @@ describe("Web: tools.web__run and its results", () => {
       `const a = await tools.web__run({ open: [{ ref_id: "https://pages.test/recipe" }] });
        text(a.pages[0].lines);
        const b = await tools.web__run({ click: [{ ref_id: "https://pages.test/recipe", id: 1 }] });
-       text(b.pages[0].lines, b.pages[0].from, b.pages[0].link);
+       text(b.pages[0].lines, b.pages[0].url);
        const c = await tools.web__run({ ask: [{ ref_id: "http://pages.test/brownies", question: "What makes them fudgy?" }] });
+       text(c.ask[0].kind);
        text(c.ask[0].answer);`
     );
     const text = String(result.content);
     // Blank lines are left out of a window but keep their numbers.
     expect(text).toContain("0: Lemon tart | Bake Club\n2: Lemon tart\n3: ==========\n5: Make the [crust](/crust) first, then the filling.\n7: Preheat the oven to 180C.");
-    expect(text).toContain("0: Crust: 200 g flour, 100 g butter. https://pages.test/recipe 1");
+    expect(text).toContain("0: Crust: 200 g flour, 100 g butter. https://pages.test/crust");
+    // An ask's answer is marked as a generated digest (§32.3a).
+    expect(text).toContain("generated digest of the page, not its own words\n");
     expect(text.endsWith("Dark chocolate and brown butter.")).toBe(true);
     expect(h.anthropic.calls).toHaveLength(1);
     const request = h.anthropic.calls[0]!.request;
@@ -211,7 +218,7 @@ describe("Web: tools.web__run and its results", () => {
     const short = await h.web(`const r = await tools.web__run({ open: [{ ref_id: "https://pages.test/brownies" }], search_query: [{ q: "x" }], response_length: "short" }); return r.pages[0].lines.length`);
     expect(Number(String(short.content).split("\n")[1])).toBeLessThanOrEqual(1_600);
     expect(h.searches[0]).toMatchObject({ numResults: 3 });
-    const long = await h.web(`const r = await tools.web__run({ open: [{ ref_id: "https://pages.test/brownies" }], response_length: "long" }); const again = await tools.web__run({ open: [{ ref_id: "https://pages.test/brownies", lineno: 2 }] }); return [r.pages[0].lines.length > 3000, again.pages[0].line]`);
+    const long = await h.web(`const r = await tools.web__run({ open: [{ ref_id: "https://pages.test/brownies" }], response_length: "long" }); const again = await tools.web__run({ open: [{ ref_id: "https://pages.test/brownies", lineno: 2 }] }); return [r.pages[0].lines.length > 3000, again.pages[0].lineno]`);
     expect(String(long.content).split("\n")[1]).toBe("[true,2]");
   });
 
@@ -221,7 +228,26 @@ describe("Web: tools.web__run and its results", () => {
     expect(pdf.content).toBe(`${LINE}\n0: --- page 1 ---\n1: Soup of the day\n2: --- page 2 ---\n3: Lemon tart`);
     const png = await h.web(`return await tools.web__run({ open: [{ ref_id: "https://pages.test/cake.png" }] })`);
     expect(png.isError).toBeFalsy();
-    expect(JSON.parse(String(png.content))).toEqual({ pages: [{ ref_id: "https://pages.test/cake.png", error: "that page is not text (image/png)" }] });
+    expect(JSON.parse(String(png.content))).toEqual({ pages: [{ url: "https://pages.test/cake.png", error: "that page is not text (image/png)" }] });
+  }, 30_000);
+
+  it("find takes her RegExp over the whole page, run in a worker of its own: a pattern that never ends is that step's error (§32.3a)", async () => {
+    const h = await harness();
+    const result = await h.web(
+      `const r = await tools.web__run({ find: [{ ref_id: "https://pages.test/recipe", pattern: /pre(heat)?\\s+the\\s+OVEN/i }, { ref_id: "https://pages.test/recipe", pattern: /(/ }] });
+       return r.find`
+    );
+    // A RegExp that doesn't even parse never reaches the host: her script's own SyntaxError.
+    expect(String(result.content)).toMatch(/SyntaxError/u);
+    const found = await h.web(`const r = await tools.web__run({ find: [{ ref_id: "https://pages.test/recipe", pattern: /pre(heat)?\\s+the\\s+OVEN/i }] }); return r.find`);
+    expect(JSON.parse(String(found.content).split("\n").slice(1).join("\n"))).toEqual([{ url: "https://pages.test/recipe", pattern: "/pre(heat)?\\s+the\\s+OVEN/i", matches: [{ lineno: 7, text: expect.stringContaining("Preheat the oven to 180C.") }] }]);
+    // A backtracking pattern ends at its time limit; the host was never blocked.
+    const lines = ["a".repeat(40) + "!", "ok"];
+    const started = Date.now();
+    expect(await regexFind(lines, "(a+)+$", "")).toEqual({ ok: false, error: "that RegExp took too long on this page; try plain text" });
+    expect(Date.now() - started).toBeLessThan(REGEX_FIND_MS + 3_000);
+    expect(await regexFind(lines, "o(k)", "i")).toEqual({ ok: true, hits: [[1, 0]] });
+    expect(await regexFind(lines, "(", "")).toMatchObject({ ok: false });
   }, 30_000);
 
   it("says done when nothing is shown, and the web is off when both caps are 0", async () => {
@@ -350,7 +376,6 @@ describe("Web: errors", () => {
       "{ search_query: [{ q: 'x' }], open: [{ ref_id: 'https://pages.test/short', lineno: -1 }] }",
       "{ click: [{ ref_id: 'https://pages.test/short', id: 1 }] }",
       "{ response_length: 'huge', search_query: [{ q: 'x' }] }",
-      "{ find: [{ ref_id: 'https://pages.test/short', pattern: /(a+)+$/ }] }",
       "{ frobnicate: 1 }",
       "{}",
       "'x'"
@@ -365,8 +390,6 @@ describe("Web: errors", () => {
       "RangeError: tools.web__run: open[0].lineno is a whole number from 0 to 10000000",
       "TypeError: tools.web__run: click: https://pages.test/short isn't a page you opened in this script; open it first",
       'TypeError: tools.web__run: response_length is "short", "medium" or "long"',
-      // A RegExp is not text: find looks for plain text (it never runs her patterns).
-      "TypeError: tools.web__run: find[0].pattern is text",
       'TypeError: tools.web__run: unknown field "frobnicate" (it takes search_query, open, click, find, ask, response_length)',
       "TypeError: tools.web__run: give it something to do: search_query, open, click, find or ask",
       'TypeError: tools.web__run takes one object, like { search_query: [{ q: "lemon tart" }] }'
@@ -386,7 +409,7 @@ describe("Web: errors", () => {
     h.setSearch({ ok: false, code: "backend_error", message: "the search backend reported an error: bad query" });
     expect(await search(new WebSession(h.tools, { waifuId: "ella", turn: turn(), route: HAIKU }))).toEqual({ search: [{ q: "q", error: "web search failed: the search backend reported an error: bad query" }] });
     h.setSearch({ ok: true, tier: "key", tool: "web_search_exa", rawText: "", truncated: false, results: [] });
-    expect(await search(new WebSession(h.tools, { waifuId: "ella", turn: turn(), route: HAIKU }))).toEqual({ search: [{ q: "q", results: [] }] });
+    expect(await search(new WebSession(h.tools, { waifuId: "ella", turn: turn(), route: HAIKU }))).toEqual({ search: [{ q: "q", hits: [] }] });
     // Anything the sandbox sends is checked: wrong shapes are refused before any web call.
     const session = new WebSession(h.tools, { waifuId: "ella", turn: turn(), route: HAIKU });
     await expect(session.run({ open: [{ ref_id: 1 }] }, signal)).rejects.toThrow(/open\[0\]\.ref_id is a web address/u);
@@ -406,10 +429,10 @@ describe("Web's own policy path (review F14)", { timeout: 30_000 }, () => {
     const signal = new AbortController().signal;
     let n = 0;
     const open = (url: string) => new WebSession(h.tools, { waifuId: "ella", turn: turn(`p${(n += 1)}`), route: HAIKU }).run({ open: [{ ref_id: url }] }, signal);
-    for (const url of PRIVATE_FORMS) expect(await open(url), url).toEqual({ pages: [{ ref_id: url.trim(), error: "that address is not on the public internet" }] });
+    for (const url of PRIVATE_FORMS) expect(await open(url), url).toEqual({ pages: [{ url: url.trim(), error: "that address is not on the public internet" }] });
     for (const url of INVALID_FORMS) {
       if (!url.trim()) continue;
-      expect(await open(url), url).toEqual({ pages: [{ ref_id: url.trim(), error: "that is not a web address I can open" }] });
+      expect(await open(url), url).toEqual({ pages: [{ url: url.trim(), error: "that is not a web address I can open" }] });
     }
     expect(calls).toEqual([]);
     expect(h.page.hits).toEqual([]);
