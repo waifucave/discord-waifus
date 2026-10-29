@@ -17,7 +17,7 @@
 // wakes her then (§29, the scheduler's `plan` wake); one without is a note.
 
 import { createHash } from "node:crypto";
-import { instantOfLocal, localDayKey, minutesOfDay } from "../clock.js";
+import { dayKeyText, instantOfLocal, localDayKey, minutesOfDay } from "../clock.js";
 import { syntaxProblem, type CheckFailure } from "./specialFiles.js";
 
 /** What she is told about timed plans (§29): in the morning greeting, the plans field's help and a schedule write's result. */
@@ -245,10 +245,10 @@ export function timedPlans(plan: DayPlan | undefined, now: Date, timeZone: strin
   return out.sort((a, b) => a.due.getTime() - b.due.getTime());
 }
 
-/** The `<schedule>` section's plan lines (§21.5): her day as she wrote it, or that there is none. */
+/** The `<schedule>` section's plan lines (§21.5): her day as she wrote it (its date with its weekday), or that there is none. */
 export function dayPlanLines(plan: DayPlan | undefined): string[] {
   if (!plan) return ["No plan for today yet."];
-  const lines = [`Today (${plan.date}), as you planned it in ~/life/schedule.json:`];
+  const lines = [`Today (${dayKeyText(plan.date)}), as you planned it in ~/life/schedule.json:`];
   if (plan.mood) lines.push(`Mood: ${plan.mood}`);
   for (const block of [...plan.busy].sort((a, b) => hhmmToMinutes(a.from) - hhmmToMinutes(b.from))) lines.push(`Busy ${block.from}–${block.to}: ${block.why}`);
   if (plan.phoneChecks.length > 0) lines.push(`Phone checks while busy: ${[...plan.phoneChecks].sort().join(", ")}`);

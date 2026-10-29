@@ -2,7 +2,7 @@
 // plan that counts today, busy blocks and phone checks, and how her availability and time line read
 // it. Pure functions only; the life's use of it is in lifeDay.test.ts.
 import { describe, expect, it } from "vitest";
-import { availabilityAt, bedPhaseAt, timeLine } from "../src/life/clock.js";
+import { availabilityAt, bedPhaseAt, datedDayKey, dayKeyText, timeLine } from "../src/life/clock.js";
 import { busyAt, checkDayScheduleText, dayPlanLines, readDayPlan, todaysPlan, type DayPlan } from "../src/life/home/daySchedule.js";
 
 const TZ = "UTC";
@@ -143,7 +143,7 @@ describe("today's plan, busy blocks and phone checks (§21.2, §21.4)", () => {
 
   it("renders the plan for <schedule>, or that there is none", () => {
     expect(dayPlanLines(plan)).toEqual([
-      "Today (2026-10-27), as you planned it in ~/life/schedule.json:",
+      "Today (Tue 27 Oct), as you planned it in ~/life/schedule.json:",
       "Mood: slow morning, want a quiet day",
       "Busy 12:00–15:30: studio shift",
       "Busy 19:00–20:30: gym with Mira",
@@ -153,5 +153,13 @@ describe("today's plan, busy blocks and phone checks (§21.2, §21.4)", () => {
       "Note: if Kevin asks about saturday: yes"
     ]);
     expect(dayPlanLines(undefined as DayPlan | undefined)).toEqual(["No plan for today yet."]);
+  });
+
+  it("a day's date reads with its weekday, in the time line's style (§23.2)", () => {
+    expect(dayKeyText("2026-11-19")).toBe("Thu 19 Nov");
+    expect(dayKeyText("2026-11-20")).toBe("Fri 20 Nov");
+    expect(dayKeyText("2027-01-01")).toBe("Fri 1 Jan");
+    expect(datedDayKey("2026-11-19")).toBe("Thu 2026-11-19");
+    expect(dayKeyText("not a day")).toBe("not a day");
   });
 });

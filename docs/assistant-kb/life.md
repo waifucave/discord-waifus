@@ -72,7 +72,7 @@ the night's time span and then one line per message that talked to her (a mentio
 name, a role or `@everyone`; ordinary chatter stays a count), rooms with the most mentions first,
 then watch matches (with the matching message's time and ref), timed-out watches, her timed wakeups and
 timed plans (a budget pause defers those).
-Times are her local `HH:MM`, with the weekday when not on the morning's day. At most
+Times are her local `HH:MM`, with the weekday and date (`Mon 26 Oct 23:50`) when not on the morning's day. At most
 `life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
 `+N earlier`. Every line has its ref, so she can reply or react without reading first; DM lines are
 redacted in the owner's views like any DM notification, and a morning that shows anything from a DM

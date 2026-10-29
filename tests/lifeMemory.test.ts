@@ -80,7 +80,7 @@ describe("nightly dreaming (§18.4, replacing §7.3 and §16.8)", () => {
       expect(JSON.stringify(call.request.messages)).not.toContain("<notifications>");
     }
     expect(JSON.stringify(calls[0]!.request.messages[0])).toContain(DREAM_INSTRUCTION.slice(0, 40));
-    expect(JSON.stringify(calls[0]!.request.messages[0])).toContain("/transcripts/bake-club/general/2026-10-24.md (the whole file, 1 line)");
+    expect(JSON.stringify(calls[0]!.request.messages[0])).toContain("/transcripts/bake-club/general/2026-10-24.md (Sat 24 Oct: the whole file, 1 line)");
     expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["maintenance", "maintenance", "maintenance"]);
     expect(await notes.read("MEMORY.md")).toBe("# Memory\n- [Kevin](people/kevin.md) — chemistry student\n");
     const reports = await readMaintenanceReports(w.storage, "ella");

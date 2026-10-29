@@ -3292,6 +3292,38 @@ built in 3.3.0). This section makes what waited richer: the morning wake's singl
   above), `life-morning.txt` and `life-day-morning.txt` (the DMs as lines, the mention line, the
   span, the watch match's time and ref).
 
+### 23.2 As built: a weekday on every date she reads (owner request, 2026-10-29)
+
+The life benchmark's summaries kept misdating things: Noor's interview was "Thursday", and summaries
+wrote "Thu 20 Nov" when Thursday was the 19th. Her time lines already read `[Mon 23 Nov 20:00 ·
+awake]`; every other date that reaches her (or her memory keeper) now carries its weekday too, and a
+day named by its weekday alone also gets its date. `clock.ts` adds `dayKeyText` ("Thu 19 Nov" for a
+local day key) and `datedDayKey` ("Thu 2026-11-19", where she may pass the text back); the unused
+`weekdayTimeText` ("Tue 18:00") is gone.
+
+- **Notifications and the morning batch** (`notifications.ts`): `- reminder (Sat 24 Oct 14:20): …`;
+  in the batch a time on another day than the morning's is `Mon 26 Oct 23:50` (DM and room lines,
+  a room's span, watch matches, `while you were away (since …)`), and `watch timed out (…)`,
+  `reminder (…)` and a deferred `plan (Sat 24 Oct 17:30)` always carry their day.
+- **ReadMessages**: its day lines already read `— Sat 24 Oct —` (unchanged). The edge hints for a
+  message without a ref read `— more before: before Tue 2026-09-01 10:05 —`, and a search's range
+  `(searched Fri 2026-10-23 – Sat 2026-10-24)`. `parseAnchor` (and the freeform query's anchor
+  start) accept a weekday in front of an ISO date (`tue`, `tuesday`, a comma allowed), so a hint
+  reads back as an anchor; the date wins over a weekday that doesn't match it. Chat lines
+  (`[14:02 #k3]`) are unchanged: no date is part of them.
+- **Block A `<schedule>`**: `Today (Sat 24 Oct), as you planned it in ~/life/schedule.json:` (was the
+  bare `2026-10-24`). It is in every summary request (they send her system blocks), so the
+  compaction and rest summary inputs carry it; the rest of those inputs already had weekdays (time
+  lines, wakeup results, `places.md`). `[your summary before the reset]` has no date and is unchanged.
+- **The dream window**: each file is listed with its day, `- /transcripts/bake-club/general/2026-10-24.md
+  (Sat 24 Oct: the whole file, 2 lines)`, since a part read from a line number skips the file's dated
+  header.
+- Left as they are: a web hit's `date` (a §32.3a result field, the page's publication date), file
+  names and paths, and the examples in tool descriptions.
+- Goldens updated: `life-day-busy.txt` (`<schedule>`), `life-dream.txt` (the window line),
+  `life-morning-summary.txt` and `life-morning.txt` (a watch timeout's day), `life-plan.txt` (the
+  reminder line).
+
 ## 24. Jev only sees who is around (owner request, 2026-10-27)
 
 The addressee detector's member list for a place (`addressee` and `chime_in` choices, the `anyone`

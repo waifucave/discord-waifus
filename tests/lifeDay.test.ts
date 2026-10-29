@@ -91,7 +91,7 @@ describe("the morning wake (§21.3)", () => {
     expect(morning[0]!.batch![0]).toBe(
       "[system] Good morning, it's Sat 24 Oct. Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans. Plans with a time wake you then. Your day is yours to plan: keep it believable for who you are. Your bed time (00:30–08:30) is fixed. Then deal with what came in overnight."
     );
-    expect(morning[0]!.batch!.slice(1)).toEqual(["- during your bed time (00:30–08:30):", '  · watch timed out (Sat 03:00) · your note: "water the basil"']);
+    expect(morning[0]!.batch!.slice(1)).toEqual(["- during your bed time (00:30–08:30):", '  · watch timed out (Sat 24 Oct 03:00) · your note: "water the basil"']);
 
     await w.cast.life("ella").runNow();
     const calls = w.anthropic.calls.map((call) => call.request);
@@ -106,7 +106,7 @@ describe("the morning wake (§21.3)", () => {
     expect(state.lastCompaction).toMatchObject({ reason: "day", summarized: false });
     expect(state.epoch).toBe(2);
     expect(state.dayCompactionDue).toBeUndefined();
-    expect(state.systemSnapshot!.harness).toContain("<schedule>\nYour bed time is 00:30–08:30.\nToday (2026-10-24)");
+    expect(state.systemSnapshot!.harness).toContain("<schedule>\nYour bed time is 00:30–08:30.\nToday (Sat 24 Oct)");
     expect(state.systemSnapshot!.harness).toContain("Busy 12:00–15:30: studio shift");
     expect(state.systemSnapshot!.harness).toContain("Phone checks while busy: 13:30");
     // One morning a day.

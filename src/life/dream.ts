@@ -19,7 +19,7 @@ import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { atomicWriteJson } from "../storage/atomic.js";
 import type { StorageService } from "../storage/storageService.js";
-import { clockText, dayTimeText, timeLine } from "./clock.js";
+import { clockText, dayKeyText, dayTimeText, timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { availabilityFor } from "./busy.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
@@ -184,7 +184,8 @@ export function windowText(chunks: readonly DreamChunk[], o: { start: string; ti
   for (const chunk of chunks) {
     // A line number, not a time: several lines can share a minute (unambiguous where the window starts).
     const where = chunk.after ? `from line ${chunk.fromLine ?? 2} on, after the ${clockText(new Date(chunk.after.at), o.timeZone)} line` : "the whole file";
-    lines.push(`- ${chunk.path} (${where}, ${chunk.lines.length} line${chunk.lines.length === 1 ? "" : "s"})`);
+    // Its day with its weekday: a part read from a line number skips the file's dated header.
+    lines.push(`- ${chunk.path} (${dayKeyText(chunk.day)}: ${where}, ${chunk.lines.length} line${chunk.lines.length === 1 ? "" : "s"})`);
   }
   if (o.more) lines.push("(The rest of the window comes in a later session: only these files now.)");
   return lines.join("\n");

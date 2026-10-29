@@ -70,7 +70,7 @@ function fieldsOf(place: string, query?: string): Record<string, unknown> {
     fields[key] = list.length > 1 ? list : list[0];
   }
   for (const key of ["before", "after", "around"] as const) {
-    const value = take(new RegExp(`\\s${key} (#\\w+|\\d{4}-\\d\\d-\\d\\d(?: \\d\\d:\\d\\d)?|yesterday \\d\\d:\\d\\d|\\d\\d:\\d\\d)`, "u"));
+    const value = take(new RegExp(`\\s${key} (#\\w+|(?:[A-Z][a-z]{2} )?\\d{4}-\\d\\d-\\d\\d(?: \\d\\d:\\d\\d)?|yesterday \\d\\d:\\d\\d|\\d\\d:\\d\\d)`, "u"));
     if (value !== undefined) fields[key] = value;
   }
   if (rest.trim()) throw new Error(`the test can't translate "${rest.trim()}"`);
@@ -114,6 +114,14 @@ describe("the query grammar (§22.2)", () => {
     expect(parse("search:meet before lunch max:5")).toEqual({ ok: true, query: { search: [["meet", "before", "lunch"]], max: 5 } });
     expect(parse("search:meet before #k3")).toEqual({ ok: true, query: { search: [["meet"]], before: { kind: "ref", ref: "k3" } } });
     expect(parse("after #a1 before #a9")).toEqual({ ok: true, query: { after: { kind: "ref", ref: "a1" }, before: { kind: "ref", ref: "a9" } } });
+  });
+
+  it("reads a date with its weekday in front, as the tools show one (the date wins)", () => {
+    expect(parse("before Fri 2026-10-23 17:02")).toEqual(parse("before 2026-10-23 17:02"));
+    expect(parse("search:exam after fri 2026-10-23")).toEqual(parse("search:exam after 2026-10-23"));
+    expect(parse("around Friday, 2026-10-23")).toEqual(parse("around 2026-10-23"));
+    expect(parse("before Mon 2026-10-23 17:02")).toEqual(parse("before 2026-10-23 17:02"));
+    expect(parse("before Fri 17:02")).toMatchObject({ ok: false });
   });
 
   it("refuses what it can't read, with the syntax and an example", () => {
@@ -261,17 +269,17 @@ describe("people: and search: over her transcripts (§22.2)", () => {
     await fed(w, ROOM, "the exam went great");
     await fed(w, ROOM, "told you so", { authorId: ELLA_BOT, authorName: "Ella", bot: true });
     const exam = text(await read(w, "bake-club/#general", "search:exam"));
-    expect(exam.split("\n")[1]).toBe("3 messages match (searched 2026-10-23 (when your transcripts begin) – 2026-10-24)");
+    expect(exam.split("\n")[1]).toBe("3 messages match (searched Fri 2026-10-23 (when your transcripts begin) – Sat 2026-10-24)");
     expect(exam).toContain("— Fri 23 Oct —");
     expect(bodies(exam)).toEqual(["Kevin: my exam is on Monday", "Mina: good luck with the EXAM", "Kevin: the exam went great"]);
     expect(bodies(text(await read(w, "bake-club/#general", "people:mina")))).toEqual(["Mina: good luck with the EXAM"]);
     expect(bodies(text(await read(w, "bake-club/#general", "people:you")))).toEqual(["you: told you so"]);
     const latestOne = text(await read(w, "bake-club/#general", "search:exam max:1"));
     expect(bodies(latestOne)).toEqual(["Kevin: the exam went great"]);
-    expect(latestOne.split("\n")[1]).toBe("3 messages match, 1 shown (searched 2026-10-23 (when your transcripts begin) – 2026-10-24)");
+    expect(latestOne.split("\n")[1]).toBe("3 messages match, 1 shown (searched Fri 2026-10-23 (when your transcripts begin) – Sat 2026-10-24)");
     expect(latestOne).toContain("— more before: before #");
     const since = text(await read(w, "bake-club/#general", "search:exam after 2026-10-24"));
-    expect(since.split("\n")[1]).toBe("1 message matches (searched 2026-10-24 – 2026-10-24)");
+    expect(since.split("\n")[1]).toBe("1 message matches (searched Sat 2026-10-24 – Sat 2026-10-24)");
     expect(text(await read(w, "bake-club/#general", "search:nothing like this"))).toContain("0 messages match");
   });
 
@@ -358,7 +366,9 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     expect(bodies(page)).toEqual(["Mina: september 4", "Kevin: september 5", "Mina: september 6"]);
     expect(page).toContain("[10:04] Mina: september 4");
     // `before` leaves its minute out: the hint names the next one, so nothing older is skipped.
-    expect(page.split("\n")[1]).toBe("— more before: before 2026-09-01 10:05 —");
+    expect(page.split("\n")[1]).toBe("— more before: before Tue 2026-09-01 10:05 —");
+    // The hint, weekday and all, reads back as an anchor (its minute's edge message again, nothing older skipped).
+    expect(bodies(text(await read(w, "bake-club/#general", "before Tue 2026-09-01 10:05 max:3")))).toEqual(["Mina: september 2", "Kevin: september 3", "Mina: september 4"]);
     expect(await refsJson(w)).toEqual({});
   });
 
@@ -454,7 +464,7 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     SEARCH_LIMITS.days = 2;
     try {
       const found = text(await read(w, "bake-club/#general", "search:tea"));
-      expect(found.split("\n")[1]).toBe("2 messages match (searched 2026-10-23 – 2026-10-24; the search stopped at its size limit: add before or after to look further)");
+      expect(found.split("\n")[1]).toBe("2 messages match (searched Fri 2026-10-23 – Sat 2026-10-24; the search stopped at its size limit: add before or after to look further)");
       expect(found).toContain("— more before: before #");
       expect(bodies(found)).toEqual(["Kevin: tea on day 23", "Kevin: tea on day 24"]);
     } finally {

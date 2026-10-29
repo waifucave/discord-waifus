@@ -76,7 +76,7 @@ describe("the dream window (§18.4)", () => {
     expect(request.system).not.toContain(waifu.persona);
     expect(request.messages).toHaveLength(1);
     expect(openingText(request)).toContain(DREAM_INSTRUCTION.slice(0, 60));
-    expect(openingText(request)).toContain("/transcripts/bake-club/general/2026-10-24.md (the whole file, 1 line)");
+    expect(openingText(request)).toContain("/transcripts/bake-club/general/2026-10-24.md (Sat 24 Oct: the whole file, 1 line)");
     expect(request.tools?.map((tool) => tool.name)).toEqual(["Read", "Edit", "Bash"]);
   });
 });

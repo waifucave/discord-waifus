@@ -97,7 +97,7 @@ describe("sleep and the morning batch (§4.5, §4.7, §21.6c)", () => {
     const queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(queue.immediate.map((wake) => wake.reason)).toEqual(["morning"]);
     // §23: the same lines as a sleep batch; yesterday's times have their weekday.
-    expect(queue.immediate[0]!.batch).toEqual(["- while you were away (since Sat 14:00):", "  · bake-club/#general: 1 mention, 1 message (Sat 14:00)", '    · mention · Sat 14:00 #a0 from Kevin "<@Ella> hi"']);
+    expect(queue.immediate[0]!.batch).toEqual(["- while you were away (since Sat 24 Oct 14:00):", "  · bake-club/#general: 1 mention, 1 message (Sat 24 Oct 14:00)", '    · mention · Sat 24 Oct 14:00 #a0 from Kevin "<@Ella> hi"']);
   });
 
   it("a sleep batch she wakes up to over budget waits for her next local day", async () => {

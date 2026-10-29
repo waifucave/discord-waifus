@@ -82,8 +82,11 @@ log line).
   results show `[file: name]` and download nothing.
 
 **Output details**: `— more before: before #x —` first and `— more after: after #y —` last when the
-page was cut (a time is named when the edge message has no ref); `— Sat 24 Oct —` lines where each day
-starts when the page is not all today; `(no messages)` when empty.
+page was cut (a time is named when the edge message has no ref, with its weekday: `before Tue
+2026-09-01 10:05`, which reads back as an anchor; any anchor date may carry a weekday in front, and
+the date wins); `— Sat 24 Oct —` lines where each day starts when the page is not all today;
+`(no messages)` when empty. A search says where it searched with weekdays too: `(searched Fri
+2026-10-23 – Sat 2026-10-24)`.
 
 **Effects**:
 

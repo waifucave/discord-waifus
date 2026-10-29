@@ -203,8 +203,8 @@ describe("the morning batch and privacy (§20, D14)", () => {
     };
     const lines = morningBatch({ reason: "sleep", since: new Date(AT), until: new Date(AT), places: [{ placeKey: DM_KEY, kind: "dm", mentions: 0, messages: 2 }], items: [wake] }, view({ handle: "dm/kevin" }));
     expect(lines.filter((line) => line.includes("watch matched"))).toEqual([
-      '  · watch matched · dm/kevin · "exam" · from Kevin · Fri 11:22 · your note: "his exam"',
-      '  · watch matched · dm/kevin · "party" · from Kevin · Fri 11:22 · your note: "party plans"'
+      '  · watch matched · dm/kevin · "exam" · from Kevin · Fri 22 Jul 11:22 · your note: "his exam"',
+      '  · watch matched · dm/kevin · "party" · from Kevin · Fri 22 Jul 11:22 · your note: "party plans"'
     ]);
   });
 

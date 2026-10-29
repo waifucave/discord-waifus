@@ -60,7 +60,7 @@ export function matchesSearch(text: string, alternatives: readonly string[][]): 
   return alternatives.some((alternative) => alternative.every((word) => words.has(word)));
 }
 
-const ANCHOR_START = /^(?:#[0-9a-z]{2,8}\b|\d{4}-\d{2}-\d{2}\b|\d{1,2}:\d{2}\b|yesterday\b|today\b)/iu;
+const ANCHOR_START = /^(?:#[0-9a-z]{2,8}\b|(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?\d{4}-\d{2}-\d{2}\b|\d{1,2}:\d{2}\b|yesterday\b|today\b)/iu;
 const TERM = /(^|\s)(before|after|around|max|people|search)(\s*:\s*|\s+)/giu;
 
 function fail(problem: string): ParsedQuery {
@@ -101,7 +101,8 @@ export function parseAnchor(raw: string, o: { now: Date; timeZone: string }): An
     const at = parseLocalDateTime(`${localDate(o.now, o.timeZone, 0)} ${text}`, o.timeZone);
     return at ? { kind: "time", at } : undefined;
   }
-  const dated = /^(\d{4}-\d{2}-\d{2})(?:[ t](\d{1,2}:\d{2}))?$/u.exec(text);
+  // A weekday in front of a date is how the tools show one (`thu 2026-11-19 14:00`); the date wins.
+  const dated = /^(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(\d{4}-\d{2}-\d{2})(?:[ t](\d{1,2}:\d{2}))?$/u.exec(text);
   if (dated) {
     if (!dated[2]) return dayAnchor(dated[1]!, o.timeZone);
     const at = parseLocalDateTime(`${dated[1]} ${dated[2]}`, o.timeZone);

@@ -150,7 +150,7 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
 - **Cap**: at most `life.notificationLinesPerPlace` lines per place (default 8, 1–50), the newest;
   the first shown line then says `+N earlier`. `N unread` (messages newer than her read cursor and
   the DM floor, not hers) appears on the last line only when unread exceeds the lines shown.
-- Lines without a place: `- reminder (Sat 14:20): "<note>"` (the due time), `- plan · 17:30 ·
+- Lines without a place: `- reminder (Sat 24 Oct 14:20): "<note>"` (the due time, with its date), `- plan · 17:30 ·
   "<what>"` (one per timed plan of her day, spec §29), `- watch timed out · your note: "<note>"`,
   `- nudge · "<owner note>"`, the morning batch's own lines.
 - `- +N more from Kevin (bake-club/#general)` lines come from the per-user wake limit.
@@ -209,7 +209,7 @@ Golden: `tests/golden/__snapshots__/life-system-prompt.txt`.
 | `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; Wakeup habits (watch for answers, a wakeup to ask how it went, her own filter code, everything in `~/life/wakeups.json`); her day file and busy rule; the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system; DM discretion. Last, how she writes a summary for herself (2026-10-29): "A summary you write for yourself (when your memory is full, or for a fresh start) is your own memory: write it in the first person, in your own voice and style (your casing, your tone), not as a neutral report. Keep names, times and facts exact." `/tmp` retention follows `life.tmp.retentionDays`. |
 | `<identity>` | `Your name is …`, her display name, her server nicknames (as last seen, kept in `state.serverNicknames` so an unloaded guild never changes the block), the other enabled waifus by name. |
 | `<persona>` | Her persona text (when not empty). |
-| `<schedule>` | Only when `scheduleInPrompt` is on (default): `Your bed time is HH:MM–HH:MM.` (when enabled), today's plan from `~/life/schedule.json` as it was at epoch start, or `No plan for today yet.`, then `Times are local (<zone>).` |
+| `<schedule>` | Only when `scheduleInPrompt` is on (default): `Your bed time is HH:MM–HH:MM.` (when enabled), today's plan from `~/life/schedule.json` as it was at epoch start (`Today (Sat 24 Oct), as you planned it in ~/life/schedule.json:` and its lines), or `No plan for today yet.`, then `Times are local (<zone>).` |
 | `<custom_instructions>` | When not empty (≤ 4,000 characters). |
 
 **Block B** (`buildBlockB`):

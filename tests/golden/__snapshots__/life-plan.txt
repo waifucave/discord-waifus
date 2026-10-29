@@ -1,7 +1,7 @@
 === 0 user ===
 --- text ---
 <notifications>
-- reminder (Sat 14:00): "plan the evening"
+- reminder (Sat 24 Oct 14:00): "plan the evening"
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00 · awake]

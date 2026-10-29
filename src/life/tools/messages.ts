@@ -17,7 +17,7 @@ import { readDmFloor, readDmLimitIfExists, readDmState, updateDmLimit, updateExi
 import { readActiveChatParticipants } from "../../orchestration/stores/participants.js";
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { OutgoingFile } from "../../discord/client.js";
-import { clockText, dayText, localDayKey } from "../clock.js";
+import { clockText, datedDayKey, dayText, localDayKey } from "../clock.js";
 import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
 import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
@@ -138,14 +138,14 @@ function withDayLines(entries: ReadonlyArray<{ at: string; lines: string[] }>, n
 }
 
 /**
- * `#k3`, or (a message without a ref) a local time for a hint. `before` leaves its whole minute out,
- * so a before-hint names the next minute (`before 2026-10-20 17:03` for a 17:02 message: nothing older
- * is skipped); `after` includes its minute.
+ * `#k3`, or (a message without a ref) a local time for a hint, with its weekday (`parseAnchor` reads
+ * it back). `before` leaves its whole minute out, so a before-hint names the next minute (`before Tue
+ * 2026-10-20 17:03` for a 17:02 message: nothing older is skipped); `after` includes its minute.
  */
 function anchorText(ref: string | undefined, at: string, timeZone: string, side: "before" | "after"): string {
   if (ref) return `#${ref}`;
   const when = new Date(Math.floor(Date.parse(at) / 60_000) * 60_000 + (side === "before" ? 60_000 : 0));
-  return `${localDayKey(when, timeZone)} ${clockText(when, timeZone)}`;
+  return `${datedDayKey(localDayKey(when, timeZone))} ${clockText(when, timeZone)}`;
 }
 
 type Section = { text: string; ids: string[] } | { error: string };
@@ -423,16 +423,17 @@ class SearchScope {
     return new SearchScope(ctx, forgotten, new Map(folders.map((folder) => [folder.key, folder])), startedAt);
   }
 
-  /** The days searched, as she reads them. */
+  /** The days searched, as she reads them (each with its weekday: `Fri 2026-10-23`). */
   private rangeText(from: { day?: string; ms?: number }, to: { day?: string; ms?: number }, cut: boolean): string {
     const tz = this.ctx.deps.timeZone;
     const now = this.ctx.deps.now();
     const begins = this.startedAt ? Date.parse(this.startedAt) : undefined;
+    const day = (ms: number) => datedDayKey(localDayKey(new Date(ms), tz));
     let fromText: string;
-    if (from.day) fromText = from.day;
-    else if (from.ms !== undefined && (begins === undefined || from.ms >= begins)) fromText = localDayKey(new Date(from.ms), tz);
-    else fromText = begins !== undefined ? `${localDayKey(new Date(begins), tz)} (when your transcripts begin)` : "the start";
-    const toText = to.day ?? localDayKey(new Date(to.ms !== undefined ? Math.min(to.ms, now.getTime()) : now.getTime()), tz);
+    if (from.day) fromText = datedDayKey(from.day);
+    else if (from.ms !== undefined && (begins === undefined || from.ms >= begins)) fromText = day(from.ms);
+    else fromText = begins !== undefined ? `${day(begins)} (when your transcripts begin)` : "the start";
+    const toText = to.day ? datedDayKey(to.day) : day(to.ms !== undefined ? Math.min(to.ms, now.getTime()) : now.getTime());
     return `searched ${fromText} – ${toText}${cut ? "; the search stopped at its size limit: add before or after to look further" : ""}`;
   }
 

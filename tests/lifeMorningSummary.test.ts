@@ -96,7 +96,7 @@ describe("the morning summary (§23)", () => {
     ]);
   });
 
-  it("a time on another day than the morning's has its weekday; a DM with no kept lines keeps a count", () => {
+  it("a time on another day than the morning's has its weekday and date; a DM with no kept lines keeps a count", () => {
     const late = idAt("2026-10-26T23:50:00Z");
     const places: MorningPlace[] = [
       { placeKey: DM_KEY, kind: "dm", mentions: 0, messages: 1, lines: [{ id: late, preview: "still up?", reasons: ["dm"], at: new Date(at("2026-10-26T23:50:00Z")) }] },
@@ -104,7 +104,7 @@ describe("the morning summary (§23)", () => {
       { placeKey: ROOM_KEY, kind: "room", mentions: 0, messages: 5, span: { from: new Date(at("2026-10-26T23:10:00Z")), to: new Date(at("2026-10-27T00:20:00Z")) } }
     ];
     const lines = morningBatch({ reason: "sleep", since: new Date(at("2026-10-26T23:00:00Z")), until: new Date(at("2026-10-27T07:00:00Z")), places, items: [] }, view({ [late]: "a4" }, { [DM_KEY]: "dm/kevin", [DM_MINA]: "dm/mina", [ROOM_KEY]: "bake-club/#general" }));
-    expect(lines.slice(1)).toEqual(["  · DMs:", '    · dm/kevin · Mon 23:50 #a4 "still up?"', "    · dm/mina: 3 messages", "  · bake-club/#general: 5 messages (Mon 23:10–00:20)"]);
+    expect(lines.slice(1)).toEqual(["  · DMs:", '    · dm/kevin · Mon 26 Oct 23:50 #a4 "still up?"', "    · dm/mina: 3 messages", "  · bake-club/#general: 5 messages (Mon 26 Oct 23:10–00:20)"]);
   });
 
   it("deferred wakes keep a DM's messages and a room's messages that addressed her, the newest 50 with a count", () => {
@@ -379,7 +379,7 @@ describe("the morning batch's bookkeeping (review)", () => {
     await w.cast.scheduler.tick();
     const batch = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!.batch!;
     expect(batch).toContain("  · bake-club/#general: 1 mention, 1 message");
-    expect(batch).toContainEqual(expect.stringMatching(/^ {4}· mention · Sat 14:00 #\w+ from Mina "<@Ella> you around\?"$/u));
+    expect(batch).toContainEqual(expect.stringMatching(/^ {4}· mention · Sat 24 Oct 14:00 #\w+ from Mina "<@Ella> you around\?"$/u));
     expect(batch).toContainEqual(expect.stringMatching(/^ {4}· dm\/\w+ · \+2 earlier · 02:00 #\w+ "still up\?"$/u));
   });
 });

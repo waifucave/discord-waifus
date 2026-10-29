@@ -64,10 +64,24 @@ export function dayText(date: Date, timeZone: string): string {
   return `${p.weekday} ${p.day} ${MONTHS[p.month - 1]}`;
 }
 
-/** "Tue 18:00" (the reminder line's "you set this …"). */
-export function weekdayTimeText(date: Date, timeZone: string): string {
-  const p = localParts(date, timeZone);
-  return `${p.weekday} ${pad(p.hour)}:${pad(p.minute)}`;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** A local day key ("2026-11-19") as its calendar day (a UTC midnight); undefined when it isn't one. */
+function calendarDay(day: string): Date | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(day);
+  return match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))) : undefined;
+}
+
+/** "Thu 19 Nov" for a local day key ("2026-11-19"); the key itself when it isn't one. */
+export function dayKeyText(day: string): string {
+  const date = calendarDay(day);
+  return date ? `${WEEKDAYS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}` : day;
+}
+
+/** "Thu 2026-11-19": a local day key with its weekday, still one she can pass back as an anchor (§22). */
+export function datedDayKey(day: string): string {
+  const date = calendarDay(day);
+  return date ? `${WEEKDAYS[date.getUTCDay()]} ${day}` : day;
 }
 
 /** "2026-10-24": the local day. */

@@ -193,7 +193,7 @@ describe("a plan with a time wakes her (§29)", () => {
     await tickAt(w, "2026-10-24T14:31:00Z");
     expect((await queue(w)).deferred.items).toHaveLength(1);
     const batch = morningBatch({ reason: "budget", since: new Date(at("2026-10-24T14:30:00Z")), until: new Date(at("2026-10-25T08:00:00Z")), places: [], items: q.deferred.items }, VIEW);
-    expect(batch).toEqual(["- while you were away (since Sat 14:30):", '  · plan (Sat 14:30): "send K the photo"']);
+    expect(batch).toEqual(["- while you were away (since Sat 24 Oct 14:30):", '  · plan (Sat 24 Oct 14:30): "send K the photo"']);
   });
 
   it("forget: a queued plan's text that names the person becomes (removed), the plan stays", async () => {

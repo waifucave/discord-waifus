@@ -136,7 +136,9 @@ Images are always OCR text. Round cap `life.dreamMaxRounds` (60).
 **The window**: for every conversation she can read, the transcript lines after her dream cursor
 `life/dream-cursor.json` (per conversation, the time and id of the last line covered); the first
 dream's window starts at the store's `startedAt`. Rooms count only inside her access intervals. Each
-file is listed as `the whole file` or `from line N on, after the HH:MM line`.
+file is listed with its day and weekday (a part read from a line number skips the file's dated
+header), then `the whole file` or `from line N on, after the HH:MM line`:
+`- /transcripts/bake-club/general/2026-10-24.md (Sat 24 Oct: the whole file, 2 lines)`.
 
 - A window over `life.dreamWindowMaxChars` (200,000) rendered characters runs in several sessions,
   whole day files, oldest first; a single larger day is a session of its own; a session that is not

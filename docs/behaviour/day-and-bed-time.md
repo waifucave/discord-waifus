@@ -71,7 +71,7 @@ saved (`src/life/home/daySchedule.ts` `checkDayScheduleText`):
   has no place: she decides where (if anywhere) to act.
 - **Routing**: `plan` is in the busy set (gets through a busy block, and up late or dozing) and gets
   through while asleep, like `reminder`. Over her daily budget it is deferred (reason `budget`) and
-  listed in the batch as `  · plan (Sat 17:30): "<what>"`.
+  listed in the batch as `  · plan (Sat 24 Oct 17:30): "<what>"`.
 - **Notification**: one line per plan, `- plan · 17:30 · "send one photo to dm/k if K is around"`
   (golden `life-plan.txt`). It folds into a running turn like any other wake.
 - An unreadable `plans-fired.json` is replaced; plans already due then count as fired (never twice).
@@ -121,11 +121,11 @@ Built when her bed time ends (or a budget pause lifts) from `wakes.json` `deferr
     · mention · 03:02 #c41 from Lianne "@Lumi the cat did the thing again"
   · winter-s-secret-room/#general: 4 messages (06:10–06:30)
   · watch matched · kingdom-16062/#general · "sushi" · from Lianne · 05:12 #c55 · your note: "…"
-  · watch timed out (Tue 04:00) · your note: "…"
+  · watch timed out (Tue 27 Oct 04:00) · your note: "…"
 ```
 
 - Header: `- during your bed time (<start>–<end>):` for a sleep batch with a bed time; `- while you
-  were asleep (HH:MM–HH:MM):` without one; `- while you were away (since HH:MM):` for a budget pause.
+  were asleep (HH:MM–HH:MM):` without one; `- while you were away (since HH:MM):` for a budget pause (`since Sat 24 Oct 14:30` when on another day).
 - (§23) **DMs** one line per message (time, ref, 60-char preview), oldest
   first; **rooms** by most mentions, a counts line with the night's time span, then one line per
   message that addressed her (mention or reply, her name, a role, `@everyone`) with reason, time,
@@ -135,7 +135,9 @@ Built when her bed time ends (or a budget pause lifts) from `wakes.json` `deferr
 - Then watch matches (with the matching message's time and ref; a page's with its URL), watch
   timeouts, her timed wakeups (`reminder`), stopped-wakeup notices (`wakeup_error`) and timed plans
   (only a budget pause defers them), follow-ups and an earlier unread batch.
-- Times are `HH:MM`, with the weekday when not on the morning's day.
+- Times are `HH:MM`, with the day (weekday and date, `Mon 26 Oct 23:50`) when not on the morning's
+  day; a watch timeout, a reminder and a deferred plan always carry their day (2026-10-29: summaries
+  were misdating things from a weekday alone).
 - Kept lines per place are the newest 50 (`wakeQueue.ts` `morningLinesOf`). Messages counted come
   from the conversation cache since the pause began (at most 10 minutes earlier, `NIGHT_LEAD_MS`).
 - Lines at or below a DM's forget floor and lines from a forgotten person are left out; with

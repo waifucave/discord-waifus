@@ -10,7 +10,7 @@ import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import type { FiredWakeupRecord, Wake, WakeQueue, WakeReason } from "../shared/schemas/life.js";
 import { compareIds } from "../discord/rawMessage.js";
 import { snowflakeTime } from "../discord/refStore.js";
-import { clockText, dayText, localDayKey, weekdayTimeText } from "./clock.js";
+import { clockText, dayText, dayTimeText, localDayKey } from "./clock.js";
 import { messagesOf } from "./wakeMessages.js";
 import { PLAN_WAKE_TEXT } from "./home/daySchedule.js";
 
@@ -181,8 +181,8 @@ function placeLine(group: Wake[], view: NotificationView): string {
 function soloLine(wake: Wake, view: NotificationView): string[] {
   switch (wake.reason) {
     case "reminder":
-      // §16.4: `reminder (Sat 14:20): "<note>"`, the time it was due.
-      return [`- reminder (${weekdayTimeText(new Date(wake.at), view.timeZone)}): ${quote(wake.note ?? "")}`];
+      // §16.4: `reminder (Sat 24 Oct 14:20): "<note>"`, the time it was due (its date with its weekday, §23.2).
+      return [`- reminder (${dayTimeText(new Date(wake.at), view.timeZone)}): ${quote(wake.note ?? "")}`];
     case "plan":
       // §29: `plan · 17:30 · "<what>"`, one line per plan whose time came (no place; she decides).
       return (wake.plans ?? []).map((plan) => `- ${REASON_LABELS.plan} · ${plan.at} · ${quote(plan.what)}`);
@@ -293,7 +293,7 @@ const ADDRESSED: readonly WakeReason[] = ["mention", "name", "role", "everyone"]
  * The `morning` batch lines (§4.7, §23), built when her bed time (or budget pause) ends: DMs with one
  * line per message, then rooms by most mentions (counts with the night's span, then one line per
  * message that addressed her), then watch matches, watch timeouts, reminders, plans and the rest. Times
- * are her local `HH:MM`, with the weekday when not on the morning's day; every line has its ref.
+ * are her local `HH:MM`, with the day (`Tue 17 Nov 23:40`) when not on the morning's day; every line has its ref.
  */
 export function morningBatch(
   o: {
@@ -308,7 +308,7 @@ export function morningBatch(
   view: NotificationView
 ): string[] {
   const morningDay = localDayKey(o.until, view.timeZone);
-  const timeOf = (date: Date) => (localDayKey(date, view.timeZone) === morningDay ? clockText(date, view.timeZone) : weekdayTimeText(date, view.timeZone));
+  const timeOf = (date: Date) => (localDayKey(date, view.timeZone) === morningDay ? clockText(date, view.timeZone) : dayTimeText(date, view.timeZone));
   const header =
     o.reason === "sleep"
       ? `- while you were asleep (${clockText(o.since, view.timeZone)}–${clockText(o.until, view.timeZone)}):`
@@ -387,19 +387,19 @@ export function morningBatch(
     }
   }
   for (const item of o.items) {
-    if (item.reason === "watch_timeout") lines.push(`  · watch timed out (${weekdayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
+    if (item.reason === "watch_timeout") lines.push(`  · watch timed out (${dayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
   }
   for (const item of o.items) {
-    if (item.reason === "reminder") lines.push(`  · reminder (${weekdayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
+    if (item.reason === "reminder") lines.push(`  · reminder (${dayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);
   }
   for (const item of o.items) {
     if (item.reason === "wakeup_error") lines.push(`  · ${item.note ?? "a wakeup stopped"}`);
   }
   for (const item of o.items) {
-    // A timed plan deferred for her budget (§29): one line per plan, with the weekday of its day.
+    // A timed plan deferred for her budget (§29): one line per plan, with its day (weekday and date).
     if (item.reason !== "plan") continue;
-    const weekday = weekdayTimeText(new Date(item.at), view.timeZone).split(" ")[0];
-    for (const plan of item.plans ?? []) lines.push(`  · plan (${weekday} ${plan.at}): ${quote(plan.what)}`);
+    const day = dayText(new Date(item.at), view.timeZone);
+    for (const plan of item.plans ?? []) lines.push(`  · plan (${day} ${plan.at}): ${quote(plan.what)}`);
   }
   for (const item of o.items) {
     if (isWatch(item) || item.reason === "watch_timeout" || item.reason === "reminder" || item.reason === "plan" || item.reason === "wakeup_error") continue;
