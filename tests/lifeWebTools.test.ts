@@ -350,6 +350,7 @@ describe("Web: errors", () => {
       "{ search_query: [{ q: 'x' }], open: [{ ref_id: 'https://pages.test/short', lineno: -1 }] }",
       "{ click: [{ ref_id: 'https://pages.test/short', id: 1 }] }",
       "{ response_length: 'huge', search_query: [{ q: 'x' }] }",
+      "{ find: [{ ref_id: 'https://pages.test/short', pattern: /(a+)+$/ }] }",
       "{ frobnicate: 1 }",
       "{}",
       "'x'"
@@ -364,6 +365,8 @@ describe("Web: errors", () => {
       "RangeError: tools.web__run: open[0].lineno is a whole number from 0 to 10000000",
       "TypeError: tools.web__run: click: https://pages.test/short isn't a page you opened in this script; open it first",
       'TypeError: tools.web__run: response_length is "short", "medium" or "long"',
+      // A RegExp is not text: find looks for plain text (it never runs her patterns).
+      "TypeError: tools.web__run: find[0].pattern is text",
       'TypeError: tools.web__run: unknown field "frobnicate" (it takes search_query, open, click, find, ask, response_length)',
       "TypeError: tools.web__run: give it something to do: search_query, open, click, find or ask",
       'TypeError: tools.web__run takes one object, like { search_query: [{ q: "lemon tart" }] }'

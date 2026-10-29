@@ -146,7 +146,7 @@ her return value is shown; nothing is `done`; an error follows with its line. `t
 `runScriptTool` is the shared host side: per-function caps per script, each argument read as JSON
 (a function inside it as its source, `{"$function": …}`, read with the captured
 `Function.prototype.toString`; only `wakeup` accepts one), every field checked by the tool's adapter
-(`ScriptError` = her readable error), the calls bound to the tool call's async context
+(`ScriptError` = her readable error, named `tools.<fn>: …` or by its item, `messages[2]: …`), the calls bound to the tool call's async context
 (`AsyncResource.bind`, so `notePlace` records every place they resolve), and D14: a script or any
 call argument naming a DM (`isDmPlaceRef`, no length cap) is a DM call (`DM_NAMED`) even when it
 fails or doesn't parse. The adapters map onto the internals that existed before:
@@ -173,7 +173,8 @@ Under the scripts: `search.ts` the daily caps and `life.webFetch.maxPerTurn` (6;
 anything came from the web.
 `Wakeup` (spec §30, `src/life/wakeups/`): `at` (`when`), `every` (day/weekday lists or a 5-field cron,
 steps ≥ 15 min; the result echoes the next three times), `watch` (`places`, an object filter from
-`from`/`words`/`any`, or her `filter` function `(m, state) => true | "line" | false`; `for` ≤ 7 days),
+`from`/`words`/`any`, or her `filter` function `(m, state) => true | "line" | false`, none of them a
+timer saved as the filter `[]`; `for` ≤ 7 days),
 `page` (`contains`, `changes: true` or her `check` function; every ≥ 1h, ≤ 7 days, fetched by the
 scheduler through `WebTools.fetchForWakeup`: the SSRF-denying winter-web fetcher, no cache, no model
 call, nothing while page fetching is off, a URL never sooner than its `every` across edits, at most 72

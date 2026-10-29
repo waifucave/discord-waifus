@@ -4110,3 +4110,76 @@ waits, closures, budgets) stay.
   scrub get Read, Edit and Bash. Goldens are regenerated; each tool keeps its abuse and privacy tests
   (send-script, wakeup and web reviews), moved to the new shapes, plus an apply_patch suite (grammar,
   matching passes, anchors, duplicates refused, all-or-nothing, protected files, Move, Delete).
+
+### 32.4 As built
+
+- **One sandbox for every tool script** (`src/life/sandbox/toolScript.ts` host side,
+  `toolScriptWorker.ts`; §31.4's `webScript.ts`/`webScriptWorker.ts` became these): the sync build, her
+  script the body of an async function, each `tools.*` call a QuickJS promise the driver loop resolves,
+  one worker per call. Limits as §31.4 (1 s of her own CPU from the worker's stamps, 16 MiB, 256 KiB
+  stack, 10 s to start), the wall clock per tool (60 s; SendMessage 150 s). A call's argument is at most
+  16,384 characters as JSON (`send_message` and `wakeup` 128 KiB, `apply_patch` its 300 KiB patch); the
+  calls per script are the functions' own caps added up, plus one, so the call over a cap gets its
+  function's error. Error messages are cut at 1,000 characters. `tools/script.ts` `runScriptTool` is the
+  shared host side; each tool's adapter checks every field and maps onto what existed (`runSend`, the
+  §22 `ReadQuery`, `readFile`, `HomeStore.applyChanges`, `applyWakeups`, the §31 web session).
+- **`text()`** as §32.1; `console.log` is `text()` too. An image result is `{ path, kind: "image", about,
+  image_id }`; `text()` of it (or returning it) shows the picture, anything else shows it as JSON. A
+  picture is marked shown for the epoch's image caps only when she shows it; at most 10 in a script.
+- **Errors**: a call that fails rejects with an `Error` (a `TypeError`/`RangeError` for a bad argument
+  or a cap) whose message names the function or the item: `tools.read_file: ~/x.md doesn't exist`,
+  `tools.send_message: messages[2]: #zz9: message too old; nothing was sent`, `watch[0]: …; nothing was
+  saved`. She may catch it; uncaught, the result ends `error: Error: … (line N)` (`is_error`). Another
+  tool's function and an old free function (`search()`, `open()`, `print()`, `at()`, `watch()`, …)
+  throw a readable error naming what to use.
+- **D14**: `runScriptTool` records the call as a DM call (`DM_NAMED`) before anything runs when any
+  string of the input names a DM anywhere in it (`isDmPlaceRef`, now a search of the whole string, no
+  length cap), so a script that fails, is refused or doesn't parse is still one; the calls are bound to
+  the tool call's async context (`AsyncResource.bind`), so a place or a DM file her code computes is
+  recorded when it resolves. The owner's views apply the same rule to a call with no recorded result.
+- **ReadMessages**: `place` a handle, a list (≤ 5) or `"everywhere"`; `around`/`before`/`after` one
+  anchor each (a `#ref`, `"2026-10-25 17:02"`, `"2026-10-25"`, `"17:02"`, `"yesterday 17:02"`);
+  `people` and `search` a text or a list. §22 had no output cap of its own: a script shows at most
+  100,000 characters. The page hints keep §22's wording (`— more before: before #k3 —`); she passes
+  it as `before: "#k3"`.
+- **SendMessage**: items as §32.2; an object that is none of them, or an unknown field, is refused.
+  The calls of a script run one at a time in the order she made them (her waits and intents stay in
+  order) and share the 120 s and the per-turn caps. A call checks all its items first and refuses the
+  whole call naming the item; what it sent is final, a later call's error leaves it sent. Returns
+  `{ sent, reacted?, stopped?, not_sent?, note? }` (`note` is the length nudge; `stopped` names the
+  item, `messages[1] (wait 5): someone wrote`, then what came in). Intents: a `plan` (`call`, `place`,
+  its messages with lines numbered across the script) before the call's first Discord call, each
+  message's `line` + `lineDone` as §27, then `callDone`. Boot repair (`repair.ts` `recoverSendCalls`)
+  reads the plans: a finished call sent the messages with a done line and nothing else; in the running
+  call the next message is looked for on Discord (by its digest, else its text); when Discord can't
+  be read it is unknown and named by its text (`it is unknown whether "four" was sent`), never
+  reported sent.
+- **Read**: as §32.2; the 100,000 characters are shared by a script's reads (a read past them throws).
+- **Edit**: as §32.2, plus: `*** Move to:` onto an existing file is refused like Add File; a patch that
+  changes nothing says `No change: …`; the duplicate refusal reads `tools.apply_patch: the lines to
+  change in ~/x.md match in 2 places (lines 4 and 19); add a line above or below to say which; nothing
+  was changed`. Each patch is its own all-or-nothing change set (journal `<callId>-patch<n>`, intent
+  lines `patch:<n>` and `lineDone`); repair says `patches 1, 2 saved (recovered)` or which was not. The
+  special files' notes (her day's prompt copy, timed plans, `profile.json: saved; …`) follow the
+  `Updated:` line. The dream's `~/life/` refusal and tidying's `profile.json` refusal hold.
+- **Wakeup**: as §32.2; a `watch` with none of `from`, `words`, `any`, `filter` is a timer (§30's `[]`).
+  Each `tools.wakeup` call is checked whole and saved on its own (a later call's error leaves an earlier
+  one saved). Returns the text §30 did (`set w1 (bake-club/#general, until …) (in
+  ~/life/wakeups.json)`). A list filter (several objects, each with its own `place`) is only written in
+  her file.
+- **Web**: as §32.2. `find` is plain text, case-insensitive, run in the host over the page (no RegExp:
+  one is refused as not text, so §31.4's RegExp watchdog has nothing left to stop); `response_length`
+  sets the window (1,500 / 3,000 / 6,000 characters) and the results (3 / 5 / 8). Pages a script
+  opened stay open for its later calls (`click`, `find`, `ask`); a step that fails carries its `error`
+  in its place in the result.
+- **Kept, not offered**: `React`, `Write` (`index.ts` `UNOFFERED_TOOL_NAMES`), runnable for old log
+  lines and tests. A call with a top-level `place` to `SendMessage` (a §27 script or a pre-§27 `text`)
+  or `ReadMessages` (§22 `query`) still runs the old way. An epoch offering `React` or `Write` is
+  summarised before her next turn with no kept turns, as in §31.4.
+- **Also changed**: maintenance's report leaves out `~/life/profile.json` (the scheduler rewrites it
+  from her config during a session; a session can't change it), and typing reads the place out of a
+  streaming `send_message` script (any quotes, a quoted key).
+- **Tests**: `tests/toolScriptSandbox.test.ts` (the abuse suite, from `webScriptSandbox.test.ts`),
+  `tests/applyPatch.test.ts`, `tests/toolCalls.ts` (the tests' call helpers); the send, read, wakeup,
+  web, files, repair, typing and privacy suites call the new shapes, with one test each for the
+  pre-§32 calls; goldens regenerated.
