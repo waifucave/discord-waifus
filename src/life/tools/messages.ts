@@ -22,7 +22,7 @@ import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
 import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
 import { advanceReadCursor, appendIntent, updateLifeState } from "../lifeStore.js";
-import { isOnlyToolCallSyntax, stripCopiedHeader, typingDelayMs } from "../outbound.js";
+import { isOnlyToolCallSyntax, MAX_TYPING_DELAY_MS, stripCopiedHeader, typingDelayMs } from "../outbound.js";
 import { forgottenPeople, isRemovedMessage } from "../people.js";
 import { placeLabel, placesWithHandles, refreshPlaces, resolvePlace, type ResolvedPlace } from "../places.js";
 import { notePlace } from "../placeRecorder.js";
@@ -1009,7 +1009,12 @@ export async function runSend(
   placeArg: string,
   place: ResolvedPlace,
   steps: readonly ScriptStep[],
-  o: { where: (line: number) => string; beforeSending?: (ready: ReadonlyArray<{ step: ScriptStep }>) => Promise<void> }
+  o: {
+    where: (line: number) => string;
+    beforeSending?: (ready: ReadonlyArray<{ step: ScriptStep }>) => Promise<void>;
+    /** Each message Discord took, at once (so a failure after it never loses it). */
+    onSent?: (messageId: string) => void;
+  }
 ): Promise<SendOutcome | { error: string }> {
   const { deps, waifu, turn } = ctx;
   const life = deps.config().life;
@@ -1178,27 +1183,34 @@ export async function runSend(
       break;
     }
     const now = deps.now();
-    if (place.kind === "dm") {
-      const userId = place.userId!;
-      // One reply per turn per user counts toward the rate limit (§4.4 guard 2).
-      if (!turn.dmUsersSent.has(userId)) {
-        await updateDmLimit(deps.storage, userId, waifu.id, (limits) => {
-          const assessed = assessDmLimit([...limits.replyTimestamps, now.toISOString()], waifu.dm.rateLimit, now);
-          return { ...limits, replyTimestamps: assessed.pruned };
-        });
-      }
-      turn.dmUsersSent.add(userId);
-      await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
-    }
+    // Discord took it: it is sent, whatever the bookkeeping after it does (a failure there is logged,
+    // never a lost send that she might send again).
     turn.sentPlaces.add(place.placeKey);
     turn.sends = (turn.sends ?? 0) + 1;
     sentIds.push(messageId);
     sentTexts.push(send.text);
-    if (ctx.intent) await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: now.toISOString(), line: step.line, lineDone: true, resultRef: messageId });
-    deps.notices?.clear(`no-bot:${waifu.id}`);
-    // Her message gets its ref after the messages before it get theirs (refs stay in message order, §4.7).
-    await refsThrough(deps, place, [messageId]);
-    await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
+    o.onSent?.(messageId);
+    try {
+      if (place.kind === "dm") {
+        const userId = place.userId!;
+        // One reply per turn per user counts toward the rate limit (§4.4 guard 2).
+        if (!turn.dmUsersSent.has(userId)) {
+          turn.dmUsersSent.add(userId);
+          await updateDmLimit(deps.storage, userId, waifu.id, (limits) => {
+            const assessed = assessDmLimit([...limits.replyTimestamps, now.toISOString()], waifu.dm.rateLimit, now);
+            return { ...limits, replyTimestamps: assessed.pruned };
+          });
+        }
+        await updateExistingDmState(deps.storage, userId, waifu.id, (state) => ({ ...state, lastRepliedMessageId: messageId, lastReplyAt: now.toISOString() })).catch(() => undefined);
+      }
+      if (ctx.intent) await appendIntent(deps.storage, waifu.id, { ...ctx.intent, at: now.toISOString(), line: step.line, lineDone: true, resultRef: messageId });
+      deps.notices?.clear(`no-bot:${waifu.id}`);
+      // Her message gets its ref after the messages before it get theirs (refs stay in message order, §4.7).
+      await refsThrough(deps, place, [messageId]);
+      await advanceReadCursor(deps.storage, waifu.id, place.placeKey, messageId, now);
+    } catch (error) {
+      deps.logger.warn("Life send bookkeeping failed", { waifuId: waifu.id, placeKey: place.placeKey, messageId, message: error instanceof Error ? error.message : String(error) });
+    }
     // A room's handle lets the dashboard name the place; a DM's handle would name the person.
     deps.logger.info("Life message sent", { category: "life", waifuId: waifu.id, placeKey: place.placeKey, ...(place.placeKey.startsWith("dm_") ? {} : { place: place.handle }), messageId });
   }
@@ -1210,8 +1222,8 @@ export async function runSend(
       else if (item.step.kind === "react") left.push(`not done: react #${item.step.ref} ${item.step.emoji}`);
     }
   }
-  const cameLines = stop?.kind === "wait" ? await cameInLines(ctx, place, stop.came) : [];
-  const nudge = sentTexts.length > 0 ? await lengthNudge(ctx, place, sentTexts) : undefined;
+  const cameLines = stop?.kind === "wait" ? await cameInLines(ctx, place, stop.came).catch(() => stop.came.map(() => "- (a message)")) : [];
+  const nudge = sentTexts.length > 0 ? await lengthNudge(ctx, place, sentTexts).catch(() => undefined) : undefined;
   return { place, sentIds, refs, reacted, ...(stop ? { stop } : {}), cameLines, left, ...(nudge ? { nudge } : {}), steps: ready.length };
 }
 
@@ -1267,8 +1279,14 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
 /** send_message calls in one script (several places within the per-turn place cap). */
 export const MAX_SEND_CALLS = 10;
 const SEND_FIELDS = ["place", "messages"] as const;
-/** A script's waits and typing, all its calls together. */
-export const SEND_SCRIPT_WALL_MS = 150_000;
+/**
+ * A SendMessage script's wall clock: its 120 s of waits and typing, the typing before each message the
+ * turn may still send (up to 4.5 s each), and 30 s for Discord itself (217.5 s at the default 15), so
+ * a script that keeps to its caps is never cut off part way.
+ */
+export function sendScriptWallMs(maxSends: number): number {
+  return (MAX_WAIT_TOTAL_SECONDS * 1000) + Math.max(0, maxSends) * MAX_TYPING_DELAY_MS + 30_000;
+}
 
 /** Her `messages` items as steps (§27's), numbered across the whole script for the intents. */
 function stepsOfItems(items: unknown, firstLine: number, maxFiles: number): { steps: ScriptStep[]; labels: Map<number, string>; waited: number } {
@@ -1339,15 +1357,19 @@ function refOfArg(raw: string): string | undefined {
 }
 
 /** The script's send state: its calls run one at a time, numbered, its waits and typing counted together. */
-type SendScript = { queue: Promise<unknown>; calls: number; nextLine: number; waited: number };
+type SendScript = { queue: Promise<unknown>; calls: number; started: number; nextLine: number; waited: number };
 
 /** One `tools.send_message({ place, messages })` (§32.2). */
 async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, script: SendScript): Promise<Record<string, unknown>> {
   const o = objectArg("send_message", arg, SEND_FIELDS, '{ place: "bake-club/#general", messages: [{ text: "hi" }] }');
   const placeArg = textArg("tools.send_message: place", o["place"], 200)!.trim();
+  // A call after the first looks again: the cast or a server paused, a DM closed meanwhile.
+  const later = (script.started += 1) > 1;
+  if (later) refreshPlaces(ctx.deps.storage, ctx.waifu.id);
   // The place first: a refused DM call is still a DM call (D14: resolving it records the place).
   const place = await resolvePlace(ctx.deps.storage, ctx.waifu.id, placeArg);
   if (!place) throw new ScriptError(`tools.send_message: unknown place ${placeArg.slice(0, 80)}; see ~/life/places.md`);
+  if (later && ctx.deps.isPaused()) throw new ScriptError(`tools.send_message: ${CANNOT_POST.replace(/^error:\s*/u, "")}`);
   const life = ctx.deps.config().life;
   const firstLine = script.nextLine;
   const { steps, labels, waited } = stepsOfItems(o["messages"], firstLine, life.send.maxFiles);
@@ -1357,21 +1379,37 @@ async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, s
   script.waited += waited;
   const call = (script.calls += 1);
   const where = (line: number) => labels.get(line) ?? "messages";
-  const outcome = await runSend(ctx, placeArg, place, steps, {
-    where,
-    // Before the first Discord call: what this call means to send, for boot repair (§5.7).
-    beforeSending: async (ready) => {
-      if (!ctx.intent) return;
-      const sends = ready.flatMap((item) => (item.step.kind === "send" ? [{ line: item.step.line, text: item.step.text, files: item.step.files.map((file) => file.path) }] : []));
-      await appendIntent(ctx.deps.storage, ctx.waifu.id, { ...ctx.intent, at: ctx.deps.now().toISOString(), plan: { call, place: placeArg, sends } });
-    }
-  });
+  // What went out is recorded as it goes: a failure later never loses a sent message (§32.3a).
+  const sentSoFar: string[] = [];
+  let outcome: Awaited<ReturnType<typeof runSend>>;
+  try {
+    outcome = await runSend(ctx, placeArg, place, steps, {
+      where,
+      // Before the first Discord call: what this call means to send, for boot repair (§5.7).
+      beforeSending: async (ready) => {
+        if (!ctx.intent) return;
+        const sends = ready.flatMap((item) => (item.step.kind === "send" ? [{ line: item.step.line, text: item.step.text, files: item.step.files.map((file) => file.path) }] : []));
+        await appendIntent(ctx.deps.storage, ctx.waifu.id, { ...ctx.intent, at: ctx.deps.now().toISOString(), plan: { call, place: placeArg, sends } });
+      },
+      onSent: (id) => {
+        sentSoFar.push(id);
+        run.messageIds.push(id);
+        run.resultRefs.push(id);
+        run.sentPlaces.add(place.placeKey);
+      }
+    });
+  } catch (error) {
+    if (sentSoFar.length > 0) run.receipts.push(`send_message to ${placeArg}: sent ${sentSoFar.length} message${sentSoFar.length === 1 ? "" : "s"}, then something went wrong; the rest of that list was not sent`);
+    throw error;
+  }
   if ("error" in outcome) throw new ScriptError(`tools.send_message: ${outcome.error.replace(/^error:\s*/u, "")}`);
-  if (ctx.intent && outcome.steps > 0) await appendIntent(ctx.deps.storage, ctx.waifu.id, { ...ctx.intent, at: ctx.deps.now().toISOString(), callDone: call, ...(outcome.sentIds.length > 0 ? { resultRef: outcome.sentIds.join(",") } : {}) });
+  if (ctx.intent && outcome.steps > 0) {
+    await appendIntent(ctx.deps.storage, ctx.waifu.id, { ...ctx.intent, at: ctx.deps.now().toISOString(), callDone: call, ...(outcome.sentIds.length > 0 ? { resultRef: outcome.sentIds.join(",") } : {}) }).catch((error: unknown) =>
+      ctx.deps.logger.warn("Life send intent failed", { waifuId: ctx.waifu.id, message: error instanceof Error ? error.message : String(error) })
+    );
+  }
   const came = outcome.stop?.kind === "wait" ? outcome.stop.came : [];
-  run.messageIds.push(...outcome.sentIds, ...came.map((message) => message.id));
-  run.resultRefs.push(...outcome.sentIds);
-  if (outcome.sentIds.length > 0) run.sentPlaces.add(place.placeKey);
+  run.messageIds.push(...came.map((message) => message.id));
   const failedReason = sendFailed(outcome);
   if (failedReason !== undefined) {
     if (outcome.stop?.kind === "interrupted") throw new ScriptError(`tools.send_message: ${failedReason}`);
@@ -1402,7 +1440,7 @@ async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, s
 async function sendScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   // A call with a place is one from before §32 (a §27 script of lines, or one message).
   if (input !== null && typeof input === "object" && "place" in input) return sendMessageTool(input, ctx);
-  const script: SendScript = { queue: Promise.resolve(), calls: 0, nextLine: 1, waited: 0 };
+  const script: SendScript = { queue: Promise.resolve(), calls: 0, started: 0, nextLine: 1, waited: 0 };
   return runScriptTool(input, ctx, {
     tool: "SendMessage",
     functions: [
@@ -1411,14 +1449,20 @@ async function sendScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOut
         max: MAX_SEND_CALLS,
         maxArgChars: 128 * 1024,
         // One at a time, in the order she called them (her sends, intents and waits stay in order).
-        run: (arg, run) => {
-          const next = script.queue.then(() => sendMessageCall(arg, ctx, run, script));
+        // Each runs on the script's signal too: once the script is stopped, the call in progress
+        // stops before its next item and the ones still queued never start.
+        run: (arg, run, signal) => {
+          const callCtx: ToolContext = { ...ctx, signal: AbortSignal.any([ctx.signal, signal]) };
+          const next = script.queue.then(() => {
+            if (callCtx.signal.aborted) throw new ScriptError("tools.send_message: the script was stopped before this call started");
+            return sendMessageCall(arg, callCtx, run, script);
+          });
           script.queue = next.catch(() => undefined);
           return next;
         }
       }
     ],
-    wallMs: SEND_SCRIPT_WALL_MS
+    wallMs: sendScriptWallMs(ctx.deps.config().life.maxSendsPerTurn)
   });
 }
 

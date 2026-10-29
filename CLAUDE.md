@@ -139,7 +139,7 @@ the body of an async JavaScript function in its own QuickJS worker per call
 (`src/life/sandbox/toolScript.ts` host side with the busy-time and wall-clock watchdogs,
 `toolScriptWorker.ts` the sync build with promise-returning host calls resolved by a driver loop;
 1 s of her own CPU (waits not counted, busy time from the worker's own stamps), 16 MiB, 256 KiB stack,
-60 s wall, SendMessage 150 s). `tools` holds only that tool's function(s); another tool's throws a
+60 s wall, SendMessage 120 s + 4.5 s per allowed send + 30 s). `tools` holds only that tool's function(s); another tool's throws a
 readable error naming it, an old free function (`search()`, `at()`) what replaced it. She shows values
 with `text()` (also `console.log`; a `read_file` image result as the picture); without any `text()`
 her return value is shown; nothing is `done`; an error follows with its line. `tools/script.ts`

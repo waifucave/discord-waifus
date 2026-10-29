@@ -167,7 +167,10 @@ Checks in order:
 Then the items run in order. Before every message her bot types for `30 ms × chars` (0.6–4.5 s), then
 the message goes through her bot. Between items without a `wait`, new messages don't stop the call.
 The turn keeps running during a wait; wakes that arrive fold into the next tool results as usual. The
-whole script has 150 s of wall clock.
+whole script's wall clock covers its worst case: 120 s of waits and typing, 4.5 s of typing for each
+message the turn may still send, and 30 s for Discord (217.5 s at the default 15 sends). Once the
+script is stopped, a call in progress stops before its next item and calls still queued never start.
+Each call after the first looks at the place again first (a cast or server pause, a closed DM).
 
 **Result**: `{ sent: ["#k9", "#ka"], reactions: ["#k2"], stopped?, note? }`. A wait someone cut
 short ends that list only (her script and its other calls go on): `stopped` is `{ reason:

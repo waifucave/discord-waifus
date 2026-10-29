@@ -157,8 +157,8 @@ return await tools.read_messages({ place: "bake-club/#general", around: "#k3", m
   script holds up no one else. Her own computing has 1 s in all, waiting for her tool not counted
   (QuickJS's interrupt, and her busy time summed from the worker's own timestamps: a host busy with
   something else never adds to it; over 1 s + 250 ms is a time hit; a backstop stops a worker still
-  busy 2 s past her budget); 16 MiB of memory, 256 KiB of stack; a wall clock of 60 s, 150 s for
-  `SendMessage` (its waits); `Date` is the app's clock in her zone; no `require`, network, timers or
+  busy 2 s past her budget); 16 MiB of memory, 256 KiB of stack; a wall clock of 60 s; for
+  `SendMessage` 120 s of waits + 4.5 s of typing per allowed send + 30 s; `Date` is the app's clock in her zone; no `require`, network, timers or
   host objects. After her program ends no more of her code runs and no call is made; calls still
   going (never awaited) are waited for up to the wall clock, then told to stop and given 10 s to
   finish what they began (a stop, a pause or the turn's abort tells them at once). A call's argument goes out as JSON (16,384 characters; 128 KiB

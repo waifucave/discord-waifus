@@ -17,6 +17,8 @@ import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
 import { CHANNEL, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, script, seedTranscript, tinyPng, toolTurn, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 import { readMessages, receiptsOf, runScript, sendMessage, withoutReceipts } from "./toolCalls.js";
+import { sendScriptWallMs } from "../src/life/tools/messages.js";
+import { MAX_TYPING_DELAY_MS } from "../src/life/outbound.js";
 
 const roots: string[] = [];
 // Several tests build more than one world: slow under full-suite load.
@@ -346,6 +348,94 @@ describe("tools.send_message (§27.1, §32.2)", () => {
     const ctx = await ctxFor(w);
     ctx.turn.sentPlaces.add("elsewhere");
     expect(await send([{ text: "hi" }], ctx)).toEqual(thrown("you've already written in 1 places this turn"));
+  });
+
+  it("the wall clock covers 120 s of waits plus the typing before every allowed send (review)", () => {
+    // 120 s + 15 × 4.5 s + 30 s: a script within its caps is never cut off part way.
+    expect(sendScriptWallMs(15)).toBe(217_500);
+    expect(sendScriptWallMs(15)).toBeGreaterThan(120_000 + 15 * MAX_TYPING_DELAY_MS);
+  });
+
+  it("once the script is stopped, the call in progress sends nothing more and a queued call never starts (review)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      const { w } = await worldWithSleep((_world, ms) => {
+        // Her script's wall clock runs out during the wait (the turn itself is not aborted).
+        if (ms === 60_000) vi.advanceTimersByTime(sendScriptWallMs(15) + 1_000);
+      });
+      const ctx = await ctxFor(w);
+      const output = text(
+        await runScript(
+          "SendMessage",
+          'const a = tools.send_message({ place: "bake-club/#general", messages: [{ text: "one" }, { wait: 60 }, { text: "two" }] });\nconst b = tools.send_message({ place: "bake-club/#general", messages: [{ text: "three" }] });\nawait a;\nawait b;',
+          ctx
+        )
+      );
+      expect(ctx.signal.aborted).toBe(false);
+      expect(output).toContain("was stopped");
+      expect(w.discord.sent.map((entry) => entry.content)).toEqual(["one"]);
+      // What did go out still reaches her receipts.
+      expect(receiptsOf(output).join("\n")).toMatch(/send_message to bake-club\/#general: sent #\w+/u);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a call after the first looks again: a pause since the first call refuses it (review)", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w);
+    const paused = w.cast.deps.isPaused;
+    w.cast.deps.isPaused = () => w.discord.sent.length > 0 || paused();
+    const output = text(
+      await runScript(
+        "SendMessage",
+        'text(await tools.send_message({ place: "bake-club/#general", messages: [{ text: "one" }] }));\ntext(await tools.send_message({ place: "bake-club/#general", messages: [{ text: "two" }] }));',
+        ctx
+      )
+    );
+    expect(withoutReceipts(output)).toMatch(/^\{"sent":\["#\w+"\],"reactions":\[\]\}\nerror: Error: tools\.send_message: you can't post there \(line 2\)$/u);
+    expect(w.discord.sent.map((entry) => entry.content)).toEqual(["one"]);
+
+    // A server paused between two calls (no wait in either): the second call sees it.
+    const v = await lifeWorld(roots);
+    const vctx = await ctxFor(v);
+    let pending: Promise<unknown> | undefined;
+    const sendOriginal = v.discord.sendWaifuMessage.bind(v.discord);
+    v.discord.sendWaifuMessage = async (...args: Parameters<typeof v.discord.sendWaifuMessage>) => {
+      const sent = await sendOriginal(...args);
+      pending ??= v.storage.updateRevisionedJson({
+        resourceKey: `server:${GUILD}`,
+        relativePath: `user/servers/${GUILD}/server.json`,
+        schema: ServerConfigSchema,
+        fallback: undefined as never,
+        transform: (server) => ({ ...server, paused: true })
+      });
+      await pending;
+      return sent;
+    };
+    const vOutput = text(
+      await runScript(
+        "SendMessage",
+        'text(await tools.send_message({ place: "bake-club/#general", messages: [{ text: "one" }] }));\ntext(await tools.send_message({ place: "bake-club/#general", messages: [{ text: "two" }] }));',
+        vctx
+      )
+    );
+    expect(withoutReceipts(vOutput)).toMatch(/\nerror: Error: tools\.send_message: you can't post there.* \(line 2\)$/u);
+    expect(v.discord.sent.map((entry) => entry.content)).toEqual(["one"]);
+  });
+
+  it("a storage error after Discord took a message never loses it: the result and receipt still list it (review)", async () => {
+    const w = await lifeWorld(roots);
+    const ctx = await ctxFor(w, { intent: true });
+    const withLocks = w.storage.withLocks.bind(w.storage);
+    vi.spyOn(w.storage, "withLocks").mockImplementation(async (keys, task) => {
+      if (w.discord.sent.length > 0 && keys.some((key) => key.startsWith("life-reads:"))) throw new Error("disk full");
+      return withLocks(keys, task);
+    });
+    const output = text(await send([{ text: "first" }, { text: "second" }], ctx));
+    expect(output).not.toContain("didn't work");
+    expect(result({ content: output }).sent).toEqual([expect.stringMatching(/^#\w+$/u), expect.stringMatching(/^#\w+$/u)]);
+    expect(w.discord.sent.map((entry) => entry.content)).toEqual(["first", "second"]);
   });
 });
 

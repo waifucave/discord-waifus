@@ -10,7 +10,7 @@
 //   adds nothing); over `cpuMs` + `RUN_GRACE_MS` the run is a time hit. A backstop timer stops a
 //   worker still busy `BACKSTOP_SLACK_MS` past her budget (a native call QuickJS can't interrupt),
 //   after reading any messages already waiting;
-// - the whole run: `wallMs` (60 s; SendMessage 150 s), whatever it waits for;
+// - the whole run: `wallMs` (60 s; SendMessage 120 s + 4.5 s per allowed send + 30 s), whatever it waits for;
 // - a stop, a pause or a turn's abort ends it at once.
 //
 // When the run ends, for any reason, the worker is terminated; its calls still going are waited for

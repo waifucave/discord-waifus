@@ -4050,7 +4050,9 @@ waits, closures, budgets) stay.
 
 - Input `{ "script": string }` (≤ 20,000 chars), run in the §30.1 sandbox worker (QuickJS, a fresh
   context per call, 1 s of her own CPU, 16 MiB, 256 KiB stack). The wall clock is per tool: 60 s, and
-  for SendMessage 150 s (its waits and typing stay ≤ 120 s).
+  for SendMessage 120 s + 4.5 s per message the turn may send + 30 s (217.5 s at the default 15; its
+  waits and typing stay ≤ 120 s, and the clock covers the worst case so a script within its caps is
+  never cut off part way).
 - Inside, `tools` holds only that tool's function(s); a function of another tool throws its readable
   error naming the tool to use (`tools.read_file is the Read tool's; call Read`). Every function is
   async, takes one object (`apply_patch` one string), snake_case fields, lists of operations where one
@@ -4160,7 +4162,7 @@ waits, closures, budgets) stay.
   `toolScriptWorker.ts`; §31.4's `webScript.ts`/`webScriptWorker.ts` became these): the sync build, her
   script the body of an async function, each `tools.*` call a QuickJS promise the driver loop resolves,
   one worker per call. Limits as §31.4 (1 s of her own CPU from the worker's stamps, 16 MiB, 256 KiB
-  stack, 10 s to start), the wall clock per tool (60 s; SendMessage 150 s). A call's argument is at most
+  stack, 10 s to start), the wall clock per tool (60 s; SendMessage 120 s + 4.5 s per allowed send + 30 s). A call's argument is at most
   16,384 characters as JSON (`send_message` and `wakeup` 128 KiB, `apply_patch` its 300 KiB patch); the
   calls per script are the functions' own caps added up, plus one, so the call over a cap gets its
   function's error. Error messages are cut at 1,000 characters. `tools/script.ts` `runScriptTool` is the
