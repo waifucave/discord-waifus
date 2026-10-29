@@ -353,7 +353,8 @@ a whole file longer than the 20,000-character script is written with Bash.
   `places.md` never, dreaming leaves `~/life/` alone, a tidy session never changes `profile.json`,
   256 KiB per file), then the whole patch is one change set through her home store, like a Bash
   command's, read, matched, checked and saved under one hold of her home lock; patches she runs at
-  once run one at a time in call order, each seeing the ones saved before it and its done line written
+  once run one at a time in call order (one still queued when her script is stopped never starts:
+  `the script was stopped before this call started`), each seeing the ones saved before it and its done line written
   before the next begins: journalled under the call, her special files in `~/life/` checked as they would be after
   it (wakeups compiled, ids given), the limits, case collisions, and nothing changed under her since it
   was read. Any problem throws `tools.apply_patch: …; nothing was changed`. It returns `Updated: M ~/MEMORY.md,

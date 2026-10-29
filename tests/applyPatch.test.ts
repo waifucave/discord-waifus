@@ -294,6 +294,31 @@ describe("apply_patch: the tool (her files, all or nothing)", () => {
     expect(outputText(await applyPatch(ctx, patch("*** Delete File: /tmp/big.txt")))).toMatch(/^Updated: D \/tmp\/big\.txt/u);
   });
 
+  it("a patch still queued when the script is stopped never starts (review)", async () => {
+    const w = await lifeWorld(roots);
+    const controller = new AbortController();
+    const ctx = { ...(await ctxFor(w)), signal: controller.signal };
+    await put(w, "n.md", "notes\n");
+    const original = HomeStore.prototype.transaction;
+    let first = true;
+    const spy = vi.spyOn(HomeStore.prototype, "transaction").mockImplementation(async function (this: HomeStore, ...args: Parameters<HomeStore["transaction"]>) {
+      // The turn is stopped while the first patch runs, once the second is queued behind it.
+      if (first) {
+        first = false;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        controller.abort();
+      }
+      return original.apply(this, args) as never;
+    });
+    try {
+      const append = (n: number) => `tools.apply_patch(["*** Begin Patch", "*** Update File: ~/n.md", "@@", "+line ${n}", "*** End Patch"].join("\\n"))`;
+      await runScript("Edit", `await Promise.all([${append(1)}, ${append(2)}])`, ctx);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await readFile(home(w, "n.md"), "utf8")).toBe("notes\nline 1\n");
+  });
+
   it("runs patches called at once one at a time: each one's done line is written before the next begins (review)", async () => {
     const w = await lifeWorld(roots);
     const ctx = await ctxFor(w, { intent: true });

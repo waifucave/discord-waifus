@@ -609,9 +609,13 @@ async function editScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOut
         name: "apply_patch",
         max: MAX_PATCHES_PER_SCRIPT,
         maxArgChars: MAX_PATCH_CHARS + 1_024,
-        run: (arg, run) => {
+        run: (arg, run, signal) => {
           const call = (n += 1);
-          const next = queue.then(() => applyPatchCall(arg, ctx, call, run));
+          // Once the script is stopped, a patch still queued never starts.
+          const next = queue.then(() => {
+            if (signal.aborted || ctx.signal.aborted) throw new ScriptError("tools.apply_patch: the script was stopped before this call started");
+            return applyPatchCall(arg, ctx, call, run);
+          });
           queue = next.catch(() => undefined);
           return next;
         }
