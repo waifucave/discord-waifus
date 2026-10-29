@@ -4266,6 +4266,31 @@ waits, closures, budgets) stay.
 - **Also changed**: maintenance's report leaves out `~/life/profile.json` (the scheduler rewrites it
   from her config during a session; a session can't change it), and typing reads the place out of a
   streaming `send_message` script (any quotes, a quoted key).
+- **Independent review fixes (2026-10-29)**:
+  - `apply_patch` matching normalises each line once per pass, tries only the positions of a chunk's
+    first line, and stops at 2,000,000 comparisons per Update (`that chunk of ~/x.md is too long to
+    find; use fewer lines`); a repeated-line file and a long chunk had blocked the main thread for
+    seconds under the home lock. Under an `@@ anchor` the chunk is the first match after it (the
+    lead's decision, recorded in §32.3a).
+  - `send_message` runs on the script's signal as well as the turn's: once the script is stopped the
+    call in progress sends nothing more and calls still queued never start. The wall clock is 120 s +
+    4.5 s × `life.maxSendsPerTurn` + 30 s (217.5 s at the default 15) instead of 150 s, so typing
+    delays never cut off a script within its caps. A call after the first looks at the place again
+    (`refreshPlaces`, the cast pause) before it starts.
+  - Once Discord took a message it is recorded at once (result refs, sent places, the call's
+    message ids); the bookkeeping after it (DM rate limit, `lineDone`, refs, read cursor, `callDone`)
+    is caught and logged, never a lost send. Boot repair takes a finished call's sent messages from
+    its `callDone` list when a message's own done line is missing.
+  - `Edit` runs a script's patches one at a time in call order (like `send_message`), so a change
+    set's `.applied` marker outlives its done line.
+  - D14: `withPlaceRecord` takes the caller's set, so a tool call that throws keeps the places it
+    touched and the life loop records it in `dmCalls`; `runScriptTool` turns any failure around her
+    script (a worker that didn't start, a picture, a save that failed for another reason) into
+    `error: that didn't work` with its receipts (Wakeup adds `saving went wrong; read
+    ~/life/wakeups.json to see what is set`).
+  - Boot repair of a send script looks at every call without `callDone` (one that threw part way
+    while her script went on is no longer hiding later calls), and a running call whose place no
+    longer resolves leaves its tried message unknown, never "not sent".
 - **Tests**: `tests/toolScriptSandbox.test.ts` (the abuse suite, from `webScriptSandbox.test.ts`),
   `tests/applyPatch.test.ts`, `tests/toolCalls.ts` (the tests' call helpers); the send, read, wakeup,
   web, files, repair, typing and privacy suites call the new shapes, with one test each for the
