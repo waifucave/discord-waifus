@@ -6,11 +6,11 @@
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
---- tool call Write (call_1_Write) ---
-{"file_path":"~/life/schedule.json","content":"{\n  \"date\": \"2026-10-24\",\n  \"plans\": [\n    {\n      \"at\": \"17:30\",\n      \"what\": \"send one photo to dm/kevin if Kevin is around\"\n    },\n    {\n      \"at\": \"17:30\",\n      \"what\": \"check bake-club/#general for the cake contest\"\n    },\n    {\n      \"what\": \"finish the rain poem\"\n    }\n  ]\n}"}
+--- tool call Edit (call_1_Edit) ---
+{"script":"text(await tools.apply_patch(\"*** Begin Patch\\n*** Add File: ~/life/schedule.json\\n+{\\n+  \\\"date\\\": \\\"2026-10-24\\\",\\n+  \\\"plans\\\": [\\n+    {\\n+      \\\"at\\\": \\\"17:30\\\",\\n+      \\\"what\\\": \\\"send one photo to dm/kevin if Kevin is around\\\"\\n+    },\\n+    {\\n+      \\\"at\\\": \\\"17:30\\\",\\n+      \\\"what\\\": \\\"check bake-club/#general for the cake contest\\\"\\n+    },\\n+    {\\n+      \\\"what\\\": \\\"finish the rain poem\\\"\\n+    }\\n+  ]\\n+}\\n*** End Patch\"))"}
 === 2 user ===
---- tool result call_1_Write ---
-wrote ~/life/schedule.json (285 B)
+--- tool result call_1_Edit ---
+Updated: A ~/life/schedule.json
 The copy of ~/life/schedule.json in your system prompt still shows the old version; it updates at your next summary. The file itself is current.
 Plans with a time wake you then.
 --- text ---

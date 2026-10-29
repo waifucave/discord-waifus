@@ -7,7 +7,7 @@
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
 --- tool call ReadMessages (call_1_ReadMessages) ---
-{"place":"bake-club/#general"}
+{"script":"text(await tools.read_messages({ place: \"bake-club/#general\" }))"}
 === 2 user ===
 --- tool result call_1_ReadMessages ---
 bake-club/#general (Bake Club › #general)
@@ -18,7 +18,7 @@ bake-club/#general (Bake Club › #general)
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
 --- tool call Read (call_1_Read) ---
-{"file_path":"/tmp/bake-club/general/a1-tart.png"}
+{"script":"text(await tools.read_file({ path: \"/tmp/bake-club/general/a1-tart.png\" }))"}
 === 4 user ===
 --- tool result call_1_Read ---
 --- text ---
@@ -28,9 +28,9 @@ bake-club/#general (Bake Club › #general)
 [Sat 24 Oct 14:00 · awake]
 === 5 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"bake-club/#general","script":"reply #a1\nm: omg that glaze\nm: saving this"}
+{"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"omg that glaze\", reply_to: \"#a1\" }, { text: \"saving this\" }] }))"}
 === 6 user ===
 --- tool result call_1_SendMessage ---
-sent #a2 #a3
+{"sent":["#a2","#a3"]}
 --- text ---
 [Sat 24 Oct 14:00 · awake]

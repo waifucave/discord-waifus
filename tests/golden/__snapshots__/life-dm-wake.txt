@@ -8,7 +8,7 @@
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
 --- tool call ReadMessages (call_1_ReadMessages) ---
-{"place":"dm/kevin"}
+{"script":"text(await tools.read_messages({ place: \"dm/kevin\" }))"}
 === 2 user ===
 --- tool result call_1_ReadMessages ---
 dm/kevin (DM with Kevin)
@@ -18,9 +18,9 @@ dm/kevin (DM with Kevin)
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"dm/kevin","script":"m: good luck on friday!!\nm: you've got this"}
+{"script":"text(await tools.send_message({ place: \"dm/kevin\", messages: [{ text: \"good luck on friday!!\" }, { text: \"you've got this\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-sent #a2 #a3
+{"sent":["#a2","#a3"]}
 --- text ---
 [Sat 24 Oct 14:00 · awake]

@@ -12,7 +12,7 @@ cacheTtl: 1h
 --- text ---
 let me look
 --- tool call ReadMessages (call_1_ReadMessages) ---
-{"place":"bake-club/#general"}
+{"script":"text(await tools.read_messages({ place: \"bake-club/#general\" }))"}
 === 2 user ===
 --- tool result call_1_ReadMessages ---
 bake-club/#general (Bake Club › #general)
@@ -22,9 +22,9 @@ bake-club/#general (Bake Club › #general)
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"bake-club/#general","script":"reply #a1\nm: yes!!\nm: i'm bringing lemon tarts"}
+{"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"yes!!\", reply_to: \"#a1\" }, { text: \"i'm bringing lemon tarts\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-sent #a2 #a3
+{"sent":["#a2","#a3"]}
 --- text ---
 [Sat 24 Oct 14:00 · awake]

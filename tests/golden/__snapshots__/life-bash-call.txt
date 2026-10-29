@@ -20,9 +20,9 @@ changed: ~/people/kevin.md
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"bake-club/#general","script":"m: KEVIN!!\nm: knew you'd pass"}
+{"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"KEVIN!!\" }, { text: \"knew you'd pass\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-sent #a2 #a3
+{"sent":["#a2","#a3"]}
 --- text ---
 [Sat 24 Oct 14:00 · awake]

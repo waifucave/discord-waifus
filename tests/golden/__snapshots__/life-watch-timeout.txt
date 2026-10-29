@@ -7,7 +7,7 @@
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
 --- tool call Wakeup (call_1_Wakeup) ---
-{"script":"watch(\"everywhere\", [], {for: \"12m\"}, \"the tarts come out of the oven\")"}
+{"script":"text(await tools.wakeup({ watch: [{ places: \"everywhere\", for: \"12m\", note: \"the tarts come out of the oven\" }] }))"}
 === 2 user ===
 --- tool result call_1_Wakeup ---
 set w1 (timer, until Sat 24 Oct 14:12) (in ~/life/wakeups.json)
@@ -15,10 +15,10 @@ set w1 (timer, until Sat 24 Oct 14:12) (in ~/life/wakeups.json)
 [Sat 24 Oct 14:00 · awake]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
-{"place":"bake-club/#general","script":"m: on it, timer set"}
+{"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"on it, timer set\" }] }))"}
 === 4 user ===
 --- tool result call_1_SendMessage ---
-sent #a2
+{"sent":["#a2"]}
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 5 assistant ===

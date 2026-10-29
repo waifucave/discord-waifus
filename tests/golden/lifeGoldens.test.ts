@@ -22,6 +22,7 @@ import { textTurn } from "../modelFakes.js";
 import { FakeImageFetcher } from "../contextFixtures.js";
 import { ELLA_BOT, CHANNEL, closeWorlds, dmOf, GUILD, herFile, homeOf, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, script, seedTranscript, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "../lifeFixtures.js";
 import { removeTempRoot } from "../testUtils.js";
+import { addFilePatch } from "../toolCalls.js";
 import { serializeMessages, serializeRequest, serializeSystem, serializeTools } from "./serialize.js";
 
 const roots: string[] = [];
@@ -53,10 +54,15 @@ async function mention(w: LifeWorld, text: string, o: { attachments?: Parameters
   await w.cast.settle();
 }
 
+/** Her tool scripts as she would write them (§32). */
+const read = (place: string) => ({ script: `text(await tools.read_messages({ place: ${JSON.stringify(place)} }))` });
+const send = (place: string, messages: string) => ({ script: `text(await tools.send_message({ place: ${JSON.stringify(place)}, messages: ${messages} }))` });
+const patch = (text: string) => ({ script: `text(await tools.apply_patch(${JSON.stringify(text)}))` });
+
 const wakeTurn = () =>
   script(
-    toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }], { text: "let me look" }),
-    toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "reply #a1\nm: yes!!\nm: i'm bringing lemon tarts" } }]),
+    toolTurn([{ name: "ReadMessages", input: read("bake-club/#general") }], { text: "let me look" }),
+    toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "yes!!", reply_to: "#a1" }, { text: "i'm bringing lemon tarts" }]`) }]),
     textTurn("(sent; that's handled)")
   );
 
@@ -86,9 +92,9 @@ describe("Living cast goldens", () => {
           await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: more.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: more });
           w.cast.intake.flushDetector();
           await w.cast.intake.settle();
-          yield* toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]);
+          yield* toolTurn([{ name: "ReadMessages", input: read("bake-club/#general") }]);
         },
-        () => toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: yes!! lemon tarts\nm: and i'll bring the piping bags" } }]),
+        () => toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "yes!! lemon tarts" }, { text: "and i'll bring the piping bags" }]`) }]),
         () => textTurn("(sent)")
       ]
     });
@@ -124,8 +130,8 @@ describe("Living cast goldens", () => {
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
       scripts: script(
-        toolTurn([{ name: "ReadMessages", input: { place: "dm/kevin" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "dm/kevin", script: "m: good luck on friday!!\nm: you've got this" } }]),
+        toolTurn([{ name: "ReadMessages", input: read("dm/kevin") }]),
+        toolTurn([{ name: "SendMessage", input: send("dm/kevin", `[{ text: "good luck on friday!!" }, { text: "you've got this" }]`) }]),
         textTurn("(done)")
       )
     });
@@ -189,7 +195,7 @@ describe("Living cast goldens", () => {
       waifus: [sleeper],
       scripts: script(
         textTurn("(evening)"),
-        toolTurn([{ name: "Write", input: { file_path: "~/life/schedule.json", content: day } }]),
+        toolTurn([{ name: "Edit", input: patch(addFilePatch("~/life/schedule.json", day)) }]),
         textTurn("(planned)"),
         textTurn("(on my break)")
       )
@@ -242,7 +248,7 @@ describe("Living cast goldens", () => {
     );
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
-      scripts: script(toolTurn([{ name: "Write", input: { file_path: "~/life/schedule.json", content: day } }]), textTurn("(planned)"), textTurn("(on it)"))
+      scripts: script(toolTurn([{ name: "Edit", input: patch(addFilePatch("~/life/schedule.json", day)) }]), textTurn("(planned)"), textTurn("(on it)"))
     });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     // Today's maintenance already ran: the ticks only look at her plans.
@@ -276,7 +282,7 @@ describe("Living cast goldens", () => {
     const summary = "Bake Club #general, Sat 24 Oct around 14:00: Kevin asked if I'm coming Saturday and said they need someone on dessert. I said yes and that I'm bringing lemon tarts. Mina was preheating the oven. Nothing else open; I want to check the lemon supply before Saturday.";
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
-      scripts: [...wakeTurn(), () => toolTurn([{ name: "Write", input: { file_path: "~/places/bake-club.md", content: "# Bake Club\n- Saturday bake sale: I'm on dessert (lemon tarts)\n" } }]), () => textTurn(summary), () => textTurn("(nothing to send)")]
+      scripts: [...wakeTurn(), () => toolTurn([{ name: "Edit", input: patch(addFilePatch("~/places/bake-club.md", "# Bake Club\n- Saturday bake sale: I'm on dessert (lemon tarts)\n")) }]), () => textTurn(summary), () => textTurn("(nothing to send)")]
     });
     await seedNotes(w);
     await mention(w, "are you coming saturday? we need someone on dessert");
@@ -318,9 +324,9 @@ describe("Living cast goldens", () => {
       waifus: [ELLA],
       options: { images: fetcher, ocr: { cachedText: async () => "LEMON TART 4€" } },
       scripts: script(
-        toolTurn([{ name: "ReadMessages", input: { place: "bake-club/#general" } }]),
-        toolTurn([{ name: "Read", input: { file_path: "/tmp/bake-club/general/a1-tart.png" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "reply #a1\nm: omg that glaze\nm: saving this" } }]),
+        toolTurn([{ name: "ReadMessages", input: read("bake-club/#general") }]),
+        toolTurn([{ name: "Read", input: { script: 'text(await tools.read_file({ path: "/tmp/bake-club/general/a1-tart.png" }))' } }]),
+        toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "omg that glaze", reply_to: "#a1" }, { text: "saving this" }]`) }]),
         textTurn("(sent)")
       )
     });
@@ -336,7 +342,7 @@ describe("Living cast goldens", () => {
       waifus: [ELLA],
       scripts: script(
         toolTurn([{ name: "Bash", input: { command: "cat ~/people/kevin.md && echo '- passed the chemistry exam!' >> ~/people/kevin.md && grep -c exam ~/people/kevin.md" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: KEVIN!!\nm: knew you'd pass" } }]),
+        toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "KEVIN!!" }, { text: "knew you'd pass" }]`) }]),
         textTurn("(sent)")
       )
     });
@@ -358,8 +364,19 @@ describe("Living cast goldens", () => {
       waifus: [ELLA],
       options: { webBackend: backend as never },
       scripts: script(
-        toolTurn([{ name: "Web", input: { script: 'const hits = await search("lemon tart recipe", {n: 3});\nconst page = await open(hits[0]);\nprint(page.title, page.links);\nreturn page.find("oven");' } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: 180C, 25 min!" } }]),
+        toolTurn([{
+          name: "Web",
+          input: {
+            script: [
+              'const r = await tools.web__run({ search_query: [{ q: "lemon tart recipe", n: 3 }] });',
+              "const url = r.search[0].results[0].url;",
+              'const p = await tools.web__run({ open: [{ ref_id: url }], find: [{ ref_id: url, pattern: "oven" }] });',
+              "text({ title: p.pages[0].title, links: p.pages[0].links });",
+              "text(p.find[0]);"
+            ].join("\n")
+          }
+        }]),
+        toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "180C, 25 min!" }]`) }]),
         textTurn("(sent)")
       )
     });
@@ -378,7 +395,7 @@ describe("Living cast goldens", () => {
       // Mina writes during the wait: the rest of the script is not sent.
       options: { sleep: async (ms: number) => void (ms === 5000 ? w.discord.post(ROOM, "wait which oven", { authorId: MINA_USER, authorName: "Mina" }) : undefined) },
       scripts: script(
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: `reply #a1\nm: yes!!\nm: ${long}\nwait 5\nm: anyone else coming?` } }]),
+        toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "yes!!", reply_to: "#a1" }, { text: ${JSON.stringify(long)} }, { wait: 5 }, { text: "anyone else coming?" }]`) }]),
         textTurn("(sent)")
       )
     });
@@ -394,10 +411,10 @@ describe("Living cast goldens", () => {
     const w = await lifeWorld(roots, {
       waifus: [ELLA],
       scripts: script(
-        toolTurn([{ name: "Wakeup", input: { script: "watch(\"everywhere\", [], {for: \"12m\"}, \"the tarts come out of the oven\")" } }]),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: on it, timer set" } }]),
+        toolTurn([{ name: "Wakeup", input: { script: 'text(await tools.wakeup({ watch: [{ places: "everywhere", for: "12m", note: "the tarts come out of the oven" }] }))' } }]),
+        toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "on it, timer set" }]`) }]),
         textTurn("(sent)"),
-        toolTurn([{ name: "SendMessage", input: { place: "bake-club/#general", script: "m: tarts are out!!" } }]),
+        toolTurn([{ name: "SendMessage", input: send("bake-club/#general", `[{ text: "tarts are out!!" }]`) }]),
         textTurn("(sent)")
       )
     });

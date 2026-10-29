@@ -12,6 +12,7 @@ import type { FakeAnthropic } from "./eval/fakeAnthropic.js";
 import { blocksOf, dmWake, isCompaction, isMaintenance, lifeTurn, realAnthropicWorld as wireWorld, roomWake, unmarked } from "./eval/lifeWire.js";
 import { modelTokens } from "./eval/tokenModel.js";
 import { removeTempRoot } from "./testUtils.js";
+import { scriptInput } from "./toolCalls.js";
 
 const roots: string[] = [];
 const servers: FakeAnthropic[] = [];
@@ -207,10 +208,10 @@ describe("the life prompt on the wire", { timeout: 60_000 }, () => {
       if (step === 1) {
         // Mina pings her while she reads: folded into a later tool-results message.
         folded = enqueueWake(w.storage, "ella", { id: "w-fold", reason: "mention", placeKey: ROOM_KEY, fromUserId: "300000000000000077", fromName: "Mina", messageId: "900000000000000777", preview: "and mine?", at: new Date(w.clock.ms).toISOString() });
-        return { thinking: "let me look", toolCalls: [{ name: "ReadMessages", input: { place: "bake-club/#general" } }] };
+        return { thinking: "let me look", toolCalls: [{ name: "ReadMessages", input: scriptInput.readMessages({ place: "bake-club/#general" }) }] };
       }
-      if (step === 2) return { thinking: "a cake", toolCalls: [{ name: "Read", input: { file_path: "/tmp/bake-club/general/a0-cake.png" } }] };
-      if (step === 3) return { thinking: "answering", toolCalls: [{ name: "SendMessage", input: { place: "bake-club/#general", text: "that cake looks great" } }] };
+      if (step === 2) return { thinking: "a cake", toolCalls: [{ name: "Read", input: scriptInput.readFile("/tmp/bake-club/general/a0-cake.png") }] };
+      if (step === 3) return { thinking: "answering", toolCalls: [{ name: "SendMessage", input: scriptInput.sendMessage("bake-club/#general", [{ text: "that cake looks great" }]) }] };
       // The next call hangs until the owner pauses her.
       if (step === 4) {
         hangStarted();
