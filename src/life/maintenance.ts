@@ -12,7 +12,7 @@ import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { homeStoreFor } from "./home/index.js";
 import { availabilityFor } from "./busy.js";
-import { LIFE_DIR, PLACES_FILE } from "./home/pathRules.js";
+import { LIFE_DIR, PLACES_FILE, PROFILE_FILE } from "./home/pathRules.js";
 import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
 
@@ -155,8 +155,12 @@ export async function runNotesSession(
   });
 }
 
-/** What she changed: places.md is the app's to rewrite (she can't), so a refresh during the session isn't hers. */
+/**
+ * What she changed: places.md and profile.json are the app's to rewrite (a session can't change
+ * either), so the scheduler's refresh during the session isn't hers.
+ */
+const APP_REWRITTEN = new Set([`${LIFE_DIR}/${PLACES_FILE}`, `${LIFE_DIR}/${PROFILE_FILE}`]);
 function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
-  return [...paths].filter((path) => path !== `${LIFE_DIR}/${PLACES_FILE}` && before.get(path) !== after.get(path)).sort();
+  return [...paths].filter((path) => !APP_REWRITTEN.has(path) && before.get(path) !== after.get(path)).sort();
 }
