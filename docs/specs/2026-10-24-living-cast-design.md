@@ -4111,6 +4111,49 @@ waits, closures, budgets) stay.
   (send-script, wakeup and web reviews), moved to the new shapes, plus an apply_patch suite (grammar,
   matching passes, anchors, duplicates refused, all-or-nothing, protected files, Move, Delete).
 
+### 32.3a Contract details (Codex's review, owner-approved 2026-10-29)
+
+- **Script and output.** The script is the body of an async function: a last expression is not
+  returned, so examples end in `return await tools.…(…)` or `text(await tools.…(…))`. `text(undefined)`
+  shows nothing; an output cut at its cap says so; an image result is a handle shown as the picture,
+  never its bytes copied into the sandbox.
+- **Receipts.** Every side effect gets a host-written receipt shown after her own output, whatever
+  her script does (throws, times out, never calls `text()`, output cut): messages sent (refs) and
+  whether the rest of a list ran, files committed, wakeups saved or cancelled. Calls still in flight
+  when the script ends are awaited up to the wall clock; a send that began is never reported as not
+  sent. Sends to one place started together (`Promise.all`) go out in call order.
+- **Validation and transactions.** "Bad values throw before anything runs" holds per function call,
+  not for the whole script. `send_message` checks its whole `messages` list (fields, refs, files,
+  caps) before the first item goes out; sends can't be undone. `apply_patch` is all-or-nothing per
+  call, its checks, match and commit under the home store's lock. `wakeup` keeps §30's promise: all
+  wakeup calls in one script are staged and saved once when the script ends without error (a failed
+  script saves none; the receipt says so); within a call cancels apply before additions, so replacing
+  one at the cap works; an unknown or repeated cancel id is an error.
+- **send_message items.** Exactly one variant per item (`{text, reply_to?, attach?}`, `{attach}`,
+  `{react, to}`, `{wait}`, `{typing}`; `{text, wait}` or `{}` throw); `attach` always a list; `to` and
+  `reply_to` take the same `#ref`; wait and typing in seconds. A stopped wait ends that list only; the
+  result is `{ sent: [refs], reactions: [...], stopped?: { reason: "new_message", next_index, incoming } }`.
+- **wakeup entries.** In a watch, `from`, `words` and `any` combine as in §30 (every field set must
+  match) and `filter` excludes them. A page takes exactly one of `contains` (string), `changes` (true)
+  or `check` (function). Every list may be left out; `{}` is an error (nothing to do). The closure
+  error names the captured variable and shows one corrected filter. The result lists each new
+  wakeup's id, kind and next firings.
+- **web__run results.** `search: [{ q, hits: [{ title, url, date?, snippet }] }]`, `pages: [{ url,
+  title, status, lineno, lines, total_lines, more, links: [{ id, text, url }] }]`, `find: [{ url,
+  pattern, matches: [{ lineno, text }] }]`, `ask: [{ url, answer }]` (marked a generated digest).
+  `ref_id` is a URL; link ids are `id` everywhere and stay stable for a page; `lineno` is 0-based as in
+  §31; `find` searches the whole page (a string, or a RegExp); an explicit `n` beats `response_length`.
+  Each operation reports its own error in its slot (`{ error }`), so one failed open never discards
+  the rest; opens made for `find`, `ask` or `click` count against the open caps. A search's hits feed
+  an open only through a second call (the description's example shows it).
+- **apply_patch matching.** A chunk is ambiguous only at the first strictness pass that finds it,
+  counted after the anchor and End of File constraints (one exact match is accepted even when a
+  normalised copy exists elsewhere). A repeated `@@` anchor is refused like a repeated chunk;
+  overlapping chunks, a second Update of the same path in one patch, Move onto an existing file, and a
+  protected source or destination are refused. The description shows the line-list idiom
+  (`["*** Begin Patch", …, "*** End Patch"].join("\n")`) so backticks and `${…}` in her notes are safe.
+  A whole file larger than the 20,000-character script is written with Bash.
+
 ### 32.4 As built
 
 - **One sandbox for every tool script** (`src/life/sandbox/toolScript.ts` host side,
