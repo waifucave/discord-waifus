@@ -15,6 +15,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { ConversationRefsSchema } from "../src/shared/schemas/context.js";
 import { CHANNEL_2, closeWorlds, dmOf, ELLA_BOT, GUILD, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { readMessages, sendMessage } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -45,8 +46,39 @@ async function ctxFor(w: LifeWorld): Promise<ToolContext> {
 
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
 
+/**
+ * `tools.read_messages` with the fields a §22 query names (`before #k3 max:3`, `search:exam, test`,
+ * `people:Mina`); several places separated by commas are a list.
+ */
+function fieldsOf(place: string, query?: string): Record<string, unknown> {
+  const places = place.split(",").map((handle) => handle.trim());
+  const fields: Record<string, unknown> = { place: places.length > 1 ? places : places[0] };
+  let rest = ` ${query ?? ""}`;
+  const take = (pattern: RegExp): string | undefined => {
+    const match = pattern.exec(rest);
+    if (!match) return undefined;
+    rest = rest.replace(match[0], " ");
+    return match[1]!.trim();
+  };
+  const next = "(?= (?:before|after|around) |\\s+max:|\\s+search:|\\s+people:|\\s*$)";
+  const max = take(/\smax:(\d+)/u);
+  if (max !== undefined) fields["max"] = Number(max);
+  for (const key of ["search", "people"] as const) {
+    const value = take(new RegExp(`\\s${key}:(.+?)${next}`, "u"));
+    if (value === undefined) continue;
+    const list = value.split(",").map((item) => item.trim());
+    fields[key] = list.length > 1 ? list : list[0];
+  }
+  for (const key of ["before", "after", "around"] as const) {
+    const value = take(new RegExp(`\\s${key} (#\\w+|\\d{4}-\\d\\d-\\d\\d(?: \\d\\d:\\d\\d)?|yesterday \\d\\d:\\d\\d|\\d\\d:\\d\\d)`, "u"));
+    if (value !== undefined) fields[key] = value;
+  }
+  if (rest.trim()) throw new Error(`the test can't translate "${rest.trim()}"`);
+  return fields;
+}
+
 async function read(w: LifeWorld, place: string, query?: string): Promise<ToolOutput> {
-  return lifeTool("ReadMessages")!.run({ place, ...(query !== undefined ? { query } : {}) }, await ctxFor(w));
+  return readMessages(await ctxFor(w), fieldsOf(place, query));
 }
 
 /** Messages a minute apart, by Kevin and Mina in turn; returns them. */
@@ -166,9 +198,9 @@ describe("pages: before, after, around, ranges and several places (§22.2)", () 
     expect(bodies(general!)).toEqual(["Kevin: in general"]);
     expect(recipes!.split("\n")[0]).toBe("bake-club/#recipes (Bake Club › #recipes)");
     expect(bodies(recipes!)).toEqual(["Kevin: in recipes"]);
-    expect((await read(w, "bake-club/#general, bake-club/#recipes", "around #a0")).content).toBe("error: a #ref belongs to one place; read one place with it");
-    expect(text(await read(w, "a, b, c, d, e, f"))).toContain("at most 5 places");
-    expect(text(await read(w, "everywhere"))).toContain('"everywhere" needs people: or search:');
+    expect((await read(w, "bake-club/#general, bake-club/#recipes", "around #a0")).content).toBe("error: Error: tools.read_messages: a #ref belongs to one place; read one place with it (line 1)");
+    expect(text(await read(w, "a, b, c, d, e, f"))).toContain("place is text or a list of at most 5");
+    expect(text(await read(w, "everywhere"))).toContain('"everywhere" needs people or search');
   });
 
   it("a page across days says which day each part is", async () => {
@@ -188,7 +220,7 @@ describe("pages: before, after, around, ranges and several places (§22.2)", () 
 });
 
 describe("refs at ingest, resolving after refs.json pruned them (§22.1)", () => {
-  it("ReadMessages, SendMessage reply_to and React find a pruned ref through the transcript", async () => {
+  it("read_messages, send_message's reply_to and react find a pruned ref through the transcript", async () => {
     const w = await lifeWorld(roots);
     const message = w.discord.post(ROOM, "we won the bake-off!");
     w.cast.transcripts.onCacheEvent({ type: "create", conversation: ROOM, message, own: false });
@@ -201,11 +233,13 @@ describe("refs at ingest, resolving after refs.json pruned them (§22.1)", () =>
     await w.storage.writeJson(`refs:${ROOM_KEY}`, refsFile, ConversationRefsSchema, { ...refs, refs: {} });
     expect(bodies(text(await read(w, "bake-club/#general", "around #a0")))).toEqual(["Kevin: we won the bake-off!"]);
     const ctx = await ctxFor(w);
-    expect(text(await lifeTool("React")!.run({ place: "bake-club/#general", ref: "#a0", emoji: "🎉" }, ctx))).toBe("reacted");
-    const sent = await lifeTool("SendMessage")!.run({ place: "bake-club/#general", text: "congrats!!", reply_to: "#a0" }, ctx);
+    expect(text(await sendMessage(ctx, "bake-club/#general", [{ react: "🎉", to: "#a0" }]))).toBe('{"sent":[],"reacted":["#a0"]}');
+    const sent = await sendMessage(ctx, "bake-club/#general", [{ text: "congrats!!", reply_to: "#a0" }]);
     expect(sent.isError).not.toBe(true);
+    // The retired React (old log lines) still finds it.
+    expect(text(await lifeTool("React")!.run({ place: "bake-club/#general", ref: "#a0", emoji: "🎂" }, ctx))).toBe("reacted");
     expect(w.discord.sent.at(-1)).toMatchObject({ content: "congrats!!", replyToMessageId: message.id });
-    expect((await read(w, "bake-club/#general", "around #zz")).content).toBe("error: message too old");
+    expect((await read(w, "bake-club/#general", "around #zz")).content).toBe("error: Error: tools.read_messages: message too old (line 1)");
   });
 });
 
@@ -265,7 +299,7 @@ describe("people: and search: over her transcripts (§22.2)", () => {
     w.cast.intake.close();
     await fed(w, dmOf("ella"), "save me a brownie?");
     const ctx = await ctxFor(w);
-    const { value, places } = await withPlaceRecord(() => lifeTool("ReadMessages")!.run({ place: "everywhere", query: "search:brownie, brownies" }, ctx));
+    const { value, places } = await withPlaceRecord(() => readMessages(ctx, { place: "everywhere", search: ["brownie", "brownies"] }));
     const sections = text(value).split("\n\n");
     expect(sections.map((section) => section.split("\n")[0])).toEqual([
       "bake-club/#general (Bake Club › #general)",
@@ -274,7 +308,7 @@ describe("people: and search: over her transcripts (§22.2)", () => {
     ]);
     expect(places.has(conversationKey(dmOf("ella")))).toBe(true);
     // Rooms only: the call is not about a DM.
-    const rooms = await withPlaceRecord(() => lifeTool("ReadMessages")!.run({ place: "everywhere", query: "search:butter" }, ctx));
+    const rooms = await withPlaceRecord(() => readMessages(ctx, { place: "everywhere", search: "butter" }));
     expect(text(rooms.value).split("\n")[0]).toBe("bake-club/#recipes (Bake Club › #recipes)");
     expect([...rooms.places].some((key) => key.startsWith("dm_"))).toBe(false);
     expect(text(await read(w, "everywhere", "search:pineapple"))).toMatch(/^no messages match \(searched /u);
@@ -374,7 +408,7 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     await recordForgottenPerson(w.storage, MINA_USER, new Date("2026-10-24T10:00:00.000Z"));
     w.clock.ms = Date.parse("2026-10-24T14:00:00.000Z");
     expect(bodies(text(await read(w, "bake-club/#general", "search:cardamom")))).toEqual(["Kevin: cardamom is great"]);
-    expect((await read(w, "bake-club/#general", "around #a0")).content).toBe("error: message too old");
+    expect((await read(w, "bake-club/#general", "around #a0")).content).toBe("error: Error: tools.read_messages: message too old (line 1)");
     const day = await new TranscriptView({ storage: w.storage, waifuId: "ella", timeZone: TZ, now: w.clock.now }).read(["bake-club", "general", "2026-10-24.md"]);
     expect(day).not.toContain("secret recipe");
     expect(day).toContain("cardamom is great");
@@ -429,6 +463,10 @@ describe("review fixes: refs from transcripts, filters, limits (§22)", () => {
     const controller = new AbortController();
     controller.abort(new Error("stop"));
     const ctx = { ...(await ctxFor(w)), signal: controller.signal };
+    const stopped = await readMessages(ctx, { place: "bake-club/#general", search: "tea" });
+    expect(stopped.isError).toBe(true);
+    expect(text(stopped)).not.toContain("tea on day");
+    // The call from before §32 rejects as it did.
     await expect(lifeTool("ReadMessages")!.run({ place: "bake-club/#general", query: "search:tea" }, ctx)).rejects.toThrow("stop");
   });
 
