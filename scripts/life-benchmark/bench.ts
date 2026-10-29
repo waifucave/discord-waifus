@@ -205,6 +205,38 @@ export async function mergeGradesInto(outDir: string): Promise<{ grades: number;
   return { grades: grades.length, runs: merged.byRun.size, unknown: merged.unknown, problems: [...problems, ...merged.problems] };
 }
 
+/**
+ * Rebuilds the summary judge packets of a results folder from its saved captures, in place under the
+ * same ids (so the index still maps them); grades already written for them are left to the caller.
+ */
+export async function repackSummaries(o: { outDir: string; scenarios: Scenario[] }): Promise<string[]> {
+  const index = await readIndex(o.outDir);
+  const summary = await readSummary(o.outDir);
+  const captures = new Map<string, SummaryCapture[]>();
+  const capturesOf = async (runId: string) => {
+    if (!captures.has(runId)) captures.set(runId, JSON.parse(await readFile(path.join(o.outDir, "runs", runId, "summaries.json"), "utf8").catch(() => "[]")) as SummaryCapture[]);
+    return captures.get(runId)!;
+  };
+  const repacked: string[] = [];
+  for (const [id, entry] of Object.entries(index)) {
+    if (entry.kind !== "summary" || !entry.summaryId) continue;
+    const resummarised = entry.runId.startsWith("resummarise:") ? entry.runId.split(":") : undefined;
+    const runId = resummarised ? resummarised.slice(2, -1).join(":") : entry.runId;
+    const scenario = o.scenarios.find((candidate) => candidate.id === summary.runs.find((run) => run.runId === runId)?.scenario);
+    const capture = (await capturesOf(runId)).find((candidate) => candidate.id === entry.summaryId);
+    if (!scenario || !capture) continue;
+    const output = resummarised
+      ? (JSON.parse(await readFile(path.join(o.outDir, "resummarise", resummarised[1]!.replace(/[/#.]/gu, "_"), `${runId}__${capture.id}.json`), "utf8").catch(() => "{}")) as { output?: string }).output
+      : capture.output;
+    if (!output) continue;
+    const { packet } = packetsForRun({ scenario, summary: { runId, variant: "baseline" } as RunSummary, events: [], summaries: [{ ...capture, output }] }).find((candidate) => candidate.packet.kind === "summary") ?? {};
+    if (!packet) continue;
+    await writeJson(path.join(o.outDir, "judge", "packets", `${id}.json`), { ...packet, packet: id });
+    repacked.push(id);
+  }
+  return repacked;
+}
+
 /** The saved summary inputs a model can be asked again: her rest summaries and the app's compactions. */
 export async function replayableSummaries(outDir: string): Promise<Array<{ runId: string; scenario: string; capture: SummaryCapture }>> {
   const summary = await readSummary(outDir);

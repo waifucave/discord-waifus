@@ -67,7 +67,7 @@ facts kept by her summaries and her notes after the dream.
 Runs past the gate (finished, first-try tool success and probe pass rate over the thresholds) get
 judge packets: a `chat` packet (persona, rubric, the anonymised conversation; for a variant also the
 baseline's transcript of the same scenario, model and repeat as `reference`) and a `summary` packet
-per model-made summary (input and summary). Give each packet to an Opus subagent in your Claude Code
+per model-made summary (what she knew going in — her notes index and earlier summary — the input, and the summary; a fact carried over from that context counts as supported). `npm run bench:life -- repack --out=<out>` rebuilds a folder's summary packets in place under the same ids after a packet change; move the stale grades out of `grades/` first. Give each packet to an Opus subagent in your Claude Code
 session, for example:
 
 > Read `<out>/judge/packets/<id>.json` and follow its `instructions`. Write only the JSON its

@@ -11,7 +11,7 @@ import { buildBlockA } from "../src/life/lifeHarness.js";
 import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { mergeGradesInto, readSummary, resummariseInto, runBenchmark, selectModels } from "../scripts/life-benchmark/bench.js";
-import { GradeSchema, gateOf, renderChat } from "../scripts/life-benchmark/grading.js";
+import { GradeSchema, gateOf, packetsForRun, renderChat } from "../scripts/life-benchmark/grading.js";
 import { computeMetrics, factsFound, longestBurst, mentions } from "../scripts/life-benchmark/metrics.js";
 import { evaluateProbes } from "../scripts/life-benchmark/probes.js";
 import { defineScenario, scenarioClock, scenarioTimeMs, type ScenarioInput } from "../scripts/life-benchmark/scenario.js";
@@ -321,6 +321,16 @@ describe("grading", () => {
     const summary = { status: "done", metrics: { firstTrySuccess: 0.5, probesPassed: 9, probesScored: 9, messages: 3 } } as never;
     expect(gateOf(summary, GATE)).toMatchObject({ passed: false });
     expect(renderChat(tiny, [{ type: "sent", at: new Date(scenarioTimeMs(tiny, "d1 19:05")).toISOString(), place: "dm:mina", dm: true, text: "hi", messageId: "1" }])).toBe("[d1 19:05 DM with Mina] Ella (her): hi");
+  });
+
+  it("a summary packet carries what she knew going in (block B), not block A, so carried-over facts are not invented", () => {
+    const capture = { id: "s2", at: new Date(0).toISOString(), kind: "rest", input: { system: ["<life>rules and persona</life>", "<life_so_far><summary>mina owes me a coffee</summary></life_so_far>"], text: "[d2 10:00] Mina: hi" }, output: "mina still owes me a coffee", inputChars: 20, outputChars: 27 } as const;
+    const run = { runId: "r1", variant: "baseline" } as never;
+    const [packet] = packetsForRun({ scenario: tiny, summary: run, events: [], summaries: [capture] }).filter((entry) => entry.packet.kind === "summary");
+    expect(packet?.packet).toMatchObject({ context: "<life_so_far><summary>mina owes me a coffee</summary></life_so_far>", input: "[d2 10:00] Mina: hi" });
+    expect(packet?.packet.instructions).toContain("CONTEXT");
+    const dream = packetsForRun({ scenario: tiny, summary: run, events: [], summaries: [{ ...capture, kind: "dream", input: { system: ["You keep her memory."], text: "notes" } }] });
+    expect(dream.find((entry) => entry.packet.kind === "summary")?.packet.context).toBeUndefined();
   });
 
   it("model selection: one route per family, contributor routes only when named, efforts checked", () => {

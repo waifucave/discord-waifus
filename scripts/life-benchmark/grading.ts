@@ -21,9 +21,9 @@ export const SAME_PERSONALITY_CRITERION = {
 } as const;
 
 export const SUMMARY_CRITERIA = {
-  faithful: "Everything the summary says is supported by the input. 5 = fully faithful; 1 = mostly wrong.",
+  faithful: "Everything the summary says is supported by the input or the context. 5 = fully faithful; 1 = mostly wrong.",
   complete: "It keeps what matters to her: who people are, promises, plans and times, preferences, running jokes, open questions. 5 = nothing important lost; 1 = most of it lost.",
-  nothing_invented: "No facts, events, people or promises that are not in the input. 5 = none invented; 1 = several inventions. List each invention in `invented`.",
+  nothing_invented: "No facts, events, people or promises that are in neither the input nor the context. 5 = none invented; 1 = several inventions. List each invention in `invented`.",
   keeps_voice: "It reads like her own memory in her own voice (first person, her tone), not a neutral report. 5 = clearly hers; 1 = a clinical log.",
   open_threads: "It keeps her open threads: questions she is waiting on, follow-ups she meant to do, what she was in the middle of. 5 = all kept; 1 = none kept."
 } as const;
@@ -42,7 +42,8 @@ export type JudgePacket = {
   transcript?: string;
   /** chat, variants: the baseline prompt's transcript of the same scenario. */
   reference?: string;
-  /** summary: what was summarised and what she wrote. */
+  /** summary: what she already knew (her notes index, her summary before, her places), what was summarised and what she wrote. */
+  context?: string;
   input?: string;
   summary?: string;
   summaryKind?: string;
@@ -82,7 +83,7 @@ export function answerFormat(criteria: readonly string[], kind: PacketKind): unk
 const CHAT_INSTRUCTIONS =
   "You are grading one AI character's chat on a Discord server. Read her persona, then the transcript (the people's lines are fixed and never react to her; lines marked `(her)` are hers; DM lines are private between her and that person). Score each rubric criterion from 1 to 5 using the whole transcript, judging only what she sent. Be strict and consistent; 3 is an ordinary, acceptable result. Write only the JSON in `answerFormat`.";
 const SUMMARY_INSTRUCTIONS =
-  "You are grading a summary an AI character wrote (or that was written for her) of a stretch of her life, to keep as her memory. Compare SUMMARY against INPUT (the conversation and tool results she summarised). Score each rubric criterion from 1 to 5, list every invented fact in `invented`, and write only the JSON in `answerFormat`.";
+  "You are grading a summary an AI character wrote (or that was written for her) of a stretch of her life, to keep as her memory. Compare SUMMARY against INPUT (the conversation and tool results she summarised) and CONTEXT when given (what she already knew as this stretch began: her notes index and her earlier summary). A fact carried over from CONTEXT is supported, not invented. Score each rubric criterion from 1 to 5, list every invented fact in `invented`, and write only the JSON in `answerFormat`.";
 
 /** The conversation as people saw it, oldest first; her lines marked `(her)`. No model name, no tool calls. */
 export function renderChat(scenario: Scenario, events: readonly TranscriptEvent[]): string {
@@ -118,6 +119,18 @@ export function gateOf(summary: RunSummary, gate: GateOptions): { passed: boolea
 
 const SUMMARY_INPUT_MAX = 80_000;
 
+function capped(text: string, what: string): string {
+  return text.length > SUMMARY_INPUT_MAX ? `${text.slice(0, SUMMARY_INPUT_MAX)}\n[… ${what} cut at ${SUMMARY_INPUT_MAX} characters]` : text;
+}
+
+/** Her system blocks after block A (whose rules and persona the packet has): what she knew going in. */
+function summaryContext(capture: SummaryCapture): string | undefined {
+  const blocks = capture.input.system ?? [];
+  if (capture.kind === "dream" || blocks.length < 2) return undefined;
+  const text = blocks.slice(1).join("\n\n").trim();
+  return text ? capped(text, "context") : undefined;
+}
+
 /**
  * Packets for one run: the chat (with the baseline's transcript as reference for a variant) and
  * every model-made summary (her rest/self summaries, the app's compactions, the dream's changes).
@@ -152,7 +165,7 @@ export function packetsForRun(o: {
   for (const capture of o.summaries) {
     if (capture.kind === "morning" || !capture.output.trim()) continue;
     const id = packetId();
-    const input = capture.input.text.length > SUMMARY_INPUT_MAX ? `${capture.input.text.slice(0, SUMMARY_INPUT_MAX)}\n[… input cut at ${SUMMARY_INPUT_MAX} characters]` : capture.input.text;
+    const context = summaryContext(capture);
     out.push({
       packet: {
         packet: id,
@@ -161,7 +174,8 @@ export function packetsForRun(o: {
         rubric: { ...SUMMARY_CRITERIA },
         persona,
         scenario: scenarioInfo,
-        input,
+        ...(context ? { context } : {}),
+        input: capped(capture.input.text, "input"),
         summary: capture.output,
         summaryKind: capture.kind === "dream" ? "her notes changed overnight by a memory keeper" : capture.kind === "compaction" ? "the app summarised her context" : "she summarised her own context",
         answerFormat: answerFormat(Object.keys(SUMMARY_CRITERIA), "summary")

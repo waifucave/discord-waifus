@@ -5,6 +5,7 @@
 //   npm run bench:life -- [run] [--scenarios=…] [--models=…] [--variants=…] [--repeat=N]
 //                         [--concurrency=N] [--max-usd=X] [--web] [--dry-run] [--yes] [--out=DIR]
 //   npm run bench:life -- merge-grades --out=DIR
+//   npm run bench:life -- repack --out=DIR
 //   npm run bench:life -- resummarise --out=DIR --models=… [--max-usd=X] [--dry-run] [--yes]
 //   npm run bench:life -- list
 //
@@ -16,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { getDataRoot } from "../src/config/paths.js";
 import { createProviderCredentialsLookup } from "../src/models/credentials.js";
 import { curatedCatalog } from "../src/models/catalog.js";
-import { mergeGradesInto, planEstimate, readSummary, replayableSummaries, resummariseEstimate, resummariseInto, runBenchmark, selectModels } from "./life-benchmark/bench.js";
+import { mergeGradesInto, planEstimate, readSummary, repackSummaries, replayableSummaries, resummariseEstimate, resummariseInto, runBenchmark, selectModels } from "./life-benchmark/bench.js";
 import { SCENARIOS, selectScenarios } from "./life-benchmark/scenarios/index.js";
 import { BUILT_IN_VARIANTS, loadVariants } from "./life-benchmark/variants.js";
 import { routeId } from "./life-benchmark/world.js";
@@ -55,7 +56,7 @@ function defaultOut(): string {
 }
 
 function help(): void {
-  console.log(`Life benchmark (spec §33). Commands: run (default), merge-grades, resummarise, list.
+  console.log(`Life benchmark (spec §33). Commands: run (default), merge-grades, repack, resummarise, list.
   --scenarios=default|all|id,id    (default: ${SCENARIOS.filter((s) => s.id !== "tiny").map((s) => s.id).join(", ")})
   --models=families|all|route[#effort],…   (default families: one route per curated family with a key; contributor routes only when named)
   --variants=baseline,brief,./file.json    (built-ins: ${BUILT_IN_VARIANTS.map((v) => v.id).join(", ")})
@@ -143,6 +144,13 @@ async function mergeGrades(): Promise<void> {
   console.log(`Report: ${path.join(path.resolve(out), "report.md")}`);
 }
 
+async function repack(): Promise<void> {
+  const out = value("out", "");
+  if (!out) throw new Error("repack needs --out=<a results folder>");
+  const ids = await repackSummaries({ outDir: path.resolve(out), scenarios: [...SCENARIOS] });
+  console.log(`Rebuilt ${ids.length} summary packet(s) in place. Grades written for them before are now stale: move them out of grades/ and grade again.`);
+}
+
 function list(): void {
   console.log("Scenarios:");
   for (const scenario of SCENARIOS) console.log(`  ${scenario.id.padEnd(14)} ${scenario.title} (${scenario.events.length} events, ${scenario.probes.length} probes)`);
@@ -162,6 +170,7 @@ async function main(): Promise<void> {
   checkFlags();
   if (command === "run") await run();
   else if (command === "merge-grades") await mergeGrades();
+  else if (command === "repack") await repack();
   else if (command === "resummarise") await resummarise();
   else if (command === "list") list();
   else throw new Error(`Unknown command ${command}`);
