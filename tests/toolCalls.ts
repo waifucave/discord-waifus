@@ -24,3 +24,25 @@ export const replaceFilePatch = (path: string, content: string) =>
 
 /** The text of a tool's output (images as `[image]`). */
 export const outputText = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
+
+/**
+ * §30's free functions written over `tools.wakeup`, for tests that only set wakeups up: `at(when,
+ * note)`, `every(when, note)`, `watch(places, filter, options, note)` (an object filter's fields or a
+ * function), `page(url, check, options, note)` and `cancel(id)` collect items, and one
+ * `tools.wakeup` call saves them at the end. Tests of the tool itself call `tools.wakeup` directly.
+ */
+const OLD_WAKEUP_PRELUDE = [
+  "const __w = { at: [], every: [], watch: [], page: [], cancel: [] };",
+  "function at(when, note) { __w.at.push({ when, note }); }",
+  "function every(when, note) { __w.every.push({ when, note }); }",
+  "function watch(places, filter, options, note) { const item = { places, ...(options || {}), note }; if (typeof filter === 'function') item.filter = filter; else Object.assign(item, filter); __w.watch.push(item); }",
+  "function page(url, check, options, note) { const item = { url, ...(options || {}), note }; if (typeof check === 'function') item.check = check; else if (check === 'changes') item.changes = true; else Object.assign(item, check); __w.page.push(item); }",
+  "function cancel(id) { __w.cancel.push(id); }",
+  ""
+].join(" ");
+
+export const wakeupCalls = (ctx: ToolContext, script: string) =>
+  runScript("Wakeup", `${OLD_WAKEUP_PRELUDE}${script}\n;text(await tools.wakeup(Object.fromEntries(Object.entries(__w).filter(([, v]) => v.length > 0))));`, ctx);
+
+/** `text(await tools.wakeup(<arg as JavaScript source>))`. */
+export const wakeupCall = (ctx: ToolContext, arg: string) => runScript("Wakeup", `text(await tools.wakeup(${arg}))`, ctx);

@@ -24,7 +24,8 @@ import { selfAuthorIds } from "../src/life/people.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { PRIVATE_FILE_NAME } from "../src/shared/constants/files.js";
 import { WakeupSideSchema } from "../src/shared/schemas/life.js";
-import { CHANNEL, closeWorlds, dmOf, GUILD, herEntries, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { CHANNEL, closeWorlds, dmOf, GUILD, herEntries, herFile, KEVIN, lifeWorld, MINA_BOT, ROOM, ROOM_KEY, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { applyPatch, readFile as readFile_, wakeupCalls } from "./toolCalls.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -54,7 +55,8 @@ async function ctxFor(w: LifeWorld): Promise<ToolContext> {
 }
 const run = (name: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> => lifeTool(name)!.run(input, ctx);
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
-const wakeup = async (w: LifeWorld, script: string) => text(await run("Wakeup", { script }, await ctxFor(w)));
+/** §30-style calls over tools.wakeup (tests/toolCalls.ts). */
+const wakeup = async (w: LifeWorld, script: string) => text(await wakeupCalls(await ctxFor(w), script));
 const storeOf = async (w: LifeWorld) => homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
 function message(body: string, o: Partial<WakeupMessage> = {}): WakeupMessage {
   return { placeKey: ROOM_KEY, handle: async () => "bake-club/#general", authorId: KEVIN, fromName: "Kevin", isWaifu: false, text: body, mentionsMe: false, repliesToMe: false, own: false, ...o };
@@ -112,7 +114,7 @@ describe("pages follow the owner's fetch switch and their own timing (review 5)"
     expect(await wakeup(w, 'page("https://example.com/shop", "changes", {every: "1h", for: "1d"}, "shop")')).toMatch(/^set p1 /u);
     w.setConfig((config) => ({ ...config, life: { ...config.life, webFetch: { ...config.life.webFetch, maxPerWaifuPerDay: 0 } } }));
     expect(await wakeup(w, 'page("https://example.com/other", "changes", {every: "1h", for: "1d"}, "other")')).toBe(
-      "error: line 1: page: web pages can't be checked: the owner turned page fetching off; nothing was saved"
+      "error: Error: page[0]: web pages can't be checked: the owner turned page fetching off; nothing was saved (line 2)"
     );
     // Her other wakeups still save, the unchanged page stays.
     expect(await wakeup(w, 'at("in 1h", "tea")')).toMatch(/^set t1 /u);
@@ -190,10 +192,10 @@ describe("D14: why a wakeup stopped, its error wake, her own reads (review 7)", 
     await kevinDm(w);
     const ctx = await ctxFor(w);
     expect(await wakeup(w, 'at("in 1h", "tea")')).toMatch(/^set t1/u);
-    const before = await withPlaceRecord(() => run("Read", { file_path: "~/life/wakeups.json" }, ctx));
+    const before = await withPlaceRecord(() => readFile_(ctx, "~/life/wakeups.json"));
     expect([...before.places].some((key) => key.startsWith("dm_"))).toBe(false);
     expect(await wakeup(w, 'watch("dm/kevin", {words: ["biopsy"]}, {for: "1d"}, "ask how it went")')).toMatch(/^set w1/u);
-    const read = await withPlaceRecord(() => run("Read", { file_path: "~/life/wakeups.json" }, ctx));
+    const read = await withPlaceRecord(() => readFile_(ctx, "~/life/wakeups.json"));
     expect([...read.places].some((key) => key.startsWith("dm_"))).toBe(true);
     const bash = await withPlaceRecord(() => run("Bash", { command: "cat ~/life/wakeups.json" }, ctx));
     expect(text(bash.value)).toContain("biopsy");
@@ -372,15 +374,20 @@ describe("pages and watch ends (re-review 2 and 3)", () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await kevinDm(w);
-    await wakeup(
-      w,
-      [
-        'watch("dm/kevin", {any: true}, {for: "30m"}, "his reply")',
-        'watch("everywhere", {words: ["cake"]}, {for: "30m"}, "cake")',
-        'watch("bake-club/#general", {any: true}, {for: "30m"}, "room")',
-        'watch("everywhere", [], {for: "30m"}, "tea")'
-      ].join("\n")
-    );
+    expect(
+      await wakeup(
+        w,
+        [
+          'watch("dm/kevin", {any: true}, {for: "30m"}, "his reply")',
+          'watch("everywhere", {words: ["cake"]}, {for: "30m"}, "cake")',
+          'watch("bake-club/#general", {any: true}, {for: "30m"}, "room")'
+        ].join("\n")
+      )
+    ).toMatch(/^set w1 /u);
+    // A [] timer is written in her file (tools.wakeup's watch always has a filter).
+    const line = (await herFile(w, "ella", "home/life/wakeups.json"))!.split("\n").find((entry) => entry.includes('"room"'))!;
+    const timer = JSON.stringify({ kind: "watch", places: "everywhere", filter: [], options: { for: "30m" }, note: "tea" });
+    expect(text(await applyPatch(await ctxFor(w), `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n ${line}\n+,${timer}\n*** End Patch`))).toBe("Updated: M ~/life/wakeups.json");
     w.clock.advance(31 * 60_000);
     await w.cast.scheduler.tick();
     const ends = (await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch_timeout");

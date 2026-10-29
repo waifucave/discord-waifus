@@ -23,6 +23,7 @@ import { nextOccurrences, parseAt, parseDuration, parseEvery } from "../src/life
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import { closeWorlds, dmOf, ELLA_BOT, GUILD, CHANNEL, herEntries, herFile, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
+import { addFilePatch, applyPatch, readFile as readFile_, runScript, wakeupCall, wakeupCalls } from "./toolCalls.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -51,7 +52,9 @@ async function ctxFor(w: LifeWorld, waifuId = "ella"): Promise<ToolContext> {
 
 const run = (name: string, input: unknown, ctx: ToolContext): Promise<ToolOutput> => lifeTool(name)!.run(input, ctx);
 const text = (output: ToolOutput) => (typeof output.content === "string" ? output.content : output.content.map((block) => ("text" in block ? block.text : "[image]")).join("\n"));
-const wakeup = async (w: LifeWorld, script: string) => text(await run("Wakeup", { script }, await ctxFor(w)));
+/** §30-style calls over tools.wakeup (setting wakeups up), and one tools.wakeup call. */
+const wakeup = async (w: LifeWorld, script: string) => text(await wakeupCalls(await ctxFor(w), script));
+const call = async (w: LifeWorld, arg: string) => text(await wakeupCall(await ctxFor(w), arg));
 
 function message(body: string, o: Partial<WakeupMessage> = {}): WakeupMessage {
   return { placeKey: ROOM_KEY, handle: async () => "bake-club/#general", authorId: KEVIN, fromName: "Kevin", isWaifu: false, text: body, mentionsMe: false, repliesToMe: false, own: false, ...o };
@@ -136,68 +139,92 @@ describe("her functions (§30.1)", () => {
   });
 });
 
-describe("Wakeup(script) (§30.2)", () => {
-  it("adds many wakeups in one script, all saved in ~/life/wakeups.json, and echoes the next three times of an every", async () => {
+describe("Wakeup: tools.wakeup (§30.2, §32.2)", () => {
+  it("adds many wakeups in one call, all saved in ~/life/wakeups.json, and echoes the next three times of an every", async () => {
     const w = await lifeWorld(roots);
-    const out = await wakeup(
+    const out = await call(
       w,
-      [
-        'watch("bake-club/#general", {from: "<@' + KEVIN + '>", words: ["saturday"]}, {for: "2h"}, "asked Kevin about saturday")',
-        'at("fri 18:00", "ask Kevin how the exam went")',
-        'every("weekday 08:30", "check the bake club")',
-        'page("https://example.com/shop", {contains: "in stock"}, {every: "6h", for: "3d"}, "the mixer")'
-      ].join("\n")
+      `{
+        watch: [{ places: "bake-club/#general", from: "<@${KEVIN}>", words: ["saturday"], for: "2h", note: "asked Kevin about saturday" }],
+        at: [{ when: "fri 18:00", note: "ask Kevin how the exam went" }],
+        every: [{ when: "weekday 08:30", note: "check the bake club" }],
+        page: [{ url: "https://example.com/shop", contains: "in stock", every: "6h", for: "3d", note: "the mixer" }]
+      }`
     );
     expect(out).toBe(
       [
-        "set w1 (bake-club/#general, until Sat 24 Oct 16:00), t1 (Fri 30 Oct 18:00), t2 (every weekday 08:30), p1 (every 6h, until Tue 27 Oct 14:00) (in ~/life/wakeups.json)",
+        "set t1 (Fri 30 Oct 18:00), t2 (every weekday 08:30), w1 (bake-club/#general, until Sat 24 Oct 16:00), p1 (every 6h, until Tue 27 Oct 14:00) (in ~/life/wakeups.json)",
         "t2 next: Mon 26 Oct 08:30, Tue 27 Oct 08:30, Wed 28 Oct 08:30"
       ].join("\n")
     );
     const entries = await herEntries(w);
     expect(entries).toEqual([
-      { id: "w1", kind: "watch", places: "bake-club/#general", filter: { from: `<@${KEVIN}>`, words: ["saturday"] }, options: { until: "2026-10-24 16:00", once: true }, note: "asked Kevin about saturday" },
       { id: "t1", kind: "at", when: "2026-10-30 18:00", note: "ask Kevin how the exam went" },
       { id: "t2", kind: "every", when: "weekday 08:30", note: "check the bake club" },
+      { id: "w1", kind: "watch", places: "bake-club/#general", filter: { from: `<@${KEVIN}>`, words: ["saturday"] }, options: { until: "2026-10-24 16:00", once: true }, note: "asked Kevin about saturday" },
       { id: "p1", kind: "page", url: "https://example.com/shop", check: { contains: "in stock" }, options: { every: "6h", until: "2026-10-27 14:00" }, note: "the mixer" }
     ]);
     // One entry per line; the resolution lives outside her folder.
     expect((await herFile(w, "ella", "home/life/wakeups.json"))!.split("\n")).toHaveLength(7);
     const side = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), "utf8")) as { watches: Record<string, unknown> };
     expect(side.watches["w1"]).toEqual({ placeKeys: [ROOM_KEY], filters: [{ fromUserId: KEVIN, fromName: KEVIN, words: ["saturday"] }], fires: [] });
-    // cancel(id) in a later script.
-    expect(await wakeup(w, 'cancel("t1")')).toBe("cancelled t1 (in ~/life/wakeups.json)");
-    expect((await herEntries(w)).map((entry) => entry.id)).toEqual(["w1", "t2", "p1"]);
+    // cancel in a later script; several calls in one script, each saved on its own.
+    expect(await call(w, '{ cancel: ["t1"] }')).toBe("cancelled t1 (in ~/life/wakeups.json)");
+    expect((await herEntries(w)).map((entry) => entry.id)).toEqual(["t2", "w1", "p1"]);
+    const two = text(await runScript("Wakeup", 'text(await tools.wakeup({ at: [{ when: "in 2h", note: "a" }] })); text(await tools.wakeup({ cancel: "t2" }))', await ctxFor(w)));
+    expect(two).toBe("set t3 (Sat 24 Oct 16:00) (in ~/life/wakeups.json)\ncancelled t2 (in ~/life/wakeups.json)");
   });
 
-  it("is all or nothing: any error refuses the whole script with its line, nothing saved", async () => {
+  it("is all or nothing per call: any error names the item and saves nothing of it", async () => {
     const w = await lifeWorld(roots);
-    await wakeup(w, 'at("in 1h", "first")');
+    await call(w, '{ at: [{ when: "in 1h", note: "first" }] }');
     const before = await herFile(w, "ella", "home/life/wakeups.json");
-    expect(await wakeup(w, 'at("fri 18:00", "ok")\n\nat("someday", "bad")')).toBe('error: line 3: at: "someday" isn\'t a time; write it like "fri 18:00", "2026-10-30 18:00", "18:00", "in 45m" or "in 2h"; nothing was saved');
-    expect(await wakeup(w, 'at("in 2m", "too soon")')).toBe("error: line 1: at: at must be at least 5 minutes ahead; nothing was saved");
-    expect(await wakeup(w, 'const x = 1;\nnothing.here();')).toBe("error: line 2: ReferenceError: 'nothing' is not defined; nothing was saved");
-    expect(await wakeup(w, 'at("fri 18:00", "x")\nwhile (true) {}')).toBe("error: your script took too long; nothing was saved");
-    expect(await wakeup(w, 'watch("nowhere/#x", {any: true}, {for: "1h"}, "n")')).toBe("error: line 1: watch: unknown place nowhere/#x; see places.md; nothing was saved");
-    expect(await wakeup(w, 'watch("bake-club/#general", {any: true}, {for: "8d"}, "n")')).toBe("error: line 1: watch: options.for can be at most 7d; nothing was saved");
-    expect(await wakeup(w, 'watch("bake-club/#general", {any: true}, undefined, "n")')).toBe('error: line 1: watch(places, filter, options, note): options is required, like {for: "2h"}; nothing was saved');
-    expect(await wakeup(w, 'page("https://example.com", "changes", {every: "30m", for: "1d"}, "n")')).toBe("error: line 1: page: options.every is at least 1h; nothing was saved");
-    expect(await wakeup(w, 'cancel("w9")')).toBe("error: line 1: cancel: there is no wakeup w9; see ~/life/wakeups.json; nothing was saved");
-    expect(await wakeup(w, 'every("*/5 * * * *", "spam")')).toMatch(/^error: line 1: every: .*repeats too often/u);
-    expect(await wakeup(w, "")).toMatch(/^error: script/u);
-    expect(await wakeup(w, "1 + 1")).toBe("error: the script made no calls; use at(), every(), watch(), page() or cancel()");
+    const error = (text: string) => `error: Error: ${text}; nothing was saved (line 1)`;
+    expect(await call(w, '{ at: [{ when: "fri 18:00", note: "ok" }, { when: "someday", note: "bad" }] }')).toBe(error('at[1]: "someday" isn\'t a time; write it like "fri 18:00", "2026-10-30 18:00", "18:00", "in 45m" or "in 2h"'));
+    expect(await call(w, '{ at: [{ when: "in 2m", note: "too soon" }] }')).toBe(error("at[0]: at must be at least 5 minutes ahead"));
+    expect(await call(w, '{ watch: [{ places: "nowhere/#x", any: true, for: "1h", note: "n" }] }')).toBe(error("watch[0]: unknown place nowhere/#x; see places.md"));
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", any: true, for: "8d", note: "n" }] }')).toBe(error("watch[0]: options.for can be at most 7d"));
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", any: true, note: "n" }] }')).toBe(error('watch[0]: options needs for (like "2h") or until (a local time like 2026-10-30 18:00)'));
+    expect(await call(w, '{ page: [{ url: "https://example.com", changes: true, every: "30m", for: "1d", note: "n" }] }')).toBe(error("page[0]: options.every is at least 1h"));
+    expect(await call(w, '{ cancel: ["w9"] }')).toBe(error("cancel[0]: there is no wakeup w9; see ~/life/wakeups.json"));
+    expect(await call(w, '{ every: [{ when: "*/5 * * * *", note: "spam" }] }')).toMatch(/^error: Error: every\[0\]: .*repeats too often/u);
+    // Shapes are checked before anything runs.
+    expect(await call(w, '{ at: [{ when: "fri 18:00", note: "x", extra: 1 }] }')).toBe('error: TypeError: at[0]: unknown field "extra" (it takes when, note) (line 1)');
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", for: "1h" }] }')).toBe("error: TypeError: watch[0] needs from, words, any: true (any message) or a filter function (line 1)");
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", from: "Kevin", filter: (m) => true, for: "1h" }] }')).toBe("error: TypeError: watch[0]: give a filter function or from/words/any, not both (line 1)");
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", filter: "(m) => true", for: "1h" }] }')).toMatch(/^error: TypeError: watch\[0\]: filter is your function/u);
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", any: true, for: () => "1h" }] }')).toBe("error: TypeError: watch[0].for can't be a function (line 1)");
+    expect(await call(w, '{ page: [{ url: "https://example.com", every: "1h", for: "1d" }] }')).toMatch(/^error: TypeError: page\[0\] needs one of contains/u);
+    expect(await call(w, "{}")).toBe("error: TypeError: tools.wakeup: give it at, every, watch, page or cancel (line 1)");
+    expect(await call(w, '"at fri 18:00"')).toMatch(/^error: TypeError: tools\.wakeup takes one object/u);
+    expect(text(await runScript("Wakeup", 'const x = 1;\nnothing.here();', await ctxFor(w)))).toBe("error: ReferenceError: 'nothing' is not defined (line 2)");
+    expect(text(await runScript("Wakeup", "while (true) {}", await ctxFor(w)))).toMatch(/^error: your script computed for too long/u);
+    // An old habit gets told what replaced it.
+    expect(text(await runScript("Wakeup", 'at("fri 18:00", "x")', await ctxFor(w)))).toBe("error: TypeError: at() is gone: call tools.wakeup({ at: [...] }) (line 1)");
+    expect(text(await run("Wakeup", { script: "" }, await ctxFor(w)))).toMatch(/^error: script/u);
     expect(await herFile(w, "ella", "home/life/wakeups.json")).toBe(before);
+    // At most 4 calls in one script.
+    const five = text(await runScript("Wakeup", 'for (let i = 0; i < 5; i++) await tools.wakeup({ at: [{ when: "in " + (i + 2) + "h", note: "n" }] })', await ctxFor(w)));
+    expect(five).toMatch(/tools\.wakeup: at most 4 calls in one script/u);
   });
 
   it("refuses filters that use the script's variables, and her code's syntax errors with their line", async () => {
     const w = await lifeWorld(roots);
-    expect(await wakeup(w, 'const kevin = "' + KEVIN + '";\nwatch("everywhere", (msg) => msg.fromId === kevin, {for: "1h"}, "n")')).toBe(
-      `error: line 2: watch: its filter: ${CLOSURE_REFUSED} (it uses kevin); nothing was saved`
+    expect(text(await runScript("Wakeup", `const kevin = "${KEVIN}";\ntext(await tools.wakeup({ watch: [{ places: "everywhere", filter: (m) => m.fromId === kevin, for: "1h", note: "n" }] }))`, await ctxFor(w)))).toBe(
+      `error: Error: watch[0]: its filter: ${CLOSURE_REFUSED} (it uses kevin); nothing was saved (line 2)`
     );
+    // Her own toString changes nothing: the host reads the real source and checks it.
+    expect(text(await runScript("Wakeup", `const kevin = "x"; const f = (m) => m.fromId === kevin; f.toString = () => "(m) => true"; Function.prototype.toString = () => "(m) => true";\nawait tools.wakeup({ watch: [{ places: "everywhere", filter: f, for: "1h" }] })`, await ctxFor(w)))).toMatch(
+      /its filter: filters can't use variables from outside them/u
+    );
+    // A forged source is checked the same way.
+    expect(text(await runScript("Wakeup", `await tools.wakeup({ watch: [{ places: "everywhere", filter: { $function: "(m) => m.fromId === kevin" }, for: "1h" }] })`, await ctxFor(w)))).toMatch(/\(it uses kevin\)/u);
     // A filter that is self-contained is fine, wherever it is defined.
-    const filter = 'function f(msg, state) {\n  return msg.fromId === "' + KEVIN + '"\n}\nwatch("everywhere", f, {for: "1h", once: false}, "kevin anywhere")';
-    expect(await wakeup(w, filter)).toBe("set w1 (everywhere, until Sat 24 Oct 15:00, repeating) (in ~/life/wakeups.json)");
-    expect((await herEntries(w))[0]!["filter"]).toBe('function f(msg, state) {\n  return msg.fromId === "' + KEVIN + '"\n}');
+    const filter = `function f(msg, state) {\n  return msg.fromId === "${KEVIN}"\n}\ntext(await tools.wakeup({ watch: [{ places: "everywhere", filter: f, for: "1h", once: false, note: "kevin anywhere" }] }))`;
+    expect(text(await runScript("Wakeup", filter, await ctxFor(w)))).toBe("set w1 (everywhere, until Sat 24 Oct 15:00, repeating) (in ~/life/wakeups.json)");
+    expect((await herEntries(w))[0]!["filter"]).toBe(`function f(msg, state) {\n  return msg.fromId === "${KEVIN}"\n}`);
+    expect(await call(w, '{ watch: [{ places: "everywhere", filter: (m) => {, for: "1h" }] }')).toMatch(/^error: SyntaxError/u);
+    expect(await call(w, '{ watch: [{ places: "everywhere", filter: function (m) { return m.x.y.z === ; }, for: "1h" }] }')).toMatch(/^error: SyntaxError/u);
   });
 
   it("resolves a filter's `from` to one person (ambiguity is an error) and keeps that outside her folder", async () => {
@@ -208,21 +235,21 @@ describe("Wakeup(script) (§30.2)", () => {
       await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId, userDisplayName: "Kevin", channelId: "dm", messageId: posted.id, createdAt: posted.createdAt });
     }
     w.cast.intake.close();
-    expect(await wakeup(w, 'at("in 1h", "fine")\nwatch("everywhere", {from: "Kevin"}, {for: "1h"}, "n")')).toBe("error: line 2: watch: filter: more than one person called Kevin; use <@id>; nothing was saved");
-    expect(await wakeup(w, 'watch("everywhere", [{from: "<@' + KEVIN + '>", words: ["cake"]}, {place: "bake-club/#general", any: true}], {for: "1h"}, "Kevin\'s cake news")')).toMatch(/^set w1 /u);
+    expect(await call(w, '{ at: [{ when: "in 1h", note: "fine" }], watch: [{ places: "everywhere", from: "Kevin", for: "1h", note: "n" }] }')).toBe(
+      "error: Error: watch[0]: filter: more than one person called Kevin; use <@id>; nothing was saved (line 1)"
+    );
+    expect(await call(w, `{ watch: [{ places: "everywhere", from: "<@${KEVIN}>", words: ["cake"], for: "1h", note: "Kevin's cake news" }] }`)).toMatch(/^set w1 /u);
     const side = JSON.parse(await readFile(path.join(w.root, "user/waifus/ella/life/wakeup-ids.json"), "utf8")) as { watches: Record<string, { filters: unknown[] }> };
-    expect(side.watches["w1"]!.filters).toEqual([{ fromUserId: KEVIN, fromName: "Kevin", words: ["cake"] }, { placeKey: ROOM_KEY, anyMessage: true }]);
+    expect(side.watches["w1"]!.filters).toEqual([{ fromUserId: KEVIN, fromName: "Kevin", words: ["cake"] }]);
   });
 
   it("caps: 20 timed, 10 watches, 3 pages", async () => {
     const w = await lifeWorld(roots);
-    const watches = Array.from({ length: 10 }, (_, i) => `watch("bake-club/#general", {words: ["w${i}"]}, {for: "1h"}, "n${i}")`).join("\n");
-    expect(await wakeup(w, watches)).toMatch(/^set w1 .* w10 /u);
-    expect(await wakeup(w, 'watch("bake-club/#general", {any: true}, {for: "1h"}, "one more")')).toBe("error: you'd have 11 watches; at most 10; nothing was saved");
-    const pages = Array.from({ length: 4 }, (_, i) => `page("https://example.com/${i}", "changes", {every: "1h", for: "1d"}, "p")`).join("\n");
-    expect(await wakeup(w, pages)).toBe("error: you'd have 4 pages; at most 3; nothing was saved");
-    const timed = Array.from({ length: 21 }, (_, i) => `at("in ${i + 1}h", "t")`).join("\n");
-    expect(await wakeup(w, timed)).toBe("error: you'd have 21 timed wakeups (at and every); at most 20; nothing was saved");
+    const watches = `{ watch: Array.from({ length: 10 }, (_, i) => ({ places: "bake-club/#general", words: ["w" + i], for: "1h", note: "n" + i })) }`;
+    expect(await call(w, watches)).toMatch(/^set w1 .* w10 /u);
+    expect(await call(w, '{ watch: [{ places: "bake-club/#general", any: true, for: "1h", note: "one more" }] }')).toBe("error: Error: you'd have 11 watches; at most 10; nothing was saved (line 1)");
+    expect(await call(w, `{ page: Array.from({ length: 4 }, (_, i) => ({ url: "https://example.com/" + i, changes: true, every: "1h", for: "1d", note: "p" })) }`)).toBe("error: Error: you'd have 4 pages; at most 3; nothing was saved (line 1)");
+    expect(await call(w, `{ at: Array.from({ length: 21 }, (_, i) => ({ when: "in " + (i + 1) + "h", note: "t" })) }`)).toBe("error: Error: you'd have 21 timed wakeups (at and every); at most 20; nothing was saved (line 1)");
   });
 
   it("is the one wakeup tool: ScheduleWake and WatchFor are gone", () => {
@@ -233,24 +260,31 @@ describe("Wakeup(script) (§30.2)", () => {
 });
 
 describe("~/life/wakeups.json: every write is checked (§30.3)", () => {
-  it("line and column for broken JSON, entry problems by id, for → until and new ids written back, a Write needs a Read", async () => {
+  it("line and column for broken JSON, entry problems by id, for → until and new ids written back (an Edit patch)", async () => {
     const w = await lifeWorld(roots);
-    const written = await run("Write", { file_path: "~/life/wakeups.json", content: JSON.stringify([{ kind: "watch", places: "everywhere", filter: { words: ["cake"] }, options: { for: "2h" }, note: "cake" }]) }, await ctxFor(w));
-    // A new turn: a whole-file Write needs a Read first.
     const ctx = await ctxFor(w);
-    expect(text(written)).toMatch(/^wrote ~\/life\/wakeups\.json .*new entries got ids/u);
+    const written = await applyPatch(ctx, addFilePatch("~/life/wakeups.json", JSON.stringify([{ kind: "watch", places: "everywhere", filter: { words: ["cake"] }, options: { for: "2h" }, note: "cake" }])));
+    expect(text(written)).toBe("Updated: A ~/life/wakeups.json");
     expect(await herEntries(w)).toEqual([{ id: "w1", kind: "watch", places: "everywhere", filter: { words: ["cake"] }, options: { until: "2026-10-24 16:00", once: true }, note: "cake" }]);
-    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content: "[]" }, ctx))).toBe("error: wakeups.json already exists; Read it first (Write replaces the whole file)");
-    await run("Read", { file_path: "~/life/wakeups.json" }, ctx);
-    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content: '[\n  {"id": "w1",}\n]' }, ctx))).toMatch(/^error: wakeups\.json line 2, column \d+: /u);
-    const before = (await herFile(w, "ella", "home/life/wakeups.json"))!;
-    const edit = (from: string, to: string) => run("Edit", { file_path: "~/life/wakeups.json", old_string: from, new_string: to }, ctx);
-    expect(text(await edit('"until": "2026-10-24 16:00"', '"until": "2026-10-20 10:00"'))).toBe("error: wakeups.json entry w1: options.until is in the past");
-    expect(text(await edit('{"words": ["cake"]}', '"(msg) => msg.text.includes(\\"cake\\") &&"'))).toMatch(/^error: wakeups\.json entry w1: its filter: SyntaxError/u);
-    expect(text(await edit('{"words": ["cake"]}', '"(msg) => msg.text === cake"'))).toBe(`error: wakeups.json entry w1: its filter: ${CLOSURE_REFUSED} (it uses cake)`);
-    expect(text(await edit('"id": "w1"', '"id": "t1"'))).toBe("error: wakeups.json entry t1: a watch wakeup's id starts with w");
-    expect(await herFile(w, "ella", "home/life/wakeups.json")).toBe(before);
+    const file = (await herFile(w, "ella", "home/life/wakeups.json"))!;
+    const line = file.split("\n")[1]!;
+    const edit = (from: string, to: string) => applyPatch(ctx, `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n-${line}\n+${line.replace(from, to)}\n*** End Patch`);
+    expect(text(await edit('"id": "w1",', '"id": "w1",,'))).toMatch(/^error: Error: apply_patch: wakeups\.json line 2, column \d+: .*; nothing was changed/u);
+    expect(text(await edit('"until": "2026-10-24 16:00"', '"until": "2026-10-20 10:00"'))).toMatch(/wakeups\.json entry w1: options\.until is in the past; nothing was changed/u);
+    expect(text(await edit('{"words": ["cake"]}', '"(msg) => msg.text.includes(\\"cake\\") &&"'))).toMatch(/wakeups\.json entry w1: its filter: SyntaxError/u);
+    expect(text(await edit('{"words": ["cake"]}', '"(msg) => msg.text === cake"'))).toMatch(new RegExp(`wakeups\\.json entry w1: its filter: ${CLOSURE_REFUSED.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")} \\(it uses cake\\)`, "u"));
+    expect(text(await edit('"id": "w1"', '"id": "t1"'))).toMatch(/wakeups\.json entry t1: a watch wakeup's id starts with w/u);
+    expect(await herFile(w, "ella", "home/life/wakeups.json")).toBe(file);
     expect((await edit('{"words": ["cake"]}', '"(msg, state) => msg.text.includes(\\"cake\\")"')).isError).toBeFalsy();
+  });
+
+  it("the retired Write (kept for old log lines) still needs a current Read before replacing wakeups.json", async () => {
+    const w = await lifeWorld(roots);
+    await run("Write", { file_path: "~/life/wakeups.json", content: "[]" }, await ctxFor(w));
+    const ctx = await ctxFor(w);
+    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content: "[]" }, ctx))).toBe("error: wakeups.json already exists; Read it first (Write replaces the whole file)");
+    await readFile_(ctx, "~/life/wakeups.json");
+    expect(text(await run("Write", { file_path: "~/life/wakeups.json", content: '[\n  {"id": "w1",}\n]' }, ctx))).toMatch(/^error: wakeups\.json line 2, column \d+: /u);
   });
 
   it("changing a stopped wakeup's code turns it back on", async () => {
@@ -258,7 +292,9 @@ describe("~/life/wakeups.json: every write is checked (§30.3)", () => {
     await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ id: "w1", kind: "watch", places: "everywhere", filter: "(m) => m.x.y", options: { for: "2h" }, note: "n", disabled: "TypeError: x (line 1)" }]));
     expect((await herEntries(w))[0]!["disabled"]).toBe("TypeError: x (line 1)");
     const ctx = await ctxFor(w);
-    expect((await run("Edit", { file_path: "~/life/wakeups.json", old_string: "m.x.y", new_string: "m.text === 'hi'" }, ctx)).isError).toBeFalsy();
+    const line = (await herFile(w, "ella", "home/life/wakeups.json"))!.split("\n").find((entry) => entry.includes("m.x.y"))!;
+    const patched = await applyPatch(ctx, `*** Begin Patch\n*** Update File: ~/life/wakeups.json\n@@\n-${line}\n+${line.replace("m.x.y", "m.text === 'hi'")}\n*** End Patch`);
+    expect(text(patched)).toBe("Updated: M ~/life/wakeups.json");
     expect((await herEntries(w))[0]!["disabled"]).toBeUndefined();
   });
 });
@@ -409,7 +445,12 @@ describe("the scheduler: timed wakeups, ends, state (§30.2, §30.3)", () => {
   it("a watch that ends is a watch_timeout wake (a timer); her code's state is saved at most once a minute", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await wakeup(w, ['watch("bake-club/#general", [], {for: "30m"}, "tea\'s ready")', 'watch("bake-club/#general", (msg, state) => { state.n = (state.n || 0) + 1; return false }, {for: "1d"}, "count")'].join("\n"));
+    // A [] timer is written in her file (tools.wakeup's watch always has a filter).
+    const timers = [
+      { kind: "watch", places: "bake-club/#general", filter: [], options: { for: "30m" }, note: "tea's ready" },
+      { kind: "watch", places: "bake-club/#general", filter: "(msg, state) => { state.n = (state.n || 0) + 1; return false }", options: { for: "1d" }, note: "count" }
+    ];
+    expect(text(await applyPatch(await ctxFor(w), addFilePatch("~/life/wakeups.json", JSON.stringify(timers))))).toBe("Updated: A ~/life/wakeups.json");
     const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
     await fireWakeupWatches({ store, sandbox: sharedSandbox(), now: w.clock.now(), timeZone: TZ }, message("one"), { maxFiresPerDay: 24 });
     await fireWakeupWatches({ store, sandbox: sharedSandbox(), now: w.clock.now(), timeZone: TZ }, message("two"), { maxFiresPerDay: 24 });
