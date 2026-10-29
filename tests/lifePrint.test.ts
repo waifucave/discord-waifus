@@ -160,6 +160,27 @@ describe("/print life", () => {
     expect(JSON.stringify(room.map((entry) => viewLogLine(entry, roomScan, { includePrivate: false }).view))).toContain("Mina: dm_ me the recipe");
   });
 
+  it("an unrecorded tool script that names a DM anywhere in it is a DM call, also one that never parsed (§32, D14)", () => {
+    const scripts = [
+      'text(await tools.send_message({ place: "dm/kevin", messages: [{ text: "Your secret is safe." }] }))',
+      "const who = 'DM/Kevin';\nawait tools.send_message({ place: who, messages: [{ text: \"Your secret is safe.\" }] })",
+      `${"// filler\n".repeat(2_000)}await tools.read_messages({ place: "<dm/kevin>" })`,
+      'await tools.send_message({ place: "dm/kevin", messages: [{ text: "Your secret is safe." }'
+    ];
+    for (const code of scripts) {
+      const lines: LifeLogLine[] = [
+        line(0, "notifications", { role: "user", content: [{ type: "text", text: '<notifications>\n- mention · bake-club/#general · from Mia · "ella??"\n</notifications>' }] }),
+        line(1, "assistant", { role: "assistant", content: [{ type: "text", text: "Kevin trusted me." }, { type: "tool_use", id: "c1", name: "SendMessage", input: { script: code } }] }),
+        line(2, "tool_results", { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "sent #a1 (recovered)" }] })
+      ];
+      const scan = scanDmContent(lines);
+      expect(scan.dmCalls.has("c1"), code.slice(-80)).toBe(true);
+      const shown = JSON.stringify(lines.map((entry) => viewLogLine(entry, scan, { includePrivate: false }).view));
+      expect(shown).not.toContain("secret is safe");
+      expect(shown).not.toContain("trusted");
+    }
+  });
+
   it("an unrecorded call is matched the way resolvePlace reads places: any case, spaces, <…> (review I-1)", () => {
     for (const place of ["dm/kevin", "DM/kevin", "Dm/Kevin", " dm/kevin", "dm/kevin ", "<dm/kevin>", "\ndm/kevin", "dm_300000000000000003_ella"]) {
       const lines: LifeLogLine[] = [

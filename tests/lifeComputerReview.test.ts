@@ -20,7 +20,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { AppConfigSchema } from "../src/shared/schemas/config.js";
 import { textTurn } from "./modelFakes.js";
 import { FakeImageFetcher } from "./contextFixtures.js";
-import { CHANNEL, closeWorlds, GUILD, herEntries, herFile, homeOf, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
+import { CHANNEL, closeWorlds, dmOf, GUILD, herEntries, herFile, homeOf, KEVIN, lifeWorld, ROOM, script, tinyPng, toolTurn, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 import { addFilePatch, applyPatch, readFile as readFile_, readMessages, replaceFilePatch, runScript, sendMessage, wakeupCalls } from "./toolCalls.js";
 
@@ -200,8 +200,30 @@ describe("DM files touched by Bash or Write are DM calls (review S5)", () => {
     }
     expect([...(await recorded("Bash", { command: "cd /tmp; mkdir keep; mv d? keep/x" }))].some((place) => place.startsWith("dm_"))).toBe(true);
     expect([...(await recorded("Write", { file_path: "/tmp/keep/x/kevin/a8-note.txt", content: "overwritten" }))].some((place) => place.startsWith("dm_"))).toBe(true);
+    // Tool scripts (§32): paths and places her code computes, so no DM handle is in the script's text.
+    const dmKey = (places: Set<string>) => [...places].some((place) => place === DM_KEY || place.startsWith(`dm_${KEVIN}`));
+    await store.saveDownload(store.path("tmp", ["dm", "kevin", "a9-list.txt"]), Buffer.from("milk\n"), meta("3"));
+    const patch = 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: /tmp/d" + "m/kevin/a9-list.txt\\n@@\\n-milk\\n+oat milk\\n*** End Patch"))';
+    const edited = await withPlaceRecord(() => run("Edit", { script: patch }, ctx));
+    expect(text(edited.value)).toBe("Updated: M /tmp/dm/kevin/a9-list.txt");
+    expect(dmKey(edited.places)).toBe(true);
+    // A copy of a DM file in her home (same bytes) is one too: patching it is a DM call.
+    await store.saveDownload(store.path("tmp", ["dm", "kevin", "a10-plan.txt"]), Buffer.from("saturday\n"), meta("4"));
+    await run("Bash", { command: "cp /tmp/dm/kevin/a10-plan.txt ~/plan.txt" }, ctx);
+    expect(await store.dmOrigin((await store.resolveExisting("~/plan.txt")).path!)).toBe(DM_KEY);
+    const copied = await withPlaceRecord(() => run("Edit", { script: 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: ~/plan.txt\\n@@\\n-saturday\\n+sunday\\n*** End Patch"))' }, ctx));
+    expect(dmKey(copied.places)).toBe(true);
+    expect(dmKey(await recorded("Read", { script: 'text(await tools.read_file({ path: "/tmp/keep/x/kevin/" + "a7-results.pdf" }))' }))).toBe(true);
+    // Kevin DMs her, so dm/kevin is one of her places.
+    const dm = w.discord.post(dmOf("ella"), "hi ella");
+    await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
+    w.cast.intake.close();
+    expect(dmKey(await recorded("ReadMessages", { script: 'text(await tools.read_messages({ place: "d" + "m/kevin" }))' }))).toBe(true);
+    // A script that fails after reading one records it too.
+    expect(dmKey(await recorded("ReadMessages", { script: 'await tools.read_messages({ place: "d" + "m/kevin" }); throw new Error("x")' }))).toBe(true);
     // A command that touches nothing of a DM records nothing.
     expect([...(await recorded("Bash", { command: "echo hi" }))]).toEqual([]);
+    expect([...(await recorded("Read", { script: 'text(await tools.read_file({ path: "~/MEMORY.md" }))' }))]).toEqual([]);
   });
 });
 
