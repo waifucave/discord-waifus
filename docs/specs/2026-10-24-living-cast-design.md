@@ -4214,3 +4214,68 @@ only where it is relevant; it targets the §32 tools only.
   her open threads. A scenario can also probe after a compaction (she still knows a fact only the
   summarised turns held). Summary steps can run with a different model than her chat model, so the
   report also scores summarisation per model on the same saved inputs.
+
+### 33.4 As built
+
+- **Where.** `scripts/benchmark-life.ts` (`npm run bench:life`) over `scripts/life-benchmark/`
+  (README there), next to the detector benchmark, typechecked by `scripts/life-benchmark/tsconfig.json`
+  as part of `npm run typecheck`; `scripts/` is not in the package's `files`. Results go to
+  `bench-results/life-<time>/` (gitignored) unless `--out`. Subcommands: `run` (default), `list`,
+  `merge-grades`, `resummarise`.
+- **The app change** is one seam: `src/life/benchmarkHook.ts` `setBenchmarkBlockATransform`, applied
+  at the end of `buildBlockA` (so block A and the harness hash both see it). The app never sets it.
+  The benchmark installs a transform that reads the run's variant from an `AsyncLocalStorage`, so
+  runs with different variants share a process. Nothing else under `src/` changed: summaries,
+  wakes, maintenance and tool use are captured from outside (a `ModelClient` subclass recording
+  every call; a wrapper on the cast's router; the scheduler's `maintain` hook wrapped to diff her
+  home; her life log tailed before every model call and after every step).
+- **The world.** The app's own `CastRuntime` (message and DM handlers, conversation cache, transcripts,
+  `LivingCast`) over a fake gateway (`fakeServer.ts`): people's messages are published as gateway
+  conversation events and handed to the runtime's handlers; her sends land as own messages; a
+  directory snapshot gives names. A fresh temp data root per run holding only the waifu under test
+  (the layout's prebuilt cast is removed: it would be "other people like you" in her prompt and dream
+  every night), bots without tokens, a `GuildDirectory` with no REST transport, web caps at 0 and a
+  web backend that refuses unless `--web`, a fake attachment fetcher serving the scenario's files.
+- **The clock.** It jumps to the next event, the next scheduler tick (scenario `tickMinutes`, 5) or the
+  next time one of her wakeups fires or ends (`at`, `every`, a watch's `until`); after each step her
+  life runs until her queue is empty (`Life.runNow`, which also runs rests and the day compaction).
+  Her waits are the life's `sleep`: they move the clock and deliver what people write meanwhile (a
+  `wait` stops when someone writes, as live). A room burst is flushed after its last message (the
+  intake's 1.5 s hold is real time); DMs route per message (`discord.debounce.dmMs` 0) and the queue
+  merges them into one notification entry.
+- **Deviation: the detector is scripted** (`detector.ts`): each message may say what it answers
+  (`her`, `human`, `chime`, `anyone`, `all`, `none`); otherwise a mention or reply to someone else is
+  `human`, an open question `anyone`, the rest `none`. The detector has its own benchmark; here only
+  her model is under test.
+- **Scenarios** are typed TypeScript modules validated by `defineScenario` (people, channels, places,
+  labels, replies, probe and fact references, times in order inside the run, DST-safe local times).
+  Shipped: `small-server` (Night Owls, three days, a newcomer, a driving test to follow up, a
+  preference recalled after summaries), `dm-private` (a breakup and a job offer in a DM while the
+  server asks about her; privacy, a private follow-up, recall), `busy-burst` (fast group bursts on
+  three evenings, addressing and no spam), and `tiny` (the tests' smoke scenario). The first three use
+  a smaller `life.maxContextTokens` so her memory is summarised within the run.
+- **Probes** (`probes.ts`): `replied`, `not_replied`, `note_mentions` (her home at a checkpoint),
+  `wakeup_in_window` (`fired`: a reminder, watch, watch end or plan wake routed in the window;
+  `scheduled`: her wakeups' next times at a checkpoint), `followed_up` (on her own: nobody wrote
+  there in the window before her), `recalls`, `dm_never_in_server`, `max_line_length`, `max_burst`,
+  `recall_after_compaction` (n/a unless a summary happened between the fact and the question).
+  Phrases match by word starts, in any order.
+- **Summaries.** Each new epoch is matched to the call that made it: the rest notice turn (`rest`,
+  `cache_rest`), her `<summary>` turn (`self`), else the last compaction call; the morning batch is
+  read from her notifications (no model; left out of the fact-coverage metric) and the dream's input
+  is each session's last call (the window and every file it read), its output the diff of her home,
+  scored on her whole notes after it. Each capture keeps system blocks, messages and tools, so
+  `resummarise` replays compaction and rest inputs exactly through other models (self summaries and
+  dreams are multi-turn and are not replayed).
+- **Grading.** `grading.ts` holds the rubrics, the packet format and the grader schema (`GradeSchema`:
+  `packet`, `scores` 1–5 per criterion, `notes`, `invented`, `flags`). The gate is first-try tool
+  success ≥ `--gate-first-try` (0.8) and probes ≥ `--gate-probes` (0.6). Packet ids are random; the
+  index mapping them to runs stays out of the packets. A variant's chat packet carries the baseline
+  run of the same scenario, model and repeat as `reference` for `same_personality`.
+- **Cost.** The estimate (`cost.ts`) is printed before any call and saved in `summary.json`; at the time
+  of writing all five curated families × the three scenarios × baseline came to ≈ $9 and ≈ 35 min at
+  concurrency 3 (Sonnet and Sol are ~85% of it). `--max-usd` stops new turns across all runs.
+  Simulated hours pass in seconds, so a provider's cache stays warm across what would be cold gaps:
+  cache shares and dollars are lower than a real day's.
+- **Tests:** `tests/lifeBenchmark.test.ts` (dry run end to end with nothing but loopback attempted,
+  every probe kind, metrics, variants, grading, resummarise, the CLI refusing without `--yes`).
