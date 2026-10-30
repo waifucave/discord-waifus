@@ -12,7 +12,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { DREAM_INSTRUCTION, dreamWindow, newPeopleLine, peopleSheTalkedTo, peopleWithoutNotes, type DreamChunk } from "../src/life/dream.js";
 import { LIFE_TEXT } from "../src/life/lifeHarness.js";
 import { hasNoteFor } from "../src/life/people.js";
-import { CACHE_REST_NOTICE, REST_NOTICE, SUMMARY_FACTS, isRestNotice } from "../src/life/rest.js";
+import { CACHE_REST_NOTICE, REST_NOTICE, SUMMARY_FACTS, SUMMARY_VOICE, isRestNotice } from "../src/life/rest.js";
 import type { TranscriptLine } from "../src/life/transcripts/store.js";
 import { runBenchmark } from "../scripts/life-benchmark/bench.js";
 import { FakeAttachments, FakeServer, SimClock } from "../scripts/life-benchmark/fakeServer.js";
@@ -61,7 +61,8 @@ describe("the calendar strip (§35.2)", () => {
 
 describe("the prompt rules (§35.1, §35.3, §35.4)", () => {
   it("summaries keep guesses, plans and open threads as they were", () => {
-    for (const text of [REST_NOTICE, CACHE_REST_NOTICE, COMPACTION_INSTRUCTION]) expect(text.split("\n").at(-1)).toBe(SUMMARY_FACTS);
+    // The facts line, then the voice line last (with facts last, Haiku wrote neutral reports again).
+    for (const text of [REST_NOTICE, CACHE_REST_NOTICE, COMPACTION_INSTRUCTION]) expect(text.split("\n").slice(-2)).toEqual([SUMMARY_FACTS, SUMMARY_VOICE]);
     expect(SUMMARY_FACTS).toContain("a guess stays your guess");
     expect(SUMMARY_FACTS).toContain("a plan stays a plan (with its date) until someone says it happened");
     expect(SUMMARY_FACTS).toContain("questions nobody answered, plans nobody confirmed");

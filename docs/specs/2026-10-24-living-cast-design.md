@@ -4676,10 +4676,12 @@ person only), stores and records the repaired message, and keeps her model's own
 - **Facts line** (`src/life/rest.ts` `SUMMARY_FACTS`): "Write only what someone actually said or did,
   and who said it: a guess stays your guess, a plan stays a plan (with its date) until someone says it
   happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open: questions nobody
-  answered, plans nobody confirmed, someone who didn't reply." The last line of `REST_NOTICE`,
-  `CACHE_REST_NOTICE` and `COMPACTION_INSTRUCTION` (after `SUMMARY_VOICE`; deleted messages and
-  forgotten people still follow it), and appended after "Keep names, times and facts exact." in
-  `LIFE_TEXT`'s summary paragraph. The rest notices' first 60 characters are unchanged, so
+  answered, plans nobody confirmed, someone who didn't reply." The line before `SUMMARY_VOICE` in
+  `REST_NOTICE`, `CACHE_REST_NOTICE` and `COMPACTION_INSTRUCTION` (deleted messages and forgotten
+  people still follow the voice line), and appended after "Keep names, times and facts exact." in
+  `LIFE_TEXT`'s summary paragraph (a system block, not the last thing she reads before writing). It first shipped after the voice line; the re-bench (life-2026-10-30T16-03-52, graded
+  blind together with the morning's medium runs) had Haiku's own summaries drop to neutral reports
+  (voice 4.85 → 2.48) with the facts line last, so the voice line went back to last. The rest notices' first 60 characters are unchanged, so
   `isRestNotice` and the benchmark's variant check still hold.
 - **Calendar** (`calendarStrip` in `src/life/clock.ts`, from `localParts` and calendar-day arithmetic,
   so DST never shifts a day): "Calendar as of Thu 26 Nov (look dates up here, don't count): last week

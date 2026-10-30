@@ -378,7 +378,7 @@ export async function compactRetiredTools(
 }
 
 /** The summary request's instruction (owner wording of 2026-10-27), then the voice line (§19.8) and the facts line (§35.1). */
-export const COMPACTION_INSTRUCTION = `[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.\n${SUMMARY_VOICE}\n${SUMMARY_FACTS}`;
+export const COMPACTION_INSTRUCTION = `[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.\n${SUMMARY_FACTS}\n${SUMMARY_VOICE}`;
 
 export type CompactionOmissions = { deleted: string[]; people: string[] };
 

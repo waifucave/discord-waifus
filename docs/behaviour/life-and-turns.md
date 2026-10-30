@@ -289,14 +289,14 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
   forward, including what still matters from your last summary. Write it clearly, so you won't
   misunderstand it later without what you can see now. Write what happened and how you feel, not
   rules for yourself. Reply with text only; your tools aren't available here." Then, on its own
-  line, the voice line (`SUMMARY_VOICE`, shipped 2026-10-29 from the life benchmark's `own-voice`
-  variant): "Write it as your own memory: in the first person, in your own voice and style (your
-  casing, your tone), not as a neutral report or a log. Keep names, times and facts exact." Then, on
-  its own line, the facts line (`SUMMARY_FACTS`, 2026-10-30, spec §35.1): "Write only what someone
+  line, the facts line (`SUMMARY_FACTS`, 2026-10-30, spec §35.1): "Write only what someone
   actually said or did, and who said it: a guess stays your guess, a plan stays a plan (with its date)
   until someone says it happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open:
-  questions nobody answered, plans nobody confirmed, someone who didn't reply." Deleted messages and
-  forgotten people are listed for omission on lines after it. After a blank line come the calendar
+  questions nobody answered, plans nobody confirmed, someone who didn't reply." Then, on its own line,
+  the voice line, last (`SUMMARY_VOICE`, shipped 2026-10-29 from the life benchmark's `own-voice`
+  variant): "Write it as your own memory: in the first person, in your own voice and style (your
+  casing, your tone), not as a neutral report or a log. Keep names, times and facts exact."
+  Deleted messages and forgotten people are listed for omission on lines after it. After a blank line come the calendar
   (§35.2, `calendarStrip` in `clock.ts`: "Calendar as of Thu 26 Nov (look dates up here, don't count):
   last week Mon 16 Nov · … · Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29
   Nov; next week Mon 30 Nov · … · Sun 6 Dec." in her zone; dated in its first words, so the copy a rest
@@ -333,8 +333,8 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   anything that should last can go into your notes now. Then write, in your own way, whatever you
   want to carry forward. Write it clearly, so you won't misunderstand it later without what you can
   see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this
-  turn." Then, on their own lines, the same voice and facts lines as the compaction instruction ("Write
-  it as your own memory: …", 2026-10-29; "Write only what someone actually said or did, …", 2026-10-30).
+  turn." Then, on their own lines, the same facts and voice lines as the compaction instruction ("Write
+  only what someone actually said or did, …", 2026-10-30; "Write it as your own memory: …", 2026-10-29).
   Then the calendar as its own text block (§35.2), then her time line. Same system blocks and tools (the cache holds). A
   rest turn is recognised by the notice's first 60 characters (`isRestNotice`), in this wording (with
   or without the voice line, which comes later) or the earlier one ("…When this turn ends, your
@@ -376,7 +376,7 @@ with a large context, she rests while the cache is still warm (`src/life/cacheRe
   (the morning `day` compaction comes first); up late, dozing, or asleep with more than an hour of
   bed time left, it does come.
 - **The turn**: the rest turn above, opened by `CACHE_REST_NOTICE`: the same notice with "You've been
-  quiet a while; this is a good moment to rest." appended to its first line, then the voice and facts
+  quiet a while; this is a good moment to rest." appended to its first line, then the facts and voice
   lines and the calendar; the same refusals.
 - **Accepted**: a new epoch from her summary, boundary reason `cache_rest` (Life: "rested (her own
   summary, before her cache went cold)").
