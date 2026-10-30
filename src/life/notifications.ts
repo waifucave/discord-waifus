@@ -71,7 +71,21 @@ export type NotificationView = {
   timeZone: string;
   /** Lines per place (§20); `NOTIFICATION_LINES_PER_PLACE` when absent. */
   linesPerPlace?: number;
+  /**
+   * Her unanswered streak in a place (§34), already worded ("you've written in bake-club/#general 3
+   * times since anyone answered (since Tue 21:00)"), when it is long enough to show; looked up for the
+   * places her own ended watches named.
+   */
+  unanswered?(placeKey: string): string | undefined;
 };
+
+/** The ` · you've written in … since anyone answered (…)` parts of an ended watch, one per place that has one. */
+function unansweredParts(wake: Wake, view: NotificationView): string {
+  return (wake.watchedPlaces ?? []).flatMap((key) => {
+    const text = view.unanswered?.(key);
+    return text ? [` · ${text}`] : [];
+  }).join("");
+}
 
 /**
  * A quoted part on one line: its own double quotes become single ones and line breaks become spaces,
@@ -188,7 +202,8 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
       return (wake.plans ?? []).map((plan) => `- ${REASON_LABELS.plan} · ${plan.at} · ${quote(plan.what)}`);
     case "watch_timeout":
       // §16.5: a watch always ends at its timeout, so an empty one is a timer.
-      return [`- ${REASON_LABELS.watch_timeout} · your note: ${quote(wake.note ?? "")}`];
+      // §34: and, for a place it watched, how often she has written there with no answer.
+      return [`- ${REASON_LABELS.watch_timeout} · your note: ${quote(wake.note ?? "")}${unansweredParts(wake, view)}`];
     case "owner":
       return [`- ${REASON_LABELS.owner}${wake.note ? ` · ${quote(wake.note)}` : ""}`];
     case "morning":
@@ -387,7 +402,7 @@ export function morningBatch(
     }
   }
   for (const item of o.items) {
-    if (item.reason === "watch_timeout") lines.push(`  · watch timed out (${dayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}`);
+    if (item.reason === "watch_timeout") lines.push(`  · watch timed out (${dayTimeText(new Date(item.at), view.timeZone)}) · your note: ${quote(item.note ?? "")}${unansweredParts(item, view)}`);
   }
   for (const item of o.items) {
     if (item.reason === "reminder") lines.push(`  · reminder (${dayTimeText(new Date(item.at), view.timeZone)}): ${quote(item.note ?? "")}`);

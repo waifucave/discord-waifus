@@ -26,6 +26,7 @@ import { isOnlyToolCallSyntax, MAX_TYPING_DELAY_MS, stripCopiedHeader, typingDel
 import { forgottenPeople, isRemovedMessage } from "../people.js";
 import { placeLabel, placesWithHandles, refreshPlaces, resolvePlace, type ResolvedPlace } from "../places.js";
 import { notePlace } from "../placeRecorder.js";
+import { readUnanswered, showsUnanswered, unansweredReceipt, unansweredText } from "../unanswered.js";
 import { refsForMessages } from "../messageRefs.js";
 import { entryHeader, entryLine, type LineMessage, type LineView } from "../render.js";
 import {
@@ -347,6 +348,12 @@ async function pagePlace(ctx: ToolContext, place: ResolvedPlace, query: ReadQuer
   text.push(...withDayLines(rendered, now, tz));
   if (page.messages.length === 0) text.push("(no messages)");
   if (page.hasNewer && newest) text.push(`— more after: after ${anchorText(refs.get(newest.id), newest.createdAt, tz, "after")} —`);
+  // A page that reaches now (the latest, or after an anchor up to now) ends with her unanswered
+  // streak there, when it is long enough (§34).
+  if (!page.hasNewer && !query.before && !query.around) {
+    const streak = await readUnanswered(deps, ctx.selfAuthorIds, place.placeKey);
+    if (showsUnanswered(streak)) text.push(`— ${unansweredText(streak, { dm: place.kind === "dm", now, timeZone: tz })} —`);
+  }
   // Only the latest page moves her read cursor (what she has caught up on).
   if (!query.before && !query.after && !query.around && newest) await advanceReadCursor(deps.storage, ctx.waifu.id, place.placeKey, newest.id, now);
   return { text: text.join("\n"), ids };
@@ -1228,6 +1235,12 @@ export async function runSend(
   return { place, sentIds, refs, reacted, ...(stop ? { stop } : {}), cameLines, left, ...(nudge ? { nudge } : {}), steps: ready.length };
 }
 
+/** The receipt's "let it rest" sentence when her sends there have gone unanswered twice or more (§34). */
+async function unansweredAfterSend(ctx: ToolContext, place: ResolvedPlace): Promise<string | undefined> {
+  const streak = await readUnanswered(ctx.deps, ctx.selfAuthorIds, place.placeKey);
+  return showsUnanswered(streak) ? unansweredReceipt(streak, { dm: place.kind === "dm", now: ctx.deps.now(), timeZone: ctx.deps.timeZone }) : undefined;
+}
+
 /** Whether a send did nothing and stopped for a reason other than a wait (an error for her). */
 function sendFailed(outcome: SendOutcome): string | undefined {
   const { stop } = outcome;
@@ -1267,6 +1280,8 @@ export async function sendMessageTool(input: unknown, ctx: ToolContext): Promise
     lines.push(...outcome.cameLines, ...outcome.left);
   } else lines.push(done.join(", "));
   if (outcome.nudge) lines.push(outcome.nudge);
+  const letItRest = outcome.sentIds.length > 0 ? await unansweredAfterSend(ctx, place) : undefined;
+  if (letItRest) lines.push(letItRest);
   const came = stop?.kind === "wait" ? stop.came : [];
   return {
     content: lines.join("\n"),
@@ -1358,7 +1373,7 @@ function refOfArg(raw: string): string | undefined {
 }
 
 /** The script's send state: its calls run one at a time, numbered, its waits and typing counted together. */
-type SendScript = { queue: Promise<unknown>; calls: number; started: number; nextLine: number; waited: number };
+type SendScript = { queue: Promise<unknown>; calls: number; started: number; nextLine: number; waited: number; unanswered: Set<string> };
 
 /** One `tools.send_message({ place, messages })` (§32.2). */
 async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, script: SendScript): Promise<Record<string, unknown>> {
@@ -1434,14 +1449,17 @@ async function sendMessageCall(arg: unknown, ctx: ToolContext, run: ScriptRun, s
   }
   if (outcome.nudge) result["note"] = outcome.nudge;
   const did = [sent.length > 0 ? `sent ${sent.join(" ")}` : "", reactions.length > 0 ? `reacted to ${reactions.join(" ")}` : ""].filter(Boolean).join(", ");
-  run.receipts.push(`send_message to ${placeArg}: ${did || "nothing sent"}; ${ran}`);
+  // After a send that leaves her unanswered there twice or more (§34): once per place per script, soft.
+  const letItRest = sent.length > 0 && !script.unanswered.has(place.placeKey) ? await unansweredAfterSend(ctx, place) : undefined;
+  if (letItRest) script.unanswered.add(place.placeKey);
+  run.receipts.push(`send_message to ${placeArg}: ${did || "nothing sent"}; ${ran}${letItRest ? `. ${letItRest}` : ""}`);
   return result;
 }
 
 async function sendScriptTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> {
   // A call with a place is one from before §32 (a §27 script of lines, or one message).
   if (input !== null && typeof input === "object" && "place" in input) return sendMessageTool(input, ctx);
-  const script: SendScript = { queue: Promise.resolve(), calls: 0, started: 0, nextLine: 1, waited: 0 };
+  const script: SendScript = { queue: Promise.resolve(), calls: 0, started: 0, nextLine: 1, waited: 0, unanswered: new Set() };
   return runScriptTool(input, ctx, {
     tool: "SendMessage",
     functions: [

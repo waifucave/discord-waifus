@@ -86,7 +86,9 @@ page was cut (a time is named when the edge message has no ref, with its weekday
 2026-09-01 10:05`, which reads back as an anchor; any anchor date may carry a weekday in front, and
 the date wins); `— Sat 24 Oct —` lines where each day starts when the page is not all today;
 `(no messages)` when empty. A search says where it searched with weekdays too: `(searched Fri
-2026-10-23 – Sat 2026-10-24)`.
+2026-10-23 – Sat 2026-10-24)`. A page that reaches now (no `before` or `around`, nothing newer) ends
+with `— you've written here 3 times since anyone answered (since Tue 21:00) —` when her unanswered
+sends there are two or more (see [Unanswered sends](#unanswered-sends)).
 
 **Effects**:
 
@@ -192,7 +194,10 @@ or a place no longer hers stops the rest (`send_failed`, `you can't post there`)
 script does with the result, the host adds a receipt after her output (§32.3a): `[receipt]
 send_message to bake-club/#general: sent #k9; stopped (someone wrote during the wait): messages[2]
 and after were not sent`; a send she never waited for is waited for, and a send that began is never
-reported as not sent. When nothing went out it throws: one item alone gives just the reason (`tools.send_message:
+reported as not sent. A send that leaves her unanswered sends there at two or more adds, once per
+place per script: `. No one has answered your last 3 here (since Tue 21:00). Let it rest: wait for
+someone to write before you write here again.` (a DM: `They haven't answered … wait for them to
+write …`). It never refuses or holds a send. When nothing went out it throws: one item alone gives just the reason (`tools.send_message:
 they can't receive your messages right now`), a longer call `tools.send_message: messages[0]: the
 message could not be sent; nothing was sent`.
 
@@ -227,6 +232,22 @@ refused for length.
 
 The `React` tool (`React(place, ref, emoji)`, `reactTool`) is kept for old log lines but no longer
 offered (§32): she reacts with a `{ react, to }` item of `send_message`, with the same rules.
+
+## Unanswered sends
+
+(2026-10-30, spec §34; `src/life/unanswered.ts`.) Per place, the number of her separate sends there
+since anyone else last wrote (in a DM, the other person; in a room, anyone, other waifus included),
+and when that streak began. Nothing new is stored: it is read from the conversation's latest page
+(50 messages, the cache's buffer while the conversation is trusted) and, when that page holds only her
+messages, from the place's transcript days, newest first, at most 14 days back.
+
+- **A send, not a message**: her messages less than 5 minutes after her previous one there are one
+  send (`UNANSWERED_SEND_GAP_MS`), so one `send_message` with three lines, or two calls in one turn,
+  count once (unless they are 5 minutes or more apart).
+- **Shown from 2** (`UNANSWERED_NOTICE_FROM`, not a setting): on her ended watches' notification
+  lines, at the end of a ReadMessages page that reaches now, and in the SendMessage receipt. The start
+  reads with its weekday: `Tue 21:00` within the last six days, else `Mon 26 Oct 23:50`.
+- **Soft**: it never blocks, holds or refuses a send. A failure to read it shows nothing.
 
 ## Spec differs
 

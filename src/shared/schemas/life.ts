@@ -86,6 +86,8 @@ export const WakeSchema = z.object({
   wakeups: z.array(FiredWakeupSchema).optional(),
   /** watch from a page wakeup (§30.2 `page`): the page polled. */
   url: z.string().optional(),
+  /** watch_timeout: the places the ended watch named (their keys; none for "everywhere"), for her unanswered line (§34). */
+  watchedPlaces: z.array(z.string().min(1)).max(10).optional(),
   setAt: IsoDateStringSchema.optional(),
   /** Every message of the burst or the merged wakes, oldest first (the newest `MAX_WAKE_MESSAGES`). */
   messages: z.array(WakeMessageSchema).optional(),

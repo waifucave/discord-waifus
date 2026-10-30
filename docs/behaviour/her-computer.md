@@ -228,7 +228,9 @@ wakeup to `~/life/wakeups.json` (or cancels one). Up to 40 items per call, 4 cal
   is fetched. A fire is a `watch` wake with the page's URL.
 - **Ends**: a watch or page whose `until` passes is removed and she gets `watch timed out · your
   note: …` (`watch_timeout`; a DM wake for a watch on a DM or on "everywhere", not for a `[]` timer),
-  so a watch works as a timer.
+  so a watch works as a timer. The wake keeps the places the watch named (`watchedPlaces`), so the
+  line adds how often she has written there with no answer when that is twice or more (spec §34,
+  [messages-and-refs.md](messages-and-refs.md#unanswered-sends)).
 - **Timed ones**: a due `at` or `every` is routed as a `reminder` wake under a fixed id per occurrence
   (`w-reminder-<id>-<time>`), recorded, then the `at` is removed (an `every` stays); a late `at` fires
   once at the first tick, an `every` counts from when it was first seen (a new one never fires a past

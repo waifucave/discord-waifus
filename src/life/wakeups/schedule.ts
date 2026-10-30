@@ -83,7 +83,24 @@ export function timedWake(item: DueTimed): Wake {
  * on "everywhere") is about a private chat: a DM wake (D14), like its error wake.
  */
 export function endWake(item: { entry: WakeupEntry; ends: Date; wakeId: string }, side: WakeupSide): Wake {
-  return { id: item.wakeId, reason: "watch_timeout", watchId: item.entry.id, note: item.entry.note, ...(mayHaveSeenDm(item.entry, side) ? { dm: true } : {}), at: item.ends.toISOString() };
+  const watched = watchedPlacesOf(item.entry, side);
+  return {
+    id: item.wakeId,
+    reason: "watch_timeout",
+    watchId: item.entry.id,
+    note: item.entry.note,
+    ...(watched.length > 0 ? { watchedPlaces: watched } : {}),
+    ...(mayHaveSeenDm(item.entry, side) ? { dm: true } : {}),
+    at: item.ends.toISOString()
+  };
+}
+
+/** The places a watch named (resolved keys of its places and its filters' places; none for "everywhere"), at most 10. */
+export function watchedPlacesOf(entry: WakeupEntry, side: WakeupSide): string[] {
+  if (entry.kind !== "watch") return [];
+  const resolved = side.watches[entry.id];
+  const keys = [...(resolved?.placeKeys ?? []), ...(resolved?.filters ?? []).flatMap((filter) => (filter.placeKey ? [filter.placeKey] : []))];
+  return [...new Set(keys)].slice(0, 10);
 }
 
 /** The next `count` times of an `every` (her result shows three). */

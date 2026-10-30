@@ -38,6 +38,7 @@ import { compactLife, compactRetiredTools, currentHarness, newTurnId, offersReti
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
+import { unansweredForWakes } from "./unanswered.js";
 import { CACHE_REST_NOTICE, cacheRestIgnoredNote, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
 import { cacheRestDue } from "./cacheRest.js";
 import { messagesOf } from "./wakeMessages.js";
@@ -357,12 +358,15 @@ export class Life {
       const ids = known.filter((id) => compareIds(id, newest) <= 0);
       refs.set(key, await assignConversationRefs(deps.storage, key as never, ids, deps.now()).catch(() => new Map<string, string>()));
     }
+    // Her ended watches' places: how often she has written there with no answer (§34).
+    const unanswered = await unansweredForWakes(deps, { waifuId: this.waifuId, selfAuthorIds: selfIdList, wakes, now: deps.now() });
     return {
       timeZone: deps.timeZone,
       linesPerPlace: deps.config().life.notificationLinesPerPlace,
       handle: (key) => handles.get(key) ?? key,
       unread: (key) => unread.get(key),
-      ref: (key, messageId) => refs.get(key)?.get(messageId)
+      ref: (key, messageId) => refs.get(key)?.get(messageId),
+      unanswered: (key) => unanswered.get(key)
     };
   }
 

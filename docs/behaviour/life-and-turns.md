@@ -153,6 +153,11 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
 - Lines without a place: `- reminder (Sat 24 Oct 14:20): "<note>"` (the due time, with its date), `- plan · 17:30 ·
   "<what>"` (one per timed plan of her day, spec §29), `- watch timed out · your note: "<note>"`,
   `- nudge · "<owner note>"`, the morning batch's own lines.
+- **Unanswered** (2026-10-30, spec §34): a watch timeout whose watch named places (not
+  "everywhere") adds, per such place where she has written at least twice since anyone else did,
+  ` · you've written in bake-club/#general 3 times since anyone answered (since Tue 21:00)` (a DM:
+  `since they answered`); the morning batch's watch-timeout line too. See
+  [messages-and-refs.md](messages-and-refs.md#unanswered-sends) for how sends are counted.
 - `- +N more from Kevin (bake-club/#general)` lines come from the per-user wake limit.
 - `- (Kevin deleted a message you read in bake-club/#general: #k3)` lines are pending notices.
 - Wakes released from a busy hold get one first line: `- phone check (busy: <why>)` or

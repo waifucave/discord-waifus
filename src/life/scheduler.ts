@@ -57,6 +57,7 @@ import { readDmFloor } from "../orchestration/dm/dmStore.js";
 import { wakeShowsDm } from "./lifeView.js";
 import { refsForMessages } from "./messageRefs.js";
 import { messagesOf } from "./wakeMessages.js";
+import { unansweredForWakes } from "./unanswered.js";
 import { snowflakeTime } from "../discord/refStore.js";
 import { compareIds } from "../discord/rawMessage.js";
 
@@ -565,7 +566,9 @@ export class Scheduler {
       handles.set(key, await handleOf(deps.storage, waifu.id, key));
     }
     const refs = await this.morningRefs(places, items, now);
-    const view: NotificationView = { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: () => undefined, ref: (key, id) => refs.get(key)?.get(id) };
+    // Her ended watches' places: how often she has written there with no answer (§34).
+    const unanswered = await unansweredForWakes(deps, { waifuId: waifu.id, selfAuthorIds: await selfAuthorIds(deps.storage, waifu), wakes: items, now });
+    const view: NotificationView = { timeZone: deps.timeZone, handle: (key) => handles.get(key) ?? key, unread: () => undefined, ref: (key, id) => refs.get(key)?.get(id), unanswered: (key) => unanswered.get(key) };
     // From a DM: a DM's lines or count, a DM watch or timeout, an earlier batch that showed one.
     const dm = places.some((place) => place.kind === "dm") || items.some((item) => wakeShowsDm(item));
     return { places, items, view, dm };

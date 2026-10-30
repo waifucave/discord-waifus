@@ -124,6 +124,9 @@ Built when her bed time ends (or a budget pause lifts) from `wakes.json` `deferr
   · watch timed out (Tue 27 Oct 04:00) · your note: "…"
 ```
 
+(A watch-timeout line adds ` · you've written in <place> 3 times since anyone answered (since Mon
+21:00)` for a place the watch named where she has written twice or more with no answer, spec §34.)
+
 - Header: `- during your bed time (<start>–<end>):` for a sleep batch with a bed time; `- while you
   were asleep (HH:MM–HH:MM):` without one; `- while you were away (since HH:MM):` for a budget pause (`since Sat 24 Oct 14:30` when on another day).
 - (§23) **DMs** one line per message (time, ref, 60-char preview), oldest
