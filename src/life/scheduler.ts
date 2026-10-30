@@ -42,7 +42,9 @@ import type { LifeDeps } from "./deps.js";
 import { readLifeFile, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { checkEnvFor, dayPlanFor, homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { checkPages, type PageFetch } from "./wakeups/run.js";
-import { dueTimed, endedWakeups, endWake, saveWakeupStates, timedWake } from "./wakeups/schedule.js";
+import { dueHeldMatches, dueTimed, endedWakeups, endWake, heldWake, saveWakeupStates, timedWake, type HeldMatch } from "./wakeups/schedule.js";
+import { readTranscriptDay, transcriptDay } from "./transcripts/store.js";
+import { previewText } from "./notifications.js";
 import { parseDuration } from "./wakeups/when.js";
 import { sharedSandbox } from "./sandbox/index.js";
 import { morningBatch, morningGreeting, type MorningLine, type MorningPlace, type NotificationView } from "./notifications.js";
@@ -263,6 +265,7 @@ export class Scheduler {
           return { entries: kept, side: { ...currentSide, every, watches, pages } };
         });
       }
+      await this.releaseHeldMatches(waifu, store, entries, side, now);
       const fetchPage = this.pageFetch();
       if (fetchPage && entries.some((entry) => entry.kind === "page")) {
         // Her pages on their own: one that fails never stops her timed wakeups or her saved state.
@@ -286,6 +289,52 @@ export class Scheduler {
     }
     const { errorWakes } = await saveWakeupStates(store, now.getTime());
     for (const wake of errorWakes) await this.o.router.route(waifu.id, wake);
+  }
+
+  /**
+   * Room matches a repeating watch's 10-minute spacing held back (§30.2): once the spacing allows,
+   * each fires as a watch wake, its message read from the transcript (a message that is gone, deleted
+   * or forgotten, fires nothing). When she has written in that place since the message, she has been
+   * there: nothing fires. Either way the match is cleared; a fire counts against the spacing and cap.
+   */
+  private async releaseHeldMatches(
+    waifu: WaifuConfig,
+    store: ReturnType<typeof homeStoreFor>,
+    entries: Parameters<typeof dueHeldMatches>[0],
+    side: Parameters<typeof dueHeldMatches>[1],
+    now: Date
+  ): Promise<void> {
+    const deps = this.o.deps;
+    const due = dueHeldMatches(entries, side, now, deps.timeZone, deps.config().life.maxWatchFiresPerDay);
+    if (due.length === 0) return;
+    const state = await readLifeState(deps.storage, waifu.id).catch(() => undefined);
+    const done: Array<{ id: string; messageId: string; fired: boolean }> = [];
+    for (const { entry, held } of due) {
+      const sent = state?.recentSends?.[held.placeKey];
+      const message = sent !== undefined && Date.parse(sent) > Date.parse(held.at) ? undefined : await this.heldMessage(held);
+      const ref = parseConversationKey(held.placeKey);
+      if (message) await this.o.router.route(waifu.id, heldWake(entry, held, message), ref?.kind === "guild" ? { guildId: ref.guildId } : {});
+      done.push({ id: entry.id, messageId: held.messageId, fired: message !== undefined });
+    }
+    await store.rewriteWakeups((current, currentSide) => {
+      const watches = { ...currentSide.watches };
+      for (const item of done) {
+        const watch = watches[item.id];
+        // Only the match it fired: a newer one held meanwhile stays for the next tick.
+        if (watch?.held?.messageId !== item.messageId) continue;
+        const { held: _held, ...rest } = watch;
+        watches[item.id] = item.fired ? { ...rest, fires: [...rest.fires, now.toISOString()] } : rest;
+      }
+      return { entries: current, side: { ...currentSide, watches } };
+    });
+  }
+
+  /** A held match's message as her transcript has it, or nothing when it is gone. */
+  private async heldMessage(held: HeldMatch): Promise<{ fromName: string; preview: string } | undefined> {
+    const deps = this.o.deps;
+    const lines = await readTranscriptDay(deps.storage.dataRoot, held.placeKey, transcriptDay(held.at, deps.timeZone)).catch(() => []);
+    const line = lines.find((candidate) => candidate.id === held.messageId);
+    return line ? { fromName: line.author, preview: previewText(line.text, line.files?.length ?? 0) } : undefined;
   }
 
   /** Her pages' fetch (§30.2): the SSRF-checked fetcher, no model call; none without the web tools. */

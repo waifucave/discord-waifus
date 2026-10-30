@@ -57,7 +57,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `life.maxSendPlacesPerTurn` | integer 1–10 | `3` | Distinct places she may send to in one turn. |
 | `life.maxSendsPerTurn` | integer 1–50 | `15` | Messages she may send in one turn (each { text } of her send_message calls counts one, and so does a message with only files). |
 | `life.maxWakesPerUserPerHour` | integer 1–200 | `20` | Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line. |
-| `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches (a Wakeup watch with once: false) may fire per day; at most once per 10 minutes either way. |
+| `life.maxWatchFiresPerDay` | integer 1–100 | `24` | How often one of her repeating watches (a Wakeup watch with once: false) may fire per day; at most once per 10 minutes either way, unless she has written in that place since it last fired; a room match the 10 minutes hold back fires when they are up. |
 | `life.notificationLinesPerPlace` | integer 1–50 | `8` | Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out. |
 | `life.morningLinesPerPlace` | integer 1–50 | `8` | Her morning summary lists the night's DMs and the room messages that talked to her, one line per message with its time; at most this many per DM or room (the newest), the first saying how many earlier ones were left out. |
 | `life.maxWaifuTriggeredTurns` | integer 0–100 | `0` | Room loop guard: after this many waifu-written messages woke someone in a place since the last human message there, further waifu messages wake nobody (0 = off). |

@@ -386,7 +386,7 @@ export class Intake {
         removed,
         files: removed ? [] : raw.attachments.map((file) => ({ name: file.filename, size: file.size })),
         ref: () => this.refOf(placeKey, raw)
-      });
+      }, { room: true });
       // Several wakeups on one message are one wake, a line each (§30.4).
       if (fired.length > 0) {
         await this.o.router.route(waifu.id, { id: newWakeId(), reason: "watch", ...watchFields(fired), ...base }, { guildId: input.guildId });
@@ -941,15 +941,18 @@ export class Intake {
    * Her wakeups that fire for one message (§30.2); a wakeup her errors stopped sends its
    * `wakeup_error` wake from here.
    */
-  private async firedWakeups(waifu: WaifuConfig, message: WakeupMessage): Promise<FiredWakeup[]> {
+  private async firedWakeups(waifu: WaifuConfig, message: WakeupMessage, o: { room?: boolean } = {}): Promise<FiredWakeup[]> {
     const deps = this.deps;
     // Her wakeups are hers alone: whatever goes wrong in them never stops this message reaching
     // anyone else (or her other wakes).
     try {
+      // Her last send in the place lifts a repeating watch's 10-minute spacing (§30.2): she is in
+      // that conversation. In a room a match the spacing holds back waits for the scheduler.
+      const lastSentHere = (await readLifeState(deps.storage, waifu.id).catch(() => undefined))?.recentSends?.[message.placeKey];
       const { fired, errorWakes } = await fireWakeupWatches(
         { store: homeStoreFor(deps, waifu), sandbox: sharedSandbox(), now: deps.now(), timeZone: deps.timeZone },
         message,
-        { maxFiresPerDay: deps.config().life.maxWatchFiresPerDay }
+        { maxFiresPerDay: deps.config().life.maxWatchFiresPerDay, ...(lastSentHere ? { lastSentHere } : {}), ...(o.room ? { hold: true } : {}) }
       );
       for (const wake of errorWakes) await this.o.router.route(waifu.id, wake, {}).catch(() => undefined);
       return fired;

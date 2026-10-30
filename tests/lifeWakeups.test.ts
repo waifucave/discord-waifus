@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { migrateLivingCastWakeups } from "../src/backend/migrationSteps/livingCastWakeups.js";
 import { homeStoreFor } from "../src/life/home/index.js";
 import { HomeStore } from "../src/life/home/homeStore.js";
-import { readLifeFile } from "../src/life/lifeStore.js";
+import { readLifeFile, updateLifeState } from "../src/life/lifeStore.js";
 import { selfAuthorIds } from "../src/life/people.js";
 import { sharedSandbox } from "../src/life/sandbox/index.js";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
@@ -22,6 +22,7 @@ import { timedWakeId } from "../src/life/wakeups/schedule.js";
 import { STATE_SAVE_MS } from "../src/life/wakeups/state.js";
 import { nextOccurrences, parseAt, parseDuration, parseEvery } from "../src/life/wakeups/when.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
+import { addTranscriptLine } from "../src/life/transcripts/store.js";
 import { closeWorlds, dmOf, ELLA_BOT, GUILD, CHANNEL, herEntries, herFile, KEVIN, lifeWorld, MINA_USER, ROOM, ROOM_KEY, writeHerFile, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 import { addFilePatch, applyPatch, readFile as readFile_, runScript, wakeupCall, wakeupCalls } from "./toolCalls.js";
@@ -440,6 +441,78 @@ describe("watches: object and code filters (§30.2)", () => {
       '- watch · bake-club/#general · #k1 · "a long one" · your note: "long messages"'
     ]);
   });
+});
+
+describe("a repeating watch's 10-minute spacing (§30.2, 2026-10-30)", () => {
+  const post = async (w: LifeWorld, body: string) => {
+    const posted = w.discord.post(ROOM, body);
+    await w.cast.onGuildMessage({ guildId: GUILD, channelId: CHANNEL, messageId: posted.id, castWaifuIds: ["ella"], authorIsWaifu: false, raw: posted });
+    w.cast.intake.flushDetector();
+    await w.cast.settle();
+    return posted;
+  };
+  const watchWakes = async (w: LifeWorld) => (await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch");
+
+  it("a match inside the 10 minutes is held, not lost: the scheduler fires it, from the transcript, once the 10 minutes are up", async () => {
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await wakeup(w, 'watch("bake-club/#general", {any: true}, {for: "2h", once: false}, "film night")');
+    await post(w, "door joke");
+    expect((await watchWakes(w)).map((wake) => wake.preview)).toEqual(["door joke"]);
+    w.clock.advance(60_000);
+    const night = await post(w, "Night, have fun watching that film.");
+    // The transcript has it (the cache's events write it in the app).
+    await addTranscriptLine({ dataRoot: w.root, timeZone: TZ }, ROOM_KEY, { id: night.id, at: night.createdAt, authorId: KEVIN, author: "Kevin", text: night.content });
+    expect(await watchWakes(w)).toHaveLength(1);
+    const store = homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella"));
+    expect((await store.readWakeups()).side.watches["w1"]!.held).toMatchObject({ messageId: night.id, placeKey: ROOM_KEY, matched: "any message" });
+    // Not before the 10 minutes are up.
+    w.clock.advance(5 * 60_000);
+    await w.cast.scheduler.tick();
+    expect(await watchWakes(w)).toHaveLength(1);
+    w.clock.advance(5 * 60_000);
+    await w.cast.scheduler.tick();
+    const wakes = await watchWakes(w);
+    expect(wakes).toHaveLength(2);
+    expect(wakes[1]).toMatchObject({ id: `w-held-w1-${night.id}`, watchId: "w1", note: "film night", messageId: night.id, placeKey: ROOM_KEY, preview: "Night, have fun watching that film." });
+    // Fired once: cleared, and counted for the spacing.
+    const after = (await store.readWakeups()).side.watches["w1"]!;
+    expect(after.held).toBeUndefined();
+    expect(after.fires).toHaveLength(2);
+    await w.cast.scheduler.tick();
+    expect(await watchWakes(w)).toHaveLength(2);
+  }, 30_000);
+
+  it("no spacing while she is in the conversation: she wrote there after the watch last fired", async () => {
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await wakeup(w, 'watch("bake-club/#general", {any: true}, {for: "2h", once: false}, "film night")');
+    await post(w, "door joke");
+    w.clock.advance(20_000);
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastSentAt: w.clock.now().toISOString(), recentSends: { [ROOM_KEY]: w.clock.now().toISOString() } }));
+    w.clock.advance(60_000);
+    await post(w, "Night, have fun watching that film.");
+    expect((await watchWakes(w)).map((wake) => wake.preview)).toEqual(["door joke", "Night, have fun watching that film."]);
+  }, 30_000);
+
+  it("a held match fires nothing when she wrote there after it, or when the watch ended first", async () => {
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await wakeup(w, ['watch("bake-club/#general", {any: true}, {for: "2h", once: false}, "film night")', 'watch("bake-club/#general", {any: true}, {for: "5m", once: false}, "short")'].join("\n"));
+    await post(w, "door joke");
+    w.clock.advance(60_000);
+    await post(w, "Night!");
+    w.clock.advance(60_000);
+    // She answered in the room (another wake got her there).
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastSentAt: w.clock.now().toISOString(), recentSends: { [ROOM_KEY]: w.clock.now().toISOString() } }));
+    w.clock.advance(10 * 60_000);
+    await w.cast.scheduler.tick();
+    expect((await watchWakes(w)).map((wake) => wake.preview)).toEqual(["door joke"]);
+    const side = (await homeStoreFor(w.cast.deps, await readWaifu(w.storage, "ella")).readWakeups()).side;
+    expect(side.watches["w1"]?.held).toBeUndefined();
+    // The short one ended: its end wake, no held fire.
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.map((wake) => [wake.reason, wake.note])).toContainEqual(["watch_timeout", "short"]);
+  }, 30_000);
 });
 
 describe("after the migration (§30.3)", () => {

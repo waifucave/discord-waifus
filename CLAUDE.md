@@ -191,7 +191,7 @@ call, nothing while page fetching is off, a URL never sooner than its `every` ac
 a day) and `cancel`; each item is checked (`file.ts` `checkEntry`; her functions must not use names
 from outside them: acorn 8.19.0 free-name analysis in `functionSource.ts`) and compiled, and the call
 saved all or nothing through `HomeStore.applyWakeups` (any error: `watch[1]: …; nothing was saved`).
-Caps 20 timed / 10 watches / 3 pages. Her filters run in `src/life/sandbox/` (quickjs-emscripten
+Caps 20 timed / 10 watches / 3 pages. A repeating watch fires at most once per 10 minutes unless she wrote in that place since its last fire; a room match held back by the 10 minutes is kept as ids (`held`) and fired by the scheduler when they are up (§30.6). Her filters run in `src/life/sandbox/` (quickjs-emscripten
 0.32.0, exact pin, the sync build; the tool scripts use it too, in their own worker per call: the
 asyncify build can't suspend a host call made after an `await`): one long-lived worker thread, a fresh
 QuickJS runtime per run with no host functions (JSON in, JSON out, read with built-ins captured before

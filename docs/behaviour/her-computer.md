@@ -216,7 +216,13 @@ wakeup to `~/life/wakeups.json` (or cancels one). Up to 40 items per call, 4 cal
   can read); her own never. An object filter costs nothing; her functions run in the sandbox once per
   such message (50 ms CPU, 16 MiB, 64 KiB stack each). `once` (default) removes the watch at its first
   fire; a repeating one fires at most once per 10 minutes and `life.maxWatchFiresPerDay` (24) times a
-  day (its function still runs, so its state stays current). A message posted before the watch ended
+  day (its function still runs, so its state stays current). The 10 minutes don't apply when she has
+  written in that place since it last fired (her `recentSends`): she is in that conversation. A room
+  match the 10 minutes hold back is kept, the latest one, as ids only (`held` in the side file); the
+  scheduler fires it as a watch wake once the 10 minutes are up (id `w-held-<watch>-<message>`, the
+  name and preview read from the transcript), unless the message is gone (deleted, forgotten), she
+  wrote in that place after it, or the watch ended first (its end wake covers it). A DM wakes her on
+  its own, so a DM match is never held. A message posted before the watch ended
   still counts when handled later (catch-up). Several of her wakeups firing on one message are one wake,
   a line each.
 - **Pages** are fetched by the scheduler through the same SSRF-checked fetcher as `Web`'s opens

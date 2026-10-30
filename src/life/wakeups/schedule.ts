@@ -8,7 +8,7 @@ import type { Wake, WakeupSide } from "../../shared/schemas/life.js";
 import { parseLocalDateTime } from "../clock.js";
 import { onceKey, type HomeStore } from "../home/homeStore.js";
 import { functionSourceOf, MAX_WAKEUPS_FILE_BYTES, untilOf, wakeupsText, type WakeupEntry } from "./file.js";
-import { applyRuns, type CodeRun } from "./run.js";
+import { applyRuns, WATCH_MIN_SPACING_MS, type CodeRun } from "./run.js";
 import { mayHaveSeenDm } from "./privacy.js";
 import { dropState, markSaved, pendingStates } from "./state.js";
 import { latestOccurrence, nextOccurrences, parseEvery } from "./when.js";
@@ -71,6 +71,46 @@ export function endedWakeups(entries: readonly WakeupEntry[], side: WakeupSide, 
     const route = !fired.has(wakeId) && !fired.has(onceKey(entry)) && !(lostBefore !== undefined && ends.getTime() <= lostBefore);
     return [{ entry, ends, wakeId, route }];
   });
+}
+
+export type HeldMatch = NonNullable<WakeupSide["watches"][string]["held"]>;
+
+/**
+ * Room matches a repeating watch's 10-minute spacing held back (§30.2) that may fire now: the watch
+ * still on and not ended (its end wake covers the rest), its last fire 10 minutes ago or more, under
+ * the daily cap.
+ */
+export function dueHeldMatches(entries: readonly WakeupEntry[], side: WakeupSide, now: Date, timeZone: string, maxFiresPerDay: number): Array<{ entry: WakeupEntry; held: HeldMatch }> {
+  const nowMs = now.getTime();
+  return entries.flatMap((entry) => {
+    const watch = side.watches[entry.id];
+    if (entry.kind !== "watch" || entry.disabled !== undefined || !watch?.held) return [];
+    if ((untilOf(entry, timeZone)?.getTime() ?? 0) <= nowMs) return [];
+    const fires = watch.fires.filter((at) => nowMs - Date.parse(at) < 86_400_000);
+    const last = fires.length > 0 ? Date.parse(fires[fires.length - 1]!) : undefined;
+    if ((last !== undefined && nowMs - last < WATCH_MIN_SPACING_MS) || fires.length >= maxFiresPerDay) return [];
+    return [{ entry, held: watch.held }];
+  });
+}
+
+/** A held match's watch wake, from the message as her transcript has it (deterministic id: once). */
+export function heldWake(entry: WakeupEntry, held: HeldMatch, message: { fromName: string; preview: string }): Wake {
+  const matched = held.matched !== undefined ? { matched: held.matched } : {};
+  return {
+    id: `w-held-${entry.id}-${held.messageId}`,
+    reason: "watch",
+    watchId: entry.id,
+    ...matched,
+    note: entry.note,
+    wakeups: [{ id: entry.id, ...matched, note: entry.note }],
+    placeKey: held.placeKey,
+    ...(held.fromUserId ? { fromUserId: held.fromUserId } : {}),
+    fromName: message.fromName,
+    messageId: held.messageId,
+    preview: message.preview,
+    at: held.at,
+    ...(held.waifuAuthored ? { waifuAuthored: true } : {})
+  };
 }
 
 /** The wake of a timed wakeup (§30.2: it reads like a reminder). */

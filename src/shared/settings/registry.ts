@@ -84,7 +84,7 @@ const APP: SettingGroup = {
     "life.maxSendPlacesPerTurn": { label: "Places per turn", help: "Distinct places she may send to in one turn.", ...reload, example: "3" },
     "life.maxSendsPerTurn": { label: "Messages per turn", help: "Messages she may send in one turn (each { text } of her send_message calls counts one, and so does a message with only files).", ...reload, example: "15" },
     "life.maxWakesPerUserPerHour": { label: "Wakes per person per hour", help: "Direct or detector wakes one person may cause her per hour in servers; the rest are merged into one line.", ...reload, example: "20" },
-    "life.maxWatchFiresPerDay": { label: "Watch fires per day", help: "How often one of her repeating watches (a Wakeup watch with once: false) may fire per day; at most once per 10 minutes either way.", ...reload, example: "24" },
+    "life.maxWatchFiresPerDay": { label: "Watch fires per day", help: "How often one of her repeating watches (a Wakeup watch with once: false) may fire per day; at most once per 10 minutes either way, unless she has written in that place since it last fired; a room match the 10 minutes hold back fires when they are up.", ...reload, example: "24" },
     "life.notificationLinesPerPlace": {
       label: "Notification lines per place",
       help: "Her notifications show one line per message; at most this many per place (the newest), the first saying how many earlier ones were left out.",

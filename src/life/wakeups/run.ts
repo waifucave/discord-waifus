@@ -225,7 +225,13 @@ function watchesPlace(side: WakeupSide["watches"][string] | undefined, placeKey:
 export async function fireWakeupWatches(
   ctx: WakeupRunContext,
   message: WakeupMessage,
-  o: { maxFiresPerDay: number }
+  o: {
+    maxFiresPerDay: number;
+    /** Her last send in this message's place: after a watch's last fire, the spacing doesn't apply. */
+    lastSentHere?: string;
+    /** A room message: a match the spacing holds back is kept for the scheduler (`held`). */
+    hold?: boolean;
+  }
 ): Promise<{ fired: FiredWakeup[]; errorWakes: Wake[] }> {
   if (message.own) return { fired: [], errorWakes: [] };
   const nowMs = ctx.now.getTime();
@@ -297,10 +303,32 @@ export async function fireWakeupWatches(
         dropState(dataRoot, ctx.store.waifuId, entry.id);
         continue;
       }
-      const sideEntry = watches[entry.id] ?? { fires: [] };
+      const { held: _held, ...sideEntry } = watches[entry.id] ?? { fires: [] };
       const fires = sideEntry.fires.filter((at) => nowMs - Date.parse(at) < DAY_MS);
       const last = fires.length > 0 ? Date.parse(fires[fires.length - 1]!) : undefined;
-      if ((last !== undefined && nowMs - last < WATCH_MIN_SPACING_MS) || fires.length >= o.maxFiresPerDay) {
+      if (fires.length >= o.maxFiresPerDay) {
+        kept.push(entry);
+        continue;
+      }
+      // Once per 10 minutes, unless she has written there since it last fired: then it's a
+      // conversation she is in, and the room's loop guard and her budget bound it. A room match the
+      // spacing holds back is kept (the latest), and the scheduler fires it when the 10 minutes are up.
+      const conversing = last !== undefined && o.lastSentHere !== undefined && Date.parse(o.lastSentHere) > last;
+      if (last !== undefined && nowMs - last < WATCH_MIN_SPACING_MS && !conversing) {
+        if (o.hold && message.messageId) {
+          watches[entry.id] = {
+            ...sideEntry,
+            fires,
+            held: {
+              messageId: message.messageId,
+              placeKey: message.placeKey,
+              at: new Date(messageMs).toISOString(),
+              ...(message.removed ? {} : { fromUserId: message.authorId }),
+              ...(answer.matched !== undefined ? { matched: answer.matched } : {}),
+              ...(message.isWaifu ? { waifuAuthored: true as const } : {})
+            }
+          };
+        }
         kept.push(entry);
         continue;
       }

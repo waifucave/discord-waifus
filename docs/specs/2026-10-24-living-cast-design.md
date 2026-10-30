@@ -3991,6 +3991,17 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   `Wakeup` call that resolved a DM place is a DM call in the life log, and so is her `Read` or a Bash
   read of `~/life/wakeups.json` while it holds such an entry (`wakeupsDmOrigin`). `/print` has no
   wakeups view.
+- **Spacing and held matches** (owner request, 2026-10-30, after a goodnight 86 seconds after a fire
+  went unseen for 16 minutes): a repeating watch's 10-minute spacing (`WATCH_MIN_SPACING_MS`) doesn't
+  apply when her last send in the message's place (`state.recentSends`, kept `life.busyEngagedMinutes`)
+  came after the watch's last fire; the daily cap still does. A room match the spacing holds back is
+  kept as the watch's `held` (side file: message id, place key, time, author id, matched; no name or
+  text), the latest one replacing an earlier one; a fire clears it. The scheduler's wakeups step
+  (`releaseHeldMatches`, `dueHeldMatches`) fires it once the spacing and the cap allow, while the watch
+  is on and not ended: a `watch` wake `w-held-<watch>-<message>` whose name and preview are read from
+  the transcript; a message the transcript no longer has, or one she wrote after in that place, fires
+  nothing. Either way the match is cleared, and a fire counts. DM matches are never held (the DM itself
+  wakes her). Tests: `tests/lifeWakeups.test.ts` ("a repeating watch's 10-minute spacing").
 
 ## 31. `Web(script)`: one web tool, a small program (owner request, 2026-10-28)
 

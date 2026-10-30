@@ -399,7 +399,21 @@ export const WakeupSideSchema = z.object({
         /** Object filters with their names resolved; absent: a function filter. */
         filters: z.array(ResolvedWatchBindingSchema).optional(),
         /** Fire times in the last day (the daily cap) and the last fire (the 10-minute spacing). */
-        fires: z.array(IsoDateStringSchema).default([])
+        fires: z.array(IsoDateStringSchema).default([]),
+        /**
+         * The latest room match the 10-minute spacing held back (§30.2, 2026-10-30), ids only: the
+         * scheduler fires it once the spacing allows, reading the message from the transcript.
+         */
+        held: z
+          .object({
+            messageId: z.string().min(1),
+            placeKey: z.string().min(1),
+            at: IsoDateStringSchema,
+            fromUserId: z.string().optional(),
+            matched: z.string().optional(),
+            waifuAuthored: z.literal(true).optional()
+          })
+          .optional()
       })
     )
     .default({}),
