@@ -275,7 +275,7 @@ export const WAKEUP_DESCRIPTION = [
   '- page: [{ url, contains, changes, check, every, for, note }]: checks a web page, with one of contains: "in stock", changes: true, or check: (page, state) => …, page is { url, status, title, text }; every: "6h" (at least 1h), for: "3d" (at most 7 days).',
   '- cancel: ["w3"]: removes wakeups by id.',
   "Your functions run on their own for each message or check: they can't use variables from outside them, only their arguments; state is an object they may change to remember things between runs. They get 50 ms each; one that fails three times in a row stops and you are told.",
-  "Use it whenever you ask something or wait for news (watch for the answer, with a sensible for), when someone mentions plans (a wakeup to ask how it went), and now and then to check back in rooms you like. All of them are in ~/life/wakeups.json: look there before adding one you have, and change them there with Edit.",
+  "Use it whenever you ask something or wait for news (watch for the answer, with a sensible for; follow up once at most) and when someone mentions plans (a wakeup to ask how it went). All of them are in ~/life/wakeups.json: look there before adding one you have, and change them there with Edit.",
   'Example: return await tools.wakeup({ watch: [{ places: "bake-club/#general", from: "Kevin", for: "3h", note: "asked Kevin about saturday" }], at: [{ when: "fri 19:00", note: "ask Kevin how his exam went" }] })'
 ].join("\n");
 
