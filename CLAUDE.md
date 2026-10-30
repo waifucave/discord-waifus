@@ -55,7 +55,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1–L4 done; L3's own
 choices are listed in spec §14.4, L4's "as built" notes in §16, which overrides §6 and §7.1–§7.3;
-her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4; following up once and her unanswered-sends line (`src/life/unanswered.ts`) in §34 with its as-built §34.4)**: each waifu is an autonomous agent with one continuous
+her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4; following up once and her unanswered-sends line (`src/life/unanswered.ts`) in §34 with its as-built §34.4; summaries keeping guesses, plans and open threads as said (`SUMMARY_FACTS`), the calendar strip (`calendarStrip`), the dream's new-people line and the benchmark's mention repair in §35 with its as-built §35.6)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
 `LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: typing-aware holds in
@@ -115,7 +115,7 @@ model from an upstream that keeps only 5 minutes) the scheduler's tick pokes her
 request (`lastRequestTokens`, `lastRequestAt`) was at least `life.cacheRestMinRatio` × the trigger,
 and it is `life.cacheRestLeadMinutes` before that request + TTL (not after it expired; not asleep in
 a bed time ending within the TTL). The life loop then runs the rest turn with `CACHE_REST_NOTICE`
-(the notice's first line plus one sentence, then the voice line `SUMMARY_VOICE` that ends both notices and the compaction instruction): accepted, epoch reason `cache_rest`; ignored, nothing else happens
+(the notice's first line plus one sentence, then the voice line `SUMMARY_VOICE` and the facts line `SUMMARY_FACTS` that end both notices and the compaction instruction, followed in the request by the calendar strip and the time line): accepted, epoch reason `cache_rest`; ignored, nothing else happens
 (the turn stays in her log). `state.cacheRest` allows one per epoch, apart from `state.restTurn`.
 Any turn whose final reply is only `<summary>…</summary>` (§21.6b, `rest.ts` `selfSummaryOf`) starts
 such an epoch too (reason `self`) when it passes `life.restSummaryMinChars`,

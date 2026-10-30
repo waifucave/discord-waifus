@@ -4616,3 +4616,107 @@ sends in one place with nobody else posting in between, in the report and the be
   watch timeout and morning lines, a real turn whose watch ends after two unanswered sends),
   `tests/lifeBenchmark.test.ts` (the metric). Goldens changed: `life-system-prompt.txt` (block A's
   paragraph and the Wakeup description) and `life-rest-epoch.txt` (block A).
+
+## 35. Summaries keep what was said; a calendar, new people and her voice in dreams (owner request, 2026-10-30)
+
+A blind-graded effort sweep of the life benchmark (270 packets, Haiku 5.5 and Sonnet 5.5) found the
+same faults again and again. Her summaries (compaction, her rest and `<summary>` summaries) and the
+memory keeper's notes wrote guesses as facts ("Lou watched Hereditary" when Lou never named the film),
+plans as done ("we had practice" when Rosa never showed; "Among Us round 2 happened" when nobody
+answered), maybes as promises and teasing as fact, and dropped open threads (an unanswered question,
+an unconfirmed plan, someone who never replied). Dates were a day off ("sat 29 nov" when Saturday was
+28 Nov; a Thursday test dated 13 Nov instead of 12 Nov), even with the weekday on every date she reads
+(§23.2): the models count days instead of looking them up. The overnight notes often had no note at all
+for people she talked to that day (Aiko, Tom, Jade, Omar) and read as capitalised neutral logs, not as
+her. In chat she sometimes claimed to have seen something no log holds ("omar said 'fine, dance pad'").
+And the benchmark's fake server skipped the client's mention repair, so its transcripts showed broken
+mentions (`<@Priya}`, `<@lou>`) that Discord would never have received. Owner-approved design
+(2026-10-30); stripping old reasoning from history and filtering tool talk out of summaries are not
+part of it.
+
+### 35.1 What a summary may say as fact
+
+One shared line (`SUMMARY_FACTS`), short, in the style of the voice line (§19.8): only what someone
+said or did, and who; a guess stays her guess, a plan stays a plan with its date until someone says it
+happened, a maybe a maybe, teasing teasing; open threads stay open. It follows the voice line in the
+rest notices and the compaction instruction and ends block A's summary paragraph (her own `<summary>`
+has no other instruction). The dream says the same about "her".
+
+### 35.2 A calendar to look dates up in
+
+A deterministic strip computed in her zone: last week, this week and next week, Monday first, today
+marked, in the app's date style (`Mon 23 Nov`). It goes where the call already varies, never in a
+cached system block: in the compaction request's appended message (before the time line), as its own
+text block in the rest turn's opening message (before the time line), and in the dream's opening
+(before the time line). Her `<summary>` turns get nothing new: a calendar on every turn would cost every
+turn for a rare summary.
+
+### 35.3 New people and her voice in the dream
+
+The app computes who she talked to in the session's window who has no note file yet and names them in
+the dream's opening, asking for a note each; nothing is added when nobody is missing. The dream's
+instruction also says to write like her own "you" lines in /transcripts (lowercase when she is).
+
+### 35.4 No invented memories in chat
+
+One sentence in `<life>`, after "You can't see anything you haven't read.": never claim to have seen,
+heard or remembered something that isn't in what she can see, her notes or /transcripts; when unsure,
+say so or ask.
+
+### 35.5 The benchmark sends what Discord receives
+
+The fake server passes her outgoing text through `denormalizeModelContentForDiscord` exactly as the
+real client does (the server's members and the place's present people as active authors; a DM with its
+person only), stores and records the repaired message, and keeps her model's own text alongside.
+
+### 35.6 As built
+
+- **Facts line** (`src/life/rest.ts` `SUMMARY_FACTS`): "Write only what someone actually said or did,
+  and who said it: a guess stays your guess, a plan stays a plan (with its date) until someone says it
+  happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open: questions nobody
+  answered, plans nobody confirmed, someone who didn't reply." The last line of `REST_NOTICE`,
+  `CACHE_REST_NOTICE` and `COMPACTION_INSTRUCTION` (after `SUMMARY_VOICE`; deleted messages and
+  forgotten people still follow it), and appended after "Keep names, times and facts exact." in
+  `LIFE_TEXT`'s summary paragraph. The rest notices' first 60 characters are unchanged, so
+  `isRestNotice` and the benchmark's variant check still hold.
+- **Calendar** (`calendarStrip` in `src/life/clock.ts`, from `localParts` and calendar-day arithmetic,
+  so DST never shifts a day): "Calendar (look dates up here, don't count): last week Mon 16 Nov · … ·
+  Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next week Mon 30 Nov · …
+  · Sun 6 Dec." `compactLife` sends `<instruction>\n\n<calendar>\n<time line>`; `Life.restTurn` sends
+  the notice, the calendar and the time line as three text blocks; `runDream` puts it before the time
+  line. The forget scrub's summary is a compaction and gets it too; the notes scrub session does not.
+- **New people** (`src/life/dream.ts`): `peopleSheTalkedTo(chunks)`: in a DM chunk the other person, in
+  a room day chunk where she has a line everyone else who wrote; lines of waifus (`line.waifu`), her own
+  bot ids, bots the guild directory knows and forgotten people (`isRemovedMessage`) are left out;
+  ordered by first line, named by their latest name. `hasNoteFor` (`src/life/people.ts`): a file of
+  her home outside `~/life/` and other than MEMORY.md whose name (`people/aiko.md`, `jade-lee.md`),
+  first heading or `Name:` first line folds (`foldName`, NFKC: unicode stylings and diacritics) to the
+  person's whole name or its first word, or that holds `<!-- user:<id> -->`. `peopleWithoutNotes`
+  reads her home per session (a note made in session 1 counts in session 2), at most
+  `NEW_PEOPLE_MAX` (20) names, and any failure is "nobody". The line (`newPeopleLine`), after the
+  window: "People she talked to in this window who have no note yet: Aiko, Tom. Make a note for each
+  (what the window says about them, in her voice) and add it to MEMORY.md."
+- **Dream instruction**: after the §19.8 voice line, the facts line in the third person ("a guess stays
+  her guess, …") and "Write like her lines in /transcripts (the "you" lines): if she writes in
+  lowercase, so do her notes." Both are lines (paragraphs) of `DREAM_INSTRUCTION`, so benchmark variants
+  can edit them.
+- **Chat rule** (`LIFE_TEXT`): "Never claim you saw, heard or remember something that isn't in what you
+  can see, your notes or /transcripts; if you're not sure, say so or ask." Block A changes, so every
+  life compacts once with reason `config` at its next turn boundary (§5.2).
+- **Benchmark** (`scripts/life-benchmark/fakeServer.ts`): `FakeServer.repair` runs
+  `denormalizeModelContentForDiscord` with `members()` (the directory snapshot's people and her bot)
+  and `allowedUserMentionIds` for a room, `activeAuthorIds: [userId]` for a DM, as
+  `DiscordGateway.sendWaifuMessage`/`sendDirectMessage` do; `onFinalContent` gets the repaired text,
+  the fake channel stores it with the mention map Discord would fill, and the `SentRecord` keeps
+  `content` (the wire text), `modelContent` (her model's text, when changed) and `shown` (`<@id>` as
+  `@Name`, when different). The transcript's `sent` event has `text` as Discord shows it and `raw`
+  for her model's text; metrics, probes, the report and judge packets read `text`.
+- **Tests**: `tests/lifeSummaryFacts.test.ts` (the strip: week layout, today in her zone, a Sunday,
+  a year end and a DST week; the prompt lines; `hasNoteFor`; `peopleSheTalkedTo`; a real dream's
+  opening with and without someone missing a note; the fake server's repair, a clean message, and a
+  dry run whose transcript and chat packet show `@Kevin … @Mina` with the raw text kept);
+  `tests/lifeBenchmark.test.ts`'s own-voice test now compares the texts without the §35 lines. Goldens
+  changed: `life-system-prompt.txt` and `life-rest-epoch.txt` (block A: the chat rule and the facts
+  sentence), `life-rest-notice.txt` (facts line, calendar block), `life-compaction-request.txt` (facts
+  line, calendar), `life-dream.txt` (the two new instruction lines, a Mina line seeded so the opening
+  shows the new-people line, the calendar).
