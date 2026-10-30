@@ -131,3 +131,14 @@ export function toggleAllowed(allowed: readonly string[], id: string, on: boolea
   const without = allowed.filter((entry) => entry !== id);
   return on ? [...without, id] : without;
 }
+
+/**
+ * A Discord user ID added to a permission list (Settings → Permissions, §36): spaces and an
+ * `<@…>` mention around it are dropped; anything but 17 to 20 digits is refused, and an ID already
+ * listed is left where it is.
+ */
+export function addDiscordUserId(list: readonly string[], raw: string): { list: string[]; error?: string } {
+  const id = raw.trim().replace(/^<@!?(\d+)>$/u, "$1");
+  if (!/^\d{17,20}$/u.test(id)) return { list: [...list], error: "A Discord user ID is 17 to 20 digits (Developer Mode → right-click the person → Copy User ID)." };
+  return { list: list.includes(id) ? [...list] : [...list, id] };
+}

@@ -67,6 +67,7 @@ import { OperationStore } from "../storage/operationStore.js";
 import { onCapturedTrafficForgotten, recentQueries, recentReplies, subscribeQueries, subscribeReplies } from "../shared/queryLog.js";
 import { listDocs, readDoc } from "./docsKb.js";
 import { registerAssistantRoutes } from "./assistant/routes.js";
+import { createDiscordNorma, type AskNorma } from "./assistant/discordNorma.js";
 import { registerDmRoutes } from "./dms.js";
 import { registerLifeRoutes } from "./lifeRoutes.js";
 import { registerHomeRoutes } from "./homeRoutes.js";
@@ -131,6 +132,8 @@ export type ApiServerOptions = {
   assistant?: {
     modelClient?: AssistantModelClient;
   };
+  /** §36: receives the runner that answers the House bot's `/norma` (the cast runtime calls it). */
+  discordNorma?: { register: (ask: AskNorma) => void };
   browserSecurity?: Partial<BrowserSecurityOptions>;
   remoteTrust?: {
     isAuthorized: (principal: RemoteRequestPrincipal) => boolean | Promise<boolean>;
@@ -496,6 +499,17 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         "RemoteConfigFieldForbidden"
       );
     }
+    // Who may use /norma (§36): never widened by Norma herself (a /norma user could add others).
+    const permissionsChanged = patch.permissions !== undefined
+      && JSON.stringify({ ...currentConfig.permissions, ...patch.permissions }) !== JSON.stringify(currentConfig.permissions);
+    if (permissionsChanged && request.assistantDelegation && !request.assistantDelegation.pendingActionId) {
+      throw new ApiError(
+        403,
+        "The dashboard assistant only proposes changes to who may use /norma; the owner confirms them on a dashboard card.",
+        undefined,
+        "AssistantConfirmationRequired"
+      );
+    }
     // The dashboard assistant only proposes these (a confirmation card); the owner's click applies
     // them, and that request carries the card's pending action id.
     if (guarded && request.assistantDelegation && !request.assistantDelegation.pendingActionId) {
@@ -515,15 +529,16 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     }
     const saved = await storage.withLocks([APP_CONFIG_LOCK], () => updateAppConfig(options.dataRoot, patch));
     options.runtime.paused = saved.runtime.paused;
-    const { updates: _beforeUpdates, remoteAccess: _beforeRemote, ...beforeRuntimeConfig } = currentConfig;
-    const { updates: _afterUpdates, remoteAccess: _afterRemote, ...afterRuntimeConfig } = saved;
-    // Enabling idle updates or the helper debug log (read at the next helper start) must not itself
-    // abort a live conversation via runtime reload.
-    const outsideRuntime = (key: string) => key === "updates" || key === "remoteAccess" || key === "schemaVersion";
-    const touchesOutside = patch.updates !== undefined || patch.remoteAccess !== undefined;
+    const { updates: _beforeUpdates, remoteAccess: _beforeRemote, permissions: _beforePermissions, ...beforeRuntimeConfig } = currentConfig;
+    const { updates: _afterUpdates, remoteAccess: _afterRemote, permissions: _afterPermissions, ...afterRuntimeConfig } = saved;
+    // Enabling idle updates or the helper debug log (read at the next helper start), or changing who
+    // may use /norma (read at every command), must not itself abort a live conversation via runtime reload.
+    const outsideRuntime = (key: string) => key === "updates" || key === "remoteAccess" || key === "permissions" || key === "schemaVersion";
+    const touchesOutside = patch.updates !== undefined || patch.remoteAccess !== undefined || patch.permissions !== undefined;
     const onlyOutsidePatch = Object.keys(patch).every(outsideRuntime);
     const outsideChanged = JSON.stringify(currentConfig.updates) !== JSON.stringify(saved.updates)
-      || JSON.stringify(currentConfig.remoteAccess) !== JSON.stringify(saved.remoteAccess);
+      || JSON.stringify(currentConfig.remoteAccess) !== JSON.stringify(saved.remoteAccess)
+      || JSON.stringify(currentConfig.permissions) !== JSON.stringify(saved.permissions);
     const updaterOnlyChange = touchesOutside && (onlyOutsidePatch || (outsideChanged
       && JSON.stringify(beforeRuntimeConfig) === JSON.stringify(afterRuntimeConfig)));
     if (!updaterOnlyChange) {
@@ -617,6 +632,10 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
     return saved;
   });
 
+  options.discordNorma?.register(createDiscordNorma(app, {
+    dataRoot: options.dataRoot,
+    ...(options.assistant?.modelClient ? { modelClient: options.assistant.modelClient } : {})
+  }));
   registerAssistantRoutes(app, {
     dataRoot: options.dataRoot,
     ...(options.assistant?.modelClient ? { modelClient: options.assistant.modelClient } : {}),
@@ -1237,6 +1256,7 @@ function remoteAppConfig(config: AppConfig) {
     life: config.life,
     search: config.search,
     detector: config.detector,
+    permissions: config.permissions,
     updates: config.updates,
     remoteAccess: config.remoteAccess
   };

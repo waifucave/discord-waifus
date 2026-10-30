@@ -272,10 +272,13 @@ describe("Discord member cache helpers", () => {
 });
 
 describe("House bot slash command payloads (Living cast §10.4)", () => {
-  it("registers only /wake and /print, both for Administrators", () => {
+  it("registers /wake and /print for Administrators, and /norma for everyone (the app checks permissions.norma, §36)", () => {
     const payloads = buildHouseCommandPayloads();
-    expect(payloads.map((payload) => payload.name)).toEqual(["wake", "print"]);
-    for (const payload of payloads) expect(payload.defaultMemberPermissions).toBe(8n);
+    expect(payloads.map((payload) => payload.name)).toEqual(["wake", "print", "norma"]);
+    const byName = new Map(payloads.map((payload) => [payload.name, payload]));
+    for (const name of ["wake", "print"]) expect(byName.get(name)?.defaultMemberPermissions).toBe(8n);
+    expect(byName.get("norma")?.defaultMemberPermissions).toBeNull();
+    expect(byName.get("norma")?.options).toEqual([expect.objectContaining({ name: "text", required: true, max_length: 4000 })]);
   });
 
   it("/wake takes a waifu (autocomplete) and an optional note; /print takes system_prompt, notes or life, and private", () => {

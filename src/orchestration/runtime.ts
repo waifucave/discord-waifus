@@ -7,6 +7,7 @@ import type {
   DiscordDirectMessageEvent,
   DiscordDmForgetCommandEvent,
   DiscordMessageEvent,
+  DiscordNormaCommandEvent,
   DiscordPrintCommandEvent,
   DiscordThreadEvent,
   DiscordThreadInfo,
@@ -145,6 +146,7 @@ export class CastRuntime {
       // The owner's slash commands on the House bot (§10.4).
       discord.onWakeCommand?.((event) => this.handleWakeCommand(event)),
       discord.onPrintCommand?.((event) => this.handlePrintCommand(event)),
+      discord.onNormaCommand?.((event) => this.handleNormaCommand(event)),
       discord.onWaifuAutocomplete?.((event) => this.handleWaifuAutocomplete(event)),
       // Edits and deletes in a life (§10.3); a newly added mention under 2 minutes wakes (§4.2).
       this.conversations.onEvent((event) => this.cast.onCacheEvent(event, (guildId, channelId) => this.castOf(guildId, channelId))),
@@ -575,6 +577,15 @@ export class CastRuntime {
   }
 
   /** `/print system_prompt|notes|life <waifu> [private]` (§10.4), only to the owner; DM content only with `private`. */
+  /** §36: `/norma <text>`. Who may use it, and Norma's run, are `askNorma`'s (the API side). */
+  async handleNormaCommand(event: DiscordNormaCommandEvent): Promise<void> {
+    if (!event.text) return event.respond("Tell Norma something: /norma <text>.");
+    const ask = this.options.askNorma;
+    if (!ask) return event.respond("Norma isn't available on this host.");
+    this.options.logger.info("Norma asked from Discord", { guildId: event.guildId, channelId: event.channelId, userId: event.userId });
+    await event.respond(await ask({ userId: event.userId, text: event.text }));
+  }
+
   async handlePrintCommand(event: DiscordPrintCommandEvent): Promise<void> {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");

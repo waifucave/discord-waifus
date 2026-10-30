@@ -574,6 +574,41 @@ describe("DiscordJsGateway slash commands", () => {
   });
 });
 
+describe("DiscordJsGateway /norma (§36)", () => {
+  it("is not an owner command: anyone's /norma reaches the listener (which checks permissions.norma), ephemerally; a long answer is a file", async () => {
+    const asked: string[] = [];
+    const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async (userId) => (asked.push(userId), false) } });
+    let answer = "Hi!";
+    const events: Array<{ userId: string; text: string }> = [];
+    gateway.onNormaCommand(async (event) => {
+      events.push({ userId: event.userId, text: event.text });
+      await event.respond(answer);
+    });
+    const plain = fakeInteraction({ commandName: "norma", userId: "user-9", admin: false, strings: { text: "  what's my setup?  " } });
+    await slashHandler(gateway, "handleNormaInteraction")(plain.interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(asked).toEqual([]);
+    expect(events).toEqual([{ userId: "user-9", text: "what's my setup?" }]);
+    expect(plain.calls.deferReply).toEqual([{ flags: MessageFlags.Ephemeral }]);
+    expect(plain.calls.reply).toEqual([]);
+    expect(plain.calls.editReply).toEqual(["Hi!"]);
+
+    answer = "y".repeat(5_000);
+    const long = fakeInteraction({ commandName: "norma", strings: { text: "explain everything" } });
+    await slashHandler(gateway, "handleNormaInteraction")(long.interaction);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(long.calls.editReply).toEqual([{ content: "Attached as norma.md.", files: [{ attachment: expect.any(Buffer), name: "norma.md" }] }]);
+  });
+
+  it("answers not-ready when no listener is attached", async () => {
+    const gateway = makeGateway({ house: bot("house") });
+    const { interaction, calls } = fakeInteraction({ commandName: "norma", strings: { text: "hi" } });
+    await slashHandler(gateway, "handleNormaInteraction")(interaction);
+    expect(calls.deferReply).toEqual([]);
+    expect(calls.reply).toEqual([{ content: expect.stringContaining("not ready"), flags: MessageFlags.Ephemeral }]);
+  });
+});
+
 describe("DiscordJsGateway /print private option", () => {
   it("passes private:true through and defaults to redacted output", async () => {
     const gateway = makeGateway({ house: bot("house"), applicationOwners: { isOwner: async () => true } });

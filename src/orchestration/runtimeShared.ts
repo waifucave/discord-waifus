@@ -44,6 +44,8 @@ export type CastRuntimeOptions = {
   models?: import("../models/client.js").ModelClient;
   /** Test seams for the Living cast host. */
   livingCast?: Partial<import("../life/livingCast.js").LivingCastOptions>;
+  /** §36: Norma's answer to a `/norma` (the API server's runner; it checks `permissions.norma`). */
+  askNorma?: (request: { userId: string; text: string }) => Promise<string>;
 };
 
 /** The narrow I/O services the store helpers need. */

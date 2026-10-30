@@ -31,6 +31,7 @@ import {
   GuildRolesFileSchema,
   createEmptyRevisionedFile
 } from "../shared/schemas/domain.js";
+import type { AskNorma } from "../api/assistant/discordNorma.js";
 import { createApiServer, resolveStaticDir } from "../api/server.js";
 import { createLogger, Logger } from "./logger.js";
 import { runMigrations } from "./migrations.js";
@@ -206,6 +207,8 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       });
     };
 
+    // §36: set once the API server is built; the House bot's /norma answers through it.
+    let askNorma: AskNorma | undefined;
     const makeCastRuntime = (nextGateway: DiscordGatewayFacade, currentConfig = config) => {
       memberListRefreshHours = currentConfig.discord.memberListRefreshHours;
       // One image fetcher shared by OCR and the context engine's inline images (spec 8.4).
@@ -223,6 +226,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       return new CastRuntime({
         storage,
         discord: nextGateway,
+        askNorma: (request) => (askNorma ? askNorma(request) : Promise.resolve("Norma isn't ready yet: Discord Waifus is still starting up.")),
         logger,
         ocr,
         images,
@@ -450,6 +454,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
       dataRoot: options.dataRoot,
       storage,
       runtime,
+      discordNorma: { register: (ask) => { askNorma = ask; } },
       updateActivity,
       runtimeControl: {
         getCastRuntime: () => castRuntime,

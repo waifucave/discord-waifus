@@ -1159,6 +1159,7 @@ This replaces the Phase 5 "recent deletes redacted in place" rule.
 |---|---|---|
 | `/wake <waifu> [note]` | owner (House bot, guild) | Queue an `owner` wake. Only a waifu cast in this server (any channel or thread); the autocomplete offers this server's cast. |
 | `/print system_prompt|notes|life [private]` | owner (ephemeral) | Any waifu. Her system prompt, `MEMORY.md`, or the last 20 life-log lines, with DM content redacted by the §14.4 rule unless `private:true`. |
+| `/norma <text>` | anyone in `permissions.norma` (ephemeral) | Ask Norma, the dashboard assistant; her final answer is the reply (§36). |
 | `/forget conversation|everything` | DM user (waifu bot) | §7.5, existing confirm button. |
 
 Retired: `/run`, `/stop`, `/review`, `/memories`, `/console`, `/clear`, `/debug` (deleted from
@@ -4746,3 +4747,56 @@ person only), stores and records the repaired message, and keeps her model's own
   sentence), `life-rest-notice.txt` (facts line, calendar block), `life-compaction-request.txt` (facts
   line, calendar), `life-dream.txt` (the two new instruction lines, a Mina line seeded, with Mina known
   to the directory, so the opening shows the new-people line, the calendar).
+
+## 36. `/norma` from Discord, and a Permissions tab (owner request, 2026-10-30)
+
+### 36.1 What the owner asked
+
+A House bot command `/norma <text>` that only the users allowed inside Discord Waifus can use,
+whatever their roles in the Discord server; the reply is Norma's final answer. A Permissions tab in
+Settings holds who is allowed, with room for more permissions later.
+
+### 36.2 Who may use it
+
+- `config.toml` `[permissions] norma`: a list of Discord user IDs (17 to 20 digits, at most 50),
+  default empty: nobody, the owner included, until listed. Settings → Permissions edits it (an ID or a
+  pasted `<@…>` mention); `waifus set app permissions.norma '[…]'` and `PUT /api/config` too.
+- The House bot registers `/norma` with no default member permission (Discord shows it to everyone in
+  the server, since a role can't express this list) and guild-only like its other commands. Who may use
+  it is checked by the app at every turn and at every Norma tool call, read fresh from `config.toml`, so
+  a change applies at once and a removal stops a running turn at its next tool call. The application
+  owner check of `/wake` and `/print` (§10.4) does not apply.
+- A `permissions` change never reloads the Discord runtime (like `updates` and `remoteAccess`).
+
+### 36.3 What Norma does there
+
+- The interaction is deferred ephemeral at once; the backend answers with Norma's final text (over
+  1,900 characters as an attached `norma.md` on the same ephemeral reply). An empty text asks for one.
+- She runs the dashboard's tool loop (§9.3) as the host's local principal, with the dashboard's tools
+  and model, in a conversation of her own per Discord user (its own in-memory store, apart from the
+  dashboard's); it continues while they keep talking and starts over after 30 minutes without a
+  message. A second `/norma` while one runs is refused ("still answering").
+- Her message is prefixed `[/norma in Discord from user <id>: only they see your final answer, as a
+  Discord message. Confirmation cards can't be shown or clicked here.]`.
+- Every proposal (a change that needs a confirmation card: §9.3's guarded config keys, file writes,
+  forgets, Remote Access pairing) is refused from Discord: the tool gets the refusal and she tells them to
+  make it in the dashboard. DM content stays out of her reach as in the dashboard.
+- `permissions.*` is a guarded key for the assistant: `update_app_config` only proposes it on a card, and
+  `PUT /api/config` refuses it from an assistant delegation without the card's pending action id (403
+  `AssistantConfirmationRequired`). So a `/norma` user can never widen the list.
+
+### 36.4 As built
+
+- `src/shared/schemas/config.ts` `PermissionsConfigSchema`; registry key `permissions.norma`
+  (`applies: live`); `src/api/server.ts` `applyConfigPatch` (the assistant guard, no reload, the
+  remote copy of the config carries it); `src/api/assistant/tools.ts` `splitGuardedAppConfig`.
+- `src/discord/client.ts`: `buildHouseCommandPayloads` (`norma`, option `text` ≤ 4,000 characters,
+  `defaultMemberPermissions: null`), `handleNormaInteraction`, `onNormaCommand`.
+- `src/orchestration/runtime.ts` `handleNormaCommand` calls `CastRuntimeOptions.askNorma`, which
+  `src/backend/server.ts` takes from `createApiServer`'s `discordNorma.register`;
+  `src/api/assistant/discordNorma.ts` `createDiscordNorma` is the runner (its action store refuses
+  every proposal).
+- Settings → Permissions (`SettingsScreen.tsx` `PermissionsTab`, `settingsForm.ts` `addDiscordUserId`).
+- Tests: `tests/discordNorma.test.ts`, the `/norma` cases in `tests/discordGatewayConnect.test.ts` and
+  `tests/discord.test.ts`.
+

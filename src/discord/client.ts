@@ -122,6 +122,8 @@ export interface DiscordGatewayFacade {
   onWakeCommand?(listener: DiscordWakeCommandListener): () => void;
   /** Living cast §10.4: the owner's `/print system_prompt|notes|life <waifu>` (ephemeral). */
   onPrintCommand?(listener: DiscordPrintCommandListener): () => void;
+  /** Living cast §36: `/norma <text>` (ephemeral); who may use it is the backend's check. */
+  onNormaCommand?(listener: DiscordNormaCommandListener): () => void;
   /** The `waifu` option of `/wake` and `/print`. */
   onWaifuAutocomplete?(listener: DiscordWaifuAutocompleteListener): () => void;
   /**
@@ -344,6 +346,9 @@ export type DiscordWaifuAutocompleteEvent = {
 };
 export type DiscordWakeCommandListener = (event: DiscordWakeCommandEvent) => void | Promise<void>;
 export type DiscordPrintCommandListener = (event: DiscordPrintCommandEvent) => void | Promise<void>;
+/** `/norma <text>` (§36): `respond` sends Norma's answer, as a `norma.md` file when it is long. */
+export type DiscordNormaCommandEvent = DiscordSlashCommandEvent & { text: string };
+export type DiscordNormaCommandListener = (event: DiscordNormaCommandEvent) => void | Promise<void>;
 export type DiscordWaifuAutocompleteListener = (event: DiscordWaifuAutocompleteEvent) => void | Promise<void>;
 
 export type DiscordPrintCommandType = "system_prompt" | "notes" | "life";
@@ -432,6 +437,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly botRolesListeners = new Set<(event: { botId: string; guildId: string; roleIds: string[] }) => void>();
   private readonly wakeListeners = new Set<DiscordWakeCommandListener>();
   private readonly printListeners = new Set<DiscordPrintCommandListener>();
+  private readonly normaListeners = new Set<DiscordNormaCommandListener>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
   // Living cast §10.4 (D-a): the application's owner or team members run /wake and /print.
@@ -1189,6 +1195,10 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         this.runBackground("Discord print interaction failed", interactionLogContext(interaction), () =>
           this.handlePrintInteraction(interaction)
         );
+      } else if (interaction.commandName === NORMA_COMMAND_NAME) {
+        this.runBackground("Discord norma interaction failed", interactionLogContext(interaction), () =>
+          this.handleNormaInteraction(interaction)
+        );
       }
     });
   }
@@ -1216,6 +1226,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   onPrintCommand(listener: DiscordPrintCommandListener): () => void {
     this.printListeners.add(listener);
     return () => this.printListeners.delete(listener);
+  }
+
+  onNormaCommand(listener: DiscordNormaCommandListener): () => void {
+    this.normaListeners.add(listener);
+    return () => this.normaListeners.delete(listener);
   }
 
   onWaifuAutocomplete(listener: DiscordWaifuAutocompleteListener): () => void {
@@ -1723,6 +1738,35 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     }
   }
 
+  /**
+   * §36: `/norma <text>`. Not an owner command: the backend checks the user against
+   * `permissions.norma`, whatever their roles here. Deferred ephemeral first (Norma takes a while).
+   */
+  private async handleNormaInteraction(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (await this.replyIfNotReady(interaction, this.normaListeners, NORMA_COMMAND_NAME)) return;
+    if (!interaction.guildId || !interaction.channelId) {
+      await replyEphemeral(interaction, `/${NORMA_COMMAND_NAME} can only be used in a server channel.`);
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const event: DiscordNormaCommandEvent = {
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      text: sanitizeOptionString(interaction.options.getString(NORMA_TEXT_OPTION_NAME)) ?? "",
+      respond: async (content) => {
+        if (content.length <= PRINT_INLINE_MAX_CHARS) {
+          await interaction.editReply(content);
+          return;
+        }
+        await interaction.editReply({ content: "Attached as norma.md.", files: [{ attachment: Buffer.from(content, "utf8"), name: "norma.md" }] });
+      }
+    };
+    for (const listener of this.normaListeners) {
+      this.dispatchListener("Discord norma command listener failed", listener, event, slashCommandLogContext(event));
+    }
+  }
+
   /** Slash commands are registered before the runtime attaches its listeners; never leave one "thinking". */
   private async replyIfNotReady(
     interaction: ChatInputCommandInteraction,
@@ -2116,6 +2160,9 @@ const DM_FORGET_WHAT_OPTION_NAME = "what";
 const DM_FORGET_CONFIRM_MS = 30_000;
 const WAKE_COMMAND_NAME = "wake";
 const PRINT_COMMAND_NAME = "print";
+const NORMA_COMMAND_NAME = "norma";
+const NORMA_TEXT_OPTION_NAME = "text";
+const MAX_NORMA_TEXT_LENGTH = 4000;
 const WAIFU_OPTION_NAME = "waifu";
 const WAKE_NOTE_OPTION_NAME = "note";
 const PRINT_TYPE_OPTION_NAME = "type";
@@ -2309,6 +2356,21 @@ export function buildHouseCommandPayloads() {
           name: PRINT_PRIVATE_OPTION_NAME,
           description: "Also show what came from private chats (hidden by default; only you see the reply).",
           required: false
+        }
+      ]
+    },
+    {
+      name: NORMA_COMMAND_NAME,
+      description: "Ask Norma, the Discord Waifus assistant (only you see her answer).",
+      // Shown to everyone: who may use it is Discord Waifus' own list (§36), not a server role.
+      defaultMemberPermissions: null,
+      options: [
+        {
+          type: ApplicationCommandOptionType.String as ApplicationCommandOptionType.String,
+          name: NORMA_TEXT_OPTION_NAME,
+          description: "What to ask or tell her.",
+          required: true,
+          max_length: MAX_NORMA_TEXT_LENGTH
         }
       ]
     }

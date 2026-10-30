@@ -280,7 +280,7 @@ waifus update --github
 ## 🎮 Setup
 
 You'll create **one Discord application for the House bot** (it reads the rooms and hosts the owner's
-`/wake` and `/print` commands) and, if you like, **one application per waifu** so each has her own
+`/wake` and `/print` commands, and `/norma` for the people you list in Settings → Permissions) and, if you like, **one application per waifu** so each has her own
 name and avatar. A waifu needs her own bot to post: the House bot only reads and never speaks for her. Then, in the dashboard:
 
 1. 🔑 **Settings → Providers**: add at least one model provider key.

@@ -376,6 +376,16 @@ const SearchConfigSchema = z
   .default({ ...DEFAULT_SEARCH_CONFIG });
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 
+// Who may use what from Discord, by Discord user ID, whatever their roles in a server (spec §36):
+// `norma`, the House bot's `/norma` (the dashboard assistant).
+const PERMISSIONS_FIELDS = {
+  norma: z.array(z.string().regex(/^\d{17,20}$/u, "Use a Discord user ID (17 to 20 digits).")).max(50)
+};
+const PermissionsConfigSchema = z
+  .object({ norma: PERMISSIONS_FIELDS.norma.default(() => []) })
+  .default(() => ({ norma: [] }));
+export type PermissionsConfig = z.infer<typeof PermissionsConfigSchema>;
+
 // The addressee detector (spec §4.3): the global native-choice target ("" = none).
 const DetectorConfigSchema = z
   .object({ target: DetectorTargetOrNoneSchema.default(DEFAULT_DETECTOR_TARGET) })
@@ -394,6 +404,7 @@ export const AppConfigSchema = z.object({
   life: LifeConfigSchema,
   search: SearchConfigSchema,
   detector: DetectorConfigSchema,
+  permissions: PermissionsConfigSchema,
   updates: z.object({
     enabled: z.boolean().default(false),
     checkIntervalMinutes: z.number().int().min(15).max(1440).default(60),
@@ -531,6 +542,9 @@ export const UpdateAppConfigBodySchema = z.object({
   }).strict().optional(),
   detector: z.object({
     target: DetectorTargetOrNoneSchema.optional()
+  }).strict().optional(),
+  permissions: z.object({
+    norma: PERMISSIONS_FIELDS.norma.optional()
   }).strict().optional()
 }).strict();
 

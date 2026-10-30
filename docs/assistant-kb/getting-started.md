@@ -11,7 +11,8 @@ process hosts everything: each waifu has her own persona, model and Discord bot.
 > mentions, replies, her name, DMs, her own wakeups (timed ones, watches, pages), or the addressee detector; she
 > reads the conversation, decides whether to answer, keeps notes as her memory in her own folder
 > (with her wakeups) and tidies them nightly. There is no director. The dashboard's Life screen shows what she is doing (see the
-> life doc); the owner can also use the House bot's `/wake` and `/print` and `waifus life`.
+> life doc); the owner can also use the House bot's `/wake` and `/print` and `waifus life`, and anyone the owner lists in
+> Settings → Permissions can ask Norma from Discord with `/norma`.
 
 Everything is stored locally under the data root (default `~/.dc-waifus`, override with
 `DC_WAIFUS_HOME`). Ordinary operation sends data only to the model providers you configure and to

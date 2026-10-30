@@ -131,8 +131,9 @@ function actionController(ctx: AssistantToolContext): AssistantActionController 
 /** What the card says about the keys only the owner's click applies. */
 const GUARDED_APP_CONFIG_NOTE =
   "The host bind decides who can reach the dashboard and API, the served folder decides what the dashboard runs, and " +
-  "automatic updates install new versions unattended, and the helper debug log writes network details to a local file; " +
-  "a wrong value can lock you out or run code you did not mean to.";
+  "automatic updates install new versions unattended, the helper debug log writes network details to a local file, and " +
+  "permissions.norma lets Discord users ask Norma to read and change this setup; a wrong value can lock you out, run code " +
+  "you did not mean to or hand your setup to someone else.";
 
 /**
  * Splits an update_app_config patch: `http.host`, `frontend.staticDir`, `updates.*` and
@@ -154,7 +155,7 @@ export function splitGuardedAppConfig(changes: Record<string, unknown>): { guard
   };
   take("http", "host");
   take("frontend", "staticDir");
-  for (const group of ["updates", "remoteAccess"]) {
+  for (const group of ["updates", "remoteAccess", "permissions"]) {
     const section = rest[group];
     if (section === undefined) continue;
     guarded[group] = section;
@@ -1159,7 +1160,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Change host-wide settings (config.toml): pass only the keys to change as a nested object under `changes`, e.g. " +
       "{ life: { maxSendsPerTurn: 6 } } or { search: { maxPerDay: 200 } }. See get_setting_help('app') for every key. " +
-      "Ordinary keys apply directly. http.host, frontend.staticDir, updates.* and remoteAccess.* are only proposed: a secure dashboard " +
+      "Ordinary keys apply directly. http.host, frontend.staticDir, updates.*, remoteAccess.* and permissions.* are only proposed: a secure dashboard " +
       "confirmation card waits for the user, and only their click on the host's dashboard applies them (never from a " +
       "paired remote device).",
     parameters: {

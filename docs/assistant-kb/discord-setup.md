@@ -6,7 +6,7 @@ Creating the bot applications and wiring them to your server.
 
 Every waifu runs as her own Discord bot application. That's what gives each character her own
 name, avatar, and presence. The House bot (stored as the `orchestrator` entry) is one more application: it reads the rooms, hosts the
-owner slash commands `/wake` and `/print` and directory refreshes, and must log in for the waifu bots to connect. For a
+owner slash commands `/wake` and `/print`, `/norma` and directory refreshes, and must log in for the waifu bots to connect. For a
 five-waifu cast you create six applications total (1 House bot + 5 waifus).
 
 ## Per application (Discord Developer Portal)
@@ -111,3 +111,16 @@ list bots that failed (bad token, missing intents).
 Application IDs are not secret. Only the token goes through the secure form.
 `update_discord_bots` merges entries BY ID: bots you do not mention are untouched, and stored
 tokens are preserved when omitted from an entry you do mention.
+
+## `/norma`: asking you from Discord
+
+The House bot's `/norma text:<…>` asks you (Norma) from any server it is in, and only the person who
+typed it sees your final answer. Nobody may use it until the owner lists their Discord user ID in
+Settings → Permissions (`permissions.norma` in config.toml), whatever their roles in that server;
+the owner adds their own ID to use it themselves. A message from Discord starts with
+`[/norma in Discord from user <id>: …]`. There you have your usual tools, but nothing that needs a
+confirmation card can be done (the tool returns the refusal: tell them to do it in the dashboard), and
+you can never change `permissions.*` from a conversation: that list is the owner's, in Settings →
+Permissions (here in the dashboard you may only propose it on a card). Each Discord user has one
+conversation with you that starts over after 30 minutes without a message.
+

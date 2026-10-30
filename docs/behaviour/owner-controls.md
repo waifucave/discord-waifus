@@ -16,7 +16,7 @@ Navigation (`src/frontend/nav.ts`): Home, Cast, Life, Rooms, Activity, Settings.
 | **Life** (`LifeScreen.tsx`, `LifeFiles.tsx`) | Mosaic of every waifu (state, waiting wakes, today's cost vs budget, last turn, review chip) and recent sends/wakes; per waifu: now (awake / busy / up late / dozing / asleep, idle or mid-turn), queue (now/deferred/quiet), today's cost, epoch, last compaction/rest/dream, live timeline, summary, needs review, web searches today, her wakeups (timed, watches and pages, each with its code, state and why it stopped; delete one), her files (home, `/tmp`, `/transcripts`) | **Wake** with a note (≤ 500); **Compact** and **Reset…** (disabled while Discord is offline); "Show private chats" (local only); dismiss review lines; delete a reminder or watch; edit/create/delete her files (same checks as her Edit tool, conflict on a stale hash); forget a person (dry run, then a confirm dialog with the limits) |
 | **Rooms** (`RoomsScreen.tsx`) | Servers, channels, cast per channel, time of the last detector decision | Server on/off (`paused`), detector override (inherit / off / another target), threads share the cast or stay silent, cast toggles per waifu |
 | **Activity** (`ActivityScreen.tsx`) | Logs, model calls and replies (life/maintenance/compaction/web calls metadata only), usage by day/waifu/purpose/model/provider | — |
-| **Settings** (`SettingsScreen.tsx`) | Providers, Models, Search, Detector, Life limits (Turns, Sending, Wakes, Her day, Context and images, Rest, Home folder, /tmp, Simulated Bash, Dreaming limits, Dream model, Compaction, Waiting before a wake, After a restart), Assistant, App, Remote Access | Edit; App → Controls: Pause, Resume, Reload Discord, Clear OCR cache, Run setup wizard |
+| **Settings** (`SettingsScreen.tsx`) | Providers, Models, Search, Detector, Life limits (Turns, Sending, Wakes, Her day, Context and images, Rest, Home folder, /tmp, Simulated Bash, Dreaming limits, Dream model, Compaction, Waiting before a wake, After a restart), Assistant, Permissions (who can use `/norma`: Discord user IDs), App, Remote Access | Edit; App → Controls: Pause, Resume, Reload Discord, Clear OCR cache, Run setup wizard |
 
 The assistant docks beside the main column (a full-width sheet below 900 px).
 
@@ -76,8 +76,8 @@ routes, so every rule above applies to it, plus:
 - **Confirmation cards** (server-held; only the owner's click applies them; expire after 5 minutes):
   `write_file` (the exact `PUT` with the current hash, ≤ 16 KB), `forget_person` and `forget_dm` (dry
   run first, the counts and the limits), `update_app_config` for `http.host`, `frontend.staticDir`,
-  `updates.*`, `remoteAccess.*` (the helper debug log; other keys apply directly; from a paired remote
-  device these are refused), Remote
+  `updates.*`, `remoteAccess.*` (the helper debug log), `permissions.*` (who can use `/norma`; other
+  keys apply directly; from a paired remote device these are refused), Remote
   Access enable/disable, invitations, pairing approval and device revocation.
 - It never sees DM content: a request with `includePrivate` from it answers 403.
 
@@ -89,12 +89,14 @@ House bot, in servers (`src/discord/client.ts`, `src/discord/applicationOwners.t
 | Command | Behaviour |
 |---|---|
 | `/wake waifu:<name> [note]` | Owner wake (note ≤ 500). Only a waifu cast in this server (autocomplete offers this server's cast); else "X isn't cast in this server." Replies "Woke X.", "X's wake is queued." (deferred or merged), "X can't be woken right now (paused or disabled)." or, while the cast reloads, "X's wake is queued: the cast is reloading, and it runs once the cast is back." (queued in `wakes.json` like HTTP's `queued_offline`) |
+| `/norma text:<text>` | Asks Norma, the dashboard assistant (spec §36, `src/api/assistant/discordNorma.ts`); her final answer is the reply (over 1,900 characters attached as `norma.md`). Not an owner command: anyone listed in `permissions.norma` (Settings → Permissions) may use it, whatever their roles in the server, and nobody else ("You can't use /norma. …"). The list is read at every turn and at every tool call, so a removal stops a turn at its next tool call. One conversation per Discord user, started over after 30 minutes without a message. She runs as the host itself, with every tool the dashboard has, but every change that needs a confirmation card is refused from Discord (her tool gets the refusal and she says so), and `PUT /api/config` refuses her any change to `permissions.*` without a confirmed card |
 | `/print type:<system_prompt\|notes\|life> waifu:<name> [private]` | Her system prompt (summary and the index lines from private chats hidden unless `private:true`), her `MEMORY.md` (lines that link to a file from a private chat or name a DM hidden, an index from a private chat not shown, unless `private:true`; [privacy-and-forget.md](privacy-and-forget.md)), or the last 20 life-log lines (DM content hidden unless `private:true`). Over 1,900 characters it is attached as `<type>.md` |
 
-- Only the House bot application's **owner or its team members** may run them; the list is fetched
+- Only the House bot application's **owner or its team members** may run `/wake` and `/print`; the list is fetched
   when the bot comes online, refreshed every 6 h and re-fetched at run time when older than 10 min; a
   failed fetch keeps the last list; with none, nobody is the owner. Server Administrator is only the
-  commands' default visibility. Every reply is ephemeral.
+  commands' default visibility. `/norma` is shown to everyone (no default permission) and checked
+  against `permissions.norma`. Every reply is ephemeral.
 - Retired commands (`/run`, `/stop`, `/review`, `/memories`, `/console`, `/clear`, `/debug`) are
   deleted at registration.
 - Waifu bots that take DMs register `/forget conversation|everything` in DMs only

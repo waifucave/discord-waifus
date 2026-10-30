@@ -33,6 +33,7 @@ export const SECTION_TABS: Partial<Record<ViewId, Array<{ id: string; label: str
     { id: "detector", label: "Detector" },
     { id: "life", label: "Life limits" },
     { id: "assistant", label: "Assistant" },
+    { id: "permissions", label: "Permissions" },
     { id: "app", label: "App" },
     { id: "remote-access", label: "Remote Access" }
   ]

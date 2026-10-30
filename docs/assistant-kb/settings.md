@@ -6,7 +6,7 @@ Targets: `app`, `assistant`, `remote-access`, `waifu:<id>`, `server:<guildId>`, 
 
 ## App (`app`)
 
-The host's config.toml. GET /api/config reads it and PUT /api/config takes a partial patch (omitted keys keep their values); the host then reloads its Discord runtime unless only `updates` or `remoteAccess` changed. With the host stopped, `waifus set app …` writes config.toml directly.
+The host's config.toml. GET /api/config reads it and PUT /api/config takes a partial patch (omitted keys keep their values); the host then reloads its Discord runtime unless only `updates`, `remoteAccess` or `permissions` changed. With the host stopped, `waifus set app …` writes config.toml directly.
 
 Target `app` · stored in `config.toml` · writes: revision none.
 
@@ -100,6 +100,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `search.maxPerDay` | integer 0–10000 | `50` | Web searches per day, host-wide (0 = searching is off). The optional Exa key is the `exa` provider credential, not config. |
 | `search.maxPerWaifuPerDay` | integer 0–10000 | `20` | Web searches one waifu may make per day (0 = searching is off). |
 | `detector.target` | string | `openrouter:typesafe/jev-1.14` | The addressee detector (who is an unaddressed message for?): a native-choice decision model such as openrouter:typesafe/jev-1.14, openai:gpt-6-luna or laya:english; "" turns it off (then a first message in 10 minutes or a question wakes one waifu who is around, by a weighted draw that favours whoever spoke there least recently). Also GET/PUT /api/detector/config. |
+| `permissions.norma` | list of strings | `[]` | Discord user IDs that may use the House bot's /norma <text> in any server it is in, whatever their roles there: it asks Norma, the dashboard assistant, and only they see her answer. Norma reads and changes the setup for them as in the dashboard (never DM content), except what needs a confirmation card, and never this list. Changing it through Norma needs your confirmation on a card. Read at every /norma, so a change applies at once. Empty: nobody. |
 | `updates.enabled` | boolean | `false` | Install newer patch releases automatically when every managed process is idle (global npm installs only). (local-only write) |
 | `updates.checkIntervalMinutes` | integer 15–1440 [minutes] | `60` | How often npm is checked for a newer patch release. (local-only write) |
 | `updates.idleMinutes` | integer 1–120 [minutes] | `5` | How long everything must be quiet before an update installs. (local-only write) |

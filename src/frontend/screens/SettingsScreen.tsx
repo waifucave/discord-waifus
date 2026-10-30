@@ -26,7 +26,7 @@ import { RemoteAccessTab } from "../components/remoteAccess/RemoteAccessTab";
 import { ModelPicker } from "../components/ModelPicker";
 import { RegistryForm } from "../components/RegistryForm";
 import { SectionHead } from "../components/SectionHead";
-import { allowedModelRows, toggleAllowed, type AllowedModelRow } from "./settingsForm";
+import { addDiscordUserId, allowedModelRows, toggleAllowed, type AllowedModelRow } from "./settingsForm";
 
 export function SettingsScreen({
   tab,
@@ -54,6 +54,8 @@ export function SettingsScreen({
         <LifeLimitsTab />
       ) : active === "assistant" ? (
         <AssistantTab />
+      ) : active === "permissions" ? (
+        <PermissionsTab />
       ) : active === "remote-access" ? (
         <RemoteAccessTab />
       ) : (
@@ -175,6 +177,106 @@ function ProvidersTab() {
 
 function sameChoice(a: ModelChoice | undefined, b: ModelChoice | undefined): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+/* ================= permissions ================= */
+
+/**
+ * Who may use what from Discord (§36), by Discord user ID, whatever their roles in a server. For
+ * now one list: the House bot's `/norma`. Saves `permissions.norma`.
+ */
+function PermissionsTab() {
+  const config = useApi<AppConfig>((s) => api.getConfig(s), []);
+  const stored = config.data?.permissions?.norma;
+  const [draft, setDraft] = useState<string[] | undefined>(undefined);
+  const [entry, setEntry] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<Message | undefined>(undefined);
+  const list = draft ?? stored ?? [];
+  const changed = draft !== undefined && JSON.stringify(draft) !== JSON.stringify(stored ?? []);
+
+  const add = () => {
+    const next = addDiscordUserId(list, entry);
+    if (next.error) {
+      setMessage({ tone: "err", text: next.error });
+      return;
+    }
+    setDraft(next.list);
+    setEntry("");
+    setMessage(undefined);
+  };
+  const save = async () => {
+    if (!draft) return;
+    setSaving(true);
+    setMessage(undefined);
+    try {
+      const saved = await api.putConfig({ permissions: { norma: draft } });
+      config.setData(saved);
+      setDraft(undefined);
+      setMessage({ tone: "ok", text: draft.length === 0 ? "Saved. Nobody can use /norma." : `Saved. ${draft.length === 1 ? "1 person" : `${draft.length} people`} can use /norma.` });
+    } catch (err) {
+      setMessage({ tone: "err", text: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="content">
+      <SectionHead
+        title="Who can use /norma"
+        hint="In any server the House bot is in, these Discord users can type /norma <text> to ask Norma, whatever their roles there; only they see her answer. She reads and changes your setup for them as she does here (never anyone's DMs), except changes that need a confirmation card, and she can never change this list. Applies at once."
+        actions={
+          <>
+            {changed && (
+              <button className="btn quiet sm" onClick={() => setDraft(undefined)}>
+                Undo
+              </button>
+            )}
+            <button className="btn primary sm" disabled={!changed || saving} onClick={() => void save()}>
+              {saving ? "Saving…" : changed ? "Save" : "Saved"}
+            </button>
+          </>
+        }
+      />
+      <MessageCell message={message} />
+      {list.length === 0 && (
+        <div className="cell provider-row">
+          <span className="t-micro">Nobody yet.</span>
+        </div>
+      )}
+      {list.map((id) => (
+        <div className="cell provider-row" key={id}>
+          <div className="provider-head">
+            <span className="t-title mono">{id}</span>
+            <span className="provider-actions">
+              <button className="btn quiet sm" onClick={() => setDraft(list.filter((other) => other !== id))}>
+                Remove
+              </button>
+            </span>
+          </div>
+        </div>
+      ))}
+      <div className="fgrid pair-action">
+        <div className="fcell" style={{ gridColumn: "span 2" }}>
+          <label className="field-label" htmlFor="norma-user">Discord user ID</label>
+          <input
+            id="norma-user"
+            className="input mono"
+            placeholder="123456789012345678"
+            value={entry}
+            onChange={(e) => setEntry(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && add()}
+          />
+          <span className="field-hint">In Discord: Settings → Advanced → Developer Mode, then right-click the person → Copy User ID. Add your own to use /norma yourself.</span>
+        </div>
+        <button className="cell clickable btn" disabled={!entry.trim()} onClick={add}>
+          Add
+        </button>
+      </div>
+      <div className="cell growcell" />
+    </div>
+  );
 }
 
 /** Norma's own model (Living cast §9.3); unset = the first configured waifu's model. */
