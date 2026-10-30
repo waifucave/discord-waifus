@@ -297,10 +297,11 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
   until someone says it happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open:
   questions nobody answered, plans nobody confirmed, someone who didn't reply." Deleted messages and
   forgotten people are listed for omission on lines after it. After a blank line come the calendar
-  (§35.2, `calendarStrip` in `clock.ts`: "Calendar (look dates up here, don't count): last week Mon 16
-  Nov · … · Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next week Mon
-  30 Nov · … · Sun 6 Dec." in her zone) and her time line, in the appended message (never in the cached
-  system blocks).
+  (§35.2, `calendarStrip` in `clock.ts`: "Calendar as of Thu 26 Nov (look dates up here, don't count):
+  last week Mon 16 Nov · … · Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29
+  Nov; next week Mon 30 Nov · … · Sun 6 Dec." in her zone; dated in its first words, so the copy a rest
+  turn leaves in her log, an ignored quiet-time rest's for the rest of the epoch, never reads as a later
+  day's) and her time line, in the appended message (never in the cached system blocks).
 - Over budget (`budget`, `overflow`), the last tool results are replaced in the request by
   `[result left out: too large to summarise]`.
 - The new epoch keeps the **last 3 complete turns** (fewer while they alone would exceed half the

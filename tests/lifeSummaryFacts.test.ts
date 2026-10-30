@@ -1,12 +1,15 @@
 // Spec §35 (2026-10-30): what her summaries and dream notes may write as fact, the calendar they look
 // dates up in, the people the dream should make a note for, the chat rule against invented memories,
 // and the life benchmark's mention repair.
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { calendarStrip } from "../src/life/clock.js";
 import { COMPACTION_INSTRUCTION } from "../src/life/compaction.js";
-import { DREAM_INSTRUCTION, newPeopleLine, peopleSheTalkedTo, type DreamChunk } from "../src/life/dream.js";
+import type { GuildDirectory } from "../src/discord/guildDirectory.js";
+import { recordForgottenPerson } from "../src/orchestration/dm/forgotten.js";
+import { readWaifu } from "../src/orchestration/stores/config.js";
+import { DREAM_INSTRUCTION, dreamWindow, newPeopleLine, peopleSheTalkedTo, peopleWithoutNotes, type DreamChunk } from "../src/life/dream.js";
 import { LIFE_TEXT } from "../src/life/lifeHarness.js";
 import { hasNoteFor } from "../src/life/people.js";
 import { CACHE_REST_NOTICE, REST_NOTICE, SUMMARY_FACTS, isRestNotice } from "../src/life/rest.js";
@@ -19,7 +22,7 @@ import tiny from "../scripts/life-benchmark/scenarios/tiny.js";
 import type { TranscriptEvent } from "../scripts/life-benchmark/types.js";
 import { BASELINE } from "../scripts/life-benchmark/variants.js";
 import { textTurn } from "./modelFakes.js";
-import { ELLA_BOT, closeWorlds, homeOf, lifeWorld, MINA_USER, seedTranscript } from "./lifeFixtures.js";
+import { CHANNEL, ELLA_BOT, GUILD, closeWorlds, dmOf, homeOf, KEVIN, lifeWorld, MINA_USER, seedTranscript, type LifeWorld } from "./lifeFixtures.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -32,7 +35,7 @@ describe("the calendar strip (§35.2)", () => {
   it("lists last, this and next week Monday first in her zone, today marked", () => {
     // Thu 26 Nov 2026, 10:00 in London.
     expect(calendarStrip(new Date("2026-11-26T10:00:00Z"), "Europe/London")).toBe(
-      "Calendar (look dates up here, don't count): " +
+      "Calendar as of Thu 26 Nov (look dates up here, don't count): " +
         "last week Mon 16 Nov · Tue 17 Nov · Wed 18 Nov · Thu 19 Nov · Fri 20 Nov · Sat 21 Nov · Sun 22 Nov; " +
         "this week Mon 23 Nov · Tue 24 Nov · Wed 25 Nov · Thu 26 Nov (today) · Fri 27 Nov · Sat 28 Nov · Sun 29 Nov; " +
         "next week Mon 30 Nov · Tue 1 Dec · Wed 2 Dec · Thu 3 Dec · Fri 4 Dec · Sat 5 Dec · Sun 6 Dec."
@@ -45,6 +48,8 @@ describe("the calendar strip (§35.2)", () => {
     expect(tokyo).toContain("this week Mon 23 Nov · Tue 24 Nov · Wed 25 Nov · Thu 26 Nov · Fri 27 Nov · Sat 28 Nov · Sun 29 Nov (today);");
     expect(calendarStrip(new Date("2026-11-28T23:30:00Z"), "UTC")).toContain("Sat 28 Nov (today)");
     expect(tokyo.match(/\(today\)/gu)).toHaveLength(1);
+    // Dated in its own first words, so a copy left in her log never reads as a later day's.
+    expect(tokyo.startsWith("Calendar as of Sun 29 Nov (look dates up here, don't count): ")).toBe(true);
   });
 
   it("crosses a year end and a DST change without losing a day", () => {
@@ -106,6 +111,34 @@ describe("people with no note yet (§35.3)", () => {
     expect(has(["Tom"])).toBe(false);
   });
 
+  it("any name they go by finds the note (a nickname note found for DMs under their global name)", () => {
+    const home = new Map([["people/kev.md", "kev from #general, owes me a coffee"]]);
+    expect(hasNoteFor(home, { userId: "1", names: ["Kevin"] })).toBe(false);
+    expect(hasNoteFor(home, { userId: "1", names: ["Kevin", "Kev", "kevin_99"] })).toBe(true);
+  });
+
+  it("a heading of any level inside a shared file is a note for them", () => {
+    const home = new Map([["friends.md", "# my people\n\n## Aiko\nnew in bake club\n\n### Tom\nscones guy\n"]]);
+    for (const name of ["Aiko", "Tom", "Aiko Tanaka"]) expect(hasNoteFor(home, { userId: "1", names: [name] }), name).toBe(true);
+    expect(hasNoteFor(home, { userId: "1", names: ["Jade"] })).toBe(false);
+  });
+
+  it("a title about something of theirs, or about several people, is not their note", () => {
+    const home = new Map([
+      ["tom-and-lou-movie-night.md", "we watched a thing"],
+      ["notes/birthdays.md", "## Tom's birthday\nnovember"],
+      ["people/jade-kim.md", "jade k"],
+      ["kevin.md", "# Kevin (bake club)\nfootball"]
+    ]);
+    expect(hasNoteFor(home, { userId: "1", names: ["Tom"] })).toBe(false);
+    expect(hasNoteFor(home, { userId: "1", names: ["Lou"] })).toBe(false);
+    // A two-word name never matches by a note's first word alone…
+    expect(hasNoteFor(home, { userId: "1", names: ["Jade Lee"] })).toBe(false);
+    // …but a one-word name does when the rest is not a possessive or "and".
+    expect(hasNoteFor(home, { userId: "1", names: ["Jade"] })).toBe(true);
+    expect(hasNoteFor(home, { userId: "1", names: ["Kevin"] })).toBe(true);
+  });
+
   const line = (o: Partial<TranscriptLine> & { authorId: string; author: string }): TranscriptLine => ({ id: String(Math.random()).slice(2), at: "2026-11-26T18:00:00.000Z", text: "hi", ...o });
   const chunk = (dm: boolean, lines: TranscriptLine[]): DreamChunk => ({ folder: { key: dm ? "dm_1_ella" : "g_1_2", segments: [], dm, handle: dm ? "dm/aiko" : "s/#general" }, day: "2026-11-26", path: "/transcripts/x.md", lines, chars: 10 });
   const her = line({ authorId: ELLA_BOT, author: "Ella", waifu: "ella" });
@@ -117,9 +150,9 @@ describe("people with no note yet (§35.3)", () => {
         chunk(false, [line({ authorId: "x", author: "Xavier" })]),
         chunk(true, [line({ authorId: "j", author: "Jade" })])
       ],
-      { waifuId: "ella", leaveOut: (id) => id === "t" }
+      { waifuId: "ella", counts: (entry) => entry.authorId !== "t" }
     );
-    // The other waifu, the room where she said nothing and the left-out person are not there; the latest name first.
+    // The other waifu, the room where she said nothing and the person who doesn't count are not there; the latest name first.
     expect(people).toEqual([
       { userId: "a", names: ["aiko ✿", "Aiko"] },
       { userId: "j", names: ["Jade"] }
@@ -127,13 +160,24 @@ describe("people with no note yet (§35.3)", () => {
   });
 
   it("the line names them and asks for a note each", () => {
-    expect(newPeopleLine(["Aiko", "Tom"])).toBe("People she talked to in this window who have no note yet: Aiko, Tom. Make a note for each (what the window says about them, in her voice) and add it to MEMORY.md.");
+    expect(newPeopleLine([{ name: "Aiko", userId: "123" }, { name: "Tom", userId: "456" }])).toBe(
+      "People she talked to in this window who have no note yet: Aiko (user:123), Tom (user:456). Make a note for each (what the window says about them, in her voice) with their mark as its first line, like <!-- user:123 --> for Aiko, and add it to MEMORY.md."
+    );
   });
 
   const ELLA = { id: "ella", name: "Ella", botId: "ella-bot", persona: "Ella bakes." };
+  /** The guild directory learns a member (as the message cache teaches it from messages). */
+  const knowMember = async (w: LifeWorld, userId: string, name: string, bot = false) => {
+    const directory = w.cast.deps.directory as GuildDirectory;
+    await directory.ensureLoaded(GUILD);
+    directory.observeMessages(GUILD, [
+      { id: "1", channelId: CHANNEL, guildId: GUILD, authorId: userId, authorName: name, authorIsBot: bot, createdAt: w.clock.now().toISOString(), type: 0, content: "", attachments: [], embeds: [], stickers: [], snapshots: [], mentions: { users: {}, roles: {}, channels: {} } } as never
+    ]);
+  };
   const dreamOpening = async (people: Array<{ author: string; authorId: string }>): Promise<string> => {
     const w = await lifeWorld(roots, { waifus: [ELLA], scripts: [() => textTurn("done")] });
     await homeOf(w, "ella").write("people/kevin.md", "kevin, exam on friday\n");
+    for (const person of people) await knowMember(w, person.authorId, person.author);
     await seedTranscript(w, [
       { text: "my exam got moved", minutesAgo: 30 },
       { text: "noooo", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 29 },
@@ -145,18 +189,50 @@ describe("people with no note yet (§35.3)", () => {
     return JSON.stringify(dream!.request.messages[0]);
   };
 
-  it("the dream's opening names the people without a note, after the window, with the calendar", async () => {
+  it("the dream's opening names the people without a note, after the window, with the calendar", { timeout: 60_000 }, async () => {
     const opening = await dreamOpening([{ author: "Mina", authorId: MINA_USER }]);
-    expect(opening).toContain("People she talked to in this window who have no note yet: Mina. Make a note for each");
+    expect(opening).toContain(`People she talked to in this window who have no note yet: Mina (user:${MINA_USER}). Make a note for each`);
     expect(opening).not.toMatch(/no note yet: [^.]*Kevin/u);
-    expect(opening).toContain("Calendar (look dates up here, don't count): ");
+    expect(opening).toContain("Calendar as of ");
     expect(opening.indexOf("The dream window starts")).toBeLessThan(opening.indexOf("People she talked to"));
   });
 
-  it("adds nothing when everyone she talked to has a note", async () => {
+  it("adds nothing when everyone she talked to has a note", { timeout: 60_000 }, async () => {
     const opening = await dreamOpening([]);
     expect(opening).not.toContain("no note yet");
-    expect(opening).toContain("Calendar (look dates up here");
+    expect(opening).toContain("Calendar as of ");
+  });
+
+  it("the real leave-outs: her own ids, bots, webhooks and forgotten people; a DM's person by any name she knows", { timeout: 60_000 }, async () => {
+    const w = await lifeWorld(roots, { waifus: [ELLA], scripts: [() => textTurn("done")] });
+    await homeOf(w, "ella").write("people/kev.md", "kev from #general\n");
+    await knowMember(w, MINA_USER, "Mina");
+    await knowMember(w, "300000000000000010", "GitHub", true);
+    await knowMember(w, "300000000000000011", "Noor");
+    // Her own bot's id, known to the directory as if a person: still never a "new person".
+    await knowMember(w, ELLA_BOT, "Ella");
+    // The directory knows Kevin as "Kev" in the server; tonight he only DMs, as "Kevin".
+    await knowMember(w, KEVIN, "Kev");
+    await recordForgottenPerson(w.storage, "300000000000000011", w.clock.now());
+    await seedTranscript(w, [
+      { text: "noooo", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 30 },
+      { text: "hi", author: "Mina", authorId: MINA_USER, minutesAgo: 29 },
+      { text: "new commit", author: "GitHub", authorId: "300000000000000010", minutesAgo: 28 },
+      { text: "hook", author: "Hooky", authorId: "300000000000000012", minutesAgo: 27 },
+      { text: "old me", author: "Ella", authorId: ELLA_BOT, minutesAgo: 26 },
+      { text: "forget me", author: "Noor", authorId: "300000000000000011", minutesAgo: 25 }
+    ]);
+    await seedTranscript(w, [{ text: "it's kevin, you there?", author: "Kevin", authorId: KEVIN, minutesAgo: 20 }], { conversation: dmOf("ella", KEVIN) });
+    const waifu = await readWaifu(w.storage, "ella");
+    const window = await dreamWindow(w.cast.deps, waifu);
+    expect(window.chunks).toHaveLength(2);
+    expect(await peopleWithoutNotes(w.cast.deps, waifu, window.chunks)).toEqual([{ userId: MINA_USER, name: "Mina" }]);
+    // Without the note under his nickname, Kevin of the DM is listed, by the name he wrote under.
+    await rm(path.join(w.root, "user", "waifus", "ella", "home", "people", "kev.md"));
+    expect(await peopleWithoutNotes(w.cast.deps, waifu, window.chunks)).toEqual([
+      { userId: MINA_USER, name: "Mina" },
+      { userId: KEVIN, name: "Kevin" }
+    ]);
   });
 });
 

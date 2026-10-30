@@ -22,7 +22,9 @@ import type { StorageService } from "../storage/storageService.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import { calendarStrip, clockText, dayKeyText, dayTimeText, timeLine } from "./clock.js";
 import { homeStoreFor } from "./home/index.js";
-import { forgottenPeople, hasNoteFor, isRemovedMessage, selfAuthorIds } from "./people.js";
+import type { GuildMemberCacheEntry } from "../shared/schemas/domain.js";
+import { forgottenPeople, hasNoteFor, isRemovedMessage, knownPeople, selfAuthorIds } from "./people.js";
+import { placesWithHandles } from "./places.js";
 import type { LifeDeps } from "./deps.js";
 import { availabilityFor } from "./busy.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
@@ -53,25 +55,32 @@ export const DREAM_INSTRUCTION = [
   'Write like her lines in /transcripts (the "you" lines): if she writes in lowercase, so do her notes.'
 ].join("\n");
 
-/** The opening's line for people she talked to in the window who have no note yet (§35.3). */
-export function newPeopleLine(names: readonly string[]): string {
-  return `People she talked to in this window who have no note yet: ${names.join(", ")}. Make a note for each (what the window says about them, in her voice) and add it to MEMORY.md.`;
+export type NewPerson = { userId: string; name: string };
+
+/**
+ * The opening's line for people she talked to in the window who have no note yet (§35.3): each with
+ * their id, and the `<!-- user:<id> -->` mark `hasNoteFor` finds a note by whatever she names it.
+ */
+export function newPeopleLine(people: readonly NewPerson[]): string {
+  const first = people[0]!;
+  return `People she talked to in this window who have no note yet: ${people.map((person) => `${person.name} (user:${person.userId})`).join(", ")}. Make a note for each (what the window says about them, in her voice) with their mark as its first line, like <!-- user:${first.userId} --> for ${first.name}, and add it to MEMORY.md.`;
 }
 
-/** At most this many names on the new-people line. */
+/** At most this many people on the new-people line. */
 export const NEW_PEOPLE_MAX = 20;
 
 /**
  * People she talked to in these chunks (spec §35.3): in a DM, the other person; in a room's day, everyone
- * else who wrote there that day in the window, if she wrote there too. Other waifus, bots the
- * directory knows and forgotten people are left out. By first line, with their latest name.
+ * else who wrote there that day in the window, if she wrote there too. Waifus' lines never count, and
+ * `counts` decides for every other author (the app: no bots, webhooks, forgotten people or her own
+ * ids). By first line, their latest name first.
  */
-export function peopleSheTalkedTo(chunks: readonly DreamChunk[], o: { waifuId: string; leaveOut: (authorId: string, at: string) => boolean }): Array<{ userId: string; names: string[] }> {
+export function peopleSheTalkedTo(chunks: readonly DreamChunk[], o: { waifuId: string; counts: (line: TranscriptLine, chunk: DreamChunk) => boolean }): Array<{ userId: string; names: string[] }> {
   const people = new Map<string, string[]>();
   for (const chunk of chunks) {
     if (!chunk.folder.dm && !chunk.lines.some((line) => line.waifu === o.waifuId)) continue;
     for (const line of chunk.lines) {
-      if (line.waifu || !line.author.trim() || o.leaveOut(line.authorId, line.at)) continue;
+      if (line.waifu || !line.author.trim() || !o.counts(line, chunk)) continue;
       const names = people.get(line.authorId) ?? [];
       people.set(line.authorId, [line.author.trim(), ...names.filter((name) => name !== line.author.trim())]);
     }
@@ -79,29 +88,41 @@ export function peopleSheTalkedTo(chunks: readonly DreamChunk[], o: { waifuId: s
   return [...people].map(([userId, names]) => ({ userId, names }));
 }
 
-/** The names of people she talked to in these chunks who have no note in her home yet (§35.3); [] when it can't tell. */
-export async function peopleWithoutNotes(deps: LifeDeps, waifu: WaifuConfig, chunks: readonly DreamChunk[]): Promise<string[]> {
+/**
+ * The people she talked to in these chunks who have no note in her home yet (§35.3); [] when it can't
+ * tell. A room's author counts only when the guild directory knows them as a member who is not a bot
+ * (a webhook or a stray bot gets no note), a DM's only when it is the person of that DM; never her own
+ * ids or a forgotten person. A note is looked for under every name they go by: the window's and those
+ * `knownPeople` has (server nickname, global name, username).
+ */
+export async function peopleWithoutNotes(deps: LifeDeps, waifu: WaifuConfig, chunks: readonly DreamChunk[]): Promise<NewPerson[]> {
   try {
     const forgotten = await forgottenPeople(deps.storage);
-    const bots = new Set<string>(await selfAuthorIds(deps.storage, waifu));
-    for (const guildId of new Set(chunks.flatMap((chunk) => (chunk.folder.dm ? [] : [guildIdOf(chunk.folder.key)].filter((id): id is string => Boolean(id)))))) {
-      for (const member of await deps.directory.members(guildId).catch(() => [])) if (member.bot) bots.add(member.userId);
+    const self = new Set(await selfAuthorIds(deps.storage, waifu));
+    const members = new Map<string, Map<string, GuildMemberCacheEntry>>();
+    for (const chunk of chunks) {
+      const ref = parseConversationKey(chunk.folder.key);
+      if (ref?.kind !== "guild" || members.has(ref.guildId)) continue;
+      members.set(ref.guildId, new Map((await deps.directory.members(ref.guildId).catch(() => [])).map((member) => [member.userId, member])));
     }
-    const people = peopleSheTalkedTo(chunks, { waifuId: waifu.id, leaveOut: (authorId, at) => bots.has(authorId) || isRemovedMessage({ authorId, createdAt: at }, forgotten) });
+    const counts = (line: TranscriptLine, chunk: DreamChunk) => {
+      if (self.has(line.authorId) || isRemovedMessage({ authorId: line.authorId, createdAt: line.at }, forgotten)) return false;
+      const ref = parseConversationKey(chunk.folder.key);
+      if (ref?.kind === "dm") return line.authorId === ref.userId;
+      const member = ref?.kind === "guild" ? members.get(ref.guildId)?.get(line.authorId) : undefined;
+      return member !== undefined && !member.bot;
+    };
+    const people = peopleSheTalkedTo(chunks, { waifuId: waifu.id, counts });
     if (people.length === 0) return [];
+    const known = new Map((await knownPeople(deps, await placesWithHandles(deps.storage, waifu.id))).map((person) => [person.userId, person.names]));
     const notes = await homeStoreFor(deps, waifu).readAllText();
     return people
-      .filter((person) => !hasNoteFor(notes, person))
-      .map((person) => person.names[0]!)
+      .filter((person) => !hasNoteFor(notes, { userId: person.userId, names: [...person.names, ...(known.get(person.userId) ?? [])] }))
+      .map((person) => ({ userId: person.userId, name: person.names[0]! }))
       .slice(0, NEW_PEOPLE_MAX);
   } catch {
     return [];
   }
-}
-
-function guildIdOf(key: string): string | undefined {
-  const ref = parseConversationKey(key);
-  return ref?.kind === "guild" ? ref.guildId : undefined;
 }
 
 /** The report's summary when the window is empty (no model is called). */

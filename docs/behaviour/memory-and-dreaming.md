@@ -113,20 +113,28 @@ layout). MEMORY.md is the index… In /transcripts (read-only) her own lines are
 The opening message is `DREAM_INSTRUCTION`, then a listing of her files (at most 200, "… and N more;
 use `ls -R`"), then the window, then (2026-10-30, spec §35.3, only when there is anyone) the people
 she talked to in this session's window who have no note yet: "People she talked to in this window who
-have no note yet: Aiko, Tom. Make a note for each (what the window says about them, in her voice) and
-add it to MEMORY.md." (at most 20 names), then the calendar (§35.2, `calendarStrip`: "Calendar (look
-dates up here, don't count): last week Mon 16 Nov · … ; this week … Thu 26 Nov (today) · …; next week
-… ." in her zone, Monday first), then her time line. Golden: `tests/golden/__snapshots__/life-dream.txt`.
+have no note yet: Aiko (user:123), Tom (user:456). Make a note for each (what the window says about
+them, in her voice) with their mark as its first line, like <!-- user:123 --> for Aiko, and add it to
+MEMORY.md." (at most 20 people), then the calendar (§35.2, `calendarStrip`: "Calendar as of Thu 26
+Nov (look dates up here, don't count): last week Mon 16 Nov · … ; this week … Thu 26 Nov (today) · …;
+next week … ." in her zone, Monday first), then her time line. Golden:
+`tests/golden/__snapshots__/life-dream.txt`.
 
-Who counts as talked to (`peopleSheTalkedTo`, `peopleWithoutNotes` in `dream.ts`): in a DM, the other
-person; in a room's day, everyone else who wrote there in the window when she wrote there too. Other
-waifus, bots the guild directory knows, her own bot ids and forgotten people are left out; the name is
-their latest one in the window. A note (`hasNoteFor` in `people.ts`) is a file of her home outside
-`~/life/` (MEMORY.md aside) named after them (`people/aiko.md`, `aiko-tanaka.md`: the whole name or
-its first word, diacritics and unicode stylings folded), headed or titled (`Rosa: …` first line) by
-their name, or marked `<!-- user:<id> -->`; a mention inside another note does not count. Computed
-again for each session, so a note made in the first session counts in the next; any failure adds
-nothing.
+Who counts as talked to (`peopleSheTalkedTo`, `peopleWithoutNotes` in `dream.ts`): in a DM, its person
+only; in a room's day where she wrote too, everyone else who wrote there in the window **and whom the
+guild directory knows as a member who is not a bot** (a webhook or a stray bot is never listed: missing
+a hint is better than a note about "GitHub"). Waifus, her own bot ids and forgotten people never
+count; the name shown is their latest one in the window. A note (`hasNoteFor` in `people.ts`) is
+looked for under every name they go by: the window's and those `knownPeople` has (server nickname,
+global name, username), so a note written as `people/kev.md` from a room is found when tonight he only
+DMs as "Kevin". It is a file of her home outside `~/life/` (MEMORY.md aside) whose name, any Markdown
+heading (any level: `## Aiko` in `friends.md` counts), or `Name:` first line names them, or that holds
+`<!-- user:<id> -->`. Names and titles are compared as folded words (diacritics and unicode stylings
+folded): the title is the person's whole name or its first word (`aiko.md` for "Aiko Tanaka"), or,
+for a one-word name only, the title starts with it and goes on with anything but a possessive or "and"
+(`jade-lee.md` and `# Kevin (bake club)` count; `Tom's birthday` and `tom-and-lou-movie-night.md` do
+not). A mention inside another note does not count. Computed again for each session, so a note made in
+the first session counts in the next; any failure adds nothing.
 
 The instruction, verbatim in substance:
 

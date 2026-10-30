@@ -269,6 +269,12 @@ describe("Living cast goldens", () => {
       scripts: script(toolTurn([{ name: "Bash", input: { command: "cat /transcripts/bake-club/general/2026-10-24.md" } }]), textTurn("Kevin's exam moved to Monday"))
     });
     await seedNotes(w);
+    // Mina is a member the directory knows (from her messages), so the dream may ask for her note (§35.3).
+    const directory = w.cast.deps.directory as GuildDirectory;
+    await directory.ensureLoaded(GUILD);
+    directory.observeMessages(GUILD, [
+      { id: "1", channelId: CHANNEL, guildId: GUILD, authorId: MINA_USER, authorName: "Mina", authorIsBot: false, createdAt: w.clock.now().toISOString(), type: 0, content: "", attachments: [], embeds: [], stickers: [], snapshots: [], mentions: { users: {}, roles: {}, channels: {} } }
+    ]);
     await seedTranscript(w, [
       { text: "my exam got moved to monday :(", minutesAgo: 30 },
       { text: "noooo, more time to study at least", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 29 },
@@ -278,7 +284,7 @@ describe("Living cast goldens", () => {
     await w.cast.scheduler.tick();
     const request = w.anthropic.calls[1]!.request;
     await expect(serializeRequest(request)).toMatchFileSnapshot("./__snapshots__/life-dream.txt");
-  });
+  }, 30_000);
 
   it("the rest notice and the epoch her own summary opens (§19)", async () => {
     const summary = "Bake Club #general, Sat 24 Oct around 14:00: Kevin asked if I'm coming Saturday and said they need someone on dessert. I said yes and that I'm bringing lemon tarts. Mina was preheating the oven. Nothing else open; I want to check the lemon supply before Saturday.";

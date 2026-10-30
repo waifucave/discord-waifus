@@ -63,40 +63,58 @@ export async function knownPeople(deps: LifeDeps, places: readonly PlaceInfo[]):
   return [...people].map(([userId, names]) => ({ userId, names: [...names] }));
 }
 
-/** A name's folded forms a note can go by: the whole name and its first word ("Aiko T." → aiko t., aiko). */
-function noteNameKeys(name: string): string[] {
-  const folded = foldName(name).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  if (!folded) return [];
-  return [...new Set([folded, folded.split(" ")[0]!])];
+/** A name or note title as folded words ("Tom's birthday" → tom s birthday, "Tom & Lou" → tom and lou). */
+function nameWords(text: string): string[] {
+  return foldName(text.replace(/&/gu, " and "))
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean);
 }
 
-/** The first Markdown heading's text, else the first line's text before a colon ("Rosa: duo partner"). */
-function noteTitle(text: string): string | undefined {
-  const heading = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/mu.exec(text)?.[1];
-  if (heading) return heading;
+/** Words after a title's first word that make it about something of theirs, or about several people. */
+const NOT_ONLY_THEM = new Set(["s", "and", "n", "x", "vs", "with"]);
+
+/**
+ * Whether a note title (a file name, a heading, a `Name:` first line) is about someone going by `name`
+ * (§35.3): the title is the whole name or its first word; or, for a one-word name, the title starts
+ * with it and goes on with something other than a possessive or "and" ("jade-lee", "Kevin (bake
+ * club)"; not "Tom's birthday" or "tom-and-lou-movie-night").
+ */
+function titleNames(title: readonly string[], name: readonly string[]): boolean {
+  if (title.length === 0 || name.length === 0) return false;
+  const whole = title.join(" ");
+  if (whole === name.join(" ") || whole === name[0]) return true;
+  return name.length === 1 && title[0] === name[0] && !NOT_ONLY_THEM.has(title[1] ?? "");
+}
+
+/** Every Markdown heading's text (any level), and the first line's text before a colon ("Rosa: duo partner"). */
+function noteTitles(text: string): string[] {
+  const titles = [...text.matchAll(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/gmu)].map((match) => match[1]!);
   const first = text.split("\n").find((line) => line.trim())?.trim();
-  return first && first.includes(":") ? first.slice(0, first.indexOf(":")) : undefined;
+  if (first && !first.startsWith("#") && first.includes(":")) titles.push(first.slice(0, first.indexOf(":")));
+  return titles;
 }
 
 /**
- * Whether her home has a note about this person (spec §35.3): a file (outside `~/life/`, MEMORY.md
- * aside) named after them (`people/aiko.md`, `aiko-tanaka.md`), headed or titled by their name, or
- * marked as theirs (`<!-- user:<id> -->`). Being mentioned in another note does not count.
+ * Whether her home has a note about this person (spec §35.3), by any name they go by (`names`: the
+ * window's and those `knownPeople` has): a file (outside `~/life/`, MEMORY.md aside) named after them
+ * (`people/aiko.md`, `jade-lee.md`), a heading of any level naming them (`## Aiko` in `friends.md`), a
+ * `Name:` first line, or a `<!-- user:<id> -->` mark. Being mentioned in another note does not count.
  */
 export function hasNoteFor(notes: ReadonlyMap<string, string>, person: { userId: string; names: readonly string[] }): boolean {
-  const wanted = new Set(person.names.flatMap(noteNameKeys));
-  if (wanted.size === 0) return true;
+  const names = person.names.map(nameWords).filter((words) => words.join(" ").length >= 2);
+  if (names.length === 0) return true;
   for (const [notePath, text] of notes) {
     if (notePath === "MEMORY.md" || notePath.startsWith("life/")) continue;
     if (text.includes(`<!-- user:${person.userId} -->`)) return true;
     const stem = notePath.split("/").at(-1)!.replace(/\.[^.]+$/u, "");
-    const title = noteTitle(text);
-    if ([stem, ...(title ? [title] : [])].some((candidate) => noteNameKeys(candidate).some((key) => wanted.has(key)))) return true;
+    if ([stem, ...noteTitles(text)].some((candidate) => names.some((name) => titleNames(nameWords(candidate), name)))) return true;
   }
   return false;
 }
 
-export type PersonLookup ={ ok: true; userId: string; name: string } | { ok: false; error: string };
+export type PersonLookup = { ok: true; userId: string; name: string } | { ok: false; error: string };
 
 /** `<@123>` / `123` → that id; a name → the one person she knows by it (§6.5). */
 export async function resolvePerson(deps: LifeDeps, places: readonly PlaceInfo[], input: string): Promise<PersonLookup> {

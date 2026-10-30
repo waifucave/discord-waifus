@@ -87,8 +87,8 @@ export function datedDayKey(day: string): string {
 /**
  * The calendar her summaries and dreams look dates up in (spec §35.2), so a model never counts days:
  * last week, this week and next week in her zone, Monday first, today marked.
- * "Calendar (look dates up here, don't count): last week Mon 16 Nov · … · Sun 22 Nov; this week Mon 23
- * Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next week Mon 30 Nov · … · Sun 6 Dec."
+ * "Calendar as of Thu 26 Nov (look dates up here, don't count): last week Mon 16 Nov · … · Sun 22 Nov;
+ * this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next week Mon 30 Nov · … · Sun 6 Dec."
  */
 export function calendarStrip(now: Date, timeZone: string): string {
   const p = localParts(now, timeZone);
@@ -103,7 +103,8 @@ export function calendarStrip(now: Date, timeZone: string): string {
     });
     return `${label} ${days.join(" · ")}`;
   });
-  return `Calendar (look dates up here, don't count): ${weeks.join("; ")}.`;
+  // Dated in its first words: a copy left in her log (a rest turn's) never passes for a later day's.
+  return `Calendar as of ${dayText(now, timeZone)} (look dates up here, don't count): ${weeks.join("; ")}.`;
 }
 
 /** "2026-10-24": the local day. */

@@ -38,9 +38,9 @@ Her files: ~/MEMORY.md, ~/people/kevin.md
 The dream window starts Sat 24 Oct 13:30. Read these transcript files (3 lines in all):
 - /transcripts/bake-club/general/2026-10-24.md (Sat 24 Oct: the whole file, 3 lines)
 --- text ---
-People she talked to in this window who have no note yet: Mina. Make a note for each (what the window says about them, in her voice) and add it to MEMORY.md.
+People she talked to in this window who have no note yet: Mina (user:300000000000000004). Make a note for each (what the window says about them, in her voice) with their mark as its first line, like <!-- user:300000000000000004 --> for Mina, and add it to MEMORY.md.
 --- text ---
-Calendar (look dates up here, don't count): last week Mon 12 Oct · Tue 13 Oct · Wed 14 Oct · Thu 15 Oct · Fri 16 Oct · Sat 17 Oct · Sun 18 Oct; this week Mon 19 Oct · Tue 20 Oct · Wed 21 Oct · Thu 22 Oct · Fri 23 Oct · Sat 24 Oct (today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.
+Calendar as of Sat 24 Oct (look dates up here, don't count): last week Mon 12 Oct · Tue 13 Oct · Wed 14 Oct · Thu 15 Oct · Fri 16 Oct · Sat 17 Oct · Sun 18 Oct; this week Mon 19 Oct · Tue 20 Oct · Wed 21 Oct · Thu 22 Oct · Fri 23 Oct · Sat 24 Oct (today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
