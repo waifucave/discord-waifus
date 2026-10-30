@@ -325,7 +325,8 @@ export function DiscordBotGuide({
               ) : (
                 <>
                   The House bot reads the rooms for every waifu, and runs <code>/wake</code> and{" "}
-                  <code>/print</code>. Give its role <em>View Channel</em> and{" "}
+                  <code>/print</code>. Its invite asks for <em>Administrator</em>, so it sees every
+                  channel; if you untick that, give its role <em>View Channel</em> and{" "}
                   <em>Read Message History</em> in each channel your cast should be in (right-click the
                   channel → <strong>Edit Channel → Permissions</strong>, or via a role). Then choose
                   which waifus talk in each channel on the <strong>Rooms</strong> page.

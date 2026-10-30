@@ -7,12 +7,14 @@
 // - The House bot is the one that READS: it logs in with Guilds, Guild Messages, Guild Message
 //   Reactions, Guild Message Typing, Guild Expressions and the privileged Message Content intent (plus the privileged
 //   Server Members intent only when `discord.guildMembersIntent` is on). It fetches message
-//   history over REST, runs the owner slash commands and joins threads. It never posts.
+//   history over REST, runs the owner slash commands and joins threads. It never posts. Its invite
+//   asks for Administrator (owner request, 2026-10-30), plus View Channels and Read Message History.
 // - A waifu bot only WRITES: it posts (including in threads), attaches files, reacts and shows
 //   typing. It logs in with Guilds alone (plus the three non-privileged Direct Message intents when
 //   she takes DMs). It needs no privileged intent.
 
 const PERMISSIONS = {
+  ADMINISTRATOR: 1n << 3n,
   VIEW_CHANNEL: 1n << 10n,
   SEND_MESSAGES: 1n << 11n,
   READ_MESSAGE_HISTORY: 1n << 16n,
@@ -29,7 +31,11 @@ export type BotKind = "house" | "waifu";
 type PermissionName = keyof typeof PERMISSIONS;
 
 const PERMISSIONS_BY_KIND: Record<BotKind, Array<{ flag: PermissionName; label: string }>> = {
+  // Administrator (owner request, 2026-10-30), so the House bot sees every channel the cast is
+  // in without per-channel overrides. View Channels and Read Message History stay listed, so an
+  // invite with Administrator unticked still covers what it reads.
   house: [
+    { flag: "ADMINISTRATOR", label: "Administrator" },
     { flag: "VIEW_CHANNEL", label: "View Channels" },
     { flag: "READ_MESSAGE_HISTORY", label: "Read Message History" }
   ],

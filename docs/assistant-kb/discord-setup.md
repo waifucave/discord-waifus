@@ -16,8 +16,9 @@ five-waifu cast you create six applications total (1 House bot + 5 waifus).
    `discord.guildMembersIntent`, **Server Members Intent**. A waifu bot needs no privileged intent.
 3. Reset Token → copy it. Tokens are shown once by Discord and stored write-only here.
 4. Copy the **Application ID** as well.
-5. Invite: OAuth2 → URL Generator. House bot: scopes `bot` + `applications.commands`, permissions View Channels and
-   Read Message History. Waifu bot: scope `bot`, permissions View Channels, Send Messages, Send Messages in Threads,
+5. Invite: OAuth2 → URL Generator. House bot: scopes `bot` + `applications.commands`, permissions Administrator,
+   View Channels and Read Message History (Administrator lets it see every channel; unticked, the other two still
+   cover what it reads). Waifu bot: scope `bot`, permissions View Channels, Send Messages, Send Messages in Threads,
    Read Message History, Add Reactions, Attach Files, Use External Emojis, Embed Links, Change Nickname (for her
    per-server nicknames). Open the generated URL and add
    it to your server. The dashboard's guide (Settings → App → Discord bots) builds this link from the Application ID

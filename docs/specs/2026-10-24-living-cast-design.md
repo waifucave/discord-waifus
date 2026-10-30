@@ -1128,7 +1128,8 @@ All in one winter release, pinned by the app.
 
 - The orchestrator bot becomes the **House bot** (UI label; the `discord-bots.json` key stays
   `orchestrator`). It keeps its intents (plus the non-privileged `GuildMessageTyping`, §4.2), reads
-  all guild messages and hosts slash commands.
+  all guild messages and hosts slash commands. Its invite asks for Administrator (owner request,
+  2026-10-30), plus View Channels and Read Message History; waifu bots' invites never ask for it.
 - Waifu bots send their waifu's messages, typing and reactions, and receive DMs (and DM typing
   starts, `DirectMessageTyping`) when DM-eligible.
 

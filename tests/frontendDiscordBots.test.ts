@@ -141,11 +141,12 @@ describe("intent and permission lists match what the gateway uses", () => {
           PermissionFlagsBits.ChangeNickname
       )
     );
-    expect(permissionBitsFor("house")).toBe(String(PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory));
+    expect(permissionBitsFor("house")).toBe(String(PermissionFlagsBits.Administrator | PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory));
   });
 
-  it("the House bot is not asked for Administrator and never needs to post; a waifu can post, react and attach", () => {
-    expect(permissionListFor("house")).toEqual(["View Channels", "Read Message History"]);
+  it("the House bot is asked for Administrator (owner request, 2026-10-30), plus what it reads; a waifu can post, react and attach", () => {
+    expect(permissionListFor("house")).toEqual(["Administrator", "View Channels", "Read Message History"]);
+    expect(permissionListFor("waifu")).not.toContain("Administrator");
     expect(permissionListFor("waifu")).toEqual(
       expect.arrayContaining(["Send Messages", "Send Messages in Threads", "Add Reactions", "Attach Files", "Read Message History", "Change Nickname"])
     );
