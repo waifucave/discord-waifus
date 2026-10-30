@@ -4654,7 +4654,9 @@ turn for a rare summary.
 ### 35.3 New people and her voice in the dream
 
 The app computes who she talked to in the session's window who has no note file yet and names them in
-the dream's opening, asking for a note each; nothing is added when nobody is missing. The dream's
+the dream's opening with their ids, asking for a note each marked as theirs; nothing is added when
+nobody is missing, and missing a hint is better than a wrong one (only people the directory knows as
+non-bot members, or a DM's person). The dream's
 instruction also says to write like her own "you" lines in /transcripts (lowercase when she is).
 
 ### 35.4 No invented memories in chat
@@ -4680,22 +4682,35 @@ person only), stores and records the repaired message, and keeps her model's own
   `LIFE_TEXT`'s summary paragraph. The rest notices' first 60 characters are unchanged, so
   `isRestNotice` and the benchmark's variant check still hold.
 - **Calendar** (`calendarStrip` in `src/life/clock.ts`, from `localParts` and calendar-day arithmetic,
-  so DST never shifts a day): "Calendar (look dates up here, don't count): last week Mon 16 Nov · … ·
-  Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next week Mon 30 Nov · …
-  · Sun 6 Dec." `compactLife` sends `<instruction>\n\n<calendar>\n<time line>`; `Life.restTurn` sends
-  the notice, the calendar and the time line as three text blocks; `runDream` puts it before the time
-  line. The forget scrub's summary is a compaction and gets it too; the notes scrub session does not.
-- **New people** (`src/life/dream.ts`): `peopleSheTalkedTo(chunks)`: in a DM chunk the other person, in
-  a room day chunk where she has a line everyone else who wrote; lines of waifus (`line.waifu`), her own
-  bot ids, bots the guild directory knows and forgotten people (`isRemovedMessage`) are left out;
-  ordered by first line, named by their latest name. `hasNoteFor` (`src/life/people.ts`): a file of
-  her home outside `~/life/` and other than MEMORY.md whose name (`people/aiko.md`, `jade-lee.md`),
-  first heading or `Name:` first line folds (`foldName`, NFKC: unicode stylings and diacritics) to the
-  person's whole name or its first word, or that holds `<!-- user:<id> -->`. `peopleWithoutNotes`
-  reads her home per session (a note made in session 1 counts in session 2), at most
-  `NEW_PEOPLE_MAX` (20) names, and any failure is "nobody". The line (`newPeopleLine`), after the
-  window: "People she talked to in this window who have no note yet: Aiko, Tom. Make a note for each
-  (what the window says about them, in her voice) and add it to MEMORY.md."
+  so DST never shifts a day): "Calendar as of Thu 26 Nov (look dates up here, don't count): last week
+  Mon 16 Nov · … · Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next
+  week Mon 30 Nov · … · Sun 6 Dec." Dated in its first words (review, 2026-10-30): a rest turn's copy
+  stays in her log, and after an ignored quiet-time rest (§25) for the rest of the epoch, so an undated
+  "(today)" would later mislead. `compactLife` sends `<instruction>\n\n<calendar>\n<time line>`;
+  `Life.restTurn` sends the notice, the calendar and the time line as three text blocks; `runDream`
+  puts it before the time line. The forget scrub's summary is a compaction and gets it too; the notes
+  scrub session does not.
+- **New people** (`src/life/dream.ts`): `peopleSheTalkedTo(chunks, { counts })`: in a DM chunk and in a
+  room day chunk where she has a line, every author who isn't a waifu (`line.waifu`) and whom `counts`
+  accepts; ordered by first line, named by their latest name. `peopleWithoutNotes` wires `counts`
+  (review, 2026-10-30): never her own bot ids (`selfAuthorIds`) or a forgotten person
+  (`isRemovedMessage`); in a DM only its person; in a room only someone the guild directory knows as a
+  member who is not a bot, so a webhook or stray bot ("GitHub") is never listed. It looks a note up
+  under the window's names plus every name `knownPeople` has for that id (server nickname, global name,
+  username), so `people/kev.md` written from a room is found when he DMs as "Kevin". `hasNoteFor`
+  (`src/life/people.ts`): a file of her home outside `~/life/` and other than MEMORY.md whose name, any
+  Markdown heading (any level: `## Aiko` in `friends.md`) or `Name:` first line names the person, or that
+  holds `<!-- user:<id> -->`. Titles and names are folded words (`foldName`, NFKC: unicode stylings and
+  diacritics; `&` is "and"); a title names someone when it is their whole name or its first word, or,
+  for a one-word name only, when it starts with it and its second word is not a possessive or a
+  conjunction (`s`, `and`, `n`, `x`, `vs`, `with`): `jade-lee.md` and `# Kevin (bake club)` count, `Tom's
+  birthday` and `tom-and-lou-movie-night.md` do not, and "Jade Lee" is not found by `jade-kim.md`. It
+  reads her home per session (a note made in session 1 counts in session 2), at most `NEW_PEOPLE_MAX`
+  (20) people, and any failure is "nobody". The line (`newPeopleLine`), after the window, gives each
+  id and asks for the mark `hasNoteFor` honours, whatever she names the note: "People she talked to in
+  this window who have no note yet: Aiko (user:123), Tom (user:456). Make a note for each (what the
+  window says about them, in her voice) with their mark as its first line, like <!-- user:123 --> for
+  Aiko, and add it to MEMORY.md."
 - **Dream instruction**: after the §19.8 voice line, the facts line in the third person ("a guess stays
   her guess, …") and "Write like her lines in /transcripts (the "you" lines): if she writes in
   lowercase, so do her notes." Both are lines (paragraphs) of `DREAM_INSTRUCTION`, so benchmark variants
@@ -4712,11 +4727,14 @@ person only), stores and records the repaired message, and keeps her model's own
   `@Name`, when different). The transcript's `sent` event has `text` as Discord shows it and `raw`
   for her model's text; metrics, probes, the report and judge packets read `text`.
 - **Tests**: `tests/lifeSummaryFacts.test.ts` (the strip: week layout, today in her zone, a Sunday,
-  a year end and a DST week; the prompt lines; `hasNoteFor`; `peopleSheTalkedTo`; a real dream's
-  opening with and without someone missing a note; the fake server's repair, a clean message, and a
+  a year end and a DST week, its date; the prompt lines; `hasNoteFor` (other names, headings inside a
+  shared file, possessive and "and" titles, one- and two-word names); `peopleSheTalkedTo`; the real
+  leave-outs of `peopleWithoutNotes` (her own id, a directory bot, a webhook the directory doesn't know,
+  a forgotten person, a DM's person found by his room nickname's note); a real dream's opening with
+  and without someone missing a note; the fake server's repair, a clean message, and a
   dry run whose transcript and chat packet show `@Kevin … @Mina` with the raw text kept);
   `tests/lifeBenchmark.test.ts`'s own-voice test now compares the texts without the §35 lines. Goldens
   changed: `life-system-prompt.txt` and `life-rest-epoch.txt` (block A: the chat rule and the facts
   sentence), `life-rest-notice.txt` (facts line, calendar block), `life-compaction-request.txt` (facts
-  line, calendar), `life-dream.txt` (the two new instruction lines, a Mina line seeded so the opening
-  shows the new-people line, the calendar).
+  line, calendar), `life-dream.txt` (the two new instruction lines, a Mina line seeded, with Mina known
+  to the directory, so the opening shows the new-people line, the calendar).
