@@ -20,7 +20,7 @@ Flags: `--scenarios=default|all|id,…` (default: the three real ones; `tiny` is
 `--models=families|all|route[#effort],…` (families: one route per curated family, the vendor's own
 when its key is there, else OpenRouter's; `all`: every keyed curated route; Muse Spark contributor
 routes train on prompts and run only when named), `--variants=baseline,brief,./my-variant.json`,
-`--repeat=N`, `--concurrency=N` (runs in parallel), `--max-usd=X` (no new turn once spent, across
+`--repeat=N`, `--concurrency=N` (runs in parallel, 1–32), `--max-usd=X` (no new turn once spent, across
 all runs), `--web` (her Web tool and page wakeups; off by default: Exa and fetches cost),
 `--dry-run`, `--yes`, `--out=DIR` (default `bench-results/life-<time>/`, gitignored),
 `--data-root=PATH` (where provider keys are read; default `DC_WAIFUS_HOME` or `~/.dc-waifus`),

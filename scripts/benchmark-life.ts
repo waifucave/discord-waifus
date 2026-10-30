@@ -80,7 +80,7 @@ async function run(): Promise<void> {
   const scenarios = selectScenarios(value("scenarios", "default"));
   const variants = await loadVariants(value("variants", "baseline"));
   const repeat = int("repeat", 1, 1, 20);
-  const concurrency = int("concurrency", 2, 1, 8);
+  const concurrency = int("concurrency", 2, 1, 32);
   const cap = maxUsd();
   const gate = { minFirstTry: ratio("gate-first-try", 0.8), minProbes: ratio("gate-probes", 0.6) };
   const dataRoot = path.resolve(value("data-root", getDataRoot()));
