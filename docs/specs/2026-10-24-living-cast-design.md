@@ -4811,3 +4811,27 @@ Settings holds who is allowed, with room for more permissions later.
 - Tests: `tests/discordNorma.test.ts`, the `/norma` cases in `tests/discordGatewayConnect.test.ts` and
   `tests/discord.test.ts`.
 
+## 37. The waifu role (owner request, 2026-10-30)
+
+The House bot gives every waifu that joins a server a role `waifu`.
+
+- `config.toml` `[discord] waifuRole`: the role's name, default `waifu`, `""` = off (1 to 100
+  characters, no surrounding spaces, never `@everyone`/`@here`); `applies: reload`.
+- In each server the House bot shares with a waifu bot: the role is found by name (case-insensitive,
+  the first Discord lists) or created (mentionable, at the bottom), and each waifu bot without it gets
+  it, with an audit-log reason. Never removed, never given to the House bot or to people.
+- When: the House bot connects (every waifu bot, every shared server), a waifu bot connects (that bot),
+  a waifu bot joins a server (that bot there), the House bot joins a server (every waifu bot there).
+  Background, one pass at a time per server; a failure (no Manage Roles, a role above the House bot's)
+  is logged once per server and tried again at the next connect or join. The House bot's
+  Administrator invite (2026-10-30) gives Manage Roles.
+- The bot's member update carries the new role to the life (§10.2), so a mention of the role wakes
+  every waifu there (`role`).
+
+### 37.1 As built
+
+`src/discord/waifuRole.ts` (`ensureWaifuRole`, `findRole`, over a narrow `WaifuRoleGuild`);
+`DiscordJsGateway.ensureWaifuRoles` and its `GuildCreate` hook in `attachClientRuntimeHandlers`
+(`src/discord/client.ts`); `DiscordJsGatewayOptions.waifuRole` from `src/backend/server.ts`. Tests:
+`tests/waifuRole.test.ts` and "the waifu role" in `tests/discordGatewayConnect.test.ts`.
+

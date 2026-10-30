@@ -102,6 +102,20 @@ House bot, in servers (`src/discord/client.ts`, `src/discord/applicationOwners.t
 - Waifu bots that take DMs register `/forget conversation|everything` in DMs only
   ([dms.md](dms.md)).
 
+## The waifu role
+
+`src/discord/waifuRole.ts`, `DiscordJsGateway.ensureWaifuRoles` (spec §37): the House bot gives every
+waifu bot the role named `discord.waifuRole` (default `waifu`; `""` turns it off) in each server they
+share. It looks the role up by name (case-insensitive) and creates it, mentionable, when the server
+has none. It runs in the background when the House bot connects (every waifu bot), when a waifu bot
+connects (that bot), when a waifu bot joins a server (that bot there) and when the House bot joins one
+(every waifu bot there); one pass at a time per server. A bot that has the role is left alone; it is
+never removed, and the House bot and people are never touched. It needs Manage Roles and the role
+below the House bot's own (its Administrator invite gives the first; a role it creates is at the
+bottom); a failure is logged once per server (`Could not give the waifu role`) and tried again at the
+next connect or join. The role reaches the life as the bot's member update, so mentioning it wakes
+every waifu there (`role`, [triggers.md](triggers.md)).
+
 ## Discord profile sync
 
 `src/discord/profileSync.ts`, owned by the cast runtime:

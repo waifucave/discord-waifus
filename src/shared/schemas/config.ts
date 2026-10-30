@@ -112,10 +112,21 @@ export type DmRuntimeConfig = z.infer<typeof DiscordDmConfigSchema>;
 // the House bot when changed; the full member list is re-fetched every N hours (0 = never).
 const DEFAULT_GUILD_MEMBERS_INTENT = false;
 const DEFAULT_MEMBER_LIST_REFRESH_HOURS = 24;
+/**
+ * The role the House bot gives every waifu bot in each server they share (owner request,
+ * 2026-10-30), created when missing; "" = none. Discord role names are 1 to 100 characters.
+ */
+export const DEFAULT_WAIFU_ROLE = "waifu";
+const WaifuRoleNameSchema = z
+  .string()
+  .max(100)
+  .refine((name) => name === "" || (name.trim() === name && name !== "@everyone" && name !== "@here"), "Use a role name without surrounding spaces (not @everyone or @here), or \"\" for none.");
+
 export const DiscordConfigSchema = z
   .object({
     images: DiscordImagesConfigSchema,
     guildMembersIntent: z.boolean().default(DEFAULT_GUILD_MEMBERS_INTENT),
+    waifuRole: WaifuRoleNameSchema.default(DEFAULT_WAIFU_ROLE),
     memberListRefreshHours: z.number().int().min(0).max(168).default(DEFAULT_MEMBER_LIST_REFRESH_HOURS),
     debounce: DiscordDebounceConfigSchema,
     dm: DiscordDmConfigSchema
@@ -123,6 +134,7 @@ export const DiscordConfigSchema = z
   .default({
     images: { ...DEFAULT_DISCORD_IMAGES },
     guildMembersIntent: DEFAULT_GUILD_MEMBERS_INTENT,
+    waifuRole: DEFAULT_WAIFU_ROLE,
     memberListRefreshHours: DEFAULT_MEMBER_LIST_REFRESH_HOURS,
     debounce: { ...DEFAULT_DEBOUNCE },
     dm: { ...DEFAULT_DM_RUNTIME }
@@ -468,6 +480,7 @@ export const UpdateAppConfigBodySchema = z.object({
       diskCacheTtlHours: DISCORD_IMAGE_FIELDS.diskCacheTtlHours.optional()
     }).strict().optional(),
     guildMembersIntent: z.boolean().optional(),
+    waifuRole: WaifuRoleNameSchema.optional(),
     memberListRefreshHours: z.number().int().min(0).max(168).optional(),
     debounce: z.object({
       serverMs: DEBOUNCE_FIELDS.serverMs.optional(),

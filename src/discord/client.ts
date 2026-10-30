@@ -33,6 +33,7 @@ import { compareIds, pageMessagesSince, toRawDiscordMessage, withoutAuthors, typ
 import type { ConversationRef } from "../orchestration/context/keys.js";
 import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
 import { ApplicationOwners, ownerIdsOf, type ApplicationOwnerLike, type OwnerCheck } from "./applicationOwners.js";
+import { ensureWaifuRole, type WaifuRoleGuild } from "./waifuRole.js";
 import type { BotProfileHandle, BotProfileUser } from "./profileSync.js";
 import type {
   DiscordConnectionScope,
@@ -394,6 +395,8 @@ export type DiscordJsGatewayOptions = {
   dmBots?: () => Promise<Array<{ botId: string; waifuId: string }>>;
   /** Test seam: build the discord.js client for a bot. */
   createClient?: (input: { bot: DiscordBotConfig; kind: DiscordBotKind; options: ClientOptions }) => Client;
+  /** §37: the role the House bot gives every waifu bot in a shared server ("" or absent: none). */
+  waifuRole?: string;
   /** Test seam: who owns the application (default: fetched from Discord by the House bot). */
   applicationOwners?: OwnerCheck & { start?(): void; stop?(): void };
   logger?: Logger;
@@ -438,6 +441,9 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly wakeListeners = new Set<DiscordWakeCommandListener>();
   private readonly printListeners = new Set<DiscordPrintCommandListener>();
   private readonly normaListeners = new Set<DiscordNormaCommandListener>();
+  /** §37: one waifu-role pass at a time per server; a server whose pass failed is warned about once. */
+  private readonly waifuRoleQueues = new Map<string, Promise<void>>();
+  private readonly waifuRoleWarned = new Set<string>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
   // Living cast §10.4 (D-a): the application's owner or team members run /wake and /print.
@@ -649,6 +655,45 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     });
     if (kind === "waifu") {
       for (const listener of this.waifuReadyListeners) this.dispatchTo(listener, { botId: bot.id });
+    }
+    // §37: the House bot gives the waifu role: to every waifu bot when it connects, to this one when it does.
+    this.ensureWaifuRoles(kind === "waifu" ? { botId: bot.id } : {});
+  }
+
+  /**
+   * §37: in each server the House bot shares with them (or only `guildId`), the waifu bots (or only
+   * `botId`) get the waifu role. In the background; never blocks a connect.
+   */
+  private ensureWaifuRoles(o: { guildId?: string; botId?: string }): void {
+    const roleName = this.options.waifuRole ?? "";
+    const house = this.clients.get(this.options.house.id);
+    if (!roleName || !house?.user) return;
+    const bots = (this.options.waifus ?? []).filter((bot) => bot.id !== this.options.house.id && (o.botId === undefined || bot.id === o.botId));
+    const guildIds = o.guildId ? [o.guildId] : [...house.guilds.cache.keys()];
+    for (const guildId of guildIds) {
+      if (!house.guilds.cache.has(guildId)) continue;
+      const userIds = bots.flatMap((bot) => {
+        const client = this.clients.get(bot.id);
+        return client?.user && client.guilds.cache.has(guildId) ? [client.user.id] : [];
+      });
+      if (userIds.length === 0) continue;
+      const run = async () => {
+        try {
+          const guild = await house.guilds.fetch(guildId);
+          const { created, added } = await ensureWaifuRole(guild as unknown as WaifuRoleGuild, userIds, roleName);
+          this.waifuRoleWarned.delete(guildId);
+          if (created || added.length > 0) this.options.logger?.info("Waifu role given", { guildId, role: roleName, created, bots: added.length });
+        } catch (error) {
+          if (this.waifuRoleWarned.has(guildId)) return;
+          this.waifuRoleWarned.add(guildId);
+          this.options.logger?.warn("Could not give the waifu role", { guildId, role: roleName, message: errorMessage(error) });
+        }
+      };
+      const next = (this.waifuRoleQueues.get(guildId) ?? Promise.resolve()).then(run);
+      this.waifuRoleQueues.set(guildId, next);
+      void next.finally(() => {
+        if (this.waifuRoleQueues.get(guildId) === next) this.waifuRoleQueues.delete(guildId);
+      });
     }
   }
 
@@ -1516,6 +1561,11 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   }
 
   private attachClientRuntimeHandlers(client: Client, botId: string): void {
+    // §37: a bot that joins a server: the House bot gives the waifu role there (to every waifu bot
+    // already in it when the House bot is the one joining).
+    client.on(Events.GuildCreate, (guild) => {
+      this.ensureWaifuRoles(botId === this.options.house.id ? { guildId: guild.id } : { guildId: guild.id, botId });
+    });
     // The bot's own member (roles for the Living cast `role` wake, §10.2). Discord sends the current
     // user's member updates on every bot, with or without the members intent.
     client.on(Events.GuildMemberUpdate, (_old, member) => {

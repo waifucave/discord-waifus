@@ -410,7 +410,7 @@ async function startLockedBackend(options: StartBackendOptions): Promise<Running
         createDiscordGateway,
         handleDiscordRuntimeIssue,
         handleDiscordStatusChange,
-        { directory, guildMembersIntent: currentConfig.discord.guildMembersIntent }
+        { directory, guildMembersIntent: currentConfig.discord.guildMembersIntent, waifuRole: currentConfig.discord.waifuRole }
       );
       if (closing) {
         await connected.gateway?.disconnect();
@@ -644,7 +644,7 @@ async function maybeConnectDiscord(
   createDiscordGateway: (options: DiscordJsGatewayOptions) => DiscordGatewayFacade,
   onRuntimeIssue: ((issue: DiscordRuntimeIssue) => void | Promise<void>) | undefined,
   onStatusChange: ((status: DiscordRuntimeStatus) => void | Promise<void>) | undefined,
-  extra: { directory: GuildDirectory; guildMembersIntent: boolean }
+  extra: { directory: GuildDirectory; guildMembersIntent: boolean; waifuRole?: string }
 ): Promise<{
   status: DiscordRuntimeStatus;
   gateway?: DiscordGatewayFacade;
@@ -697,6 +697,7 @@ async function maybeConnectDiscord(
     waifus: bots.waifus,
     logger,
     guildMembersIntent: extra.guildMembersIntent,
+    ...(extra.waifuRole ? { waifuRole: extra.waifuRole } : {}),
     cacheForGuild,
     // The legacy fetchFreshContext paths (reviewer, /print, resume detection) still ask for a
     // refresh on unresolved mentions; it is the directory's single refresh path now (spec 9.4).

@@ -39,6 +39,7 @@ Target `app` · stored in `config.toml` · writes: revision none.
 | `discord.images.diskCacheMb` | integer 0–2048 [MB] | `256` | On-disk image cache size. |
 | `discord.images.diskCacheTtlHours` | integer 1–720 [hours] | `168` | How long downloaded images are kept on disk (a forget cannot remove a cached guild image, or a DM image no image index recorded, before this). |
 | `discord.guildMembersIntent` | boolean | `false` | Use Discord's privileged Server Members intent for full member lists. Enable it in the Developer Portal first; changing it re-logs the House bot. |
+| `discord.waifuRole` | string | `waifu` | The House bot gives this role to every waifu bot in each server they share, creating it when the server has none (it needs Manage Roles, which its Administrator invite gives). With it, an @-mention of the role wakes every waifu there. Checked when the bots connect and when either bot joins a server; it never removes the role. "" turns it off. |
 | `discord.memberListRefreshHours` | integer 0–168 [hours] | `24` | How often full member lists are refreshed (0 = never). |
 | `discord.debounce.serverMs` | integer 0–30000 [ms] | `1500` | A burst of server messages (mentions, replies, her name, and what goes to the addressee detector) wakes her this long after its last message; each message restarts the timer. |
 | `discord.debounce.serverMaxWaitMs` | integer 0–120000 [ms] | `10000` | A server burst wakes her after at most this long from its first message, however long people keep writing or typing. |

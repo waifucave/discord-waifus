@@ -574,6 +574,74 @@ describe("DiscordJsGateway slash commands", () => {
   });
 });
 
+describe("DiscordJsGateway: the waifu role (§37)", () => {
+  function roleWorld() {
+    const roles = new Map<string, { id: string; name: string }>();
+    const memberRoles = new Map<string, Set<string>>();
+    const guild = {
+      id: "100",
+      roles: {
+        fetch: async () => roles,
+        create: async (options: { name: string }) => {
+          const role = { id: `r${roles.size + 1}`, name: options.name };
+          roles.set(role.id, role);
+          return role;
+        }
+      },
+      members: {
+        fetch: async (userId: string) => {
+          const held = memberRoles.get(userId) ?? new Set<string>();
+          memberRoles.set(userId, held);
+          return { roles: { cache: new Map([...held].map((id) => [id, {}])), add: async (roleId: string) => void held.add(roleId) } };
+        }
+      }
+    };
+    const clients = fakeClients({});
+    const created = new Map<string, Client>();
+    const cached = { id: "100", name: "Bake Club", roles: { cache: new Map() }, emojis: { cache: new Map() }, channels: { cache: new Map() }, members: { cache: new Map() } };
+    const factory: FakeClients["factory"] = (input) => {
+      const client = clients.factory(input);
+      created.set(input.bot.id, client);
+      const userId = `${input.bot.id}-user`;
+      Object.defineProperty(client, "user", { value: { id: userId }, configurable: true });
+      const cache = client.guilds.cache as unknown as Map<string, unknown>;
+      if (input.bot.id !== "ella") cache.set("100", cached);
+      if (input.kind === "house") (client.guilds as unknown as { fetch: (id: string) => Promise<unknown> }).fetch = async () => guild;
+      return client;
+    };
+    return { roles, memberRoles, factory, created, cached };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("gives every waifu bot in a shared server the role when they connect, creating it; never the House bot", async () => {
+    const w = roleWorld();
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("mina"), bot("ella")], waifuRole: "waifu", createClient: w.factory });
+    await gateway.connect();
+    await settle();
+    expect([...w.roles.values()]).toEqual([{ id: "r1", name: "waifu" }]);
+    expect(w.memberRoles.get("mina-user")).toEqual(new Set(["r1"]));
+    // Ella's bot isn't in that server (yet), and the House bot never gets it.
+    expect(w.memberRoles.has("ella-user")).toBe(false);
+    expect(w.memberRoles.has("house-user")).toBe(false);
+
+    // Ella's bot joins the server: she gets it too.
+    (w.created.get("ella")!.guilds.cache as unknown as Map<string, unknown>).set("100", w.cached);
+    w.created.get("ella")!.emit(Events.GuildCreate, w.cached as never);
+    await settle();
+    expect(w.memberRoles.get("ella-user")).toEqual(new Set(["r1"]));
+    expect(w.roles.size).toBe(1);
+  });
+
+  it("does nothing when discord.waifuRole is empty", async () => {
+    const w = roleWorld();
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("mina")], waifuRole: "", createClient: w.factory });
+    await gateway.connect();
+    await settle();
+    expect(w.roles.size).toBe(0);
+    expect(w.memberRoles.size).toBe(0);
+  });
+});
+
 describe("DiscordJsGateway /norma (§36)", () => {
   it("is not an owner command: anyone's /norma reaches the listener (which checks permissions.norma), ephemerally; a long answer is a file", async () => {
     const asked: string[] = [];

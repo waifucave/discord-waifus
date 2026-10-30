@@ -124,3 +124,13 @@ you can never change `permissions.*` from a conversation: that list is the owner
 Permissions (here in the dashboard you may only propose it on a card). Each Discord user has one
 conversation with you that starts over after 30 minutes without a message.
 
+## The `waifu` role
+
+The House bot gives every waifu bot a role named `waifu` (`discord.waifuRole` in Settings; `""` turns
+it off) in each server they share, and creates the role if the server has none. Mentioning `@waifu`
+then wakes every waifu in that room. It needs the House bot's Administrator (or at least Manage
+Roles), and a role it should give must sit below the House bot's own role. If a waifu bot is missing
+the role, check the House bot's permissions and role order, then reconnect Discord (Settings → App →
+Controls → Reload Discord) or re-invite the bot; the backend log says `Could not give the waifu role`
+with Discord's reason.
+
