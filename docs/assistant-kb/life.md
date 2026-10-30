@@ -253,7 +253,10 @@ time; a night she is never asleep that long has no dream, and the next one cover
 reads the dream window, everything said in her transcripts since her last dream, then:
 
 - adds memories from that window only (new people, places, facts, plans, how things felt), as her
-  notes in her voice, with a line in MEMORY.md for each new note;
+  notes in her voice, with a line in MEMORY.md for each new note; the app names the people she talked
+  to that day who have no note yet, so each gets one, and adds a small calendar so dates are looked
+  up, not counted; guesses stay guesses, plans stay plans until someone says they happened, and
+  unanswered questions stay open (the same rules her own summaries follow);
 - checks every note against the window: a fact the window clearly contradicts is patched (the newest
   wins); a note the window doesn't mention stays exactly as it is. Absence of evidence is never a
   reason to delete or change a note;

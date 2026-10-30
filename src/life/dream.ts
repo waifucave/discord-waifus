@@ -19,7 +19,10 @@ import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { atomicWriteJson } from "../storage/atomic.js";
 import type { StorageService } from "../storage/storageService.js";
-import { clockText, dayKeyText, dayTimeText, timeLine } from "./clock.js";
+import { parseConversationKey } from "../orchestration/context/keys.js";
+import { calendarStrip, clockText, dayKeyText, dayTimeText, timeLine } from "./clock.js";
+import { homeStoreFor } from "./home/index.js";
+import { forgottenPeople, hasNoteFor, isRemovedMessage, selfAuthorIds } from "./people.js";
 import type { LifeDeps } from "./deps.js";
 import { availabilityFor } from "./busy.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
@@ -44,8 +47,62 @@ export const DREAM_INSTRUCTION = [
   "4. Keep MEMORY.md short and its links valid; merge duplicates you notice.",
   "5. When you're done, reply with one short line saying what changed.",
   // §19.8: shipped from the life benchmark's `own-voice` variant (2026-10-29).
-  "What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact."
+  "What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact.",
+  // §35.1, §35.3 (2026-10-30): guesses, plans and open threads as they were; her voice from her own lines.
+  "Write only what someone actually said or did, and who said it: a guess stays her guess, a plan stays a plan (with its date) until someone says it happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open: questions nobody answered, plans nobody confirmed, someone who didn't reply.",
+  'Write like her lines in /transcripts (the "you" lines): if she writes in lowercase, so do her notes.'
 ].join("\n");
+
+/** The opening's line for people she talked to in the window who have no note yet (§35.3). */
+export function newPeopleLine(names: readonly string[]): string {
+  return `People she talked to in this window who have no note yet: ${names.join(", ")}. Make a note for each (what the window says about them, in her voice) and add it to MEMORY.md.`;
+}
+
+/** At most this many names on the new-people line. */
+export const NEW_PEOPLE_MAX = 20;
+
+/**
+ * People she talked to in these chunks (spec §35.3): in a DM, the other person; in a room's day, everyone
+ * else who wrote there that day in the window, if she wrote there too. Other waifus, bots the
+ * directory knows and forgotten people are left out. By first line, with their latest name.
+ */
+export function peopleSheTalkedTo(chunks: readonly DreamChunk[], o: { waifuId: string; leaveOut: (authorId: string, at: string) => boolean }): Array<{ userId: string; names: string[] }> {
+  const people = new Map<string, string[]>();
+  for (const chunk of chunks) {
+    if (!chunk.folder.dm && !chunk.lines.some((line) => line.waifu === o.waifuId)) continue;
+    for (const line of chunk.lines) {
+      if (line.waifu || !line.author.trim() || o.leaveOut(line.authorId, line.at)) continue;
+      const names = people.get(line.authorId) ?? [];
+      people.set(line.authorId, [line.author.trim(), ...names.filter((name) => name !== line.author.trim())]);
+    }
+  }
+  return [...people].map(([userId, names]) => ({ userId, names }));
+}
+
+/** The names of people she talked to in these chunks who have no note in her home yet (§35.3); [] when it can't tell. */
+export async function peopleWithoutNotes(deps: LifeDeps, waifu: WaifuConfig, chunks: readonly DreamChunk[]): Promise<string[]> {
+  try {
+    const forgotten = await forgottenPeople(deps.storage);
+    const bots = new Set<string>(await selfAuthorIds(deps.storage, waifu));
+    for (const guildId of new Set(chunks.flatMap((chunk) => (chunk.folder.dm ? [] : [guildIdOf(chunk.folder.key)].filter((id): id is string => Boolean(id)))))) {
+      for (const member of await deps.directory.members(guildId).catch(() => [])) if (member.bot) bots.add(member.userId);
+    }
+    const people = peopleSheTalkedTo(chunks, { waifuId: waifu.id, leaveOut: (authorId, at) => bots.has(authorId) || isRemovedMessage({ authorId, createdAt: at }, forgotten) });
+    if (people.length === 0) return [];
+    const notes = await homeStoreFor(deps, waifu).readAllText();
+    return people
+      .filter((person) => !hasNoteFor(notes, person))
+      .map((person) => person.names[0]!)
+      .slice(0, NEW_PEOPLE_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function guildIdOf(key: string): string | undefined {
+  const ref = parseConversationKey(key);
+  return ref?.kind === "guild" ? ref.guildId : undefined;
+}
 
 /** The report's summary when the window is empty (no model is called). */
 export const DREAM_NOTHING_NEW = "nothing new since the last dream";
@@ -223,6 +280,9 @@ export async function runDream(deps: LifeDeps, o: { waifu: WaifuConfig; signal?:
       outcome.error = "aborted";
       break;
     }
+    // Who she talked to without a note yet, and the calendar (§35.2, §35.3): computed here, after the
+    // cached instruction, so the model looks people and dates up instead of guessing or counting.
+    const newPeople = await peopleWithoutNotes(deps, o.waifu, chunks);
     const session = await runSession(deps, {
       waifu: o.waifu,
       model: chosen.model,
@@ -231,6 +291,8 @@ export async function runDream(deps: LifeDeps, o: { waifu: WaifuConfig; signal?:
         benchmarkSummaryPrompt("dream", DREAM_INSTRUCTION),
         await homeListing(deps, o.waifu, { possessive: "Her" }),
         windowText(chunks, { start: window.start, timeZone: deps.timeZone, more: index < sessions.length - 1 }),
+        ...(newPeople.length > 0 ? [newPeopleLine(newPeople)] : []),
+        calendarStrip(deps.now(), deps.timeZone),
         timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })
       ],
       maxRounds: life.dreamMaxRounds,

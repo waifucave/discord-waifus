@@ -9,7 +9,7 @@ import type { StorageService } from "../storage/storageService.js";
 import type { LifeDeps } from "./deps.js";
 import type { PlaceInfo } from "./places.js";
 import { memberDisplayName } from "../discord/directoryView.js";
-import { normalizeName } from "./text.js";
+import { foldName, normalizeName } from "./text.js";
 
 /** Her bot's Discord ids (the bot id and its application id). */
 export async function selfAuthorIds(storage: StorageService, waifu: Pick<WaifuConfig, "botId">): Promise<string[]> {
@@ -63,7 +63,40 @@ export async function knownPeople(deps: LifeDeps, places: readonly PlaceInfo[]):
   return [...people].map(([userId, names]) => ({ userId, names: [...names] }));
 }
 
-export type PersonLookup = { ok: true; userId: string; name: string } | { ok: false; error: string };
+/** A name's folded forms a note can go by: the whole name and its first word ("Aiko T." → aiko t., aiko). */
+function noteNameKeys(name: string): string[] {
+  const folded = foldName(name).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  if (!folded) return [];
+  return [...new Set([folded, folded.split(" ")[0]!])];
+}
+
+/** The first Markdown heading's text, else the first line's text before a colon ("Rosa: duo partner"). */
+function noteTitle(text: string): string | undefined {
+  const heading = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/mu.exec(text)?.[1];
+  if (heading) return heading;
+  const first = text.split("\n").find((line) => line.trim())?.trim();
+  return first && first.includes(":") ? first.slice(0, first.indexOf(":")) : undefined;
+}
+
+/**
+ * Whether her home has a note about this person (spec §35.3): a file (outside `~/life/`, MEMORY.md
+ * aside) named after them (`people/aiko.md`, `aiko-tanaka.md`), headed or titled by their name, or
+ * marked as theirs (`<!-- user:<id> -->`). Being mentioned in another note does not count.
+ */
+export function hasNoteFor(notes: ReadonlyMap<string, string>, person: { userId: string; names: readonly string[] }): boolean {
+  const wanted = new Set(person.names.flatMap(noteNameKeys));
+  if (wanted.size === 0) return true;
+  for (const [notePath, text] of notes) {
+    if (notePath === "MEMORY.md" || notePath.startsWith("life/")) continue;
+    if (text.includes(`<!-- user:${person.userId} -->`)) return true;
+    const stem = notePath.split("/").at(-1)!.replace(/\.[^.]+$/u, "");
+    const title = noteTitle(text);
+    if ([stem, ...(title ? [title] : [])].some((candidate) => noteNameKeys(candidate).some((key) => wanted.has(key)))) return true;
+  }
+  return false;
+}
+
+export type PersonLookup ={ ok: true; userId: string; name: string } | { ok: false; error: string };
 
 /** `<@123>` / `123` → that id; a name → the one person she knows by it (§6.5). */
 export async function resolvePerson(deps: LifeDeps, places: readonly PlaceInfo[], input: string): Promise<PersonLookup> {

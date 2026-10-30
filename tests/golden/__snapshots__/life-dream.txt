@@ -30,11 +30,17 @@ Example: return await tools.apply_patch(["*** Begin Patch", "*** Update File: ~/
 4. Keep MEMORY.md short and its links valid; merge duplicates you notice.
 5. When you're done, reply with one short line saying what changed.
 What you write into her notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral report or a log. Keep names, times and facts exact.
+Write only what someone actually said or did, and who said it: a guess stays her guess, a plan stays a plan (with its date) until someone says it happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open: questions nobody answered, plans nobody confirmed, someone who didn't reply.
+Write like her lines in /transcripts (the "you" lines): if she writes in lowercase, so do her notes.
 --- text ---
 Her files: ~/MEMORY.md, ~/people/kevin.md
 --- text ---
-The dream window starts Sat 24 Oct 13:30. Read these transcript files (2 lines in all):
-- /transcripts/bake-club/general/2026-10-24.md (Sat 24 Oct: the whole file, 2 lines)
+The dream window starts Sat 24 Oct 13:30. Read these transcript files (3 lines in all):
+- /transcripts/bake-club/general/2026-10-24.md (Sat 24 Oct: the whole file, 3 lines)
+--- text ---
+People she talked to in this window who have no note yet: Mina. Make a note for each (what the window says about them, in her voice) and add it to MEMORY.md.
+--- text ---
+Calendar (look dates up here, don't count): last week Mon 12 Oct · Tue 13 Oct · Wed 14 Oct · Thu 15 Oct · Fri 16 Oct · Sat 17 Oct · Sun 18 Oct; this week Mon 19 Oct · Tue 20 Oct · Wed 21 Oct · Thu 22 Oct · Fri 23 Oct · Sat 24 Oct (today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.
 --- text ---
 [Sat 24 Oct 14:00 · awake]
 === 1 assistant ===
@@ -45,4 +51,5 @@ The dream window starts Sat 24 Oct 13:30. Read these transcript files (2 lines i
 # bake-club/#general · Sat 24 Oct 2026
 [13:30] Kevin: my exam got moved to monday :(
 [13:31] you: noooo, more time to study at least
+[13:32] Mina: i'll quiz you on sunday kevin
 exit 0

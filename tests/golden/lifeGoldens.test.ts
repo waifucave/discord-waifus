@@ -271,7 +271,9 @@ describe("Living cast goldens", () => {
     await seedNotes(w);
     await seedTranscript(w, [
       { text: "my exam got moved to monday :(", minutesAgo: 30 },
-      { text: "noooo, more time to study at least", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 29 }
+      { text: "noooo, more time to study at least", author: "Ella", authorId: ELLA_BOT, waifu: "ella", minutesAgo: 29 },
+      // Mina has no note yet: the opening names her (§35.3).
+      { text: "i'll quiz you on sunday kevin", author: "Mina", authorId: MINA_USER, minutesAgo: 28 }
     ]);
     await w.cast.scheduler.tick();
     const request = w.anthropic.calls[1]!.request;

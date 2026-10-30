@@ -111,7 +111,22 @@ She dreams with `life.dreamModel` even when her own model is unavailable. Usage 
 <Name>'s memory. Her notes are files in her home, written in her own voice (keep their voice and
 layout). MEMORY.md is the index… In /transcripts (read-only) her own lines are written as "you"."
 The opening message is `DREAM_INSTRUCTION`, then a listing of her files (at most 200, "… and N more;
-use `ls -R`"), then the window, then her time line. Golden: `tests/golden/__snapshots__/life-dream.txt`.
+use `ls -R`"), then the window, then (2026-10-30, spec §35.3, only when there is anyone) the people
+she talked to in this session's window who have no note yet: "People she talked to in this window who
+have no note yet: Aiko, Tom. Make a note for each (what the window says about them, in her voice) and
+add it to MEMORY.md." (at most 20 names), then the calendar (§35.2, `calendarStrip`: "Calendar (look
+dates up here, don't count): last week Mon 16 Nov · … ; this week … Thu 26 Nov (today) · …; next week
+… ." in her zone, Monday first), then her time line. Golden: `tests/golden/__snapshots__/life-dream.txt`.
+
+Who counts as talked to (`peopleSheTalkedTo`, `peopleWithoutNotes` in `dream.ts`): in a DM, the other
+person; in a room's day, everyone else who wrote there in the window when she wrote there too. Other
+waifus, bots the guild directory knows, her own bot ids and forgotten people are left out; the name is
+their latest one in the window. A note (`hasNoteFor` in `people.ts`) is a file of her home outside
+`~/life/` (MEMORY.md aside) named after them (`people/aiko.md`, `aiko-tanaka.md`: the whole name or
+its first word, diacritics and unicode stylings folded), headed or titled (`Rosa: …` first line) by
+their name, or marked `<!-- user:<id> -->`; a mention inside another note does not count. Computed
+again for each session, so a note made in the first session counts in the next; any failure adds
+nothing.
 
 The instruction, verbatim in substance:
 
@@ -125,9 +140,14 @@ The instruction, verbatim in substance:
 4. keep MEMORY.md short with valid links; merge duplicates;
 5. reply with one short line saying what changed. Leave `~/life/` alone.
 
-Its last line (2026-10-29, from the life benchmark's `own-voice` variant): "What you write into her
+Then (2026-10-29, from the life benchmark's `own-voice` variant): "What you write into her
 notes is her own memory: first person, in her voice and style (her casing, her tone), not a neutral
-report or a log. Keep names, times and facts exact."
+report or a log. Keep names, times and facts exact." Its last two lines (2026-10-30, spec §35.1,
+§35.3): "Write only what someone actually said or did, and who said it: a guess stays her guess, a
+plan stays a plan (with its date) until someone says it happened, a maybe stays a maybe, teasing stays
+teasing. Keep open threads open: questions nobody answered, plans nobody confirmed, someone who didn't
+reply." and "Write like her lines in /transcripts (the "you" lines): if she writes in lowercase, so do
+her notes."
 
 **Tools**: `Read`, `Edit` (`apply_patch`), `Bash` over her home with `/transcripts` read-only; no messaging,
 no web. Every change under `~/life/` is refused (`DREAM_LIFE_REFUSED`) and so is `profile.json`.
