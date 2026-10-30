@@ -3,6 +3,7 @@
 // what reached the fake server; dollars and tokens from the run's usage lines.
 
 import { promptTokensOf, type UsageLedgerLine } from "../../src/orchestration/usageLedger.js";
+import { UNANSWERED_SEND_GAP_MS } from "../../src/life/unanswered.js";
 import type { Fact } from "./scenario.js";
 import type { ProbeResult, RunMetrics, SummaryCapture, TranscriptEvent } from "./types.js";
 
@@ -59,6 +60,34 @@ export function longestBurst(events: readonly TranscriptEvent[]): number {
       const count = (run.get(event.place) ?? 0) + 1;
       run.set(event.place, count);
       longest = Math.max(longest, count);
+    }
+  }
+  return longest;
+}
+
+/** Her messages this close together with no turn id to tell them apart are one send (the app's own rule, spec §34). */
+export const SEND_GAP_MS = UNANSWERED_SEND_GAP_MS;
+
+/**
+ * The most separate sends she made in a row in one place, nobody else writing there in between
+ * (spec §34): nagging. A send is a turn's go at writing, not a message: a `sent` event starts a new
+ * send when its turn id differs from her previous one there, or, when either has no turn id, when
+ * `SEND_GAP_MS` or more passed since it.
+ */
+export function maxUnansweredSends(events: readonly TranscriptEvent[]): number {
+  const run = new Map<string, { sends: number; turnId?: string | undefined; at: number }>();
+  let longest = 0;
+  for (const event of events) {
+    if (event.type === "people") run.delete(event.place);
+    else if (event.type === "sent") {
+      const at = Date.parse(event.at);
+      const previous = run.get(event.place);
+      const sameSend =
+        previous !== undefined &&
+        (previous.turnId !== undefined && event.turnId !== undefined ? previous.turnId === event.turnId : Number.isFinite(at) && Number.isFinite(previous.at) && at - previous.at < SEND_GAP_MS);
+      const sends = (previous?.sends ?? 0) + (sameSend ? 0 : 1);
+      run.set(event.place, { sends, turnId: event.turnId, at });
+      longest = Math.max(longest, sends);
     }
   }
   return longest;
@@ -135,6 +164,7 @@ export function computeMetrics(o: { events: readonly TranscriptEvent[]; summarie
     longestLineChars: lines.length > 0 ? Math.max(...lines) : null,
     messagesPerSendingTurn: sendsPerTurn.size > 0 ? [...sendsPerTurn.values()].reduce((a, b) => a + b, 0) / sendsPerTurn.size : null,
     longestBurst: longestBurst(events),
+    maxUnansweredSends: maxUnansweredSends(events),
     probesPassed: scored.filter((probe) => probe.passed).length,
     probesScored: scored.length,
     usd: Math.round(usd * 1_000_000) / 1_000_000,

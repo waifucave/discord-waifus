@@ -62,7 +62,10 @@ A failed model call's `call` event carries `error` (the app's kind), `errorStatu
 
 Automatic metrics: tool calls, failed calls (results marked `is_error`), first-try success,
 retries, loops (identical failing calls); messages, median and longest line, messages per turn,
-longest burst; probes passed; dollars, tokens in/out, cache-read share, seconds per turn; must-keep
+longest burst (`longestBurst`: the most messages in a row in one place with nobody else writing there),
+unanswered sends (`maxUnansweredSends`, spec §34: the most separate sends in a row in one place with
+nobody else writing there, which is nagging; a `sent` event is a new send when its turn id differs from
+her previous one there, or, without turn ids, when 5 minutes or more passed since it); probes passed; dollars, tokens in/out, cache-read share, seconds per turn; must-keep
 facts kept by her summaries and her notes after the dream.
 
 ## Grading

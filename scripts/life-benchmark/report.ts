@@ -75,6 +75,8 @@ function groupRows(runs: readonly RunSummary[]): string[][] {
         num(mean(m.map((x) => x.medianLineChars))),
         num(Math.max(0, ...m.map((x) => x.longestLineChars ?? 0))),
         num(mean(m.map((x) => x.messagesPerSendingTurn)), 1),
+        String(Math.max(0, ...m.map((x) => x.longestBurst))),
+        String(Math.max(0, ...m.map((x) => x.maxUnansweredSends ?? 0))),
         pct(mean(m.map((x) => x.factCoverage))),
         usd(sum(m.map((x) => x.usd))),
         `${tokens(sum(m.map((x) => x.tokensIn)))} / ${tokens(sum(m.map((x) => x.tokensOut)))}`,
@@ -101,18 +103,18 @@ export function renderReport(summary: BenchmarkSummary): string {
   out.push("");
   out.push(
     table(
-      ["model", "variant", "runs", "probes", "tool calls", "failed", "first-try", "retries", "loops", "messages", "median line", "longest line", "msgs/turn", "facts kept", "$", "tokens in/out", "cache read", "s/turn", "chat grade", "summary grade"],
+      ["model", "variant", "runs", "probes", "tool calls", "failed", "first-try", "retries", "loops", "messages", "median line", "longest line", "msgs/turn", "longest burst", "unanswered sends", "facts kept", "$", "tokens in/out", "cache read", "s/turn", "chat grade", "summary grade"],
       groupRows(runs)
     )
   );
   out.push("");
-  out.push("Probes count passed/scored (n/a probes left out). First-try = share of tool uses whose first call worked; retries = a call to the same tool right after it failed; loops = an identical failing call repeated. Grades are 1–5 means from `merge-grades`.");
+  out.push("Probes count passed/scored (n/a probes left out). First-try = share of tool uses whose first call worked; retries = a call to the same tool right after it failed; loops = an identical failing call repeated. Longest burst = the most messages in a row in one place with nobody else writing; unanswered sends = the most separate sends (turns) in a row in one place with nobody else writing (nagging, spec §34); both the worst run. Grades are 1–5 means from `merge-grades`.");
   out.push("");
   out.push("## Runs");
   out.push("");
   out.push(
     table(
-      ["run", "scenario", "model", "variant", "status", "probes", "turns", "messages", "failed calls", "$", "real s", "gate", "chat", "summaries"],
+      ["run", "scenario", "model", "variant", "status", "probes", "turns", "messages", "burst / unanswered", "failed calls", "$", "real s", "gate", "chat", "summaries"],
       runs.map((run) => [
         run.runId,
         run.scenario,
@@ -122,6 +124,7 @@ export function renderReport(summary: BenchmarkSummary): string {
         `${run.metrics.probesPassed}/${run.metrics.probesScored}`,
         String(run.metrics.turns),
         String(run.metrics.messages),
+        `${run.metrics.longestBurst} / ${run.metrics.maxUnansweredSends ?? "–"}`,
         String(run.metrics.failedCalls),
         usd(run.metrics.usd),
         num(run.realSeconds),

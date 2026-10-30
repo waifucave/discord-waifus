@@ -12,7 +12,7 @@ import { WaifuConfigSchema } from "../src/shared/schemas/domain.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
 import { mergeGradesInto, readSummary, resummariseInto, runBenchmark, selectModels } from "../scripts/life-benchmark/bench.js";
 import { GradeSchema, gateOf, packetsForRun, renderChat } from "../scripts/life-benchmark/grading.js";
-import { computeMetrics, factsFound, longestBurst, mentions } from "../scripts/life-benchmark/metrics.js";
+import { computeMetrics, factsFound, longestBurst, maxUnansweredSends, mentions } from "../scripts/life-benchmark/metrics.js";
 import { maskKeyLike } from "../scripts/life-benchmark/models.js";
 import { evaluateProbes } from "../scripts/life-benchmark/probes.js";
 import { defineScenario, scenarioClock, scenarioTimeMs, type ScenarioInput } from "../scripts/life-benchmark/scenario.js";
@@ -284,6 +284,30 @@ describe("metrics", () => {
     expect(mentions("a goat", "oat")).toBe(false);
     expect(factsFound(tiny.facts, "mina got the train tickets")).toEqual({ kept: ["tickets"], missing: ["interview"] });
     expect(longestBurst([{ type: "sent", at: "", place: "#a", dm: false, text: "1", messageId: "1" }, { type: "sent", at: "", place: "#b", dm: false, text: "2", messageId: "2" }, { type: "sent", at: "", place: "#a", dm: false, text: "3", messageId: "3" }])).toBe(2);
+  });
+
+  it("maxUnansweredSends counts her separate sends in a row in one place, not her messages (spec §34)", () => {
+    const sent = (place: string, at: string, turnId?: string): TranscriptEvent => ({ type: "sent", at, place, dm: false, text: "x", messageId: at, ...(turnId ? { turnId } : {}) });
+    const people = (place: string, at: string): TranscriptEvent => ({ type: "people", at, place, from: "Felix", text: "hm", messageId: `p${at}` });
+    // Three messages in one turn are one send; three turns over three days with nobody answering are three.
+    const nagging: TranscriptEvent[] = [
+      people("#general", "2026-10-20T20:00:00Z"),
+      sent("#general", "2026-10-20T21:00:00Z", "t1"),
+      sent("#general", "2026-10-20T21:00:05Z", "t1"),
+      sent("#general", "2026-10-20T21:00:09Z", "t1"),
+      sent("#other", "2026-10-21T10:00:00Z", "t2"),
+      sent("#general", "2026-10-21T10:00:30Z", "t2"),
+      sent("#general", "2026-10-22T19:00:00Z", "t3")
+    ];
+    expect(maxUnansweredSends(nagging)).toBe(3);
+    const metrics = computeMetrics({ events: nagging, summaries: [], ledger: [], probes: [] });
+    expect(metrics).toMatchObject({ longestBurst: 5, maxUnansweredSends: 3 });
+    // Someone else writing there resets it; another place doesn't.
+    expect(maxUnansweredSends([...nagging.slice(0, 5), people("#general", "2026-10-21T09:00:00Z"), ...nagging.slice(5)])).toBe(2);
+    expect(maxUnansweredSends([...nagging.slice(0, 4), people("#other", "2026-10-21T09:00:00Z"), ...nagging.slice(4)])).toBe(3);
+    // Without turn ids, messages less than 5 minutes apart are one send.
+    expect(maxUnansweredSends([sent("#a", "2026-10-20T21:00:00Z"), sent("#a", "2026-10-20T21:04:59Z"), sent("#a", "2026-10-20T21:10:00Z")])).toBe(2);
+    expect(maxUnansweredSends([])).toBe(0);
   });
 });
 

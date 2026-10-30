@@ -71,6 +71,8 @@ export type RunMetrics = {
   messagesPerSendingTurn: number | null;
   /** The most messages she sent in a row in one place. */
   longestBurst: number;
+  /** The most separate sends (turns) she made in a row in one place with nobody else writing there (spec §34). */
+  maxUnansweredSends: number;
   probesPassed: number;
   probesScored: number;
   usd: number;
