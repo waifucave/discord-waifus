@@ -23,7 +23,7 @@ import { BASELINE, BUILT_IN_VARIANTS, PromptVariantSchema, applySummaryEdits, ap
 import { benchmarkSummaryPrompt, benchmarkTool } from "../src/life/benchmarkHook.js";
 import { COMPACTION_INSTRUCTION, compactionInstruction } from "../src/life/compaction.js";
 import { DREAM_INSTRUCTION, dreamSystem } from "../src/life/dream.js";
-import { CACHE_REST_NOTICE, REST_NOTICE, isRestNotice } from "../src/life/rest.js";
+import { CACHE_REST_NOTICE, REST_NOTICE, SUMMARY_FACTS, isRestNotice } from "../src/life/rest.js";
 import { ALL_LIFE_TOOLS, lifeTool, modelTools, offerableTool } from "../src/life/tools/index.js";
 import { DEFAULT_APP_CONFIG } from "../src/shared/schemas/config.js";
 import { makeTempRoot, removeTempRoot } from "./testUtils.js";
@@ -472,14 +472,26 @@ describe("prompt variants", () => {
       expect(text).toContain(`${separator}${line}`);
       return text.replace(`${separator}${line}`, "");
     };
-    expect(applyVariant(before(shipped, blockA, "\n\n"), ownVoice)).toBe(shipped);
-    expect(applySummaryEdits("rest", before(REST_NOTICE, summary, "\n"), ownVoice)).toBe(REST_NOTICE);
-    expect(applySummaryEdits("rest", before(CACHE_REST_NOTICE, summary, "\n"), ownVoice)).toBe(CACHE_REST_NOTICE);
-    expect(applySummaryEdits("compaction", before(COMPACTION_INSTRUCTION, summary, "\n"), ownVoice)).toBe(COMPACTION_INSTRUCTION);
-    expect(applySummaryEdits("dream", before(DREAM_INSTRUCTION, dream, "\n"), ownVoice)).toBe(DREAM_INSTRUCTION);
+    // The texts without what §35 (2026-10-30) added after it: the facts lines, the dream's casing line and block A's sentences.
+    const without = (text: string, parts: readonly string[]) =>
+      parts.reduce((out, part) => {
+        expect(out).toContain(part);
+        return out.replace(part, "");
+      }, text);
+    const facts = [`\n${SUMMARY_FACTS}`];
+    const blockA35 = without(shipped, [` ${SUMMARY_FACTS}`, " Never claim you saw, heard or remember something that isn't in what you can see, your notes or /transcripts; if you're not sure, say so or ask."]);
+    const rest = without(REST_NOTICE, facts);
+    const cacheRest = without(CACHE_REST_NOTICE, facts);
+    const compaction = without(COMPACTION_INSTRUCTION, facts);
+    const dreamText = without(DREAM_INSTRUCTION, DREAM_INSTRUCTION.split("\n").slice(-2).map((line) => `\n${line}`));
+    expect(applyVariant(before(blockA35, blockA, "\n\n"), ownVoice)).toBe(blockA35);
+    expect(applySummaryEdits("rest", before(rest, summary, "\n"), ownVoice)).toBe(rest);
+    expect(applySummaryEdits("rest", before(cacheRest, summary, "\n"), ownVoice)).toBe(cacheRest);
+    expect(applySummaryEdits("compaction", before(compaction, summary, "\n"), ownVoice)).toBe(compaction);
+    expect(applySummaryEdits("dream", before(dreamText, dream, "\n"), ownVoice)).toBe(dreamText);
     // Each is one line (one paragraph) of its text.
-    for (const text of [REST_NOTICE, CACHE_REST_NOTICE, COMPACTION_INSTRUCTION]) expect(text.split("\n").at(-1)).toBe(summary);
-    expect(DREAM_INSTRUCTION.split("\n").at(-1)).toBe(dream);
+    for (const text of [rest, cacheRest, compaction]) expect(text.split("\n").at(-1)).toBe(summary);
+    expect(dreamText.split("\n").at(-1)).toBe(dream);
   });
 
   it("tool-examples adds one new, syntactically valid example to each tool, unlike the one already there", () => {

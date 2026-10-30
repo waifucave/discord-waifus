@@ -33,7 +33,7 @@ import { promptTokensOf } from "../orchestration/usageLedger.js";
 import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
-import { dayStartAt, timeLine } from "./clock.js";
+import { calendarStrip, dayStartAt, timeLine } from "./clock.js";
 import { compactLife, compactRetiredTools, currentHarness, newTurnId, offersRetiredTools, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
@@ -689,7 +689,9 @@ export class Life {
       currentTurn: { id: turnId, startedAt: deps.now().toISOString(), rounds: 0, wakeIds: [], wakes: [] }
     }));
     const notice = benchmarkSummaryPrompt("rest", o.cache ? CACHE_REST_NOTICE : REST_NOTICE);
-    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: notice }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
+    // The calendar (§35.2): her summary's dates are looked up, not counted.
+    const calendar = calendarStrip(deps.now(), deps.timeZone);
+    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: notice }, { type: "text", text: calendar }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
     deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate, ...(o.cache ? { before: "cache_expiry" } : {}) });
     let outcome = await this.rounds(run);
     // Interrupted (pause, shutdown, a reload): nothing changes; the rest turn runs again next cycle.

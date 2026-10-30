@@ -13,7 +13,7 @@
 // provider overflow (mid-turn too), a manual compact, a configuration change (A, tools or model), a
 // forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
 
-import { isRestNotice, SUMMARY_VOICE } from "./rest.js";
+import { isRestNotice, SUMMARY_FACTS, SUMMARY_VOICE } from "./rest.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
@@ -25,7 +25,7 @@ import { COMPACTION_FAILURE_BACKOFF_MS } from "../orchestration/context/compacti
 import { listWaifus, readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogLine, LifeModelRoute, LifeState } from "../shared/schemas/life.js";
-import { timeLine } from "./clock.js";
+import { calendarStrip, timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { buildBlockA, harnessHash } from "./lifeHarness.js";
 import { pruneOldEpochLogs, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
@@ -377,8 +377,8 @@ export async function compactRetiredTools(
   return compactLife(deps, { ...o, lines, reason: "tools", keepTurns: 0, shrinkLastResults: false });
 }
 
-/** The summary request's instruction (owner wording of 2026-10-27), then the voice line (§19.8). */
-export const COMPACTION_INSTRUCTION = `[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.\n${SUMMARY_VOICE}`;
+/** The summary request's instruction (owner wording of 2026-10-27), then the voice line (§19.8) and the facts line (§35.1). */
+export const COMPACTION_INSTRUCTION = `[system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.\n${SUMMARY_VOICE}\n${SUMMARY_FACTS}`;
 
 export type CompactionOmissions = { deleted: string[]; people: string[] };
 
@@ -459,7 +459,8 @@ export async function compactLife(
     try {
       const summaryLines = o.shrinkLastResults ? withoutLastResults(o.lines) : o.lines;
       const request = await buildLifeRequest(deps, { state: o.state, lines: summaryLines, route: o.summaryRoute!, missing: "text", ...(o.signal ? { signal: o.signal } : {}) });
-      const instruction = `${compactionInstruction(o.omit)}\n\n${timeLine({ now, timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, now, o.state) })}`;
+      // The calendar (§35.2) goes with the time line in the appended message, after the cached prefix.
+      const instruction = `${compactionInstruction(o.omit)}\n\n${calendarStrip(now, deps.timeZone)}\n${timeLine({ now, timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, now, o.state) })}`;
       const result = await summarizeWithModel(deps.models, {
         route: { providerId: o.summaryRoute!.providerId, modelId: o.summaryRoute!.modelId },
         system: request.system,

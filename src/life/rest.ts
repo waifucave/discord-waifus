@@ -9,16 +9,23 @@
  */
 export const SUMMARY_VOICE =
   "Write it as your own memory: in the first person, in your own voice and style (your casing, your tone), not as a neutral report or a log. Keep names, times and facts exact.";
+/**
+ * What a summary she writes for herself may say as fact (spec §35.1): only what was said or done, a
+ * guess as hers, a plan as a plan, open threads kept. The line after `SUMMARY_VOICE` in the rest
+ * notices and the compaction instruction, and the end of block A's summary paragraph.
+ */
+export const SUMMARY_FACTS =
+  "Write only what someone actually said or did, and who said it: a guess stays your guess, a plan stays a plan (with its date) until someone says it happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open: questions nobody answered, plans nobody confirmed, someone who didn't reply.";
 /** The rest notice's first line (spec §19.3, owner rewording 2026-10-27). */
 const REST_NOTICE_TEXT =
   "[system] Your memory is almost full. When this turn ends your context resets: everything you can see now goes away except what you write as your final reply. Your computer stays exactly as you left it (your home, /tmp and /transcripts), so anything that should last can go into your notes now. Then write, in your own way, whatever you want to carry forward. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this turn.";
 /** The rest notice: a turn of her own in which she writes the summary her new epoch starts from. */
-export const REST_NOTICE = `${REST_NOTICE_TEXT}\n${SUMMARY_VOICE}`;
+export const REST_NOTICE = `${REST_NOTICE_TEXT}\n${SUMMARY_VOICE}\n${SUMMARY_FACTS}`;
 /**
  * The quiet-time rest before her prompt cache goes cold (§25): the notice's first line plus one
- * sentence, so it starts like every rest notice (`REST_NOTICE_PREFIX`), then the voice line.
+ * sentence, so it starts like every rest notice (`REST_NOTICE_PREFIX`), then the voice and facts lines.
  */
-export const CACHE_REST_NOTICE = `${REST_NOTICE_TEXT} You've been quiet a while; this is a good moment to rest.\n${SUMMARY_VOICE}`;
+export const CACHE_REST_NOTICE = `${REST_NOTICE_TEXT} You've been quiet a while; this is a good moment to rest.\n${SUMMARY_VOICE}\n${SUMMARY_FACTS}`;
 /** What reaching people returns in the rest turn (the tools stay offered: the cached prefix holds). */
 export const REST_REFUSED_RESULT = "error: finish your summary first; you can do this after the reset";
 /** Tools that reach people or the web: refused while she writes her rest summary. */

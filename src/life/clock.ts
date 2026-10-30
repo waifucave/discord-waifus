@@ -84,6 +84,28 @@ export function datedDayKey(day: string): string {
   return date ? `${WEEKDAYS[date.getUTCDay()]} ${day}` : day;
 }
 
+/**
+ * The calendar her summaries and dreams look dates up in (spec §35.2), so a model never counts days:
+ * last week, this week and next week in her zone, Monday first, today marked.
+ * "Calendar (look dates up here, don't count): last week Mon 16 Nov · … · Sun 22 Nov; this week Mon 23
+ * Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next week Mon 30 Nov · … · Sun 6 Dec."
+ */
+export function calendarStrip(now: Date, timeZone: string): string {
+  const p = localParts(now, timeZone);
+  const today = Date.UTC(p.year, p.month - 1, p.day);
+  // Monday of last week (getUTCDay: Sunday 0).
+  const monday = today - (((new Date(today).getUTCDay() + 6) % 7) + 7) * 86_400_000;
+  const weeks = ["last week", "this week", "next week"].map((label, week) => {
+    const days = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(monday + (week * 7 + index) * 86_400_000);
+      const text = `${WEEKDAYS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`;
+      return date.getTime() === today ? `${text} (today)` : text;
+    });
+    return `${label} ${days.join(" · ")}`;
+  });
+  return `Calendar (look dates up here, don't count): ${weeks.join("; ")}.`;
+}
+
 /** "2026-10-24": the local day. */
 export function localDayKey(date: Date, timeZone: string): string {
   const p = localParts(date, timeZone);
