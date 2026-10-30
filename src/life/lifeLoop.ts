@@ -39,7 +39,7 @@ import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
 import { renderNotifications, type NotificationView } from "./notifications.js";
 import { unansweredForWakes } from "./unanswered.js";
-import { CACHE_REST_NOTICE, cacheRestIgnoredNote, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote } from "./rest.js";
+import { CACHE_REST_NOTICE, cacheRestIgnoredNote, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote, withCalendar } from "./rest.js";
 import { cacheRestDue } from "./cacheRest.js";
 import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
@@ -688,10 +688,10 @@ export class Life {
       status: "turn",
       currentTurn: { id: turnId, startedAt: deps.now().toISOString(), rounds: 0, wakeIds: [], wakes: [] }
     }));
-    const notice = benchmarkSummaryPrompt("rest", o.cache ? CACHE_REST_NOTICE : REST_NOTICE);
-    // The calendar (§35.2): her summary's dates are looked up, not counted.
-    const calendar = calendarStrip(deps.now(), deps.timeZone);
-    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: notice }, { type: "text", text: calendar }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
+    // The calendar (§35.2): her summary's dates are looked up, not counted. It goes after the
+    // notice's first line (`withCalendar`), so the notice still opens like one and ends with the voice line.
+    const notice = withCalendar(benchmarkSummaryPrompt("rest", o.cache ? CACHE_REST_NOTICE : REST_NOTICE), calendarStrip(deps.now(), deps.timeZone));
+    await this.append(run, "notifications", { role: "user", content: [{ type: "text", text: notice }, { type: "text", text: await this.timeLineText(waifu, run.lastEstimate, model) }] }, { dmWakes: false });
     deps.logger.info("Life rest turn started", { category: "life", waifuId: this.waifuId, turnId, tokens: run.lastEstimate, ...(o.cache ? { before: "cache_expiry" } : {}) });
     let outcome = await this.rounds(run);
     // Interrupted (pause, shutdown, a reload): nothing changes; the rest turn runs again next cycle.

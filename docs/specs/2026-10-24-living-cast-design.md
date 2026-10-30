@@ -4646,9 +4646,9 @@ has no other instruction). The dream says the same about "her".
 
 A deterministic strip computed in her zone: last week, this week and next week, Monday first, today
 marked, in the app's date style (`Mon 23 Nov`). It goes where the call already varies, never in a
-cached system block: in the compaction request's appended message (before the time line), as its own
-text block in the rest turn's opening message (before the time line), and in the dream's opening
-(before the time line). Her `<summary>` turns get nothing new: a calendar on every turn would cost every
+cached system block: in the compaction request's appended message and in the rest notice, each time
+right after the instruction's first line (`withCalendar`), so the facts and voice lines still come
+after it, and in the dream's opening (before the time line). Her `<summary>` turns get nothing new: a calendar on every turn would cost every
 turn for a rare summary.
 
 ### 35.3 New people and her voice in the dream
@@ -4688,9 +4688,14 @@ person only), stores and records the repaired message, and keeps her model's own
   Mon 16 Nov · … · Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29 Nov; next
   week Mon 30 Nov · … · Sun 6 Dec." Dated in its first words (review, 2026-10-30): a rest turn's copy
   stays in her log, and after an ignored quiet-time rest (§25) for the rest of the epoch, so an undated
-  "(today)" would later mislead. `compactLife` sends `<instruction>\n\n<calendar>\n<time line>`;
-  `Life.restTurn` sends the notice, the calendar and the time line as three text blocks; `runDream`
-  puts it before the time line. The forget scrub's summary is a compaction and gets it too; the notes
+  "(today)" would later mislead. `compactLife` sends the instruction with the calendar after its first
+  line, then a blank line and the time line; `Life.restTurn` sends the notice with the calendar after
+  its first line, then the time line, as two text blocks; `runDream` puts it before the time line.
+  First shipped after the voice line (compaction: after the whole instruction; rest: its own block
+  after the notice); the re-bench had Haiku's own summaries turn into capitalised reports that open by
+  reciting her persona (59% of sentences capitalised, against 0% before §35). After the first line
+  (life-2026-10-30T17-35-56): 1%, none reciting the persona. Line order was not it (facts line before
+  the voice line: no change), and neither was the facts line (a variant without it: 79%). The forget scrub's summary is a compaction and gets it too; the notes
   scrub session does not.
 - **New people** (`src/life/dream.ts`): `peopleSheTalkedTo(chunks, { counts })`: in a DM chunk and in a
   room day chunk where she has a line, every author who isn't a waifu (`line.waifu`) and whom `counts`

@@ -88,8 +88,11 @@ describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
     await w.cast.life("ella").runNow();
     const calls = w.anthropic.calls.map((call) => call.request);
     expect(calls).toHaveLength(3);
-    // The §19 notice plus one sentence; same system blocks and tools (the cache holds).
-    expect(lastText(calls[1]!)).toContain(JSON.stringify(CACHE_REST_NOTICE).slice(1, -1));
+    // The §19 notice plus one sentence, with the calendar after its first line (§35.2); same system
+    // blocks and tools (the cache holds).
+    const [head, ...tail] = CACHE_REST_NOTICE.split("\n");
+    expect(lastText(calls[1]!)).toContain(JSON.stringify(`${head}\nCalendar as of Sat 24 Oct`).slice(1, -1));
+    expect(lastText(calls[1]!)).toContain(JSON.stringify(`(today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.\n${tail.join("\n")}`).slice(1, -1));
     expect(CACHE_REST_NOTICE.startsWith(REST_NOTICE.split("\n")[0]!)).toBe(true);
     expect(CACHE_REST_NOTICE.split("\n").at(-1)).toBe(REST_NOTICE.split("\n").at(-1));
     expect(CACHE_REST_NOTICE.startsWith(REST_NOTICE_PREFIX)).toBe(true);

@@ -12,7 +12,7 @@ import { readWaifu } from "../src/orchestration/stores/config.js";
 import { DREAM_INSTRUCTION, dreamWindow, newPeopleLine, peopleSheTalkedTo, peopleWithoutNotes, type DreamChunk } from "../src/life/dream.js";
 import { LIFE_TEXT } from "../src/life/lifeHarness.js";
 import { hasNoteFor } from "../src/life/people.js";
-import { CACHE_REST_NOTICE, REST_NOTICE, SUMMARY_FACTS, SUMMARY_VOICE, isRestNotice } from "../src/life/rest.js";
+import { CACHE_REST_NOTICE, REST_NOTICE, SUMMARY_FACTS, SUMMARY_VOICE, isRestNotice, withCalendar } from "../src/life/rest.js";
 import type { TranscriptLine } from "../src/life/transcripts/store.js";
 import { runBenchmark } from "../scripts/life-benchmark/bench.js";
 import { FakeAttachments, FakeServer, SimClock } from "../scripts/life-benchmark/fakeServer.js";
@@ -70,6 +70,16 @@ describe("the prompt rules (§35.1, §35.3, §35.4)", () => {
     expect(LIFE_TEXT).toContain(`Keep names, times and facts exact. ${SUMMARY_FACTS}\n</life>`);
     // The rest notices still open like one.
     expect(isRestNotice(REST_NOTICE) && isRestNotice(CACHE_REST_NOTICE)).toBe(true);
+  });
+
+  it("the calendar goes after an instruction's first line, so the voice line stays last", () => {
+    for (const text of [REST_NOTICE, CACHE_REST_NOTICE]) {
+      const placed = withCalendar(text, "Calendar as of Thu 26 Nov (look dates up here, don't count): …");
+      expect(isRestNotice(placed)).toBe(true);
+      expect(placed.split("\n")[1]).toMatch(/^Calendar as of Thu 26 Nov/u);
+      expect(placed.split("\n").at(-1)).toBe(SUMMARY_VOICE);
+    }
+    expect(withCalendar("one line", "cal")).toBe("one line\ncal");
   });
 
   it("the dream writes facts as said and in her voice", () => {

@@ -27,6 +27,15 @@ export const REST_NOTICE = `${REST_NOTICE_TEXT}\n${SUMMARY_FACTS}\n${SUMMARY_VOI
  * sentence, so it starts like every rest notice (`REST_NOTICE_PREFIX`), then the facts and voice lines.
  */
 export const CACHE_REST_NOTICE = `${REST_NOTICE_TEXT} You've been quiet a while; this is a good moment to rest.\n${SUMMARY_FACTS}\n${SUMMARY_VOICE}`;
+/**
+ * The calendar (§35.2) goes in after an instruction's first line, so the facts and voice lines still
+ * come after it: placed after them, the dated list was the last thing she read and Haiku's summaries
+ * turned back into capitalised reports (2026-10-30 re-bench).
+ */
+export function withCalendar(instruction: string, calendar: string): string {
+  const end = instruction.indexOf("\n");
+  return end < 0 ? `${instruction}\n${calendar}` : `${instruction.slice(0, end)}\n${calendar}${instruction.slice(end)}`;
+}
 /** What reaching people returns in the rest turn (the tools stay offered: the cached prefix holds). */
 export const REST_REFUSED_RESULT = "error: finish your summary first; you can do this after the reset";
 /** Tools that reach people or the web: refused while she writes her rest summary. */

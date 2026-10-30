@@ -1,8 +1,8 @@
 (system and the old epoch's turn: see life-system-prompt.txt and life-wake-turn.txt; 6 earlier messages)
 === 6 user ===
 [system] Your memory is full and has to be summarised now. Everything you can see goes away except what you write here; your computer and your notes stay as they are. Write, in your own way, whatever you want to carry forward, including what still matters from your last summary. Write it clearly, so you won't misunderstand it later without what you can see now. Write what happened and how you feel, not rules for yourself. Reply with text only; your tools aren't available here.
+Calendar as of Sat 24 Oct (look dates up here, don't count): last week Mon 12 Oct · Tue 13 Oct · Wed 14 Oct · Thu 15 Oct · Fri 16 Oct · Sat 17 Oct · Sun 18 Oct; this week Mon 19 Oct · Tue 20 Oct · Wed 21 Oct · Thu 22 Oct · Fri 23 Oct · Sat 24 Oct (today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.
 Write only what someone actually said or did, and who said it: a guess stays your guess, a plan stays a plan (with its date) until someone says it happened, a maybe stays a maybe, teasing stays teasing. Keep open threads open: questions nobody answered, plans nobody confirmed, someone who didn't reply.
 Write it as your own memory: in the first person, in your own voice and style (your casing, your tone), not as a neutral report or a log. Keep names, times and facts exact.
 
-Calendar as of Sat 24 Oct (look dates up here, don't count): last week Mon 12 Oct · Tue 13 Oct · Wed 14 Oct · Thu 15 Oct · Fri 16 Oct · Sat 17 Oct · Sun 18 Oct; this week Mon 19 Oct · Tue 20 Oct · Wed 21 Oct · Thu 22 Oct · Fri 23 Oct · Sat 24 Oct (today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.
 [Sat 24 Oct 14:00 · awake]

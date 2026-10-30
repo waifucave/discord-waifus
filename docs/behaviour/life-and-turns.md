@@ -296,12 +296,14 @@ compaction in the same cycle drops the turn (`Life.midTurnCompaction`).
   the voice line, last (`SUMMARY_VOICE`, shipped 2026-10-29 from the life benchmark's `own-voice`
   variant): "Write it as your own memory: in the first person, in your own voice and style (your
   casing, your tone), not as a neutral report or a log. Keep names, times and facts exact."
-  Deleted messages and forgotten people are listed for omission on lines after it. After a blank line come the calendar
+  Deleted messages and forgotten people are listed for omission on lines after it. The calendar
   (§35.2, `calendarStrip` in `clock.ts`: "Calendar as of Thu 26 Nov (look dates up here, don't count):
   last week Mon 16 Nov · … · Sun 22 Nov; this week Mon 23 Nov · … · Thu 26 Nov (today) · … · Sun 29
   Nov; next week Mon 30 Nov · … · Sun 6 Dec." in her zone; dated in its first words, so the copy a rest
   turn leaves in her log, an ignored quiet-time rest's for the rest of the epoch, never reads as a later
-  day's) and her time line, in the appended message (never in the cached system blocks).
+  day's) goes right after the instruction's first line (`withCalendar` in `rest.ts`), so the facts and
+  voice lines come after it; after a blank line comes her time line. All of it is in the appended
+  message (never in the cached system blocks).
 - Over budget (`budget`, `overflow`), the last tool results are replaced in the request by
   `[result left out: too large to summarise]`.
 - The new epoch keeps the **last 3 complete turns** (fewer while they alone would exceed half the
@@ -335,7 +337,8 @@ a **rest turn**, before any queued wake (`Life.restDue`, `Life.restTurn`, `src/l
   see now. Write what happened and how you feel, not rules for yourself. Don't message anyone in this
   turn." Then, on their own lines, the same facts and voice lines as the compaction instruction ("Write
   only what someone actually said or did, …", 2026-10-30; "Write it as your own memory: …", 2026-10-29).
-  Then the calendar as its own text block (§35.2), then her time line. Same system blocks and tools (the cache holds). A
+  The calendar (§35.2) goes right after the notice's first line (`withCalendar`), so the notice still
+  opens like one and ends with the voice line; then her time line as its own text block. Same system blocks and tools (the cache holds). A
   rest turn is recognised by the notice's first 60 characters (`isRestNotice`), in this wording (with
   or without the voice line, which comes later) or the earlier one ("…When this turn ends, your
   context will be reset…"), so rest turns in older logs stay private and are never kept by

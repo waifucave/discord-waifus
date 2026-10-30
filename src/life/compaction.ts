@@ -13,7 +13,7 @@
 // provider overflow (mid-turn too), a manual compact, a configuration change (A, tools or model), a
 // forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
 
-import { isRestNotice, SUMMARY_FACTS, SUMMARY_VOICE } from "./rest.js";
+import { isRestNotice, SUMMARY_FACTS, SUMMARY_VOICE, withCalendar } from "./rest.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { randomBytes } from "node:crypto";
 import { stripOpaque, type ContentBlockLike, type ProviderMessageLike } from "@yanlinglabs/winter-provider-runtime";
@@ -459,8 +459,9 @@ export async function compactLife(
     try {
       const summaryLines = o.shrinkLastResults ? withoutLastResults(o.lines) : o.lines;
       const request = await buildLifeRequest(deps, { state: o.state, lines: summaryLines, route: o.summaryRoute!, missing: "text", ...(o.signal ? { signal: o.signal } : {}) });
-      // The calendar (§35.2) goes with the time line in the appended message, after the cached prefix.
-      const instruction = `${compactionInstruction(o.omit)}\n\n${calendarStrip(now, deps.timeZone)}\n${timeLine({ now, timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, now, o.state) })}`;
+      // The calendar (§35.2) goes after the instruction's first line (`withCalendar`), in the appended
+      // message after the cached prefix; the time line stays last.
+      const instruction = `${withCalendar(compactionInstruction(o.omit), calendarStrip(now, deps.timeZone))}\n\n${timeLine({ now, timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, now, o.state) })}`;
       const result = await summarizeWithModel(deps.models, {
         route: { providerId: o.summaryRoute!.providerId, modelId: o.summaryRoute!.modelId },
         system: request.system,
