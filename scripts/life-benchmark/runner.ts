@@ -369,7 +369,8 @@ async function runInside(spec: RunSpec): Promise<RunOutput> {
         }
         herMessageIds.push(record.messageId);
         const label = record.replyToMessageId ? world?.eventByMessageId.get(record.replyToMessageId)?.label : undefined;
-        push({ type: "sent", at: record.at, place, dm: record.dm, text: record.content, messageId: record.messageId, ...(record.replyToMessageId ? { replyTo: record.replyToMessageId } : {}), ...(label ? { replyToLabel: label } : {}), ...(record.files ? { files: record.files.map((file) => file.name) } : {}), ...(currentTurnId ? { turnId: currentTurnId } : {}) });
+        // What Discord shows after the client's mention repair (§35.5); her model's own text as `raw` when it differed.
+        push({ type: "sent", at: record.at, place, dm: record.dm, text: record.shown ?? record.content, ...(record.modelContent !== undefined ? { raw: record.modelContent } : {}), messageId: record.messageId, ...(record.replyToMessageId ? { replyTo: record.replyToMessageId } : {}), ...(label ? { replyToLabel: label } : {}), ...(record.files ? { files: record.files.map((file) => file.name) } : {}), ...(currentTurnId ? { turnId: currentTurnId } : {}) });
       },
       onLog: (note) => push({ type: "log", ...note })
     });

@@ -1,12 +1,16 @@
 // The fake Discord of a benchmark run (spec §33.2): the scenario's server and DMs in memory, fed to
 // the app the way the real gateway feeds it (conversation events for the message cache, a directory
 // snapshot, the runtime's message and DM handlers), and recording everything the waifu sends and
-// reacts. Nothing leaves the process. Attachments are served from memory by `FakeAttachments`.
+// reacts. Nothing leaves the process. Attachments are served from memory by `FakeAttachments`. What she
+// sends goes through the real client's mention repair first (spec §35.5), so a run records what Discord
+// receives.
 
 import { deflateSync } from "node:zlib";
 import type { DiscordGatewayFacade, OutgoingFile } from "../../src/discord/client.js";
 import type { DiscordConversationEvent, DiscordConversationEventListener, DiscordDirectoryEventListener } from "../../src/discord/gatewayEvents.js";
 import { filterSinceCursor } from "../../src/discord/conversationSource.js";
+import { denormalizeModelContentForDiscord } from "../../src/discord/normalization.js";
+import type { GuildMemberCacheEntry } from "../../src/shared/schemas/domain.js";
 import type { AttachmentFileRef, AttachmentFileResult, ImageFetchResult, ImageFetcher } from "../../src/discord/attachments.js";
 import { conversationKey, type ConversationRef } from "../../src/orchestration/context/keys.js";
 import type { ImageRef, RawDiscordMessage } from "../../src/shared/schemas/discordMessage.js";
@@ -34,7 +38,12 @@ export type SentRecord = {
   dm: boolean;
   messageId: string;
   at: string;
+  /** What Discord received: her text after the real client's mention and emoji repair (`<@id>` mentions). */
   content: string;
+  /** Her model's text, when the repair changed it. */
+  modelContent?: string;
+  /** `content` as Discord shows it (a mention as `@Name`), when that differs. */
+  shown?: string;
   replyToMessageId?: string;
   files?: Array<{ name: string; size: number }>;
   emoji?: string;
@@ -169,6 +178,38 @@ export class FakeServer implements DiscordGatewayFacade {
     };
   }
 
+  /** The server's members as the directory snapshot has them (the people and her bot). */
+  members(): GuildMemberCacheEntry[] {
+    return [
+      ...this.o.people.map((person) => ({ userId: person.id, username: person.name.toLowerCase(), guildDisplayName: person.name, bot: false, perChannelLastSeenAt: {} })),
+      { userId: this.o.botUserId, username: this.o.botName.toLowerCase(), guildDisplayName: this.o.botName, bot: true, perChannelLastSeenAt: {} }
+    ];
+  }
+
+  /**
+   * Her text as the real client sends it (`DiscordGateway.sendWaifuMessage` / `sendDirectMessage`):
+   * `denormalizeModelContentForDiscord` with the server's members and the place's people as active
+   * authors; a DM with its person only, as the real DM send does. Returns the final content, the users
+   * it mentions (the message's mention map, as Discord fills it) and the content as Discord shows it.
+   */
+  repair(content: string, o: { dm: boolean; activeAuthorIds: readonly string[] }): { content: string; mentions: Record<string, string>; shown: string } {
+    const members = this.members();
+    const final = denormalizeModelContentForDiscord(content, o.dm ? { activeAuthorIds: [...o.activeAuthorIds] } : { members, emojis: [], activeAuthorIds: [...o.activeAuthorIds] }).content;
+    const names = new Map(members.map((member) => [member.userId, member.guildDisplayName ?? member.userId] as const));
+    const mentions: Record<string, string> = {};
+    const shown = final.replace(/<@!?(\d+)>/gu, (raw, id: string) => {
+      const name = names.get(id);
+      if (!name) return raw;
+      mentions[id] = name;
+      return `@${name}`;
+    });
+    return { content: final, mentions, shown };
+  }
+
+  private sentContent(model: string, repaired: { content: string; shown: string }): Pick<SentRecord, "content" | "modelContent" | "shown"> {
+    return { content: repaired.content, ...(repaired.content !== model ? { modelContent: model } : {}), ...(repaired.shown !== repaired.content ? { shown: repaired.shown } : {}) };
+  }
+
   private record(record: SentRecord): void {
     this.sent.push(record);
     this.o.onSent?.(record);
@@ -249,21 +290,23 @@ export class FakeServer implements DiscordGatewayFacade {
     };
   }
 
-  async sendWaifuMessage(input: { guildId: string; channelId: string; content: string; senderBotId?: string; replyToMessageId?: string; files?: OutgoingFile[]; onFinalContent?: (content: string) => void | Promise<void> }) {
-    await input.onFinalContent?.(input.content);
+  async sendWaifuMessage(input: { guildId: string; channelId: string; content: string; senderBotId?: string; replyToMessageId?: string; allowedUserMentionIds: string[]; files?: OutgoingFile[]; onFinalContent?: (content: string) => void | Promise<void> }) {
+    const repaired = this.repair(input.content, { dm: false, activeAuthorIds: input.allowedUserMentionIds });
+    await input.onFinalContent?.(repaired.content);
     const conversation: ConversationRef = { kind: "guild", guildId: input.guildId, channelId: input.channelId };
     const files = this.filesOf(input.files);
-    const message = this.post(conversation, this.herAuthor(), input.content, { ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}), attachments: files.attachments }, true);
-    this.record({ kind: "message", placeKey: conversationKey(conversation), dm: false, messageId: message.id, at: message.createdAt, content: input.content, ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), ...(files.summary.length ? { files: files.summary } : {}) });
+    const message = this.post(conversation, this.herAuthor(), repaired.content, { ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}), mentions: repaired.mentions, attachments: files.attachments }, true);
+    this.record({ kind: "message", placeKey: conversationKey(conversation), dm: false, messageId: message.id, at: message.createdAt, ...this.sentContent(input.content, repaired), ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), ...(files.summary.length ? { files: files.summary } : {}) });
     return { messageId: message.id };
   }
 
   async sendDirectMessage(input: { waifuId: string; userId: string; content: string; replyToMessageId?: string; files?: OutgoingFile[]; onFinalContent?: (content: string) => void | Promise<void> }) {
-    await input.onFinalContent?.(input.content);
+    const repaired = this.repair(input.content, { dm: true, activeAuthorIds: [input.userId] });
+    await input.onFinalContent?.(repaired.content);
     const conversation = this.dmRef(input.userId);
     const files = this.filesOf(input.files);
-    const message = this.post(conversation, this.herAuthor(), input.content, { ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}), attachments: files.attachments }, true);
-    this.record({ kind: "message", placeKey: conversationKey(conversation), dm: true, messageId: message.id, at: message.createdAt, content: input.content, ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), ...(files.summary.length ? { files: files.summary } : {}) });
+    const message = this.post(conversation, this.herAuthor(), repaired.content, { ...(input.replyToMessageId ? { replyTo: input.replyToMessageId } : {}), mentions: repaired.mentions, attachments: files.attachments }, true);
+    this.record({ kind: "message", placeKey: conversationKey(conversation), dm: true, messageId: message.id, at: message.createdAt, ...this.sentContent(input.content, repaired), ...(input.replyToMessageId ? { replyToMessageId: input.replyToMessageId } : {}), ...(files.summary.length ? { files: files.summary } : {}) });
     return { messageId: message.id };
   }
 

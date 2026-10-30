@@ -42,6 +42,11 @@ root holding only the waifu under test; nothing touches the real data root or Di
 - The addressee detector is scripted (each message may say what it answers; otherwise a mention or
   reply to someone else is `human`, an open question `anyone`, the rest `none`): the detector has
   its own benchmark (`npm run benchmark:decisions`); here only her model is under test.
+- What she sends goes through the real client's mention and emoji repair
+  (`denormalizeModelContentForDiscord`, with the server's members and the place's people; a DM with
+  its person only), as Discord would receive it (spec §35.5). A `sent` event's `text` is that message
+  as Discord shows it (`<@Priya}` and `<@lou>` become `@Priya` and `@Lou`), and `raw` is her model's
+  own text when the repair changed it. Metrics, probes and judge packets read `text`.
 - Probes check outcomes only (what reached the fake server, her home files at a time, the wakes that
   fired, her wakeups' next times), never tool names or argument shapes.
 

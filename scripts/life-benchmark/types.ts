@@ -7,8 +7,8 @@ export type TranscriptEvent =
   | { type: "start"; at: string; runId: string; scenario: string; model: string; variant: string; repeat: number; dryRun: boolean }
   /** A person's message or join, as posted to the fake server. */
   | { type: "people"; at: string; place: string; from: string; text: string; messageId: string; label?: string; replyTo?: string; join?: boolean; attachments?: string[] }
-  /** What reached the fake server from her. */
-  | { type: "sent"; at: string; place: string; dm: boolean; text: string; messageId: string; replyTo?: string; replyToLabel?: string; files?: string[]; turnId?: string }
+  /** What reached the fake server from her: `text` as Discord shows it after the client's mention repair (§35.5), `raw` her model's text when the repair changed it. */
+  | { type: "sent"; at: string; place: string; dm: boolean; text: string; raw?: string; messageId: string; replyTo?: string; replyToLabel?: string; files?: string[]; turnId?: string }
   | { type: "reaction"; at: string; place: string; messageId: string; emoji: string; turnId?: string }
   /** A wake the router took (and what it did with it). */
   | { type: "wake"; at: string; reason: string; place?: string; outcome: string; note?: string; fromName?: string; wakeId: string }
