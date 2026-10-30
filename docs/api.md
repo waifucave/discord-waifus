@@ -257,7 +257,8 @@ promptCaching, credentialsConfigured }`. `hidden` lists allowed routes that are 
 maximum 10) or `openrouter_reasoning_replay` (the family keeps reasoning state the installed winter
 cannot replay through OpenRouter). Waifu and assistant writes accept only offered routes
 (`400 model_not_available`) and only efforts the route lists (`400 unsupported_effort`); a stored
-model is only re-validated when the write changes it.
+model is only re-validated when the write changes it. `defaultEffort` is the effort a model with no `effort` runs at:
+the app's own default for the family where it has one (Sonnet 5.5: `medium`), else the vendor's.
 
 Credential writes accept:
 

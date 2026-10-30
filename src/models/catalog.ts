@@ -15,9 +15,9 @@ import {
 } from "@yanlinglabs/winter-provider-catalog";
 
 import { estimateCostUsd } from "@yanlinglabs/winter-provider-runtime";
-import { CURATED_FAMILY_ROUTES, DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK } from "./defaults.js";
+import { CURATED_DEFAULT_EFFORT, CURATED_FAMILY_ROUTES, DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK, type CuratedFamily } from "./defaults.js";
 
-export { CURATED_FAMILY_ROUTES, DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK };
+export { CURATED_DEFAULT_EFFORT, CURATED_FAMILY_ROUTES, DEFAULT_ALLOWED_ROUTES, DEFAULT_MAX_OUTPUT_USD_PER_MTOK };
 
 export type ModelRoute = { providerId: string; modelId: string };
 /** A stored model choice: a route plus an optional reasoning effort from the route's own list. */
@@ -94,6 +94,31 @@ export function installedCatalog(): WinterCatalog {
 export function catalogModel(route: ModelRoute, catalog: WinterCatalog = installedCatalog()): WinterModelDescriptor | undefined {
   const key = routeKey(route);
   return catalog.models.find((model) => model.key === key);
+}
+
+/**
+ * The app's curated effort for this route when her choice names none (`CURATED_DEFAULT_EFFORT`),
+ * if its family has one and the route lists it. ModelClient sends it; without one, no effort is
+ * sent and the vendor's default applies.
+ */
+export function curatedEffortOf(descriptor: Pick<WinterModelDescriptor, "key" | "reasoning">): string | undefined {
+  const reasoning = descriptor.reasoning;
+  const route = parseRouteKey(descriptor.key);
+  if (!reasoning || reasoning.supported.value !== true || !route) return undefined;
+  const family = (Object.keys(CURATED_FAMILY_ROUTES) as CuratedFamily[]).find((name) => {
+    const { direct, openrouter } = CURATED_FAMILY_ROUTES[name];
+    return [direct, openrouter].some((pair) => pair.providerId === route.providerId && pair.modelId === route.modelId);
+  });
+  const effort = family ? CURATED_DEFAULT_EFFORT[family] : undefined;
+  return effort && reasoning.efforts.includes(effort) ? effort : undefined;
+}
+
+/** The effort "default" means for this route: the curated one, else winter's (the vendor's). */
+export function defaultEffortOf(descriptor: Pick<WinterModelDescriptor, "key" | "reasoning">): string | undefined {
+  const reasoning = descriptor.reasoning;
+  if (!reasoning || reasoning.supported.value !== true) return undefined;
+  const winterDefault = reasoning.defaultEffort && reasoning.efforts.includes(reasoning.defaultEffort) ? reasoning.defaultEffort : undefined;
+  return curatedEffortOf(descriptor) ?? winterDefault;
 }
 
 export function catalogProvider(providerId: string, catalog: WinterCatalog = installedCatalog()): WinterProviderDescriptor | undefined {
@@ -224,7 +249,7 @@ export function curatedModelOf(descriptor: WinterModelDescriptor, provider: Wint
     ...(descriptor.maxOutputTokens ? { maxOutputTokens: descriptor.maxOutputTokens.value } : {}),
     imageInput: descriptor.inputModalities.value.includes("image"),
     efforts,
-    ...(reasoning?.defaultEffort && efforts.includes(reasoning.defaultEffort) ? { defaultEffort: reasoning.defaultEffort } : {}),
+    ...(defaultEffortOf(descriptor) ? { defaultEffort: defaultEffortOf(descriptor)! } : {}),
     ...(pricing
       ? {
           pricing: {

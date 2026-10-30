@@ -1,6 +1,8 @@
 // Curated-catalog defaults (Living cast spec §9.2), free of any winter import so the config schema
 // can use them.
 
+export type CuratedFamily = "muse-contributor" | "haiku" | "sonnet" | "deepseek-flash" | "luna" | "sol";
+
 /** `models.allowed` default. Routes the installed winter catalog lacks are hidden, not an error. */
 export const DEFAULT_ALLOWED_ROUTES: readonly string[] = Object.freeze([
   "meta/muse-spark-1.3-contributor",
@@ -17,10 +19,15 @@ export const DEFAULT_ALLOWED_ROUTES: readonly string[] = Object.freeze([
   "openrouter/openai/gpt-6.1-sol"
 ]);
 
+/**
+ * The app's default effort for a curated family when her model choice names none (spec §9.2); a
+ * family left out keeps the vendor's own default. Sonnet: the 2026-10-30 effort sweep had medium
+ * chatting better and keeping more of her facts than the vendor default (high), for less.
+ */
+export const CURATED_DEFAULT_EFFORT: Readonly<Partial<Record<CuratedFamily, string>>> = Object.freeze({ sonnet: "medium" });
+
 /** `models.maxOutputUsdPerMTok` default (D6: nothing above $10 per million output tokens). */
 export const DEFAULT_MAX_OUTPUT_USD_PER_MTOK = 10;
-
-export type CuratedFamily = "muse-contributor" | "haiku" | "sonnet" | "deepseek-flash" | "luna" | "sol";
 
 type Route = { readonly providerId: string; readonly modelId: string };
 

@@ -76,6 +76,16 @@ describe("ModelClient request shape (spec §5.4, §9.1)", () => {
     expect(context.connection.providerId).toBe("deepseek");
   });
 
+  it("sends the curated default effort when her choice names none (Sonnet → medium), and none for other families", async () => {
+    const { client, chat, anthropic } = harness();
+    await client.call(request({ route: SONNET }));
+    expect(anthropic.calls[0]!.request.effort).toBe("medium");
+    await client.call(request({ route: SONNET, effort: "low" }));
+    expect(anthropic.calls[1]!.request.effort).toBe("low");
+    await client.call(request());
+    expect(chat.calls[0]!.request).not.toHaveProperty("effort");
+  });
+
   it("applies our own output cap only when neither the caller nor the catalog row names one (winter W2)", async () => {
     const { client, chat } = harness();
     await client.call(request({ route: { providerId: "meta", modelId: "muse-spark-1.3-contributor" } }));

@@ -1072,6 +1072,11 @@ Block B: `<your_notes_index>` (introduced as "your own notes, written by you"), 
 - Muse Spark contributor variants enable training on prompts; the picker labels them.
 - Per waifu: `model: {providerId, modelId, effort?}`. `effort` only from the route's listed efforts;
   stored efforts are re-validated at every boot and dropped with a warning if no longer listed.
+- No `effort` means the app's curated default for the family (`CURATED_DEFAULT_EFFORT`): Sonnet 5.5
+  is sent `medium` on both routes, since the 2026-10-30 effort sweep had medium chatting better
+  (4.29 against 3.79) and keeping more of her facts (97% against 74%) than the vendor default
+  (high), at about 60% of the cost. A family without one sends no effort, so the vendor's default
+  applies. `defaultEffort` in `GET /api/models` names the effort "default" means.
 - `GET /api/models`: curated routes with display name, provider, context window, max output, image
   input, efforts, prices, the contributor flag, and whether credentials are configured. Provider
   status comes from the winter catalog's provider list. `/api/llm/*` is removed.

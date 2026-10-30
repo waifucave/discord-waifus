@@ -166,7 +166,8 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   displayName, efforts, defaultEffort?, pricing?, contributor, imageInput, credentialsConfigured,
   ...}], hidden: [{id, reason}], available: [...]}`: `models` are the offered routes, `hidden` the
   allowed ones that are not offered (and why), `available` the curated routes `models.allowed` leaves
-  out that would be offered if added (same fields as `models`).
+  out that would be offered if added (same fields as `models`). `defaultEffort` is what a model with no effort runs at (Sonnet 5.5:
+  `medium`, the app's own default; other families: the vendor's).
 - `PUT /api/servers/:guildId`: `paused`, `channels` (replaced whole) and `detector` (`{target}`
   overrides the addressee detector here; `""` = off here, `null` = inherit).
   `PUT /api/servers/:guildId/channels/:channelId` `{enabledWaifuIds?, name?, threads?}` changes one

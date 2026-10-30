@@ -36,7 +36,7 @@ import {
   type WinterStopReason,
   type WinterUsage
 } from "./assemble.js";
-import { listPricedEstimate, PROMPT_CACHE_TTL, routeKey, type ModelRoute } from "./catalog.js";
+import { curatedEffortOf, listPricedEstimate, PROMPT_CACHE_TTL, routeKey, type ModelRoute } from "./catalog.js";
 import { createProviderCredentialsLookup, inlineAuthRef, type ProviderKeyLookup } from "./credentials.js";
 import { fromProviderError, ModelCallError, toModelCallError } from "./errors.js";
 import { sharedWinterRuntime, type WinterRuntime } from "./winter.js";
@@ -288,6 +288,8 @@ export class ModelClient {
       });
       const system = request.system.filter((block) => block.length > 0);
       const maxOutputTokens = request.maxOutputTokens ?? (descriptor?.maxOutputTokens ? undefined : DEFAULT_OUTPUT_CAP_TOKENS);
+      // No effort in her choice: the app's curated default for the family (spec §9.2), else none.
+      const effort = request.effort ?? (descriptor ? curatedEffortOf(descriptor) : undefined);
       const turn: TurnRequest = {
         model: resolved.providerModelId,
         ...(system.length > 0
@@ -296,7 +298,7 @@ export class ModelClient {
         messages: joinAdjacentUserMessages(rendered),
         ...(request.tools && request.tools.length > 0 ? { tools: request.tools.map((tool) => ({ ...tool })) } : {}),
         ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
-        ...(request.effort !== undefined ? { effort: request.effort as TurnRequest["effort"] } : {}),
+        ...(effort !== undefined ? { effort: effort as TurnRequest["effort"] } : {}),
         ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
         cacheTtl: PROMPT_CACHE_TTL,
         messageCacheTtl: { ...MESSAGE_CACHE_TTL },

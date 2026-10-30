@@ -5,6 +5,8 @@ import {
   allowedProviderIds,
   CURATED_FAMILY_ROUTES,
   curatedCatalog,
+  curatedEffortOf,
+  defaultEffortOf,
   isPricedRoute,
   openRouterRouteOffered,
   DEFAULT_ALLOWED_ROUTES,
@@ -57,12 +59,28 @@ describe("curated catalog over the installed winter 0.0.56 catalog (spec §9.2)"
 
   it("describes each route: efforts from the catalog, pricing, image input, contributor label", () => {
     const sonnet = findCuratedModel({ providerId: "anthropic", modelId: "claude-sonnet-5-5" }, curated)!;
-    expect(sonnet).toMatchObject({ providerDisplayName: expect.any(String), imageInput: true, contributor: false, defaultEffort: "high" });
+    expect(sonnet).toMatchObject({ providerDisplayName: expect.any(String), imageInput: true, contributor: false, defaultEffort: "medium" });
     expect(sonnet.efforts).toEqual(row(installedCatalog(), "anthropic/claude-sonnet-5-5").reasoning!.efforts);
     expect(sonnet.pricing?.outputPerMTokUsd).toBeLessThanOrEqual(DEFAULT_MAX_OUTPUT_USD_PER_MTOK);
     const muse = findCuratedModel({ providerId: "meta", modelId: "muse-spark-1.3-contributor" }, curated)!;
     expect(muse.contributor).toBe(true);
     expect(isContributorRoute({ key: "meta/muse-spark-1.3", upstreamId: "muse-spark-1.3" })).toBe(false);
+  });
+
+  it("Sonnet defaults to medium on both routes (CURATED_DEFAULT_EFFORT); other families keep the vendor default", () => {
+    for (const route of [CURATED_FAMILY_ROUTES.sonnet.direct, CURATED_FAMILY_ROUTES.sonnet.openrouter]) {
+      expect(findCuratedModel(route, curated)?.defaultEffort, routeKey(route)).toBe("medium");
+      expect(curatedEffortOf(row(installedCatalog(), routeKey(route))), routeKey(route)).toBe("medium");
+    }
+    const haiku = row(installedCatalog(), routeKey(CURATED_FAMILY_ROUTES.haiku.direct));
+    expect(curatedEffortOf(haiku)).toBeUndefined();
+    expect(findCuratedModel(CURATED_FAMILY_ROUTES.haiku.direct, curated)?.defaultEffort).toBe(haiku.reasoning?.defaultEffort);
+    // A curated effort the route doesn't list falls back to winter's default.
+    const catalog = cloneCatalog();
+    const sonnet = row(catalog, "anthropic/claude-sonnet-5-5");
+    sonnet.reasoning!.efforts = sonnet.reasoning!.efforts.filter((effort) => effort !== "medium");
+    expect(curatedEffortOf(sonnet)).toBeUndefined();
+    expect(defaultEffortOf(sonnet)).toBe(sonnet.reasoning!.defaultEffort);
   });
 
   it("models.allowed narrows and orders the list; unknown and duplicate entries are tolerated", () => {
