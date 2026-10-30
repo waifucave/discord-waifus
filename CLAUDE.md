@@ -55,7 +55,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1–L4 done; L3's own
 choices are listed in spec §14.4, L4's "as built" notes in §16, which overrides §6 and §7.1–§7.3;
-her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4)**: each waifu is an autonomous agent with one continuous
+her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4; following up once and her unanswered-sends line (`src/life/unanswered.ts`) in §34 with its as-built §34.4)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
 `LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: typing-aware holds in

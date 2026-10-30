@@ -4514,3 +4514,100 @@ only where it is relevant; it targets the §32 tools only.
   cache shares and dollars are lower than a real day's.
 - **Tests:** `tests/lifeBenchmark.test.ts` (dry run end to end with nothing but loopback attempted,
   every probe kind, metrics, variants, grading, resummarise, the CLI refusing without `--yes`).
+
+## 34. She stops nagging: follow up once, and she sees when nobody answered (owner request, 2026-10-30)
+
+The life benchmark's graders' top complaint was nagging: a question or check-in nobody answered,
+pushed again and again. In a group chat, about twelve messages over three days chasing who is seed 2,
+then pulling others in ("while you're here kai. seed 2"); in a DM after a friend shared a breakup and
+a job interview, four to six unprompted "no pressure" check-ins. Part of it was our own prompt: the
+Wakeup paragraph (§16.7, §30) made the end of a watch "your nudge to follow up" and asked for "now and
+then one to check back in rooms you like", with no limit, and nothing told her she had already
+written several times without an answer. Owner-approved design (2026-10-30):
+
+### 34.1 The prompt rule
+
+The Wakeup paragraph of `<life>` keeps watching for an expected answer and asking how an exam went,
+and bounds the rest: follow up at most once; with still no answer, let it go (they saw it; silence, or
+an answer around the question, is an answer); never ask other people to answer for someone or chase
+the question through them; after someone shares something hard, check in once, then let them come
+back to her (repeated "no pressure" messages are pressure). Plain, short, second person, with the
+Kevin example extended (ask once more, then drop it). The "check back in rooms you like" clause goes.
+
+### 34.2 The unanswered counter
+
+Per place: her separate sends there since anyone else last posted (in a DM, since the other person
+wrote) and when that streak began. A send is a turn's go at writing, not a message: one send with
+three short messages counts once. Derived from data the app already has, no new store. Shown only from
+two sends, soft only (never blocks or refuses a send):
+
+- on the `<notifications>` line of an ended watch of hers that named a place (`watch timed out`),
+  e.g. ` · you've written in bake-club/#general 3 times since anyone answered (since Tue 21:00)`;
+- at the end of a ReadMessages result for that place, one line;
+- in the SendMessage receipt after a send that leaves the streak at two or more: "No one has answered
+  your last 3 here (since Tue 21:00). Let it rest: wait for someone to write before you write here
+  again."
+
+Times carry the weekday, as her other dates do (§23.2).
+
+### 34.3 The benchmark measure
+
+`maxUnansweredSends` next to `longestBurst` (which counts messages): the longest run of her separate
+sends in one place with nobody else posting in between, in the report and the bench README, tested.
+
+### 34.4 As built
+
+- **Prompt** (`LIFE_TEXT` in `src/life/lifeHarness.ts`): "…their reply wakes you, and if it never
+  comes, you may follow up once. If that gets no answer either, let it go: they saw it, and silence,
+  or an answer that steps around the question, is an answer. Never ask other people to answer for
+  someone, or chase the question through them. When someone mentions plans, an exam or a game
+  tonight, set a wakeup to ask how it went. When someone tells you something hard, check in once,
+  then let them come back to you: one "no pressure" message after another is pressure. For example:
+  you ask Kevin if he's coming Saturday, so you watch for Kevin in that room for a few hours; nothing,
+  so you ask once more, and then you drop it; his exam is Friday, so an at: [{ when: "fri 19:00", … }]
+  asks how it went. When you've written somewhere twice or more with no answer, you're told so: wait
+  for them." The Wakeup tool's description lost "and now and then to check back in rooms you like" and
+  says "follow up once at most". Block A and the tool list change, so every life compacts once with
+  reason `config` at its next turn boundary (§5.2). The benchmark's `calm` variant (an added
+  paragraph) still applies on top; it now mostly repeats the baseline.
+- **Counting** (`src/life/unanswered.ts`): `unansweredStreak` walks a place's messages back from the
+  newest while they are hers (`selfAuthorIds`: her bot's id and application id); a message of hers
+  less than `UNANSWERED_SEND_GAP_MS` (5 minutes) before her next one is part of the same send (a
+  script's typing and waits stay well under it; two separate wakes within 5 minutes count once, an
+  undercount the hint can afford). Turn ids are not used: the transcripts and the cache do not carry
+  them, and intents are trimmed when a turn closes. Anyone else resets it, other waifus included.
+  `readUnanswered` reads the latest page (`readPage`, 50 messages, served from the buffer while the
+  conversation is trusted; her send is in the cache the moment Discord took it) and, only when that
+  page holds no one else's message, her transcript days newest first, at most `UNANSWERED_MAX_DAYS`
+  (14), stopping at the first day with someone else's line; any failure is "nothing to show".
+  `UNANSWERED_NOTICE_FROM` is 2; not a setting.
+- **Wording**: `sinceText` gives `Tue 21:00` when the streak began within the last six local days
+  (today included), else `dayTimeText` (`Mon 26 Oct 23:50`). Rooms say "since anyone answered" and
+  "No one has answered your last N here (since …). Let it rest: wait for someone to write before you
+  write here again."; DMs "since they answered" and "They haven't answered your last N here (since
+  …). Let it rest: wait for them to write before you write here again."
+- **Notifications**: an ended watch's wake (`endWake`) carries `watchedPlaces` (new optional `Wake`
+  field: the watch's resolved place keys and its object filters' place keys, at most 10; none for
+  "everywhere"). Timed wakeups (`at`, `every`) and page wakeups name no place, so they get no line.
+  `unansweredForWakes` words the streak per such place for the view (`NotificationView.unanswered`),
+  built in `Life.notificationView` (turn start and folded wakes) and in the scheduler's
+  `morningView`, so the line reads `- watch timed out · your note: "…" · you've written in
+  bake-club/#general 3 times since anyone answered (since Tue 21:00)`, and the morning batch's
+  `· watch timed out (…) · your note: "…"` line gets the same part. It follows the note, so the owner
+  views' D14 rule (a DM line redacted from its first quote) also hides a DM handle; a watch on a DM is
+  a DM wake already (§30.3).
+- **ReadMessages**: a page that reaches now (no `before` or `around`, nothing newer) ends with
+  `— you've written here 3 times since anyone answered (since Tue 21:00) —`. Searches (`people`,
+  `search`) do not add it.
+- **SendMessage**: after a call that sent something, the receipt line ends with `. No one has
+  answered your last 3 here (since Tue 21:00). Let it rest: …`, at most once per place per script; the
+  pre-§32 call adds the sentence as its own line. The result object is unchanged.
+- **Benchmark**: `maxUnansweredSends` in `scripts/life-benchmark/metrics.ts`: per place, a run of her
+  `sent` events with no `people` event there in between; a new send starts when the turn id changes,
+  or, without turn ids, when 5 minutes or more passed since her previous message there. Shown with
+  `longestBurst` in the report's model × variant table and per run.
+- **Tests**: `tests/lifeUnanswered.test.ts` (send-vs-message counting, the gap edge, reset, the
+  threshold, wording, the transcript fallback, room and DM receipts and pages, once per script, the
+  watch timeout and morning lines, a real turn whose watch ends after two unanswered sends),
+  `tests/lifeBenchmark.test.ts` (the metric). Goldens changed: `life-system-prompt.txt` (block A's
+  paragraph and the Wakeup description) and `life-rest-epoch.txt` (block A).
