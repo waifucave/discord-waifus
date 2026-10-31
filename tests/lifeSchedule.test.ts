@@ -249,6 +249,12 @@ describe("maintenance timing (§7.3, §38)", () => {
     expect(maintenanceDue(new Date("2026-10-25T23:00:00.000Z"), "UTC", 5, "2026-10-25T13:00:00.000Z")).toBe(false);
     // In her zone: 05:00 in Tokyo is 20:00 UTC the day before.
     expect(maintenanceDue(new Date("2026-10-24T20:01:00.000Z"), "Asia/Tokyo", 5, "2026-10-24T05:00:00.000Z")).toBe(true);
+    // A 3.8 dream in her bed time (01:15) counts as today's: no second one at 05:00 or at the upgrade.
+    expect(maintenanceDue(new Date("2026-10-24T05:01:00.000Z"), "UTC", 5, "2026-10-24T01:15:00.000Z")).toBe(false);
+    expect(maintenanceDue(new Date("2026-10-24T14:00:00.000Z"), "UTC", 5, "2026-10-24T01:15:00.000Z")).toBe(false);
+    expect(maintenanceDue(new Date("2026-10-25T05:01:00.000Z"), "UTC", 5, "2026-10-24T01:15:00.000Z")).toBe(true);
+    // A late one the evening before (host down all day) still leaves the next morning's due.
+    expect(maintenanceDue(new Date("2026-10-25T05:01:00.000Z"), "UTC", 5, "2026-10-24T22:30:00.000Z")).toBe(true);
   });
 
   it("a waifu whose saved config still has a bed time dreams at the maintenance hour like the rest", async () => {

@@ -4958,6 +4958,9 @@ A feature release (planned 3.9.0); not released yet.
 - The `plan` reason and its rendering stay so a `plan` wake queued before the upgrade is delivered;
   nothing creates one any more.
 - Her time line is the time alone (`[Sat 24 Oct 14:06]`, no `· awake`).
+- Maintenance is due once `life.maintenanceHourLocal` has passed today and her last one was more
+  than six hours before that hour (`MAINTENANCE_EARLY_MS`): a 3.8 dream in her bed time (e.g. 01:15)
+  counts as today's, so nobody dreams twice at the upgrade or at 05:00 that morning (review fix).
 - The life status API drops `availability` whole (no `awake`-only stub); the frontend and CLI show
   idle or mid-turn.
 - The detector history schema still reads `busy`, `bed time`, `asleep`; only `budget` is written.

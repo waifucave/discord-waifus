@@ -73,12 +73,18 @@ const RUNNING_MAINTENANCE = new Map<string, Promise<void>>();
 
 export { timedWakeId, endWakeId } from "./wakeups/schedule.js";
 
+/**
+ * A maintenance this close before today's hour counts as today's: a 3.8 life dreamt in her bed time
+ * (e.g. 01:15), and must not dream again at 05:00 or right after the upgrade (§38).
+ */
+export const MAINTENANCE_EARLY_MS = 6 * 60 * 60_000;
+
 /** Whether her daily maintenance is due (`lastAt`: her last one): at `hourLocal` every local day (§38). */
 export function maintenanceDue(now: Date, timeZone: string, hourLocal: number, lastAt: string | undefined): boolean {
   const last = lastAt ? Date.parse(lastAt) : 0;
   const p = localParts(now, timeZone);
   const at = instantOfLocal(timeZone, p.year, p.month, p.day, hourLocal, 0).getTime();
-  return now.getTime() >= at && last < at;
+  return now.getTime() >= at && last < at - MAINTENANCE_EARLY_MS;
 }
 
 /** How many times the batch is built in one tick when a wake was deferred while it was built (then the next tick tries). */
