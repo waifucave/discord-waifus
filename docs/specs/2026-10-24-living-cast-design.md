@@ -167,6 +167,10 @@ Edits: an edit that adds a mention of her to a human message less than 2 minutes
 
 ### 4.3 Addressee detector
 
+> *Superseded in part by §24 and §38 (2026-10-31):* only waifus who are around are offered, and with
+> no day schedule or bed time that is everyone but a waifu over her daily budget, always `awake`; the
+> busy and asleep weights below no longer apply.
+
 Questions about the newest burst in a channel, a person's or (owner request 2026-10-25) a cast
 member's: who is it for, and would a cast member chime in? Both go in one native-choice call.
 
@@ -242,7 +246,8 @@ Evaluated in this order for every wake candidate:
 3. **Per-user wake limit** (new, guilds): at most `life.maxWakesPerUserPerHour` (default 20) direct
    or detector wakes per user per waifu; the excess is merged into one queued line ("+N more from
    Kevin") instead of starting turns.
-4. **Sleep**: defer (§4.5).
+4. **Sleep**: defer (§4.5). *Removed by §38 (2026-10-31): no sleep or busy guard; the other
+   guards keep their numbers.*
 5. **Daily budget** (`waifu.life.dailyBudgetUsd`, default none): when her cost for the local day
    reaches it, defer to the next local day. It is checked again when a turn starts (wakes queued
    before the budget ran out are deferred the same way) and after every call of a running turn
@@ -262,6 +267,9 @@ each other indefinitely; only their own judgement stops them. The usage dashboar
 per place.
 
 ### 4.5 Sleep
+
+> *Superseded by §38 (2026-10-31):* no sleep window, no bed time, no busy, no `morning` at the end of a night and no
+> `dm.sleepNotice`: she is reachable at any hour. Kept for history.
 
 Availability (`waifu.availability.sleep`, busy blocks) stays as configured today.
 
@@ -327,7 +335,7 @@ One text block in a user turn, followed by the time line (§5.4):
   a `detector` wake with `forAll` reads `for all of you`, one with `chimeIn` reads `for someone
   else, you could chime in`. A DM wake that carries a watch match reads `dm, watch · dm/<handle> ·
   "<matched>" · from … · your note: "…"`.
-- `morning`:
+- `morning` (*§38:* only the budget's batch now, headed `- while you were away (since …):`, §23):
 
 ```
 <notifications>
@@ -819,7 +827,8 @@ links. The time line's compaction warning reminds her before her short-term memo
 - When: 30 minutes into her sleep window; at `life.maintenanceHourLocal` (5) if she has no sleep
   window. *As built (§21.6c):* once she has been asleep `life.dreamAfterAsleepMinutes` (15) in her
   bed time, at most once per bed time; a bed time she never sleeps that long in has no dream, and
-  only pending scrubs run when it ends. Takes the per-waifu lock, so it never overlaps a turn.
+  only pending scrubs run when it ends. *Superseded by §38 (2026-10-31):* every waifu dreams once a
+  local day at `life.maintenanceHourLocal`. Takes the per-waifu lock, so it never overlaps a turn.
 - How: a separate short session (not her life log): her model, her identity and persona, a
   maintenance instruction, only the notes tools; purpose `maintenance`; at most 30 tool rounds.
 - Task: resolve contradictions (newest fact wins), merge duplicates, fix broken index links, prune
@@ -2429,7 +2438,8 @@ day's memories and checks her notes against what was said since the last dream.
 - **When**: unchanged (30 minutes into her sleep window, else `life.maintenanceHourLocal`), under
   the per-waifu lock, as the same tracked background task. Pending forget scrubs still run first.
   *As built (§21.6c):* 15 minutes asleep in her bed time (`life.dreamAfterAsleepMinutes`), at most
-  once per bed time; none on a night she never sleeps that long.
+  once per bed time; none on a night she never sleeps that long. *Superseded by §38 (2026-10-31):*
+  once a local day at `life.maintenanceHourLocal`, for every waifu.
 - **Model**: `life.dreamModel` (`{providerId, modelId, effort?}`, a route `GET /api/models` offers;
   unset by default) else her model. Usage purpose stays `maintenance`.
 - **Context**: a fresh session with no life log and no persona. System: "You keep <Name>'s memory.
@@ -2848,6 +2858,10 @@ per-user wake limit, wake ids and "one wake per message" are unchanged), but the
 
 ## 21. Her day: `~/life/` and a daily schedule she writes (owner request, 2026-10-27)
 
+> *Superseded by §38 (2026-10-31):* her day schedule (§21.2–§21.5), busy holds (§21.4) and her bed time (§21.6c) are
+> gone; `~/life/` stays for her wakeups, profile and places, and §21.6b (a fresh start of her own)
+> stays. Kept for history.
+
 ### 21.1 Owner decisions (2026-10-27)
 
 | # | Decision |
@@ -3213,6 +3227,10 @@ With §21 in 3.3.0.
 
 ## 23. The morning summary shows what came in, with times (owner request, 2026-10-27)
 
+> *Superseded by §38 (2026-10-31):* there is no morning any more; the same format is the budget's batch, released
+> once she is under budget again, headed `- while you were away (since …):`, at most
+> `life.notificationLinesPerPlace` lines per place (`life.morningLinesPerPlace` is gone).
+
 While she is **asleep** (§21.6c) nothing but her reminders and the owner's wakes reaches her (as
 built in 3.3.0). This section makes what waited richer: the morning wake's single notification block
 (greeting + summary, §21.3) lists the night's messages with their times instead of only counts.
@@ -3333,6 +3351,9 @@ local day key) and `datedDayKey` ("Thu 2026-11-19", where she may pass the text 
 
 ## 24. Jev only sees who is around (owner request, 2026-10-27)
 
+> *Superseded by §38 (2026-10-31):* with no busy blocks and no bed time, "around" means not over her daily budget;
+> `leftOut.why` is only `budget` (older history entries keep `busy`, `bed time`, `asleep`).
+
 The addressee detector's member list for a place (`addressee` and `chime_in` choices, the `anyone`
 draw, the state's availability lines) contains only waifus who are **available there**:
 
@@ -3397,6 +3418,7 @@ cache is still warm and start the next stretch small.
     TTL nothing happens (no guessing).
   - Not while she is **asleep** (§21.6c) if her bed time ends within the TTL (she will be compacted
     by the morning `day` reset anyway); otherwise yes (it is a quiet harness turn; nobody sees it).
+    *Superseded by §38 (2026-10-31): no bed time, so no such exception.*
   - At most once per epoch; never when `life.restNotice` is off.
 - **What**: the §19 rest turn with its notice (same wording plus one sentence: "You've been quiet a
   while; this is a good moment to rest."), the same tool refusals, acceptance and fallback (ignored →
@@ -3721,6 +3743,9 @@ gains one line per server she is cast in:
 
 ## 29. A plan with a time wakes her (owner request, 2026-10-28)
 
+> *Superseded by §38 (2026-10-31):* her day file and its timed plans are gone; her wakeups (§30) are how she plans
+> ahead. A `plan` wake still queued from before is delivered as it was.
+
 On Beta (2026-10-28) every waifu wrote timed plans ("17:30 send K a photo", "09:30 check
 #secret-room") and none set a reminder, so nothing happened at those times. A plan in today's
 `~/life/schedule.json` with `at` now wakes her at that time.
@@ -3993,7 +4018,8 @@ description (goldens), `docs/behaviour/` (triggers, her-computer, day-and-bed-ti
   wakeups view.
 - **Spacing and held matches** (owner request, 2026-10-30, after a goodnight 86 seconds after a fire
   went unseen for 16 minutes): a repeating watch's 10-minute spacing (`WATCH_MIN_SPACING_MS`) doesn't
-  apply when her last send in the message's place (`state.recentSends`, kept `life.busyEngagedMinutes`)
+  apply when her last send in the message's place (`state.recentSends`, kept `life.busyEngagedMinutes`; since §38 a fixed 10 minutes,
+  `RECENT_SENDS_MS`)
   came after the watch's last fire; the daily cap still does. A room match the spacing holds back is
   kept as the watch's `held` (side file: message id, place key, time, author id, matched; no name or
   text), the latest one replacing an earlier one; a fire clears it. The scheduler's wakeups step
@@ -4835,3 +4861,115 @@ The House bot gives every waifu that joins a server a role `waifu`.
 (`src/discord/client.ts`); `DiscordJsGatewayOptions.waifuRole` from `src/backend/server.ts`. Tests:
 `tests/waifuRole.test.ts` and "the waifu role" in `tests/discordGatewayConnect.test.ts`.
 
+
+## 38. No schedule, no bed time (owner request, 2026-10-31)
+
+The owner asked for her day schedule and her bed time to go, whole. A waifu is reachable at any
+hour; only her daily budget (and the owner's pause, the DM rate limit, the per-user wake limit and
+the room loop guard) makes a wake wait.
+
+### 38.1 Owner decisions (2026-10-31)
+
+- Remove her day schedule entirely: `~/life/schedule.json`, the `<schedule>` block and the `<life>`
+  sentence about her day, `scheduleInPrompt`, the morning/day wake (`w-day-<date>`), the `day`
+  compaction (`dayCompactionDue`), busy blocks, phone checks, busy holds (`busy.ts`, router guard
+  4b, `wakes.json` `held`, `busyOpen`), timed plans (§29) and the prompt-copy note for
+  `schedule.json` (kept for `MEMORY.md`).
+- Remove sleep and bed time entirely: `availability` (her `bedTime`), the up late / dozing / asleep
+  phases, sleep deferral (guard 4), the overnight morning batch, `dm.sleepNotice` with
+  `sleepNoticeSentFor`, and the settings `life.bedDozeMinutes`, `life.dayStartHourLocal`,
+  `life.morningLinesPerPlace`, `life.dreamAfterAsleepMinutes` and `life.busyEngagedMinutes`; the
+  Cast editor's bed time, the Life screen's and `waifus life`'s sleep states, and `availability` in
+  the life status API. The prebuilt cast loses its bed times.
+- The addressee detector counts every waifu as around except one over her daily budget;
+  `leftOut.why` is `budget`.
+- Keep: her wakeups (reminders, watches, pages; no sleep deferral any more), the budget deferral and
+  its release as one batch in the existing line format (§23), dreaming once a local day at
+  `life.maintenanceHourLocal` for every waifu, `recentSends` for the watch spacing (§30.6) with a
+  fixed window, the `owner` wake reason and every other guard.
+
+### 38.2 What goes, what stays
+
+| Gone | Stays |
+|---|---|
+| `src/life/busy.ts`, `src/life/home/daySchedule.ts`, `src/orchestration/timeOfDay.ts` | `src/life/clock.ts` (local time, `timeLine` with the time alone) |
+| Router guard 4 (sleep) and 4b (busy holds), `maybeSleepNotice` | Guards 1, 2, 3, 5, 6 with their numbers; `owner` skips 3–6 |
+| `wakes.json` `held`, wake fields `day`, `heldUntil`, `heldFor`, `released` | `deferred` (reason `budget`), released as one `morning` batch |
+| State `lastDayStart`, `dayCompactionDue`, `busyOpen`, `lastSentAt` | `recentSends` (watch spacing, `RECENT_SENDS_MS` = 10 min) |
+| `life/plans-fired.json`, `Scheduler.plans`, the day wake | `Scheduler.wakeups`, `releaseDeferred`, maintenance, places, `/tmp` |
+| `<schedule>`, the day sentence in `<life>` | `<life>`'s fresh-start sentence (§21.6b) |
+| `availability`, `scheduleInPrompt`, `dm.sleepNotice` | `wakeOnName`, `life.dailyBudgetUsd`, `dm.limitNotice` |
+| Five `[life]` settings (above) | `life.maintenanceHourLocal`, `life.notificationLinesPerPlace` |
+
+### 38.3 Migration
+
+`living-cast-no-schedule-v1` (`src/backend/migrationSteps/livingCastNoSchedule.ts`, a once step
+after `living-cast-wakeups-v1`, before the schema stamp):
+
+- each `waifu.json` with `availability`, `scheduleInPrompt` or `dm.sleepNotice` is archived as
+  `{waifuId, archivedAt, availability?, scheduleInPrompt?, sleepNotice?}` under
+  `user/.archive/living-cast/no-schedule/<id>.json` (the first copy is kept), then those keys go;
+- `config.toml` with any of the five keys is copied to `no-schedule/config.toml` (first copy kept)
+  and rewritten without them; loading strips them anyway, so an old file never stops a start;
+- per waifu, once (marker `life/no-schedule-v1.json`, also written by `HomeStore` whenever it touches
+  her home, like the life-folder and wakeups markers): her `home/life/schedule.json` moves to
+  `no-schedule/<id>/schedule.json` (`schedule-2.json`, … when taken), `life/plans-fired.json` is
+  deleted, and a life that has begun gets a pending epoch start (reason `tools`: summarised, no kept
+  turns; an already pending start keeps its reason), since her harness changed and her old turns
+  speak of her day. A waifu with nothing to do gets no marker from the step, so a root without old
+  data stays byte-identical. An unreadable `waifu.json` or `state.json` is left alone and reported
+  as `incomplete`; the next boot tries again.
+- Saved queues and states need no step: `held` and wakes deferred for her bed time (reason `sleep`)
+  parse, and the first scheduler tick releases the held ones as ordinary wakes and the deferred
+  ones as one batch (kept for her budget while she is over it); an old `morning` or `plan` wake is
+  delivered as it was; old state keys and wake fields are dropped when read; old detector history
+  entries keep `busy`, `bed time`, `asleep`.
+
+### 38.4 Her old file name
+
+A `~/life/schedule.json` written after the upgrade is an **ordinary file** of hers: no JSON or field
+check, no note in the tool result, never in her prompt. It stays private in the "never attached"
+sense like everything under `~/life/`, and her dream leaves it alone (the dream never writes under
+`~/life/`). The migration's marker keeps a re-run (a lost ledger) from archiving it.
+
+### 38.5 Tests
+
+`tests/livingCastNoScheduleMigration.test.ts` (archive then drop, config keys, day file and epoch,
+pending reason kept, idempotent with a new `schedule.json` of hers, `schedule-2.json`,
+byte-identical empty root, unreadable files, step order); `tests/lifeSchedule.test.ts` (reachable at
+03:00, the budget's batch, a pre-§38 queue and state released at the first tick, a pre-§38 sleep
+batch found over budget waits, maintenance at the hour for every waifu including one whose saved
+config still has a bed time); `tests/lifeWakes.test.ts` (no sleep guard; §24 around is budget only);
+`tests/lifeMorningSummary.test.ts` and the golden `life-budget-batch.txt` (budget batch delivered);
+`tests/lifeWakeups.test.ts` (watch spacing with `noteSend`); `tests/lifeDay.test.ts` (markers,
+`MEMORY.md` copy note only, `schedule.json` an ordinary file); `tests/config.test.ts` (an old
+`config.toml` with the removed keys loads). Removed: `lifeDaySchedule`, `lifeBedTime`, `lifePlans`
+and the goldens `life-morning`, `life-day-morning`, `life-day-busy`, `life-plan`, `life-bed-time`.
+
+### 38.6 Release
+
+A feature release (planned 3.9.0); not released yet.
+
+### 38.7 As built (2026-10-31)
+
+- The budget's batch keeps the wake reason `morning` (its rendering, the D14 `dm` flag and the queue
+  plumbing are unchanged); its header is always `- while you were away (since …):` and its line cap
+  is `life.notificationLinesPerPlace`.
+- The `plan` reason and its rendering stay so a `plan` wake queued before the upgrade is delivered;
+  nothing creates one any more.
+- Her time line is the time alone (`[Sat 24 Oct 14:06]`, no `· awake`).
+- The life status API drops `availability` whole (no `awake`-only stub); the frontend and CLI show
+  idle or mid-turn.
+- The detector history schema still reads `busy`, `bed time`, `asleep`; only `budget` is written.
+  The detector state keeps `availability: "awake"` for each offered waifu (the fine-tuned decider's
+  contract), and the decision benchmark's `DetectorAvailability` type is unchanged.
+- The dream instruction's first line no longer mentions a night or bed time; it still says to leave
+  `~/life/` alone (wakeups, profile, places).
+- The Cast editor's "Schedule" section is "Waking" (only wake-on-name).
+- The step also strips the five keys from `config.toml` and deletes `life/plans-fired.json` (hashes
+  only); it uses a per-waifu marker so a later `schedule.json` of hers is never archived.
+- `recentSends` is written by `src/life/recentSends.ts` `noteSend`, pruned after
+  `RECENT_SENDS_MS` = `WATCH_MIN_SPACING_MS` (10 minutes, the old default).
+- Behaviour doc `docs/behaviour/day-and-bed-time.md` became `reachability-and-budget.md`.
+- The life benchmark drops bed times from its scenarios and the morning capture; its dry-run cost
+  estimate no longer counts a morning turn per simulated day (`days * 2` instead of `days * 3`).
