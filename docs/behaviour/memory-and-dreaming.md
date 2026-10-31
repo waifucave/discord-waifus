@@ -2,7 +2,7 @@
 
 What she remembers comes from four places: the current epoch's log (short-term), the summary her
 epoch started from (`<life_so_far>`), her own files (notes and `MEMORY.md`), and the transcripts of
-everything said where she is. A nightly dream keeps her notes in line with the transcripts.
+everything said where she is. A daily dream keeps her notes in line with the transcripts.
 
 ## Short-term memory
 
@@ -87,16 +87,16 @@ Code: `src/life/dream.ts` `runDream`; timing `src/life/scheduler.ts` `maintenanc
 
 **When exactly** (checked every 15 s tick, one run per waifu in the whole process):
 
-| Her setup | When the dream runs |
-|---|---|
-| Bed time on | Once she has been **asleep** for `life.dreamAfterAsleepMinutes` (15 min) in a bed time that has had no maintenance yet (at most once per bed time) |
-| Bed time on, never asleep that long (up all night) | No dream that night. When that bed time ends, pending forget scrubs run alone (only if some wait). The next dream's window covers both days. |
-| No bed time | Every local day at `life.maintenanceHourLocal`:00 (05:00) |
+Every local day at `life.maintenanceHourLocal`:00 (default 05:00), for every waifu; a day whose hour
+passed while the host was down gets its dream at the first tick after. **Unreleased (on main),
+§38:** until 3.8.0 a waifu with a bed time dreamed once she had been asleep
+`life.dreamAfterAsleepMinutes` (15 min) in it instead, and a bed time she stayed up through ran only
+the pending forget scrubs; with no bed time any more, the hour is the rule for everyone.
 
 - It takes her life lock (it never overlaps a turn; a reminder that comes due waits for it), holds an
   update-activity lease, and is aborted by pause, shutdown and reload (an aborted run is not recorded
   and runs again at its next chance). `lastMaintenanceAt` is set when a run finishes.
-- **Pending forget scrubs run first**, with or without her model, so no night or bed time keeps the
+- **Pending forget scrubs run first**, with or without her model, so nothing keeps the
   model-free steps waiting (see [privacy-and-forget.md](privacy-and-forget.md), steps 2 and 4): their
   notes session and the summary without the person run on her model, else on `life.dreamModel`;
   with neither, or a failed call, those two steps stay queued (`pendingSteps`) while everything else

@@ -66,39 +66,21 @@ describe("B17: partial PUT bodies never re-materialize nested defaults", () => {
     }
   });
 
-  it("waifu availability.bedTime patches keep the other bed time fields (a stray busy key is dropped, §21 S3)", async () => {
+  it("a waifu PUT with her old bed time, scheduleInPrompt or sleep notice is accepted and none of them is stored (§38)", async () => {
     const app = await makeApp();
     try {
       await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
-      let waifu = (await app.inject({ method: "GET", url: "/api/waifus/ella" })).json();
-      const seeded = await app.inject({
+      const waifu = (await app.inject({ method: "GET", url: "/api/waifus/ella" })).json();
+      const put = await app.inject({
         method: "PUT",
         url: "/api/waifus/ella",
-        payload: {
-          revision: waifu.revision,
-          availability: { bedTime: { enabled: false, start: "22:30", end: "06:15" }, busy: [{ start: "09:00", end: "12:00", reason: "class" }] }
-        }
+        payload: { revision: waifu.revision, availability: { bedTime: { enabled: true, start: "22:30", end: "06:15" } }, scheduleInPrompt: false, dm: { sleepNotice: "zzz", limitNotice: "later" } }
       });
-      expect(seeded.statusCode).toBe(200);
-      waifu = seeded.json();
-
-      const patched = await app.inject({
-        method: "PUT",
-        url: "/api/waifus/ella",
-        payload: { revision: waifu.revision, availability: { bedTime: { enabled: true } } }
-      });
-      expect(patched.statusCode).toBe(200);
-      expect(patched.json().availability).toEqual({
-        bedTime: { enabled: true, start: "22:30", end: "06:15" }
-      });
-
-      // Refinements still run on the merged result.
-      const invalid = await app.inject({
-        method: "PUT",
-        url: "/api/waifus/ella",
-        payload: { revision: patched.json().revision, availability: { bedTime: { end: "22:30" } } }
-      });
-      expect(invalid.statusCode).toBe(400);
+      expect(put.statusCode, put.body).toBe(200);
+      const saved = put.json();
+      expect(saved).not.toHaveProperty("availability");
+      expect(saved).not.toHaveProperty("scheduleInPrompt");
+      expect(saved.dm).toEqual({ allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "later" });
     } finally {
       await app.close();
     }

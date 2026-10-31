@@ -37,14 +37,15 @@ export const MEMORY_FILE = "MEMORY.md";
 export const LIFE_DIR = "life";
 /** `~/life/places.md`: read-only, kept up to date by the app (§16.6). */
 export const PLACES_FILE = "places.md";
-/** `~/life/schedule.json`: her day, which she writes each morning (§21.2). */
-export const DAY_SCHEDULE_FILE = "schedule.json";
 /** `~/life/wakeups.json`: every wakeup she has (Wakeup, §30.3; `reminders.json` and `watches.json` before). */
 export const WAKEUPS_FILE = "wakeups.json";
 /** `~/life/profile.json`: her Discord profile (§17.1): checked on every write, then becomes her config. */
 export const PROFILE_FILE = "profile.json";
-/** Every file the app keeps in `~/life/`. */
-export const LIFE_FILES = [DAY_SCHEDULE_FILE, WAKEUPS_FILE, PROFILE_FILE, PLACES_FILE] as const;
+/**
+ * Every file the app keeps in `~/life/`. Her day (`schedule.json`, §21.2) was one until §38: a file
+ * of that name now is hers like any other in `~/life/` (no checks, private, never attached).
+ */
+export const LIFE_FILES = [WAKEUPS_FILE, PROFILE_FILE, PLACES_FILE] as const;
 export type LifeFileName = (typeof LIFE_FILES)[number];
 
 /** Names Windows reserves for devices (`con.md` would open the console, not a file). */
@@ -181,21 +182,20 @@ export function pathKey(virtual: string): string {
   return collisionKey(virtual);
 }
 
-/** The special file kinds, checked on every write (§30.3, §17.1, §21.2). */
-export type SpecialKind = "wakeups" | "profile" | "schedule";
+/** The special file kinds, checked on every write (§30.3, §17.1). */
+export type SpecialKind = "wakeups" | "profile";
 
-/** `~/life/wakeups.json`, `profile.json` or `schedule.json` (her day, §21.2): checked on every write. */
+/** `~/life/wakeups.json` or `profile.json`: checked on every write. */
 export function specialJsonFile(p: Pick<HerPath, "root" | "segments">): SpecialKind | undefined {
   const name = lifeFileOf(p);
   if (name === WAKEUPS_FILE) return "wakeups";
   if (name === PROFILE_FILE) return "profile";
-  if (name === DAY_SCHEDULE_FILE) return "schedule";
   return undefined;
 }
 
 /** A special kind's file name in `~/life/`. */
 export function specialFileName(kind: SpecialKind): LifeFileName {
-  return kind === "wakeups" ? WAKEUPS_FILE : kind === "profile" ? PROFILE_FILE : DAY_SCHEDULE_FILE;
+  return kind === "wakeups" ? WAKEUPS_FILE : PROFILE_FILE;
 }
 
 /**

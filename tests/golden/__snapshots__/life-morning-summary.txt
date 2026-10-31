@@ -1,5 +1,5 @@
 <notifications>
-- while you were asleep (01:42–08:30):
+- while you were away (since 01:42):
   · DMs:
     · dm/kevin · 02:14 #d3 "you up? need a hand with the essay tmrw"
     · dm/kevin · 02:15 #d4 "nvm going to sleep"

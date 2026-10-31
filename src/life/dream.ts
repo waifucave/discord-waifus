@@ -1,6 +1,7 @@
-// Dreaming (Living cast spec §18.4, owner decisions T3 and T4): nightly, while she sleeps, a separate
-// memory keeper (no life log, no persona) reads what was said since her last dream in her
-// transcripts, adds the day's memories to her notes and checks every note against that window.
+// Dreaming (Living cast spec §18.4, owner decisions T3 and T4; §38): once a day at
+// `life.maintenanceHourLocal`, a separate memory keeper (no life log, no persona) reads what was
+// said since her last dream in her transcripts, adds the day's memories to her notes and checks
+// every note against that window.
 //
 // The window: for every conversation she can read (§18.3), the lines after her dream cursor
 // (`life/dream-cursor.json`: per conversation, the time and id of the last line a finished dream
@@ -26,7 +27,6 @@ import type { GuildMemberCacheEntry } from "../shared/schemas/domain.js";
 import { forgottenPeople, hasNoteFor, isRemovedMessage, knownPeople, selfAuthorIds } from "./people.js";
 import { placesWithHandles } from "./places.js";
 import type { LifeDeps } from "./deps.js";
-import { availabilityFor } from "./busy.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { appendMaintenanceReport } from "./lifeStore.js";
 import { lifeModelOf } from "./lifeLoop.js";
@@ -42,7 +42,7 @@ export function dreamSystem(waifu: Pick<WaifuConfig, "name">): string {
 }
 
 export const DREAM_INSTRUCTION = [
-  "[system] She is asleep: time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day. Leave ~/life/ alone (her day, wakeups, profile and places are hers to keep).",
+  "[system] Time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day. Leave ~/life/ alone (her wakeups, profile and places are hers to keep).",
   "1. Read the dream window below: in each file, only the lines from the line number given (as Read numbers them).",
   "2. Add memories from the window only: new people, places, facts, plans, how things felt. Write them as her notes, in her voice and the layout her notes already use, and add a line to MEMORY.md for each new note.",
   "3. Check every note against the window. Change a fact only when the window clearly says otherwise (the newest wins) and keep everything else exactly as it is. Never delete or change a note because the window doesn't mention it. You may grep older transcript days to confirm a fact the window touches, but add nothing from before the window.",
@@ -314,7 +314,7 @@ export async function runDream(deps: LifeDeps, o: { waifu: WaifuConfig; signal?:
         windowText(chunks, { start: window.start, timeZone: deps.timeZone, more: index < sessions.length - 1 }),
         ...(newPeople.length > 0 ? [newPeopleLine(newPeople)] : []),
         calendarStrip(deps.now(), deps.timeZone),
-        timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })
+        timeLine({ now: deps.now(), timeZone: deps.timeZone })
       ],
       maxRounds: life.dreamMaxRounds,
       ...(chosen.effort ? { effort: chosen.effort } : {}),

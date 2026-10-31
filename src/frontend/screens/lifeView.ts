@@ -69,25 +69,13 @@ export function usd(value: number | null | undefined, digits = 2): string {
   return value > 0 && value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(digits)}`;
 }
 
-/** awake · asleep until 07:00 · busy (exam) until 12:00 — plus mid-turn. */
-export function stateLabel(status: Pick<LifeStatus, "availability" | "status" | "runtime" | "enabled" | "model" | "hasBot">): { word: string; detail: string; hue: "mint" | "sky" | "butter" | "lavender" | "peach" } {
+/** Awake (she is around at any hour, §38), mid-turn, paused, or why she can't be. */
+export function stateLabel(status: Pick<LifeStatus, "status" | "runtime" | "enabled" | "model" | "hasBot">): { word: string; detail: string; hue: "mint" | "butter" | "lavender" } {
   if (!status.enabled) return { word: "Benched", detail: "disabled", hue: "butter" };
   if (!status.hasBot) return { word: "No bot", detail: "she needs her own Discord bot to post", hue: "butter" };
   if (!status.model) return { word: "No model", detail: "she stays quiet until she has one", hue: "butter" };
   if (status.status === "turn") return { word: "Mid-turn", detail: "thinking and acting now", hue: "lavender" };
-  const availability = status.availability;
-  if (availability.bed === "up_late") return { word: "Up late", detail: "bed time", hue: "lavender" };
-  if (availability.bed === "dozing") return { word: "Dozing", detail: availability.until ? `bed time until ${availability.until}` : "bed time", hue: "sky" };
-  if (availability.state === "asleep") return { word: "Asleep", detail: availability.until ? `until ${clock(availability.until)}` : "", hue: "sky" };
-  if (availability.state === "busy") return { word: "Busy", detail: [availability.reason, availability.until ? `until ${clock(availability.until)}` : ""].filter(Boolean).join(" · "), hue: "peach" };
   return { word: status.runtime.paused ? "Paused" : "Awake", detail: status.runtime.running ? "" : "Discord offline", hue: "mint" };
-}
-
-/** "07:00" stays; an ISO time becomes a local hh:mm. */
-export function clock(value: string): string {
-  if (/^\d{1,2}:\d{2}$/u.test(value)) return value;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export function when(iso: string | null | undefined): string {
@@ -177,7 +165,7 @@ export function wakeOutcomeText(outcome: string): string {
     case "queued":
       return "Woken: her turn starts shortly.";
     case "deferred":
-      return "Queued for later: she is asleep or over her budget.";
+      return "Queued for later: she is over her budget.";
     case "quiet":
       return "Merged into a wake already waiting.";
     case "dropped":

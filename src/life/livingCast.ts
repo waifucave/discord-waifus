@@ -195,8 +195,7 @@ export class LivingCast {
       ...(o.tickMs ? { tickMs: o.tickMs } : {}),
       hooks: {
         poke: (waifuId) => this.pokeLife(waifuId),
-        maintain: (waifu, signal, options) => this.maintain(waifu, signal, options),
-        pendingScrubs: async (waifuId) => (await readPendingScrubs(this.deps.storage, waifuId, { logger: this.deps.logger })).length > 0,
+        maintain: (waifu, signal) => this.maintain(waifu, signal),
         begin: () => this.activity.begin("maintenance")
       }
     });
@@ -577,25 +576,24 @@ export class LivingCast {
 
   // ---- owner actions ------------------------------------------------------------------------------------
 
-  /** `/wake`, the dashboard or the CLI: an `owner` wake (skips her bed time and budget, §4.5). */
+  /** `/wake`, the dashboard or the CLI: an `owner` wake (skips her budget, §4.4). */
   async ownerWake(waifuId: string, note?: string): Promise<RouteOutcome> {
     this.assertRunning();
     const trimmed = note?.trim().slice(0, 500);
     return this.track(this.router.route(waifuId, { id: newWakeId(), reason: "owner", ...(trimmed ? { note: trimmed } : {}), at: this.deps.now().toISOString() }));
   }
 
-  /** Nightly maintenance plus pending scrubs (the scheduler holds her life lock). */
-  private async maintain(waifu: WaifuConfig, signal: AbortSignal, o: { dream?: boolean } = {}): Promise<void> {
+  /** Daily maintenance plus pending scrubs (the scheduler holds her life lock). */
+  private async maintain(waifu: WaifuConfig, signal: AbortSignal): Promise<void> {
     // Aborted while it waited for her life lock (a shutdown, a pause, a reload): nothing starts (N1).
     if (signal.aborted) return;
     const pending = await readPendingScrubs(this.deps.storage, waifu.id, { logger: this.deps.logger });
     // Pending scrubs run first, with or without her model (§7.5): files by hash, DM data, transcripts,
     // wakes and review lines never need one; her summary and the notes session run on her model, else
     // `life.dreamModel`, and with neither (or a failed call) only those steps stay queued
-    // (`pendingSteps`), her summary untouched. So no night or bed time keeps the rest waiting.
+    // (`pendingSteps`), her summary untouched.
     if (pending.length > 0 && !signal.aborted) await this.runPendingScrubs(waifu, pending, "pending", signal);
-    // A bed time that ended without her falling asleep long enough has no dream (§21.6c).
-    if (signal.aborted || o.dream === false) return;
+    if (signal.aborted) return;
     await runDream(this.deps, { waifu, signal });
   }
 
@@ -641,8 +639,8 @@ export class LivingCast {
     // The DM data goes now (every scope, rate-limited or not): so does the DM's intake mark (F10),
     // and her files from them (§16.9 step 1; `conversation`: only what came from the DM).
     await this.dropDmMark(o.waifuId, o.userId);
-    // What waits for her morning from them goes now too (§23): a rate-limited DM forget's scrub can
-    // wait for her dream, and her morning would show their DM lines first.
+    // What waits for her (her budget's batch, §23) from them goes now too: a rate-limited DM forget's
+    // scrub can wait for her dream, and the batch would show their DM lines first.
     const dmKey = conversationKey({ kind: "dm", waifuId: o.waifuId, userId: o.userId });
     const dmHandle = await handleOf(deps.storage, o.waifuId, dmKey).catch(() => undefined);
     await dropDeferredOf(deps.storage, o.waifuId, {

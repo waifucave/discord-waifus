@@ -279,13 +279,12 @@ export async function dropFromServerLists(storage: StorageService, userId: strin
  */
 function floorOnly(current: DmLimitState, floor: string, at: Date): DmLimitState {
   const later = (iso: string | undefined) => iso !== undefined && Date.parse(iso) > at.getTime();
-  const { limitNoticeSentAt, sleepNoticeSentFor, ...rest } = current;
+  const { limitNoticeSentAt, ...rest } = current;
   return {
     ...rest,
     replyTimestamps: current.replyTimestamps.filter(later),
     autoMessageIds: current.autoMessageIds.filter((id) => aboveFloor(id, floor)),
     ...(later(limitNoticeSentAt) ? { limitNoticeSentAt } : {}),
-    ...(later(sleepNoticeSentFor) ? { sleepNoticeSentFor } : {}),
     floorMessageId: laterFloor(current.floorMessageId, floor)
   };
 }

@@ -233,7 +233,7 @@ export function dryRunPolicy(scenario: Pick<Scenario, "dryRun">): (request: Turn
     });
     if (actions.length === 0) {
       const handle = HANDLE_RE.exec(last)?.[1];
-      if (handle && !/Good morning/u.test(last)) actions.push({ send: { place: handle, text: "haha ok" } });
+      if (handle) actions.push({ send: { place: handle, text: "haha ok" } });
     }
     const calls = dryToolCalls(request, actions);
     if (calls.length === 0) return fakeTextTurn("", { usage });

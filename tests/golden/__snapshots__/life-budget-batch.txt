@@ -1,0 +1,15 @@
+=== 0 user ===
+--- text ---
+<notifications>
+- while you were away (since Sat 24 Oct 14:00):
+  · DMs:
+    · dm/kevin · Sat 24 Oct 14:00 #a0 "hey"
+    · dm/kevin · Sat 24 Oct 14:00 #a1 "are you there?"
+    · dm/kevin · Sat 24 Oct 14:00 #a2 "ok talk tomorrow"
+  · bake-club/#general: 1 mention, 1 message (Sat 24 Oct 14:00)
+    · mention · Sat 24 Oct 14:00 #a0 from Kevin "<@Ella> you around?"
+  · watch matched · bake-club/#general · "brownie" · from Mina · Sat 24 Oct 14:00 #a1 · your note: "Mina wanted brownie tips"
+  · watch timed out (Sat 24 Oct 14:20) · your note: "check if the bake sale flyer is up"
+</notifications>
+--- text ---
+[Sun 25 Oct 00:05]

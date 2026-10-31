@@ -146,8 +146,8 @@ export function computeMetrics(o: { events: readonly TranscriptEvent[]; summarie
     cacheRead += line.cacheReadTokens ?? 0;
   }
   const scored = o.probes.filter((probe) => probe.passed !== null);
-  // Her memory: her summaries and her notes after a dream. The morning batch is the app's own text (the same for every model) and is left out.
-  const herSummaries = o.summaries.filter((summary) => summary.facts && summary.kind !== "morning");
+  // Her memory: her summaries and her notes after a dream.
+  const herSummaries = o.summaries.filter((summary) => summary.facts);
   const kept = herSummaries.reduce((sum, summary) => sum + summary.facts!.kept.length, 0);
   const due = herSummaries.reduce((sum, summary) => sum + summary.facts!.kept.length + summary.facts!.missing.length, 0);
   return {

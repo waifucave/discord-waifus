@@ -22,7 +22,6 @@ import { checkEnvFor, homeStoreFor } from "../home/index.js";
 import { HomeError, homeLimitsOf, isTextBytes, PLACES_REFUSED, sha256, sizeText, type HomeStore } from "../home/homeStore.js";
 import { HerFilesError } from "../home/herFiles.js";
 import { extractPdfText } from "../home/pdf.js";
-import { PLAN_WAKE_TEXT } from "../home/daySchedule.js";
 import { deleteReachesPlaces, herSlug, isLifeDirPath, isMemoryFile, parseVirtual, pathKey, specialJsonFile, type HerPath } from "../home/pathRules.js";
 import { TranscriptView, TRANSCRIPTS_READ_ONLY, transcriptsSegments, transcriptsVirtual } from "../transcripts/view.js";
 import { notePlace } from "../placeRecorder.js";
@@ -300,39 +299,21 @@ export async function readTool(input: unknown, ctx: ToolContext): Promise<ToolOu
 }
 
 /** Dreaming tidies her notes and MEMORY.md only (§21.6): `~/life/` is left alone. */
-export const DREAM_LIFE_REFUSED = "error: ~/life/ isn't changed while dreaming (her day, wakeups, profile and places stay as they are); leave it alone";
+export const DREAM_LIFE_REFUSED = "error: ~/life/ isn't changed while dreaming (her wakeups, profile and places stay as they are); leave it alone";
 
 /**
- * After she changed `~/life/schedule.json` or `MEMORY.md` in her life (§21.2): both have a copy in
- * her system prompt, which updates only at her next summary. Said once per file per turn; never in
- * a session outside her life (no life prompt there), nor for her day when it is kept out of her prompt.
+ * After she changed `MEMORY.md` in her life (§21.2): it has a copy in her system prompt, which
+ * updates only at her next summary. Said once per turn; never in a session outside her life (no life
+ * prompt there). (Her day, `~/life/schedule.json`, had one too until §38.)
  */
-export function promptCopyNote(ctx: Pick<ToolContext, "mode" | "turn" | "waifu">, p: HerPath): string | undefined {
-  if (ctx.mode === "session") return undefined;
-  const copied = isMemoryFile(p) || (specialJsonFile(p) === "schedule" && ctx.waifu.scheduleInPrompt);
-  if (!copied) return undefined;
+export function promptCopyNote(ctx: Pick<ToolContext, "mode" | "turn">, p: HerPath): string | undefined {
+  if (ctx.mode === "session" || !isMemoryFile(p)) return undefined;
   const key = pathKey(p.virtual);
   ctx.turn.promptCopyNoted ??= new Set();
   if (ctx.turn.promptCopyNoted.has(key)) return undefined;
   ctx.turn.promptCopyNoted.add(key);
   return promptCopyText(p.display);
 }
-
-/**
- * After she changed her day (`~/life/schedule.json`) in her life and it has a plan with a time
- * (§29): those plans wake her then. Said once per turn, never outside her life.
- */
-export async function planWakeNote(ctx: Pick<ToolContext, "mode" | "turn">, store: Pick<HomeStore, "readDay">, p: HerPath): Promise<string | undefined> {
-  if (ctx.mode === "session" || specialJsonFile(p) !== "schedule") return undefined;
-  ctx.turn.promptCopyNoted ??= new Set();
-  if (ctx.turn.promptCopyNoted.has(PLAN_NOTE_KEY)) return undefined;
-  const day = await store.readDay().catch(() => undefined);
-  if (!day?.plans.some((plan) => plan.at !== undefined)) return undefined;
-  ctx.turn.promptCopyNoted.add(PLAN_NOTE_KEY);
-  return PLAN_WAKE_TEXT;
-}
-
-const PLAN_NOTE_KEY = "\0plan-wake";
 
 export function promptCopyText(file: string): string {
   return `The copy of ${file} in your system prompt still shows the old version; it updates at your next summary. The file itself is current.`;
@@ -356,9 +337,7 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   const target = await pathArg(store, parsed.value.file_path);
   if (!target.ok) return target.output;
   // A whole-file Write of her wakeups replaces what the app changed since she read it (one fired, ran
-  // or ended, the owner deleted one): it needs a current Read.
-  // Her day (§21.2) only she and the owner change: a Write needs no Read, but one she read this turn
-  // must still be current.
+  // or ended, the owner deleted one): it needs a current Read; so does one of her profile.
   const special = specialJsonFile(target.path);
   if (ctx.session === "dream" && isLifeDirPath(target.path)) return toolError(DREAM_LIFE_REFUSED);
   if (special === "profile" && ctx.mode === "session") return toolError(PROFILE_TIDY_REFUSED);
@@ -368,7 +347,7 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
   await noteDmFile(store, target.path);
   const why = special === "wakeups" ? "a wakeup fired, ran or ended" : special === "profile" ? "your profile was changed for you" : "it was changed for you";
   const guard =
-    special && !(special === "schedule" && known === undefined)
+    special
       ? {
           expectedHash: known ? known : null,
           staleMessage:
@@ -385,7 +364,7 @@ async function writeTool(input: unknown, ctx: ToolContext): Promise<ToolOutput> 
     await noteDmFile(store, result.path);
     const profile = result.profileChanged !== undefined ? `; ${await profileSavedNote(ctx.deps, ctx.waifu.id, result.profileChanged)}` : "";
     const changed = before !== result.hash;
-    const notes = changed ? [promptCopyNote(ctx, result.path), await planWakeNote(ctx, store, result.path)].filter(Boolean) : [];
+    const notes = changed ? [promptCopyNote(ctx, result.path)].filter(Boolean) : [];
     return { content: `wrote ${result.path.display} (${sizeText(result.bytes)}${result.rewritten ? "; new entries got ids" : ""})${profile}${notes.map((note) => `\n${note}`).join("")}` };
   } catch (error) {
     return failure(error);
@@ -585,8 +564,6 @@ async function applyPatchCall(arg: unknown, ctx: ToolContext, n: number, run: Sc
     const canonical = await store.files.canonical(p);
     const note = promptCopyNote(ctx, canonical);
     if (note) lines.push(note);
-    const plans = await planWakeNote(ctx, store, canonical);
-    if (plans) lines.push(plans);
   }
   return lines.join("\n");
 }

@@ -163,7 +163,7 @@ export function packetsForRun(o: {
     index: { runId: o.summary.runId, kind: "chat", criteria: Object.keys(chatRubric) }
   });
   for (const capture of o.summaries) {
-    if (capture.kind === "morning" || !capture.output.trim()) continue;
+    if (!capture.output.trim()) continue;
     const id = packetId();
     const context = summaryContext(capture);
     out.push({

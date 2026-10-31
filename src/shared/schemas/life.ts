@@ -16,7 +16,7 @@ export type LifeModelRoute = z.infer<typeof LifeModelRouteSchema>;
 
 /** What block A and B were built from at epoch start (§5.4): fixed for the whole epoch. */
 export const SystemSnapshotSchema = z.object({
-  /** sha256 of block A (life harness, identity, persona, style, schedule, custom instructions) + the tools offered. */
+  /** sha256 of block A (life harness, identity, persona, style, custom instructions) + the tools offered. */
   harnessHash: z.string().min(1),
   /** Block A exactly as sent. */
   harness: z.string(),
@@ -95,9 +95,15 @@ export const WakeSchema = z.object({
   earlier: z.number().int().positive().optional(),
   /** How many wakes were merged into this entry. */
   count: z.number().int().positive().optional(),
-  /** plan: the plans of her day (`~/life/schedule.json`) whose time came at one tick (§29). */
+  /**
+   * plan: the timed plans of her day file whose time came at one tick (§29). Her day file is gone
+   * (§38): only a plan wake queued or deferred before the upgrade still carries them.
+   */
   plans: z.array(z.object({ at: z.string(), what: z.string() })).optional(),
-  /** morning: the rendered batch (built when her bed time ends). */
+  /**
+   * morning: the rendered batch of what waited while she was over her daily budget (§38; before it
+   * also her bed time and her morning greeting). The reason keeps its name in saved queues.
+   */
   batch: z.array(z.string()).optional(),
   /** morning: the batch shows something from a DM (a DM's lines, a DM watch, an earlier batch that did): her turn is a DM turn (D14). */
   dm: z.boolean().optional(),
@@ -107,14 +113,8 @@ export const WakeSchema = z.object({
   chimeIn: z.boolean().optional(),
   /** The wake came from a message written by another waifu (room loop guard, §4.4). */
   waifuAuthored: z.boolean().optional(),
-  /** morning: the local date (`2026-10-27`) whose day this wake opens (§21.3); her turn is compacted after it. */
-  day: z.string().optional(),
-  /** Held while she is busy (§21.4): released at this time (her next phone check, else the block's end). */
-  heldUntil: IsoDateStringSchema.optional(),
-  /** Held: the busy block's `why`. */
-  heldFor: z.string().optional(),
-  /** Released from a busy hold: at a phone check while still busy, or when the block ended. */
-  released: z.object({ kind: z.enum(["phone", "free"]), why: z.string() }).optional(),
+  // `day` (the morning wake's date), `heldUntil`, `heldFor` and `released` (busy holds) are gone
+  // with her day file and bed time (§38); a saved wake that has them is read without them.
   at: IsoDateStringSchema
 });
 export type Wake = z.infer<typeof WakeSchema>;
@@ -190,21 +190,14 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   lastTurnEndedAt: IsoDateStringSchema.optional(),
   /** Last nightly maintenance (§7.3). */
   lastMaintenanceAt: IsoDateStringSchema.optional(),
-  /** The start of the last day whose morning wake was queued (§21.3: one per day). */
-  lastDayStart: IsoDateStringSchema.optional(),
   /** Why her last `<summary>` was not used (§21.6b): said once, on her next time line. */
   selfSummaryRefused: z.string().optional(),
-  /** The morning turn ended: the next cycle compacts with reason `day` (§21.3), once. */
-  dayCompactionDue: z.boolean().optional(),
+  // `lastDayStart`, `dayCompactionDue`, `busyOpen` and `lastSentAt` (her day and bed time) are gone
+  // (§38); a saved state that has them is read without them.
   /**
-   * Places open while she is busy (§21.4): a wake that gets through woke her there and she sent a
-   * message there; open until `until` (her latest send there + `life.busyEngagedMinutes`) and never
-   * past the busy block's end (`blockEnd`). Keyed by place.
+   * Her latest send per place within `RECENT_SENDS_MS` (10 minutes): a repeating watch's spacing
+   * gives way once she has written in the place since its last fire (§30.6).
    */
-  busyOpen: z.record(z.string(), z.object({ until: IsoDateStringSchema, blockEnd: IsoDateStringSchema })).optional(),
-  /** Her last send anywhere (§21.6c): up late, dozing or asleep in her bed time count from it. */
-  lastSentAt: IsoDateStringSchema.optional(),
-  /** Her latest send per place within `life.busyEngagedMinutes` (§21.6c: open while up late or dozing). */
   recentSends: z.record(z.string(), IsoDateStringSchema).optional(),
   /**
    * Her bot's server nicknames as last seen (guild id → name), so block A does not change just
@@ -343,14 +336,20 @@ export type DeferredPlace = z.infer<typeof DeferredPlaceSchema>;
 export const WakeQueueSchema = RevisionedRecordSchema.extend({
   immediate: z.array(WakeSchema).default([]),
   /**
-   * Wakes held while she is busy (§21.4), each with `heldUntil`; released together into `immediate`
-   * at her next phone check or the block's end. They never start a turn while held.
+   * Wakes held while she was busy (§21.4), from before §38: the scheduler's first tick moves them to
+   * `immediate` and drops the field. Nothing holds a wake any more.
    */
-  held: z.array(WakeSchema).default([]),
+  held: z.array(WakeSchema).optional(),
   deferred: z
     .object({
-      /** Why she is not taking wakes: asleep, or over her daily budget. */
-      reason: z.enum(["sleep", "budget"]).optional(),
+      /**
+       * `budget`: she is over her daily budget. A queue saved before §38 may say `sleep` (her bed
+       * time): read as no reason, so the scheduler's next tick releases the batch.
+       */
+      reason: z
+        .enum(["sleep", "budget"])
+        .transform((reason) => (reason === "budget" ? reason : undefined))
+        .optional(),
       since: IsoDateStringSchema.optional(),
       /** Per place: counters (never dropped). */
       places: z.record(z.string(), DeferredPlaceSchema).default({}),
@@ -434,19 +433,6 @@ export const WakeupSideSchema = z.object({
   recoveredAt: IsoDateStringSchema.optional()
 });
 export type WakeupSide = z.infer<typeof WakeupSideSchema>;
-
-/**
- * `life/plans-fired.json` (§29): today's timed plans of her day as the scheduler saw them, by key
- * `<at> <hash of what>` (no plan text): when each was first seen, and the ones that fired or were
- * skipped (too late). A record of another day is dropped.
- */
-export const PlansFiredSchema = RevisionedRecordSchema.extend({
-  date: z.string().optional(),
-  seen: z.record(z.string(), IsoDateStringSchema).default({}),
-  fired: z.array(z.string()).default([]),
-  skipped: z.array(z.string()).default([])
-});
-export type PlansFired = z.infer<typeof PlansFiredSchema>;
 
 // ---- files-index.json: where her downloads came from (§16.2 provenance) ------------------------------
 

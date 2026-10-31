@@ -129,7 +129,7 @@ describe("queued wakes for one place (§20)", () => {
   });
 
   it("merged in the queue past its cap, a place's wake keeps both wakes' messages", () => {
-    let queue = { immediate: [], held: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as unknown as WakeQueue;
+    let queue = { immediate: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as unknown as WakeQueue;
     for (let index = 0; index < MAX_IMMEDIATE_WAKES - 1; index += 1) queue = withImmediate(queue, { id: `o${index}`, reason: "reminder", note: "x", at: AT });
     queue = withImmediate(queue, { id: "a", reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id(1), preview: "one", at: AT });
     queue = withImmediate(queue, { id: "b", reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id(2), preview: "two", at: AT });

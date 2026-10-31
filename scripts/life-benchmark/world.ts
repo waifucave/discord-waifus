@@ -137,8 +137,7 @@ export function scenarioWaifu(scenario: Scenario, model: ModelPick): WaifuConfig
     customInstructions: scenario.waifu.style,
     model: { providerId: model.providerId, modelId: model.modelId, ...(model.effort ? { effort: model.effort } : {}) },
     botId: `${waifuId}-bot`,
-    availability: { bedTime: scenario.waifu.bedTime ? { enabled: true, ...scenario.waifu.bedTime } : { enabled: false, start: "23:00", end: "07:00" } },
-    dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "", sleepNotice: "" }
+    dm: { allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "" }
   });
 }
 

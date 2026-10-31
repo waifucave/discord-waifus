@@ -5,7 +5,7 @@
 
 ## The line format
 
-One format for `ReadMessages`, `/transcripts` and the morning summary's stamps
+One format for `ReadMessages`, `/transcripts` and the budget batch's stamps
 (`src/life/render.ts` `chatLine`):
 
 ```
@@ -104,7 +104,7 @@ sends there are two or more (see [Unanswered sends](#unanswered-sends)).
 
 - **Assigned at ingest**: the transcript writer gives every line it writes its ref, in message-id
   order, one per-conversation counter shared by every waifu (base-36 from `a0` = 360; never reused).
-  Pages, searches, notifications and the morning summary take `refs.json` first, then the ref stored
+  Pages, searches, notifications and the budget batch take `refs.json` first, then the ref stored
   on the message's transcript line, and only then assign a new one, with the messages before it, so
   refs stay in message order (`refsForMessages`).
 - Her send gets a ref after the messages before it get theirs: `sent #k9`.
@@ -222,7 +222,7 @@ refused for length.
   `lineDone` with the message id right after. Each call also writes its `plan` (place and messages)
   once everything is checked, before its first Discord call, and `callDone` after it, so boot repair
   knows what each call meant to send ([life-and-turns.md](life-and-turns.md)). After a script that
-  sent anything: her busy "open place" / bed-time clock (`noteSend`) for each place it sent to, and the
+  sent anything: her recent-send time (`noteSend`, for watch spacing) for each place it sent to, and the
   call's done line (every message id).
 - Her bot's typing from the streaming call (from the first `place: "…"` in the script as it streams)
   stops when the script starts; the script shows typing itself (before each message and for `typing`

@@ -1,5 +1,5 @@
 // Cast editor controls for how a waifu talks (spec 8.2/8.6/11.3): free text appended to her prompt
-// (`customInstructions`), and whether her schedule is mentioned in the prompt. Pure helpers are exported so the counter/validation is testable without a DOM.
+// (`customInstructions`). Pure helpers are exported so the counter/validation is testable without a DOM.
 
 // Must match WaifuConfigSchema.customInstructions (z.string().max(4000), counted in UTF-16 units).
 export const CUSTOM_INSTRUCTIONS_MAX = 4000;

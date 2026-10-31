@@ -164,19 +164,17 @@ async function runInside(spec: RunSpec): Promise<RunOutput> {
   // ---- epochs, summaries and her log, observed before every model call and after every step ----
   const seenSeq = new Map<number, number>();
   const seenBlocks = new Set<string>();
-  /** When she last had a turn (the morning summary's input starts there). */
-  let lastActiveMs = startMs;
   let lastEpochSeen = 0;
   let consumedSeq = 0;
   let observing: Promise<void> | undefined;
-  const summaryFacts = (at: string, output: string, window?: { fromMs: number }) => {
+  const summaryFacts = (at: string, output: string) => {
     const due = scenario.facts.filter((fact) => {
       if (!fact.from) return true;
       const id = world?.messageIdByLabel.get(fact.from);
       const posted = events.find((event) => event.type === "people" && event.messageId === id);
       if (!posted) return false;
       const postedMs = Date.parse(posted.at);
-      return postedMs <= Date.parse(at) && (window === undefined || postedMs > window.fromMs);
+      return postedMs <= Date.parse(at);
     });
     return factsFound(due, output);
   };
@@ -249,16 +247,7 @@ async function runInside(spec: RunSpec): Promise<RunOutput> {
             push({ type: "tool_result", ...base, id: String(block.tool_use_id), isError: block.is_error === true, content: content.slice(0, 4_000) });
           } else if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
             if (line.kind === "assistant") push({ type: "thought", ...base, text: block.text });
-            else if (line.kind === "notifications") {
-              push({ type: "notifications", ...base, text: block.text });
-              // Her morning summary (§23): the app's own overnight batch (no model), scored for the
-              // facts that came in since she was last awake.
-              if (block.text.includes("Good morning")) {
-                const input = events.filter((event) => event.type === "people" && Date.parse(event.at) > lastActiveMs && Date.parse(event.at) <= Date.parse(line.at));
-                const inputText = input.map((event) => (event.type === "people" ? `[${scenarioClock(scenario, Date.parse(event.at))} ${event.place}] ${event.from}: ${event.text}` : "")).join("\n");
-                summaries.push({ id: `s${summaries.length + 1}`, at: line.at, kind: "morning", input: { text: inputText }, output: block.text, inputChars: inputText.length, outputChars: block.text.length, facts: summaryFacts(line.at, block.text, { fromMs: lastActiveMs }) });
-              }
-            }
+            else if (line.kind === "notifications") push({ type: "notifications", ...base, text: block.text });
           }
         }
       }
@@ -434,8 +423,6 @@ async function runInside(spec: RunSpec): Promise<RunOutput> {
         const queue = await readLifeFile(w.storage, w.waifuId, "wakes");
         if (queue.immediate.length === 0 && !life.busy) break;
       }
-      const lastCall = [...calls].reverse().find((call) => call.purpose === "life");
-      if (lastCall) lastActiveMs = Date.parse(lastCall.at);
     };
     const checkpointTimes = new Map<number, string>();
     for (const probe of scenario.probes) {

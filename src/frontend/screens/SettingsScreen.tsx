@@ -774,16 +774,15 @@ type LifeGroup = { title: string; hint: string; paths: string[]; columns?: numbe
 
 /** Host-wide life limits, grouped by what they bound. Any app.life key not listed lands in "Other limits". */
 export const LIFE_LIMIT_GROUPS: readonly LifeGroup[] = [
-  { title: "Turns", hint: "How many lives run at once, how long a turn may take, and when her nightly dream runs.", paths: ["life.maxConcurrentTurns", "life.maxTurnMs", "life.maintenanceHourLocal"] },
+  { title: "Turns", hint: "How many lives run at once, how long a turn may take, and when her daily dream runs.", paths: ["life.maxConcurrentTurns", "life.maxTurnMs", "life.maintenanceHourLocal"] },
   { title: "Sending", hint: "What she may send in one turn.", paths: ["life.maxSendsPerTurn", "life.maxSendPlacesPerTurn", "life.send.maxFiles"] },
-  { title: "Wakes", hint: "How often people, watches and other waifus may wake her, and how many notification lines a place gets (also in her morning summary).", paths: ["life.maxWakesPerUserPerHour", "life.maxWatchFiresPerDay", "life.maxWaifuTriggeredTurns", "life.notificationLinesPerPlace", "life.morningLinesPerPlace"] },
-  { title: "Her day", hint: "She writes her own day each morning in ~/life/schedule.json; while busy, only people talking to her get through. Her bed time is soft: up late, dozing, then asleep.", paths: ["life.dayStartHourLocal", "life.busyEngagedMinutes", "life.bedDozeMinutes", "life.dreamAfterAsleepMinutes"], columns: 2 },
+  { title: "Wakes", hint: "How often people, watches and other waifus may wake her, and how many notification lines a place gets (also in the batch of what waited while she was over budget).", paths: ["life.maxWakesPerUserPerHour", "life.maxWatchFiresPerDay", "life.maxWaifuTriggeredTurns", "life.notificationLinesPerPlace"] },
   { title: "Context and images", hint: "How long her life gets before compaction, and the pictures she sees as images.", paths: ["life.maxLogMessages", "life.maxContextTokens", "life.maxInlineImagesPerEpoch", "life.maxInlineImageBytesPerEpoch"], columns: 2 },
   { title: "Rest before her memory fills", hint: "At the rest point (compaction.triggerRatio) she writes her own summary in a turn of her own; a new epoch starts from it alone. Compaction summarises for her only as an emergency. She may also end any turn with only <summary>…</summary> for a fresh start.", paths: ["life.restNotice", "life.restSummaryMinChars", "life.selfSummaryMinRatio", "life.selfSummaryCooldownMinutes", "life.cacheRestMinRatio", "life.cacheRestLeadMinutes"] },
   { title: "Her home folder", hint: "Her notes, wakeups and anything she keeps.", paths: ["life.home.maxBytes", "life.home.maxFiles", "life.home.maxFolders"] },
   { title: "/tmp and downloads", hint: "Files people sent her and her scratch files.", paths: ["life.tmp.maxBytes", "life.tmp.maxFiles", "life.tmp.retentionDays", "life.attachments.maxBytes"], columns: 2 },
   { title: "Simulated Bash", hint: "just-bash over a copy of her two folders: never a real program, no network.", paths: ["life.bash.enabled", "life.bash.python", "life.bash.maxTimeoutMs", "life.bash.maxOutputChars", "life.bash.maxMemoryMb"] },
-  { title: "Dreaming limits", hint: "Her nightly dream reads what was said since the last one; a long window runs in several sessions.", paths: ["life.dreamMaxRounds", "life.dreamWindowMaxChars"], columns: 2 }
+  { title: "Dreaming limits", hint: "Her daily dream reads what was said since the last one; a long window runs in several sessions.", paths: ["life.dreamMaxRounds", "life.dreamWindowMaxChars"], columns: 2 }
 ];
 
 /** The dream model (spec §18.4, §18.6): a ModelPicker over GET /api/models; unset = her own model. */
@@ -813,7 +812,7 @@ function DreamModelSection({ config }: { config: ReturnType<typeof useApi<AppCon
     <>
       <SectionHead
         title="Dreaming"
-        hint="While she sleeps, a memory keeper reads her transcripts since the last dream, adds what is new to her notes and patches what the day contradicted. It never deletes a note for lack of evidence."
+        hint="Once a day (at the hour under Turns), a memory keeper reads her transcripts since the last dream, adds what is new to her notes and patches what the day contradicted. It never deletes a note for lack of evidence."
       />
       <MessageCell message={message} />
       <div className="fgrid model-pair">
@@ -845,7 +844,7 @@ function LifeLimitsTab() {
     <div className="content">
       <div className="cell action-row">
         <span className="t-small t-mute">
-          Host-wide limits on every life. A waifu&apos;s own budget, schedule and DMs are in Cast; web search and page reading are under Search.
+          Host-wide limits on every life. A waifu&apos;s own budget and DMs are in Cast; web search and page reading are under Search.
         </span>
       </div>
       {LIFE_LIMIT_GROUPS.map((group) => (

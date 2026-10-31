@@ -30,8 +30,6 @@ import type { LifeDeps } from "./deps.js";
 import { buildBlockA, harnessHash } from "./lifeHarness.js";
 import { pruneOldEpochLogs, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { homeStoreFor } from "./home/index.js";
-import { availabilityFor } from "./busy.js";
-import { todaysPlan } from "./home/daySchedule.js";
 import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import { selfAuthorIds } from "./people.js";
 import { placesWithHandles, renderPlacesBlock } from "./places.js";
@@ -62,12 +60,7 @@ export async function currentHarness(deps: LifeDeps, waifu: WaifuConfig, model: 
     .filter((other) => other.enabled && other.id !== waifu.id)
     .map((other) => ({ name: other.name, displayName: other.displayName }));
   const facts = { serverNicknames: nicknames, others };
-  const tmpRetentionDays = deps.config().life.tmp.retentionDays;
-  // Today's plan as it is now (§21.5); the hash leaves it out, so her own edits (and a new day)
-  // never force a configuration compaction: the copy updates at her next compaction (§21.2).
-  const day = todaysPlan(await homeStoreFor(deps, waifu).readDay().catch(() => undefined), deps.now(), deps.timeZone);
-  const harness = buildBlockA(waifu, facts, deps.timeZone, { tmpRetentionDays, ...(day ? { day } : {}) });
-  const stable = buildBlockA(waifu, facts, deps.timeZone, { tmpRetentionDays, day: "hash" });
+  const harness = buildBlockA(waifu, facts, { tmpRetentionDays: deps.config().life.tmp.retentionDays });
   const tools = offeredToolNames(deps);
   const route = routeOf(model, waifu.model?.effort);
   // The descriptions as configured now (Bash says whether python3 is there): kept in the epoch's
@@ -81,7 +74,7 @@ export async function currentHarness(deps: LifeDeps, waifu: WaifuConfig, model: 
     toolDescriptions,
     toolSchemas,
     route,
-    hash: harnessHash(stable, tools.map((name) => `${name}:${toolDescriptions[name] ?? ""}:${JSON.stringify(toolSchemas[name] ?? {})}`), route)
+    hash: harnessHash(harness, tools.map((name) => `${name}:${toolDescriptions[name] ?? ""}:${JSON.stringify(toolSchemas[name] ?? {})}`), route)
   };
 }
 
@@ -114,11 +107,6 @@ function newTurnId(): string {
 export { newTurnId };
 
 /** Turn ids of the log in order of first appearance (lines without one are grouped as ""). */
-/** How many turns the epoch's log holds (complete or not). */
-export function turnCount(lines: readonly LifeLogLine[]): number {
-  return turnOrder(lines).filter((id) => id !== "").length;
-}
-
 function turnOrder(lines: readonly LifeLogLine[]): string[] {
   const order: string[] = [];
   for (const line of lines) {
@@ -276,8 +264,6 @@ export async function startEpoch(
         deletedReadIds: [],
         pendingEpochStart: false,
         pendingEpochReason: undefined,
-        // Block A is rebuilt with today's plan: a due `day` compaction is done (§21.3).
-        dayCompactionDue: undefined,
         epochStrippedThinkingBlocks: o.strippedBlocks,
         lastRequestTokens: undefined,
         lastRequestAt: undefined,
@@ -434,8 +420,6 @@ export async function compactLife(
     keepTurns?: number;
     openTurnId?: string;
     truncate?: boolean;
-    /** No summary when the epoch's turns are all kept whole (at most `KEPT_TURNS`, within the kept budget). */
-    keepWholeIfFits?: boolean;
     omit: CompactionOmissions;
     deferEpoch?: boolean;
     emptySummaryOnFailure?: boolean;
@@ -450,18 +434,14 @@ export async function compactLife(
   let summarized = false;
   // The kept window: at most half the compaction trigger (M2).
   const limit = o.summaryRoute ? 0.5 * settings.triggerRatio * lifeBudget(o.summaryRoute, deps.config().life.maxContextTokens) : Number.POSITIVE_INFINITY;
-  const whole =
-    o.keepWholeIfFits === true &&
-    turnCount(o.lines) <= (o.keepTurns ?? KEPT_TURNS) &&
-    linesTokens(keptTurnLines(o.lines, { keep: o.keepTurns ?? KEPT_TURNS, ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}), deletedIds: new Set(o.state.deletedReadIds) }).kept) <= limit;
-  const canSummarize = settings.enabled && !o.truncate && !whole && o.summaryRoute !== undefined && o.state.systemSnapshot !== null;
+  const canSummarize = settings.enabled && !o.truncate && o.summaryRoute !== undefined && o.state.systemSnapshot !== null;
   if (canSummarize) {
     try {
       const summaryLines = o.shrinkLastResults ? withoutLastResults(o.lines) : o.lines;
       const request = await buildLifeRequest(deps, { state: o.state, lines: summaryLines, route: o.summaryRoute!, missing: "text", ...(o.signal ? { signal: o.signal } : {}) });
       // The calendar (§35.2) goes after the instruction's first line (`withCalendar`), in the appended
       // message after the cached prefix; the time line stays last.
-      const instruction = `${withCalendar(compactionInstruction(o.omit), calendarStrip(now, deps.timeZone))}\n\n${timeLine({ now, timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, now, o.state) })}`;
+      const instruction = `${withCalendar(compactionInstruction(o.omit), calendarStrip(now, deps.timeZone))}\n\n${timeLine({ now, timeZone: deps.timeZone })}`;
       const result = await summarizeWithModel(deps.models, {
         route: { providerId: o.summaryRoute!.providerId, modelId: o.summaryRoute!.modelId },
         system: request.system,

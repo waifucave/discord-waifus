@@ -1,7 +1,7 @@
 // The cost estimate printed before any model call (spec §33.2). Rough on purpose and stated with its
-// assumptions: turns from the scenario's timeline (what wakes her, her mornings, a rest and a dream a
-// night), calls per turn, prompt and output sizes, and each route's list prices from winter's
-// catalog with its cache-read price when it caches prompts.
+// assumptions: turns from the scenario's timeline (what wakes her, a rest and a dream a day), calls
+// per turn, prompt and output sizes, and each route's list prices from winter's catalog with its
+// cache-read price when it caches prompts.
 
 import type { CuratedModel } from "../../src/models/catalog.js";
 import { defaultPick } from "./detector.js";
@@ -45,8 +45,8 @@ export function expectedTurns(scenario: Scenario): { turns: number; days: number
     lastPlace = event.place;
     lastMs = at;
   }
-  // Mornings and her own wakeups (about two a day).
-  return { turns: wakers + days * 3, days };
+  // Her own wakeups (about two a day; until §38 also her morning).
+  return { turns: wakers + days * 2, days };
 }
 
 export type RunEstimate = { model: string; runs: number; callsPerRun: number; usdPerRun: number; usd: number; minutesPerRun: number; priced: boolean };

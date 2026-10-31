@@ -5,7 +5,7 @@
 - dm · dm/kevin · from Kevin · #a1 "my exam got moved to friday, i'm so nervous"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call ReadMessages (call_1_ReadMessages) ---
 {"script":"text(await tools.read_messages({ place: \"dm/kevin\" }))"}
@@ -15,7 +15,7 @@ dm/kevin (DM with Kevin)
 [14:00 #a0] Kevin: hey ella
 [14:00 #a1] Kevin: my exam got moved to friday, i'm so nervous
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
 {"script":"text(await tools.send_message({ place: \"dm/kevin\", messages: [{ text: \"good luck on friday!!\" }, { text: \"you've got this\" }] }))"}
@@ -24,4 +24,4 @@ dm/kevin (DM with Kevin)
 {"sent":["#a2","#a3"],"reactions":[]}
 [receipt] send_message to dm/kevin: sent #a2 #a3; the whole list ran
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]

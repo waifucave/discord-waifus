@@ -56,7 +56,7 @@ root holding only the waifu under test; nothing touches the real data root or Di
 <out>/summary.json          every run's metrics, probes, gate and grades
 <out>/report.md             models × variants, runs, probes, summaries re-scored, grader flags
 <out>/runs/<run>/transcript.jsonl   people, her sends and reactions, wakes, model calls, tool calls and results, compactions, maintenance
-<out>/runs/<run>/summaries.json     every summary with exactly what it summarised (rest, self, compaction, dream, morning) and must-keep fact coverage
+<out>/runs/<run>/summaries.json     every summary with exactly what it summarised (rest, self, compaction, dream) and must-keep fact coverage
 <out>/runs/<run>/home.json, block-a.txt   her home at the end; her block A as her last epoch had it
 <out>/judge/packets/<id>.json       judge packets (no model name); judge/index.json maps them back
 <out>/grades/                       where graders write their JSON

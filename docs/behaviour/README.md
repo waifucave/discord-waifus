@@ -8,7 +8,8 @@ and the difference is noted ("Spec differs: …").
 
 **Describes:** the code on `main` as released in 3.5.0: everything through the script
 `SendMessage` (§27), server emojis in `places.md` (§28) and timed plans that wake her (§29). Later
-behaviour merged to `main` before its release is marked **unreleased (on main)** where it is described.
+behaviour merged to `main` before its release is marked **unreleased (on main)** where it is described
+(no day schedule and no bed time, §38, planned for 3.9.0).
 
 **Rule:** any change to waifu behaviour (triggers, routing, prompts, tools, files and folders,
 schedules, dreaming, privacy, remote behaviour) updates these files in the same commit. When these
@@ -21,11 +22,11 @@ files and the code disagree, the code is right and the files are fixed.
 | [life-and-turns.md](life-and-turns.md) | One life per waifu: queue, turns, locks, the system prompt, notifications, typing, caps, epochs, compaction, rest and self-reset |
 | [triggers.md](triggers.md) | Every way she is woken, the intake holds, merging, and the wake router's guards in order |
 | [detector.md](detector.md) | Jev, the addressee detector: what it sees, what it can answer, chime-ins, who is offered |
-| [day-and-bed-time.md](day-and-bed-time.md) | Her daily `~/life/schedule.json`, busy holds, the morning wake, bed time states |
+| [reachability-and-budget.md](reachability-and-budget.md) | Reachable at any hour (no day schedule, no bed time, §38), the budget's batch, the upgrade from 3.8 |
 | [rooms.md](rooms.md) | Behaviour specific to server channels and threads |
 | [dms.md](dms.md) | Behaviour specific to private chats |
 | [her-computer.md](her-computer.md) | Her folders, every pre-set file, the seven tools and their scripts (`tools.*`, §32), `Wakeup`, `Web`, `Read`, `Edit` (`apply_patch`) with their sandboxes, the Bash sandbox |
-| [memory-and-dreaming.md](memory-and-dreaming.md) | MEMORY.md and notes, transcripts, the nightly dream |
+| [memory-and-dreaming.md](memory-and-dreaming.md) | MEMORY.md and notes, transcripts, the daily dream |
 | [messages-and-refs.md](messages-and-refs.md) | `read_messages` fields, refs, `send_message` (messages, reactions, waits) |
 | [privacy-and-forget.md](privacy-and-forget.md) | DM privacy (D14) everywhere, every forget path |
 | [remote-access.md](remote-access.md) | How Remote Access behaves for the owner |
@@ -50,7 +51,5 @@ is not enough). Paths are relative to the repository root. Numbers are defaults;
 | **Ref** | A short per-conversation message id like `#k3`, shared by every waifu, assigned in message order and never reused (`src/discord/refStore.ts`). |
 | **Jev / detector** | The addressee detector: one native-choice decision call that guesses who a burst nobody named is for. Default target `openrouter:typesafe/jev-1.14` ("Jev", `src/shared/schemas/detector.ts` `DEFAULT_DETECTOR_TARGET`). |
 | **Burst** | Messages in one place held together by the typing-aware timer and routed as one unit (`src/life/intakeHold.ts`). |
-| **Bed time** | The owner's `availability.bedTime` window. Soft: she is up late, dozing or asleep inside it (`src/life/clock.ts` `bedPhaseAt`). |
-| **Busy block** | A `busy` entry of her own `~/life/schedule.json` for today. |
 | **D14** | The owner decision that DM content is hidden from every owner view unless revealed by a request on the host itself (`includePrivate=1`, `--private`, `private:true`). See [privacy-and-forget.md](privacy-and-forget.md). |
 | **Owner** | For Discord slash commands: the House bot application's owner or its team members. For the dashboard/CLI/API: whoever runs the host. |

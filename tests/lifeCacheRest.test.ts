@@ -1,8 +1,8 @@
 // Rest before her prompt cache goes cold (Living cast spec §25): with a large context and nothing
 // going on, the §19 rest turn comes `life.cacheRestLeadMinutes` before her route's cache expires
 // (her last request + the route's TTL), started by the scheduler's tick; never for routes without a
-// known TTL, with a small context, with a wake queued or a turn running, or asleep near the morning;
-// once per epoch; ignored, nothing else happens.
+// known TTL, with a small context, or with a wake queued or a turn running; at any hour (§38: no bed
+// time); once per epoch; ignored, nothing else happens.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderEvent } from "@yanlinglabs/winter-provider-runtime";
 
@@ -247,24 +247,6 @@ describe("the quiet-time rest (§25)", { timeout: 30_000 }, () => {
     await w.cast.scheduler.tick();
     expect(poke).not.toHaveBeenCalled();
   });
-
-  it("does not come while she is asleep with her bed time ending within the TTL; otherwise it does", async () => {
-    // Her bed time starts 30 minutes after her turn; asleep at once (bedDozeMinutes 0).
-    const near: WaifuSeed = { id: "ella", name: "Ella", botId: "ella-bot", availability: { bedTime: { enabled: true, start: "14:30", end: "15:30" } } };
-    const w = await lifeWorld(roots, { waifus: [near], config: (config) => ({ ...config, life: { ...config.life, bedDozeMinutes: 0, dreamAfterAsleepMinutes: 720 } }), scripts: [play(textTurn("noted"))] });
-    const poke = await quietAfterATurn(w, 0.6);
-    w.clock.advance(PROMPT_CACHE_TTL_MS - 5 * MINUTE);
-    await w.cast.scheduler.tick();
-    expect(poke).not.toHaveBeenCalled();
-    const far: WaifuSeed = { ...near, availability: { bedTime: { enabled: true, start: "14:30", end: "22:00" } } };
-    const v = await lifeWorld(roots, { waifus: [far], config: (config) => ({ ...config, life: { ...config.life, bedDozeMinutes: 0, dreamAfterAsleepMinutes: 720 } }), scripts: [play(textTurn("noted")), thenSmall(textTurn(SUMMARY))] });
-    const vPoke = await quietAfterATurn(v, 0.6);
-    v.clock.advance(PROMPT_CACHE_TTL_MS - 5 * MINUTE);
-    await v.cast.scheduler.tick();
-    expect(vPoke).toHaveBeenCalled();
-    await v.cast.life("ella").runNow();
-    expect((await readLifeState(v.storage, "ella")).lastCompaction).toMatchObject({ reason: "cache_rest" });
-  });
 });
 
 describe("cacheRestDueAt / cacheRestDueNow", () => {
@@ -307,16 +289,8 @@ describe("cacheRestDueAt / cacheRestDueNow", () => {
     expect(cacheRestDueNow(input({}, { cacheRest: { epoch: 3, turnId: "t" } }))).toBe(false);
     expect(cacheRestDueNow(input({}, { cacheRest: { epoch: 2, turnId: "t" } }))).toBe(true);
     expect(cacheRestDueNow(input({}, { restTurn: { epoch: 3, turnId: "t" } }))).toBe(false);
-    expect(cacheRestDueNow(input({}, { dayCompactionDue: true }))).toBe(false);
     expect(cacheRestDueNow(input({}, { pendingEpochStart: true }))).toBe(false);
     expect(cacheRestDueNow(input({}, { compactionPausedUntil: new Date(at + 90 * MINUTE).toISOString() }))).toBe(false);
     expect(cacheRestDueNow(input({ life: { ...life, restNotice: false } }))).toBe(false);
-  });
-
-  it("asleep: not when her bed time ends within the TTL; dozing or up late it is due", () => {
-    const now = at + 52 * MINUTE;
-    expect(cacheRestDueNow(input({ bed: { phase: "asleep", windowEnd: new Date(now + 30 * MINUTE) } }))).toBe(false);
-    expect(cacheRestDueNow(input({ bed: { phase: "asleep", windowEnd: new Date(now + 3 * 60 * MINUTE) } }))).toBe(true);
-    expect(cacheRestDueNow(input({ bed: { phase: "dozing", windowEnd: new Date(now + 30 * MINUTE) } }))).toBe(true);
   });
 });

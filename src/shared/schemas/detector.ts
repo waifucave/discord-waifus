@@ -36,8 +36,12 @@ export const DetectorHistoryEntrySchema = z.object({
   probabilities: z.record(z.string(), z.number()).default({}),
   /** The waifu ids woken by this result. */
   woke: z.array(z.string()).optional(),
-  /** Cast members left out because they were not around in the place (§24), and why; over her daily budget is `budget`. */
-  leftOut: z.array(z.object({ waifuId: z.string().min(1), why: z.enum(["busy", "bed time", "asleep", "budget"]) })).optional(),
+  /**
+   * Cast members left out because they were not around (§24), and why: over her daily budget is
+   * `budget`, the only reason written since §38; `busy`, `bed time` and `asleep` are read from older
+   * history entries.
+   */
+  leftOut: z.array(z.object({ waifuId: z.string().min(1), why: z.enum(["budget", "busy", "bed time", "asleep"]) })).optional(),
   /** The cast member who wrote the burst (a waifu-authored message, §4.3); absent for a person's. */
   authorWaifuId: z.string().optional(),
   /** The `chime_in` answer when it was asked, and who was woken to chime in (at most one per room per 10 minutes). */

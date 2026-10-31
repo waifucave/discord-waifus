@@ -436,7 +436,7 @@ describe("a queued scrub without her model (§7.5 step 4)", () => {
     const w = await lifeWorld(roots, { waifus: [NO_MODEL], scripts: script(textTurn("nothing else about him")) });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
     await seedQueuedForget(w);
-    // No bed time: maintenance at 05:00 local, the next day.
+    // Maintenance at 05:00 local (every waifu, §38), the next day.
     w.clock.ms = Date.parse("2026-10-25T05:30:00.000Z");
     await w.cast.scheduler.tick();
     await expectScrubbedWithoutModel(w);
@@ -454,15 +454,6 @@ describe("a queued scrub without her model (§7.5 step 4)", () => {
     expect(await readPendingScrubs(w.storage, "ella")).toEqual([]);
     expect(w.ledger.lines.map((line) => line.purpose)).toEqual(["maintenance"]);
     expect((await readMaintenanceReports(w.storage, "ella")).filter((report) => report.kind === "forget").at(-1)).toMatchObject({ notesScrub: "done" });
-  });
-
-  it("a night she never sleeps through (§21.6c) runs it when her bed time ends, without a model", async () => {
-    const w = await lifeWorld(roots, { waifus: [{ ...NO_MODEL, availability: { bedTime: { enabled: true, start: "23:00", end: "07:00" } } }] });
-    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await seedQueuedForget(w);
-    w.clock.ms = Date.parse("2026-10-25T07:01:00.000Z");
-    await w.cast.scheduler.tick();
-    await expectScrubbedWithoutModel(w);
   });
 
   it("life.dreamModel runs the notes scrub when her own model is unavailable", async () => {

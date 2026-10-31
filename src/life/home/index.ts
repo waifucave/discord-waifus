@@ -16,7 +16,6 @@ import { HomeStore, homeLimitsOf, type CheckEnv } from "./homeStore.js";
 import { herSlug } from "./pathRules.js";
 import { emojiListText, emojiUsage } from "./serverEmojis.js";
 import type { PersonResolution } from "./specialFiles.js";
-import type { DayPlan } from "./daySchedule.js";
 
 export { HomeStore, homeLimitsOf } from "./homeStore.js";
 
@@ -30,20 +29,6 @@ export function homeStoreFor(deps: Pick<LifeDeps, "storage" | "config"> & Partia
         `${waifu.name}'s life/${name} could not be read and was replaced (a copy is kept beside it); reminders or watches that were due before now were dropped without firing.`
       )
   });
-}
-
-/**
- * Her day as saved (`~/life/schedule.json`, §21.2), read on every use (the router, the detector,
- * her time line); undefined when there is none or it can't be read. Its `date` decides whether it
- * counts today (`todaysPlan`, `busyAt`).
- */
-export async function dayPlanFor(deps: Pick<LifeDeps, "storage" | "config">, waifu: Pick<WaifuConfig, "id" | "name">): Promise<DayPlan | undefined> {
-  return homeStoreFor(deps, waifu).readDay().catch(() => undefined);
-}
-
-/** Her day without the running cast (the API's status view). */
-export async function dayPlanOf(storage: StorageService, waifu: Pick<WaifuConfig, "id" | "name">): Promise<DayPlan | undefined> {
-  return new HomeStore(storage, waifu.id, herSlug(waifu), () => homeLimitsOf(DEFAULT_APP_CONFIG.life)).readDay().catch(() => undefined);
 }
 
 /** Checks with the live app: `from` names resolve against everyone she can see. */

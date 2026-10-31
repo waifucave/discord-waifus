@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IsoDateStringSchema, RevisionedRecordSchema } from "./common.js";
 
-// DM schemas (spec 9.1, Living cast §4.4–§4.5): per-waifu settings, the per-conversation DM state and
+// DM schemas (spec 9.1, Living cast §4.4): per-waifu settings, the per-conversation DM state and
 // the rate-limit counters (with the forget floor and the automatic-notice bookkeeping).
 
 export const DmRateLimitSchema = z.object({
@@ -16,16 +16,14 @@ export const WaifuDmSettingsSchema = z.object({
   allowDms: z.boolean().default(false),
   rateLimit: DmRateLimitSchema.nullable().default({ ...DEFAULT_DM_RATE_LIMIT }), // null = unlimited
   notifyWhenLimited: z.boolean().default(true),
-  limitNotice: z.string().max(300).default(""), // "" = built-in template
-  // Living cast §4.5, §21.6c: sent once per bed time per user when a DM wake is deferred while she is asleep
-  // ("" = none). No model call; not counted by the rate limit.
-  sleepNotice: z.string().max(300).default("")
+  limitNotice: z.string().max(300).default("") // "" = built-in template
+  // `sleepNotice` is gone with her bed time (spec §38); a stray key is stripped.
 });
 export type WaifuDmSettings = z.infer<typeof WaifuDmSettingsSchema>;
 
 // Outer default for WaifuConfig.dm: files written before Phase 5 have no `dm` key.
 export function defaultWaifuDmSettings(): WaifuDmSettings {
-  return { allowDms: false, rateLimit: { ...DEFAULT_DM_RATE_LIMIT }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" };
+  return { allowDms: false, rateLimit: { ...DEFAULT_DM_RATE_LIMIT }, notifyWhenLimited: true, limitNotice: "" };
 }
 
 // user/dms/<userId>/<waifuId>.json (resource `dm:<userId>:<waifuId>`)
@@ -58,9 +56,7 @@ export const DmLimitStateSchema = RevisionedRecordSchema.extend({
    * never deletes this file.
    */
   floorMessageId: z.string().min(1).optional(),
-  /** Living cast §4.5: the start (ISO) of the bed time the sleep notice was last sent for. */
-  sleepNoticeSentFor: IsoDateStringSchema.optional(),
-  /** Automatic notices (limit, sleep) she sent: `ReadMessages` renders them as `[auto] …`. */
+  /** Automatic notices she sent (the limit notice; before spec §38 also the sleep notice): `ReadMessages` renders them as `[auto] …`. */
   autoMessageIds: z.array(z.string().min(1)).max(50).default([])
 });
 export type DmLimitState = z.infer<typeof DmLimitStateSchema>;

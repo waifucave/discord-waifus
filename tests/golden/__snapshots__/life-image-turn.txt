@@ -4,7 +4,7 @@
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> look what i made [image]"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call ReadMessages (call_1_ReadMessages) ---
 {"script":"text(await tools.read_messages({ place: \"bake-club/#general\" }))"}
@@ -15,7 +15,7 @@ bake-club/#general (Bake Club › #general)
 [14:00 #a1] Kevin: <@Ella> look what i made
 [image: /tmp/bake-club/general/a1-tart.png · "LEMON TART 4€"]
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 3 assistant ===
 --- tool call Read (call_1_Read) ---
 {"script":"text(await tools.read_file({ path: \"/tmp/bake-club/general/a1-tart.png\" }))"}
@@ -25,7 +25,7 @@ bake-club/#general (Bake Club › #general)
 /tmp/bake-club/general/a1-tart.png: png 6x4, 74 B
 --- image image/png · 74 bytes · 5e3e7c4fef75 ---
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 5 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"omg that glaze\", reply_to: \"#a1\" }, { text: \"saving this\" }] }))"}
@@ -34,4 +34,4 @@ bake-club/#general (Bake Club › #general)
 {"sent":["#a2","#a3"],"reactions":[]}
 [receipt] send_message to bake-club/#general: sent #a2 #a3; the whole list ran
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]

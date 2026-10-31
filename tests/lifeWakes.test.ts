@@ -191,19 +191,19 @@ describe("wake reasons (§4.1, §4.2)", () => {
     expect(JSON.parse((await (await import("./lifeFixtures.js")).homeOf(w, "ella").read("life/watches.json")) ?? "[]")).toEqual([]);
   });
 
-  it("deferred while she sleeps, a DM wake with a watch keeps its note for the morning batch", async () => {
+  it("deferred for her budget, a DM wake with a watch keeps its note for the batch", async () => {
     const at = "2026-10-24T14:00:00.000Z";
     const wake = { id: "w1", reason: "dm" as const, reasons: ["dm" as const, "watch" as const], watchId: "w3", matched: "exam", note: "his exam", placeKey: "dm_k_ella", fromUserId: KEVIN, fromName: "Kevin", at };
-    const queue = withDeferred({ immediate: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as never, wake, "sleep", new Date(at));
+    const queue = withDeferred({ immediate: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as never, wake, new Date(at));
     expect(queue.deferred.items).toEqual([wake]);
     expect(queue.deferred.places["dm_k_ella"]).toMatchObject({ dms: 1 });
     const view = { handle: () => "dm/kevin", unread: () => undefined, timeZone: "UTC" };
-    const lines = morningBatch({ reason: "sleep", since: new Date(at), until: new Date(at), places: [{ placeKey: "dm_k_ella", kind: "dm", mentions: 0, messages: 1 }], items: queue.deferred.items }, view);
+    const lines = morningBatch({ since: new Date(at), until: new Date(at), places: [{ placeKey: "dm_k_ella", kind: "dm", mentions: 0, messages: 1 }], items: queue.deferred.items }, view);
     expect(lines).toContain('  · watch matched · dm/kevin · "exam" · from Kevin · your note: "his exam"');
   });
 
   it("a DM dropped by its rate limit still brings her watch match", async () => {
-    const w = await world({ waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "", sleepNotice: "" } }] });
+    const w = await world({ waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: false, limitNotice: "" } }] });
     const hello = w.discord.post(dmOf("ella"), "hi!");
     await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, userDisplayName: "Kevin", channelId: "dm", messageId: hello.id, createdAt: hello.createdAt });
     w.cast.intake.flushDms();
@@ -438,12 +438,12 @@ describe("addressee detector (§4.3)", () => {
     expect(await reasons(w, "ella")).toEqual(["detector", "detector"]);
   });
 
-  it("chime-in: with `human`, one awake waifu gets a soft wake, at most once per room every 10 minutes", async () => {
-    const sleeping = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
-    const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, availability: sleeping }] });
+  it("chime-in: with `human`, one waifu who is around gets a soft wake, at most once per room every 10 minutes", async () => {
+    const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, life: { dailyBudgetUsd: 0.5 } }] });
+    await overBudget(w, "mina");
     w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 0.8, nobody: 0.2 } } };
     await say(w, "Sam what should I bake for my mom? she loves lemon");
-    // Only the awake one is offered at all (§24): the asleep one is left out of the cast.
+    // Only the one who is around is offered at all (§24): the one over her budget is left out of the cast.
     expect(w.detector.questions[0]).toEqual({ addressee: ["waifu_0", "human", "anyone", "all", "none"], chime_in: ["waifu_0", "nobody"] });
     expect(JSON.parse(w.detector.states[0]!).cast.map((member: { id: string; availability: string }) => [member.id, member.availability])).toEqual([["ella", "awake"]]);
     const [wake] = (await queued(w, "ella")).immediate;
@@ -472,7 +472,7 @@ describe("addressee detector (§4.3)", () => {
     expect(history.entries[0]!.woke).toBeUndefined();
   });
 
-  it("chime-in never picks an asleep, watched or authoring waifu", async () => {
+  it("chime-in never picks a watched or authoring waifu", async () => {
     const w = await world();
     await writeHerFile(w, "life/wakeups.json", JSON.stringify([{ kind: "watch", places: "bake-club/#general", filter: { words: ["lemon"] }, options: { until: "2026-10-25 14:00", once: false }, note: "lemons" }]));
     w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 1 } } };
@@ -683,7 +683,7 @@ describe("guards in order (§4.4, §4.5)", () => {
   });
 
   it("2. a rate-limited DM user is dropped; the fixed limit notice goes out once per period", async () => {
-    const w = await world({ waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 2, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } }] });
+    const w = await world({ waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 2, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" } }] });
     const at = w.clock.now().toISOString();
     await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, replyTimestamps: [at, at] }));
     for (const text of ["hello?", "hello??"]) {
@@ -710,11 +710,9 @@ describe("guards in order (§4.4, §4.5)", () => {
     expect((await queued(w, "ella")).immediate).toHaveLength(3);
   });
 
-  it("4. asleep: wakes are deferred (DMs too); the sleep notice goes once per window; the owner's wake goes through", async () => {
-    const sleeping = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
-    const w = await world({
-      waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", availability: sleeping, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "", sleepNotice: "zzz, I'll answer in the morning" } }]
-    });
+  it("4. (no sleep or busy guard any more, §38): at any hour a mention and DMs queue at once and no notice is sent", async () => {
+    const w = await world({ waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "" } }] });
+    w.clock.ms = Date.parse("2026-10-25T03:30:00.000Z");
     await say(w, "<@ella> you up?", { mentions: { [ELLA_BOT]: "Ella" } });
     for (const text of ["psst", "still there?"]) {
       const message = w.discord.post(dmOf("ella"), text);
@@ -723,13 +721,9 @@ describe("guards in order (§4.4, §4.5)", () => {
       await w.cast.settle();
     }
     const queue = await queued(w, "ella");
-    expect(queue.immediate).toEqual([]);
-    expect(queue.deferred.reason).toBe("sleep");
-    expect(queue.deferred.places[ROOM_KEY]).toMatchObject({ mentions: 1 });
-    expect(queue.deferred.places[`dm_${KEVIN}_ella`]).toMatchObject({ dms: 2 });
-    expect(w.discord.sent.map((sent) => sent.content)).toEqual(["zzz, I'll answer in the morning"]);
-    expect(await w.cast.ownerWake("ella", "test")).toBe("queued");
-    expect(await reasons(w, "ella")).toEqual(["owner"]);
+    expect(queue.immediate.map((wake) => wake.reason)).toEqual(["mention", "dm", "dm"]);
+    expect(queue.deferred).toEqual({ places: {}, items: [] });
+    expect(w.discord.sent).toEqual([]);
   });
 
   it("5. over her daily budget: deferred to the next day; the owner's wake still goes through", async () => {
@@ -755,16 +749,14 @@ describe("guards in order (§4.4, §4.5)", () => {
   });
 
   it("combined guards apply in order: the first that matches decides", async () => {
-    const sleeping = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
     const w = await world({
       waifus: [
         {
           id: "ella",
           name: "Ella",
           botId: "ella-bot",
-          availability: sleeping,
           life: { dailyBudgetUsd: 0.5 },
-          dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "zzz" }
+          dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" }
         }
       ],
       config: (config) => ({ ...config, life: { ...config.life, maxWakesPerUserPerHour: 1 } })
@@ -772,21 +764,20 @@ describe("guards in order (§4.4, §4.5)", () => {
     const day = w.clock.now().toISOString().slice(0, 10);
     await mkdir(path.join(w.root, "user/usage"), { recursive: true });
     await appendFile(path.join(w.root, "user/usage", `${day}.jsonl`), `${JSON.stringify({ at: w.clock.now().toISOString(), waifuId: "ella", purpose: "life", costUsd: 0.6 })}\n`);
-    // 2 before 4: a rate-limited DM user gets the limit notice, never the sleep notice; nothing is deferred.
+    // 2 before 5: a rate-limited DM user gets the limit notice; nothing is deferred.
     await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, replyTimestamps: [w.clock.now().toISOString()] }));
     const dm = w.discord.post(dmOf("ella"), "are you there?");
     await w.cast.onDirectMessage({ waifuId: "ella", botId: "ella-bot", userId: KEVIN, channelId: "dm", messageId: dm.id, createdAt: dm.createdAt });
     w.cast.intake.flushDms();
     await w.cast.settle();
-    expect(w.discord.sent.map((sent) => sent.content)).not.toContain("zzz");
     expect(w.discord.sent).toHaveLength(1);
     expect((await queued(w, "ella")).deferred.places[`dm_${KEVIN}_ella`]).toBeUndefined();
-    // 4 before 5: asleep and over budget, a mention waits for her morning under "sleep".
+    // 5: over budget, a mention waits for her next local day.
     await say(w, "<@ella> one", { mentions: { [ELLA_BOT]: "Ella" } });
     let queue = await queued(w, "ella");
-    expect(queue.deferred.reason).toBe("sleep");
+    expect(queue.deferred.reason).toBe("budget");
     expect(queue.deferred.places[ROOM_KEY]).toMatchObject({ mentions: 1 });
-    // 3 before 4: past the per-user limit the next mention is a quiet line, not another deferred one.
+    // 3 before 5: past the per-user limit the next mention is a quiet line, not another deferred one.
     await say(w, "<@ella> two", { mentions: { [ELLA_BOT]: "Ella" } });
     queue = await queued(w, "ella");
     expect(queue.deferred.places[ROOM_KEY]).toMatchObject({ mentions: 1 });
@@ -800,7 +791,7 @@ describe("guards in order (§4.4, §4.5)", () => {
       transform: (server) => ({ ...server, paused: true })
     });
     expect(await w.cast.router.route("ella", { id: newWakeId(), reason: "owner", note: "x", at: w.clock.now().toISOString() }, { guildId: GUILD })).toBe("dropped");
-    // Outside that server the owner skips 3–6: queued despite sleep, budget and the user limit.
+    // Outside that server the owner skips 3–6: queued despite her budget and the user limit.
     expect(await w.cast.ownerWake("ella", "test")).toBe("queued");
   });
 
@@ -855,53 +846,29 @@ describe("edits and deletes (§4.2, §10.3)", () => {
   });
 });
 
-describe("Jev only sees who is around (§24)", () => {
-  const BED_13_15 = { bedTime: { enabled: true, start: "13:00", end: "15:00" }, busy: [] };
+describe("Jev only sees who is around (§24, §38)", () => {
   const history = async (w: LifeWorld) =>
     DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8"))).entries;
-  const minutesAgo = (w: LifeWorld, minutes: number) => new Date(w.clock.ms - minutes * 60_000).toISOString();
 
-  it("busy: left out unless the place is open for her (she joined in there)", async () => {
+  it("at any hour everyone under her budget is around, whatever an old config or state says (no busy, bed time or asleep)", async () => {
     const w = await world();
-    await writeHerFile(w, "life/schedule.json", JSON.stringify({ date: "2026-10-24", busy: [{ from: "13:00", to: "16:00", why: "studio shift" }] }), "mina");
+    // What 3.8 left behind: a day file with a busy block, and state from her bed time.
+    await writeHerFile(w, "life/schedule.json", JSON.stringify({ date: "2026-10-25", busy: [{ from: "00:00", to: "23:59", why: "studio shift" }] }), "mina");
+    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: "2026-10-24T20:00:00.000Z", busyOpen: {} }) as never);
+    w.clock.ms = Date.parse("2026-10-25T03:00:00.000Z");
     w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
     await say(w, "anyone know a good scone recipe?");
-    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
-    expect(await reasons(w, "ella")).toEqual(["detector"]);
-    expect(await reasons(w, "mina")).toEqual([]);
-    expect((await history(w)).at(-1)).toMatchObject({ choice: "anyone", woke: ["ella"], leftOut: [{ waifuId: "mina", why: "busy" }] });
-    // She sent here during the block after a wake that got through: the place is open, she is around.
-    await updateLifeState(w.storage, "mina", (state) => ({ ...state, busyOpen: { [ROOM_KEY]: { until: new Date(w.clock.ms + 10 * 60_000).toISOString(), blockEnd: "2026-10-24T16:00:00.000Z" } } }));
-    await say(w, "and what about jam?");
     expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella", "mina"]);
+    expect(JSON.parse(w.detector.states.at(-1)!).cast.map((member: { availability: string }) => member.availability)).toEqual(["awake", "awake"]);
     expect((await history(w)).at(-1)!.leftOut).toBeUndefined();
+    // The `anyone` draw lands on one of them (×3 × recency for both, no availability weight).
+    expect([...(await reasons(w, "ella")), ...(await reasons(w, "mina"))]).toEqual(["detector"]);
   });
 
-  it("bed time: up late or dozing, only where she sent within life.busyEngagedMinutes; asleep never", async () => {
-    const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, availability: BED_13_15 }] });
-    w.detector.answer = { choice: "none", probabilities: { none: 1 } };
-    // Up late, chatting here: around.
-    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: minutesAgo(w, 2), recentSends: { [ROOM_KEY]: minutesAgo(w, 2) } }));
-    await say(w, "so who's up");
-    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella", "mina"]);
-    // Up late, but chatting somewhere else: not here.
-    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: minutesAgo(w, 2), recentSends: { "dm_300000000000000003_mina": minutesAgo(w, 2) } }));
-    await say(w, "still nobody?");
-    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
-    expect((await history(w)).at(-1)!.leftOut).toEqual([{ waifuId: "mina", why: "bed time" }]);
-    // Dozing (her last send 20 minutes ago): left out.
-    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: minutesAgo(w, 20), recentSends: { [ROOM_KEY]: minutesAgo(w, 20) } }));
-    await say(w, "hello?");
-    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
-    expect((await history(w)).at(-1)!.leftOut).toEqual([{ waifuId: "mina", why: "bed time" }]);
-    // Asleep (an hour into her bed time, no send since): left out.
-    await updateLifeState(w.storage, "mina", (state) => ({ ...state, lastSentAt: undefined, recentSends: {} }));
-    await say(w, "ok then");
-    expect((await history(w)).at(-1)!.leftOut).toEqual([{ waifuId: "mina", why: "asleep" }]);
-  });
-
-  it("nobody around: no question, an `anyone` message wakes nobody, and the history says why", async () => {
-    const w = await world({ waifus: TWO.map((waifu) => ({ ...waifu, availability: BED_13_15 })) });
+  it("nobody around (both over budget): no question, an `anyone` message wakes nobody, and the history says why", async () => {
+    const w = await world({ waifus: TWO.map((waifu) => ({ ...waifu, life: { dailyBudgetUsd: 0.5 } })) });
+    await overBudget(w, "ella");
+    await overBudget(w, "mina");
     w.detector.answer = { choice: "anyone", probabilities: { anyone: 1 } };
     await say(w, "anyone around?");
     expect(w.detector.calls).toEqual([]);
@@ -911,8 +878,8 @@ describe("Jev only sees who is around (§24)", () => {
     expect((await history(w)).at(-1)).toMatchObject({
       choice: "nobody_around",
       leftOut: [
-        { waifuId: "ella", why: "asleep" },
-        { waifuId: "mina", why: "asleep" }
+        { waifuId: "ella", why: "budget" },
+        { waifuId: "mina", why: "budget" }
       ]
     });
     expect((await history(w)).at(-1)!.woke).toBeUndefined();
@@ -920,9 +887,7 @@ describe("Jev only sees who is around (§24)", () => {
 
   it("over her daily budget she is left out (`budget`); `all` wakes only who is around", async () => {
     const w = await world({ waifus: [TWO[0]!, { ...TWO[1]!, life: { dailyBudgetUsd: 0.5 } }] });
-    const day = w.clock.now().toISOString().slice(0, 10);
-    await mkdir(path.join(w.root, "user/usage"), { recursive: true });
-    await appendFile(path.join(w.root, "user/usage", `${day}.jsonl`), `${JSON.stringify({ at: w.clock.now().toISOString(), waifuId: "mina", purpose: "life", costUsd: 0.75 })}\n`);
+    await overBudget(w, "mina");
     w.detector.answer = { choice: "all", probabilities: { all: 1 } };
     await say(w, "what can you all do");
     expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
@@ -931,4 +896,17 @@ describe("Jev only sees who is around (§24)", () => {
     expect((await readLifeFile(w.storage, "mina", "wakes")).deferred.places).toEqual({});
     expect((await history(w)).at(-1)).toMatchObject({ choice: "all", woke: ["ella"], leftOut: [{ waifuId: "mina", why: "budget" }] });
   });
+
+  it("an older history entry that left someone out as busy, in bed time or asleep still reads", async () => {
+    const entry = { at: "2026-10-24T14:00:00.000Z", channelId: "1", burstMessageIds: ["2"], choice: "anyone", probabilities: {}, leftOut: [{ waifuId: "mina", why: "bed time" }, { waifuId: "aria", why: "asleep" }, { waifuId: "lumi", why: "busy" }] };
+    expect(DetectorHistoryFileSchema.parse({ schemaVersion: 2, revision: 1, updatedAt: entry.at, guildId: GUILD, entries: [entry] }).entries[0]!.leftOut).toEqual(entry.leftOut);
+  });
 });
+
+/** Her spending today is over a 0.5 budget. */
+async function overBudget(w: LifeWorld, waifuId: string): Promise<void> {
+  const day = w.clock.now().toISOString().slice(0, 10);
+  await mkdir(path.join(w.root, "user/usage"), { recursive: true });
+  await appendFile(path.join(w.root, "user/usage", `${day}.jsonl`), `${JSON.stringify({ at: w.clock.now().toISOString(), waifuId, purpose: "life", costUsd: 0.75 })}\n`);
+  w.cast.cost.invalidate();
+}

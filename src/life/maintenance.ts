@@ -11,7 +11,6 @@ import type { WaifuConfig } from "../shared/schemas/domain.js";
 import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { homeStoreFor } from "./home/index.js";
-import { availabilityFor } from "./busy.js";
 import { LIFE_DIR, PLACES_FILE, PROFILE_FILE } from "./home/pathRules.js";
 import { lifeTool, maintenanceToolNames, modelTools } from "./tools/index.js";
 import { toolError, type ToolOutput } from "./tools/types.js";
@@ -147,7 +146,7 @@ export async function runNotesSession(
     waifu: o.waifu,
     model: o.model,
     system: maintenanceSystem(o.waifu),
-    opening: [o.instruction, await homeListing(deps, o.waifu), timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, o.waifu, deps.now()) })],
+    opening: [o.instruction, await homeListing(deps, o.waifu), timeLine({ now: deps.now(), timeZone: deps.timeZone })],
     maxRounds: MAINTENANCE_MAX_ROUNDS,
     ...(effort ? { effort } : {}),
     ...(o.signal ? { signal: o.signal } : {}),

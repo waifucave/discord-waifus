@@ -12,11 +12,11 @@ Navigation (`src/frontend/nav.ts`): Home, Cast, Life, Rooms, Activity, Settings.
 | Screen | Shows | Owner actions |
 |---|---|---|
 | **Home** (`HomeScreen.tsx`) | Status (connecting / paused / live / Discord offline), a menu, and a Needs-you bar only when something needs the owner: owner notices, incomplete migrations, unfinished forget parts, unreadable forget-record copies, queued forget scrubs, model warnings | Dismiss dismissible model warnings |
-| **Cast** (`CastScreen.tsx`) | Every waifu: avatar, model, own bot or not, ready / no model / no bot / disabled | Edit: name, display name, enabled, persona, custom instructions (≤ 4,000), bot and Discord profile (username, bio, nicknames, avatar, banner), model + effort, daily budget, `scheduleInPrompt`, `wakeOnName`, bed time, DM settings (allow DMs, rate limit, notify when limited, limit notice, sleep notice); delete |
-| **Life** (`LifeScreen.tsx`, `LifeFiles.tsx`) | Mosaic of every waifu (state, waiting wakes, today's cost vs budget, last turn, review chip) and recent sends/wakes; per waifu: now (awake / busy / up late / dozing / asleep, idle or mid-turn), queue (now/deferred/quiet), today's cost, epoch, last compaction/rest/dream, live timeline, summary, needs review, web searches today, her wakeups (timed, watches and pages, each with its code, state and why it stopped; delete one), her files (home, `/tmp`, `/transcripts`) | **Wake** with a note (≤ 500); **Compact** and **Reset…** (disabled while Discord is offline); "Show private chats" (local only); dismiss review lines; delete a reminder or watch; edit/create/delete her files (same checks as her Edit tool, conflict on a stale hash); forget a person (dry run, then a confirm dialog with the limits) |
+| **Cast** (`CastScreen.tsx`) | Every waifu: avatar, model, own bot or not, ready / no model / no bot / disabled | Edit: name, display name, enabled, persona, custom instructions (≤ 4,000), bot and Discord profile (username, bio, nicknames, avatar, banner), model + effort, daily budget, `wakeOnName`, DM settings (allow DMs, rate limit, notify when limited, limit notice); delete (§38: no bed time, no `scheduleInPrompt`, no sleep notice) |
+| **Life** (`LifeScreen.tsx`, `LifeFiles.tsx`) | Mosaic of every waifu (state, waiting wakes, today's cost vs budget, last turn, review chip) and recent sends/wakes; per waifu: now (idle or mid-turn; no sleep states since §38), queue (now/deferred/quiet), today's cost, epoch, last compaction/rest/dream, live timeline, summary, needs review, web searches today, her wakeups (timed, watches and pages, each with its code, state and why it stopped; delete one), her files (home, `/tmp`, `/transcripts`) | **Wake** with a note (≤ 500); **Compact** and **Reset…** (disabled while Discord is offline); "Show private chats" (local only); dismiss review lines; delete a reminder or watch; edit/create/delete her files (same checks as her Edit tool, conflict on a stale hash); forget a person (dry run, then a confirm dialog with the limits) |
 | **Rooms** (`RoomsScreen.tsx`) | Servers, channels, cast per channel, time of the last detector decision | Server on/off (`paused`), detector override (inherit / off / another target), threads share the cast or stay silent, cast toggles per waifu |
 | **Activity** (`ActivityScreen.tsx`) | Logs, model calls and replies (life/maintenance/compaction/web calls metadata only), usage by day/waifu/purpose/model/provider | — |
-| **Settings** (`SettingsScreen.tsx`) | Providers, Models, Search, Detector, Life limits (Turns, Sending, Wakes, Her day, Context and images, Rest, Home folder, /tmp, Simulated Bash, Dreaming limits, Dream model, Compaction, Waiting before a wake, After a restart), Assistant, Permissions (who can use `/norma`: Discord user IDs), App, Remote Access | Edit; App → Controls: Pause, Resume, Reload Discord, Clear OCR cache, Run setup wizard |
+| **Settings** (`SettingsScreen.tsx`) | Providers, Models, Search, Detector, Life limits (Turns, Sending, Wakes, Context and images, Rest, Home folder, /tmp, Simulated Bash, Dreaming limits, Dream model, Compaction, Waiting before a wake, After a restart), Assistant, Permissions (who can use `/norma`: Discord user IDs), App, Remote Access | Edit; App → Controls: Pause, Resume, Reload Discord, Clear OCR cache, Run setup wizard |
 
 The assistant docks beside the main column (a full-width sheet below 900 px).
 
@@ -46,7 +46,7 @@ Every route is in `ROUTE_POLICY_MANIFEST`; summaries at `GET /api/help`. The lif
 
 | Route | Behaviour |
 |---|---|
-| `GET /api/waifus/:id/life` | Status, availability with bed phase, queue (first 50), today's cost; summary hidden unless a local `includePrivate=1` |
+| `GET /api/waifus/:id/life` | Status, queue (first 50), today's cost; summary hidden unless a local `includePrivate=1` |
 | `GET /api/waifus/:id/life/log?epoch&before&limit` | Default 50, ≤ 200 lines; old epochs 7 days; D14 redaction |
 | `POST /api/waifus/:id/wake {note?}` | Owner wake through the router; with the cast offline or reloading it is queued in `wakes.json` (`queued_offline`) and runs when the cast connects |
 | `POST …/life/compact` | Needs the live cast (409 `RuntimeOffline`) and a model (409 `Conflict`, `details.code`); waits up to 10 s, then 202 `{state: "running"}`; a pause/shutdown → `{state: "aborted"}`; a pending epoch start is applied instead of a second summary |
@@ -145,15 +145,12 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | | `life.send.maxFiles` | 4 | Attachments per message (0 = no `attach` lines) |
 | Wakes | `life.maxWakesPerUserPerHour` | 20 | Per-user wake limit |
 | | `life.maxWatchFiresPerDay` | 24 | Repeating watch cap |
-| | `life.notificationLinesPerPlace` / `morningLinesPerPlace` | 8 / 8 | Lines per place |
+| | `life.notificationLinesPerPlace` | 8 | Lines per place (also in the budget batch) |
 | | `life.maxWaifuTriggeredTurns` | 0 (off) | Room loop guard |
 | Holds | `discord.debounce.serverMs` / `serverMaxWaitMs` | 1.5 s / 10 s | Room burst |
 | | `discord.debounce.dmMs` / `dmMaxWaitMs` | 2.5 s / 60 s | DM burst |
 | | `discord.debounce.typingHoldMs` | 6 s | Per typing event |
 | | `discord.dm.resumeWindowMinutes` | 60 | Boot catch-up window |
-| Her day | `life.dayStartHourLocal` | 8 | Morning without a bed time |
-| | `life.busyEngagedMinutes` | 10 | Open place / up late |
-| | `life.bedDozeMinutes` | 60 | Dozing before asleep (0 = hard sleep) |
 | Context | `life.maxContextTokens` | 96,000 | Budget cap |
 | | `compaction.triggerRatio` | 0.7 | The rest point: her rest notice (with `life.restNotice` off, compaction) |
 | | `compaction.emergencyRatio` | 0.9 | Emergency summary: auto-compaction between turns (an update must keep it > `triggerRatio`; a stored config with it at or below the trigger loads with it moved to the trigger + 0.04, at most 0.99, and the upgrade writes that for a trigger of 0.9 or more) |
@@ -162,17 +159,15 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | Rest | `life.restNotice` / `restSummaryMinChars` | true / 200 | Rest turn (`life.restNoticeRatio` was removed in §26) |
 | | `life.cacheRestMinRatio` / `cacheRestLeadMinutes` | 0.5 / 10 | Rest before her prompt cache goes cold (§25): from this share of the trigger, this many minutes before the 1-hour cache expires |
 | | `life.selfSummaryMinRatio` / `selfSummaryCooldownMinutes` | 0.3 / 120 | `<summary>` guards |
-| Dreaming | `life.dreamAfterAsleepMinutes` | 15 | Asleep before the dream |
-| | `life.maintenanceHourLocal` | 5 | Dream hour without a bed time |
+| Dreaming | `life.maintenanceHourLocal` | 5 | Dream hour (every waifu, daily) |
 | | `life.dreamModel` / `dreamMaxRounds` / `dreamWindowMaxChars` | her model / 60 / 200,000 | Dream session |
 | Computer | `life.home.*`, `life.tmp.*`, `life.attachments.maxBytes` | 50 MiB, 2,000 files, 500 folders; 200 MiB, 2,000 files, 7 days; 10 MiB | Folder limits |
 | | `life.bash.enabled` / `python` / `maxTimeoutMs` / `maxOutputChars` / `maxMemoryMb` | true / true / 60 s / 16,000 / 512 | Bash |
 | Web | `search.maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | 2 / 50 / 20 | searches in her Web scripts (`search_query`; 0 = off) |
 | | `life.webFetch.maxPerTurn` / `maxPerWaifuPerDay` / `cacheMinutes` | 6 / 20 / 15 | pages in her Web scripts (`open`, `click`, `find`/`ask` on a new page; 0 = off; both off: no Web tool); `life.webFetch.model` answers `ask`; `directMaxChars` is no longer used |
 | Detector | `detector.target` | `openrouter:typesafe/jev-1.14` | `""` = fallback only |
-| Waifu | `wakeOnName` / `scheduleInPrompt` | true / true | |
+| Waifu | `wakeOnName` | true | |
 | | `life.dailyBudgetUsd` | none | Daily budget |
-| | `availability.bedTime` | off, 23:00–07:00 | Bed time |
 | | `dm.allowDms` / `dm.rateLimit` / `dm.notifyWhenLimited` | false / 30 per 60 min / true | DMs |
-| | `dm.limitNotice` / `dm.sleepNotice` | built-in / none | Automatic DMs (≤ 300) |
+| | `dm.limitNotice` | built-in | Automatic DM (≤ 300) |
 | | `customInstructions` | "" | Appended after the persona (≤ 4,000) |

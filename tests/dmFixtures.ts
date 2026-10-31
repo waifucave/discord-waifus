@@ -153,7 +153,6 @@ export async function writeWaifu(
     ...(o.modelId === null ? {} : { model: { providerId: "openai", modelId: o.modelId ?? "gpt-6-luna" } }),
     botId: "ella-bot",
     persona: "sunny baker",
-    availability: { bedTime: { enabled: false, start: "23:00", end: "07:00" }, busy: [] },
     dm: { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", ...o.dm }
   }));
 }

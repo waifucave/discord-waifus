@@ -22,8 +22,7 @@
 //      the next scrub run and before her next turn (after the compaction backoff);
 //   3. other state: their wakes and pending notices, every wakeup (in her `~/life/wakeups.json`,
 //      §30.3) watching their DM, with a filter resolved to them, or whose note, code or state names
-//      them (removed whole), her day's text naming them (`~/life/schedule.json`), her DM read cursor
-//      and handle, maintenance.jsonl and review lines, the host's recent web queries naming them, and
+//      them (removed whole), her DM read cursor and handle, maintenance.jsonl and review lines, the host's recent web queries naming them, and
 //      her slice of the Living cast archive. Someone else's wake that names them keeps its place and
 //      loses the quote;
 //   4. notes scrub: a maintenance session told to remove everything about the person, on her model,
@@ -85,7 +84,7 @@ import { markedUserIds, MEMORY_INDEX } from "./home/memoryIndex.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
 import { memoryIndexForPrompt } from "./home/memoryIndex.js";
 import type { HomeStore } from "./home/homeStore.js";
-import { DAY_SCHEDULE_FILE, LIFE_DIR, PLACES_FILE, PROFILE_FILE, WAKEUPS_FILE } from "./home/pathRules.js";
+import { LIFE_DIR, PLACES_FILE, PROFILE_FILE, WAKEUPS_FILE } from "./home/pathRules.js";
 import { functionSourceOf, type WakeupEntry } from "./wakeups/file.js";
 import { saveWakeupStates } from "./wakeups/schedule.js";
 import { dropState } from "./wakeups/state.js";
@@ -93,7 +92,7 @@ import { homeDir, lifeDir, legacyNotesDir } from "./paths.js";
 import { collectPlaces, dropPlaceHandles } from "./places.js";
 import { scrubSearchUsage } from "./search.js";
 import { foldName, hasNoWordBoundaries, isGenericName, isWeakName, namesSomeone } from "./text.js";
-import { REMOVED_TEXT, scrubWakeQueue } from "./wakeQueue.js";
+import { scrubWakeQueue } from "./wakeQueue.js";
 import { dreamModelOf, dropDreamCursorEntries } from "./dream.js";
 import { forgetPersonInHerTranscripts } from "./transcripts/forget.js";
 
@@ -367,11 +366,10 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     }
   );
   await dropDreamCursorEntries(deps.storage, waifu.id, new Set([dmKey])).catch(() => undefined);
-  // Her DM with them as an open place (§21.4, §21.6c): their DM key goes from her state too.
+  // Her latest send in their DM (§30.6): their DM key goes from her state too.
   await updateLifeState(deps.storage, waifu.id, (current) => {
-    if (!current.busyOpen?.[dmKey] && !current.recentSends?.[dmKey]) return current;
-    const without = <T>(record: Record<string, T> | undefined) => (record ? Object.fromEntries(Object.entries(record).filter(([key]) => key !== dmKey)) : undefined);
-    return { ...current, busyOpen: without(current.busyOpen), recentSends: without(current.recentSends) };
+    if (!current.recentSends?.[dmKey]) return current;
+    return { ...current, recentSends: Object.fromEntries(Object.entries(current.recentSends).filter(([key]) => key !== dmKey)) };
   });
   if (o.dmOnly) {
     let removed = transcriptLines + (await scrubWakeQueue(deps.storage, waifu.id, { userId: "", placeKeys: new Set([dmKey]), mentions: () => false }));
@@ -412,24 +410,6 @@ export async function scrubOtherState(deps: LifeDeps, waifu: WaifuConfig, identi
     const source = functionSourceOf(entry);
     if (source !== undefined) review("wakeups")(source, dm);
     return false;
-  });
-  // Her day (§21.6): its text fields are hers too; one that names the person becomes `(removed)`.
-  await home.rewriteDay((plan) => {
-    const scrub = (text: string): string => {
-      if (mentions(text)) {
-        removed += 1;
-        return REMOVED_TEXT;
-      }
-      review("schedule")(text);
-      return text;
-    };
-    return {
-      ...plan,
-      ...(plan.mood !== undefined ? { mood: scrub(plan.mood) } : {}),
-      busy: plan.busy.map((block) => ({ ...block, why: scrub(block.why) })),
-      plans: plan.plans.map((item) => ({ ...item, what: scrub(item.what) })),
-      ...(plan.note !== undefined ? { note: scrub(plan.note) } : {})
-    };
   });
   removed += await scrubNeedsReview(deps.storage, waifu.id, mentions);
   // Her DM cursor goes whole: the conversation is gone, and the floor holds on the read path.
@@ -652,8 +632,8 @@ export async function startEpochAndVerify(deps: LifeDeps, waifu: WaifuConfig, id
   const out: Verify = { removedLines: 0, removedSentences: 0, removedNotes: 0, needsReview: [] };
   const home = homeStoreFor(deps, waifu);
   // Every text file of her home (§16.9), except the ones step 3 handled by their own rules (her
-  // wakeups and day) and places.md (the app's), all in ~/life/.
-  const all = new Map([...(await home.readAllText())].filter(([notePath]) => !([WAKEUPS_FILE, PLACES_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as string[]).map((name) => `${LIFE_DIR}/${name}`).includes(notePath)));
+  // wakeups and profile) and places.md (the app's), all in ~/life/.
+  const all = new Map([...(await home.readAllText())].filter(([notePath]) => !([WAKEUPS_FILE, PLACES_FILE, PROFILE_FILE] as string[]).map((name) => `${LIFE_DIR}/${name}`).includes(notePath)));
   let notesChanged = (await deletePersonNotes(home, all, identity, out)).length > 0;
   // Notes marked as someone else's: a name match there (or in the index line linking one) is
   // listed for review, never removed (two people may share the name).

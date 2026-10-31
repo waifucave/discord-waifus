@@ -7,7 +7,6 @@ import {
   DiscordBotsFileSchema,
   ModelChoiceSchema,
   ServerConfigSchema,
-  WaifuAvailabilitySchema,
   WaifuConfigSchema,
   WaifuLifeSettingsSchema
 } from "./domain.js";
@@ -45,9 +44,7 @@ export const UpdateWaifuBodySchema = WaifuConfigSchema.partial().extend({
   enabled: z.boolean().optional(),
   persona: z.string().optional(),
   model: ModelChoicePatchSchema,
-  availability: partialWithoutDefaults(WaifuAvailabilitySchema).optional(),
   customInstructions: z.string().max(4000).optional(),
-  scheduleInPrompt: z.boolean().optional(),
   dm: partialWithoutDefaults(WaifuDmSettingsSchema).optional(),
   // Living cast §4.1 / §4.4: kept when a PUT leaves them out; `life.dailyBudgetUsd: null` = no budget.
   wakeOnName: z.boolean().optional(),
@@ -119,16 +116,6 @@ export const DetectorConfigBodySchema = z.object({
 
 // ---- responses: lives (§14.1) ---------------------------------------------------------------------
 
-export const LifeAvailabilitySchema = z.object({
-  state: z.enum(["awake", "busy", "asleep"]),
-  /** busy: the block's reason. */
-  reason: z.string().optional(),
-  /** busy: when the block ends ("12:00"). asleep: when her bed time ends (ISO). */
-  until: z.string().optional(),
-  /** In her bed time (§21.6c): up late (awake), dozing (busy) or asleep. */
-  bed: z.enum(["up_late", "dozing", "asleep"]).optional()
-});
-
 /** One queued wake as the dashboard shows it. DM previews are hidden unless the request may see DM content. */
 export const LifeWakeViewSchema = z.object({
   id: z.string(),
@@ -153,7 +140,6 @@ export const LifeStatusResponseSchema = z.object({
   hasBot: z.boolean(),
   /** `running`: a live cast runtime hosts her life (Discord connected). `busy`: a turn cycle runs now. */
   runtime: z.object({ running: z.boolean(), busy: z.boolean(), paused: z.boolean() }),
-  availability: LifeAvailabilitySchema,
   /** Her life has started (its first epoch's system prompt was built). */
   started: z.boolean(),
   status: z.enum(["idle", "turn"]),
@@ -168,7 +154,7 @@ export const LifeStatusResponseSchema = z.object({
   failedTurnAt: IsoDateStringSchema.nullable(),
   queue: z.object({
     immediate: z.number().int().nonnegative(),
-    deferred: z.object({ reason: z.enum(["sleep", "budget"]).nullable(), since: IsoDateStringSchema.nullable(), places: z.number().int().nonnegative(), items: z.number().int().nonnegative() }),
+    deferred: z.object({ reason: z.enum(["budget"]).nullable(), since: IsoDateStringSchema.nullable(), places: z.number().int().nonnegative(), items: z.number().int().nonnegative() }),
     quiet: z.number().int().nonnegative(),
     wakes: z.array(LifeWakeViewSchema)
   }),
@@ -247,7 +233,7 @@ export const NeedsReviewDismissResponseSchema = z.object({ waifuId: z.string(), 
 
 export const WakeResponseSchema = z.object({
   waifuId: z.string(),
-  /** queued: a turn starts shortly. deferred: she is asleep or over budget. quiet: merged into a queued line. dropped: paused or disabled. queued_offline: Discord is offline; it waits in her queue. */
+  /** queued: a turn starts shortly. deferred: she is over budget. quiet: merged into a queued line. dropped: paused or disabled. queued_offline: Discord is offline; it waits in her queue. */
   outcome: z.enum(["queued", "deferred", "quiet", "dropped", "queued_offline"]),
   wakeId: z.string().optional()
 });
@@ -341,8 +327,8 @@ export const HerFileResponseSchema = z.object({
   tooLarge: z.literal(true).optional(),
   /** `~/life/places.md` (kept up to date by the app) or a redacted wakeups.json: writes are refused. */
   readOnly: z.literal(true).optional(),
-  /** A file in `~/life/`: every write is checked (§30.3, §17.1; `schedule` is her day, §21.2). */
-  special: z.enum(["wakeups", "profile", "schedule"]).optional(),
+  /** A file in `~/life/`: every write is checked (§30.3, §17.1). */
+  special: z.enum(["wakeups", "profile"]).optional(),
   private: z.literal(true).optional(),
   /**
    * `~/life/wakeups.json` with a wakeup watching a private chat (or an "everywhere" watch's state),

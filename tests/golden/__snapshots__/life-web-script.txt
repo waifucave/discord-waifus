@@ -4,7 +4,7 @@
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> what temperature for lemon tart?"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call Web (call_1_Web) ---
 {"script":"const r = await tools.web__run({ search_query: [{ q: \"lemon tart recipe\", n: 3 }] });\nconst url = r.search[0].hits[0].url;\nconst p = await tools.web__run({ open: [{ ref_id: url }], find: [{ ref_id: url, pattern: \"oven\" }] });\ntext({ title: p.pages[0].title, links: p.pages[0].links });\ntext(p.find[0]);"}
@@ -14,4 +14,4 @@
 {"title":"Lemon tart | Bake Club","links":[{"id":1,"text":"crust","url":"https://bake.example/crust"}]}
 {"url":"https://bake.example/lemon-tart","pattern":"oven","matches":[{"lineno":7,"text":"Preheat the oven to 180C."}]}
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]

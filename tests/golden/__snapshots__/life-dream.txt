@@ -23,7 +23,7 @@ Example: return await tools.apply_patch(["*** Begin Patch", "*** Update File: ~/
   {"type":"object","properties":{"command":{"type":"string","description":"The command (a whole script is fine)."},"timeout_ms":{"type":"integer","minimum":1000,"maximum":60000,"description":"How long it may run (default 10000, at most 60000)."}},"required":["command"],"additionalProperties":false}
 === 0 user ===
 --- text ---
-[system] She is asleep: time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day. Leave ~/life/ alone (her day, wakeups, profile and places are hers to keep).
+[system] Time to dream. Her home (~) holds her notes; /transcripts holds what was said where she is, one file per place per day. Leave ~/life/ alone (her wakeups, profile and places are hers to keep).
 1. Read the dream window below: in each file, only the lines from the line number given (as Read numbers them).
 2. Add memories from the window only: new people, places, facts, plans, how things felt. Write them as her notes, in her voice and the layout her notes already use, and add a line to MEMORY.md for each new note.
 3. Check every note against the window. Change a fact only when the window clearly says otherwise (the newest wins) and keep everything else exactly as it is. Never delete or change a note because the window doesn't mention it. You may grep older transcript days to confirm a fact the window touches, but add nothing from before the window.
@@ -42,7 +42,7 @@ People she talked to in this window who have no note yet: Mina (user:30000000000
 --- text ---
 Calendar as of Sat 24 Oct (look dates up here, don't count): last week Mon 12 Oct · Tue 13 Oct · Wed 14 Oct · Thu 15 Oct · Fri 16 Oct · Sat 17 Oct · Sun 18 Oct; this week Mon 19 Oct · Tue 20 Oct · Wed 21 Oct · Thu 22 Oct · Fri 23 Oct · Sat 24 Oct (today) · Sun 25 Oct; next week Mon 26 Oct · Tue 27 Oct · Wed 28 Oct · Thu 29 Oct · Fri 30 Oct · Sat 31 Oct · Sun 1 Nov.
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call Bash (call_1_Bash) ---
 {"command":"cat /transcripts/bake-club/general/2026-10-24.md"}

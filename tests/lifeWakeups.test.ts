@@ -489,10 +489,31 @@ describe("a repeating watch's 10-minute spacing (§30.2, 2026-10-30)", () => {
     await wakeup(w, 'watch("bake-club/#general", {any: true}, {for: "2h", once: false}, "film night")');
     await post(w, "door joke");
     w.clock.advance(20_000);
-    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastSentAt: w.clock.now().toISOString(), recentSends: { [ROOM_KEY]: w.clock.now().toISOString() } }));
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, recentSends: { [ROOM_KEY]: w.clock.now().toISOString() } }));
     w.clock.advance(60_000);
     await post(w, "Night, have fun watching that film.");
     expect((await watchWakes(w)).map((wake) => wake.preview)).toEqual(["door joke", "Night, have fun watching that film."]);
+  }, 30_000);
+
+  it("her send is what lifts it: kept the spacing's 10 minutes with no setting (§38: life.busyEngagedMinutes is gone)", async () => {
+    const { noteSend, RECENT_SENDS_MS } = await import("../src/life/recentSends.js");
+    const { WATCH_MIN_SPACING_MS } = await import("../src/life/wakeups/run.js");
+    const { readLifeState } = await import("../src/life/lifeStore.js");
+    expect(RECENT_SENDS_MS).toBe(WATCH_MIN_SPACING_MS);
+    const w = await lifeWorld(roots);
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    await wakeup(w, 'watch("bake-club/#general", {any: true}, {for: "2h", once: false}, "film night")');
+    await post(w, "door joke");
+    w.clock.advance(20_000);
+    // Her own send, as SendMessage records it.
+    await noteSend(w.cast.deps, "ella", ROOM_KEY);
+    w.clock.advance(60_000);
+    await post(w, "Night, have fun watching that film.");
+    expect((await watchWakes(w)).map((wake) => wake.preview)).toEqual(["door joke", "Night, have fun watching that film."]);
+    // A send elsewhere 10 minutes later drops the old place: nothing older than the spacing is kept.
+    w.clock.advance(RECENT_SENDS_MS);
+    await noteSend(w.cast.deps, "ella", `dm_${KEVIN}_ella`);
+    expect(Object.keys((await readLifeState(w.storage, "ella")).recentSends ?? {})).toEqual([`dm_${KEVIN}_ella`]);
   }, 30_000);
 
   it("a held match fires nothing when she wrote there after it, or when the watch ended first", async () => {
@@ -504,7 +525,7 @@ describe("a repeating watch's 10-minute spacing (§30.2, 2026-10-30)", () => {
     await post(w, "Night!");
     w.clock.advance(60_000);
     // She answered in the room (another wake got her there).
-    await updateLifeState(w.storage, "ella", (current) => ({ ...current, lastSentAt: w.clock.now().toISOString(), recentSends: { [ROOM_KEY]: w.clock.now().toISOString() } }));
+    await updateLifeState(w.storage, "ella", (current) => ({ ...current, recentSends: { [ROOM_KEY]: w.clock.now().toISOString() } }));
     w.clock.advance(10 * 60_000);
     await w.cast.scheduler.tick();
     expect((await watchWakes(w)).map((wake) => wake.preview)).toEqual(["door joke"]);

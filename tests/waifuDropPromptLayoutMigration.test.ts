@@ -84,7 +84,8 @@ describe("waifu-drop-prompt-layout-v1", () => {
     expect(saved).not.toHaveProperty("promptLayout");
     expect(saved.scheduleInPrompt).toBe(false);
     expect(saved).toMatchObject({ id: "yuki", revision: 3, persona: "kind" });
-    expect(WaifuConfigSchema.parse(saved).scheduleInPrompt).toBe(false);
+    // The setting itself is gone since §38: read, it is dropped (living-cast-no-schedule-v1 archives it).
+    expect(WaifuConfigSchema.parse(saved)).not.toHaveProperty("scheduleInPrompt");
   });
 
   it("keeps the default (true) when the schedule block is enabled", async () => {
@@ -96,7 +97,7 @@ describe("waifu-drop-prompt-layout-v1", () => {
     const saved = await readWaifu(root, "mio");
     expect(saved).not.toHaveProperty("promptLayout");
     expect(saved).not.toHaveProperty("scheduleInPrompt");
-    expect(WaifuConfigSchema.parse(saved).scheduleInPrompt).toBe(true);
+    expect(WaifuConfigSchema.parse(saved)).not.toHaveProperty("scheduleInPrompt");
   });
 
   it("does not flip an existing scheduleInPrompt:false back on", async () => {
@@ -234,7 +235,7 @@ describe("waifu-drop-prompt-layout-v1", () => {
     expect([await readWaifu(root, "a"), await readWaifu(root, "b")]).toEqual(afterFirst);
   });
 
-  it("keeps the schedule choice for every legacy shape through the real boot order", async () => {
+  it("keeps the schedule choice for every legacy shape through the real boot order (archived since §38)", async () => {
     const root = await freshRoot();
     // W1 layout (legacy block ids) with schedule off.
     await writeWaifu(root, "w1", {
@@ -255,7 +256,10 @@ describe("waifu-drop-prompt-layout-v1", () => {
       const saved = await readWaifu(root, id);
       expect(saved, id).not.toHaveProperty("promptLayout");
       expect(saved, id).not.toHaveProperty("promptSections");
-      expect(saved.scheduleInPrompt, id).toBe(false);
+      // §38: the choice leaves waifu.json, kept in the archive.
+      expect(saved, id).not.toHaveProperty("scheduleInPrompt");
+      const archived = JSON.parse(await readFile(path.join(root, "user", ".archive", "living-cast", "no-schedule", `${id}.json`), "utf8")) as Record<string, unknown>;
+      expect(archived.scheduleInPrompt, id).toBe(false);
     }
   });
 });

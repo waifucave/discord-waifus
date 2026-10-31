@@ -5,9 +5,9 @@
 //
 // - her app-managed files live in `~/life/` (§21 S1); `~/life/places.md` is the app's: she can
 //   read it, nobody else writes it (§16.6);
-// - `~/life/wakeups.json` (../wakeups/file.ts, her functions compiled in the sandbox),
-//   `profile.json` (profileFile.ts) and `schedule.json`, her day (daySchedule.ts), are checked on
-//   every write; a bad write is refused with the exact problem and nothing is saved;
+// - `~/life/wakeups.json` (../wakeups/file.ts, her functions compiled in the sandbox) and
+//   `profile.json` (profileFile.ts) are checked on every write; a bad write is refused with the
+//   exact problem and nothing is saved;
 // - home ≤ `life.home.maxBytes` and `life.home.maxFiles`, `/tmp` ≤ `life.tmp.maxBytes`, a file
 //   written by Write/Edit/PUT ≤ 256 KiB; a name that differs from another in its folder only by case
 //   or Unicode normalisation is refused;
@@ -32,7 +32,6 @@ import { resolvePlace } from "../places.js";
 import { HerFiles, HerFilesError, type HerEntry } from "./herFiles.js";
 import {
   collisionKey,
-  DAY_SCHEDULE_FILE,
   deleteReachesPlaces,
   herSlug,
   isDmFolderPath,
@@ -53,7 +52,6 @@ import {
   type LifeFileName,
   type ResolvedHerPath
 } from "./pathRules.js";
-import { checkDayScheduleText, readDayPlan, type DayPlan } from "./daySchedule.js";
 import type { PersonResolution } from "./specialFiles.js";
 import { sharedSandbox, type Sandbox } from "../sandbox/index.js";
 import { checkWakeupsText, readsWhole, WAKEUPS_FILE_HARD_BYTES, readWakeupEntries, wakeupsText, type WakeupEntry } from "../wakeups/file.js";
@@ -190,8 +188,9 @@ const MARKED = new Set<string>();
 export async function ensureLifeFolderMarker(storage: StorageService, waifuId: string): Promise<void> {
   const id = `${storage.dataRoot}\0${waifuId}`;
   if (MARKED.has(id)) return;
-  // The wakeups layout too (§30.3, `living-cast-wakeups-v1`): a `reminders.json` she writes later is her own file.
-  for (const file of [storage.dataPath(lifePaths.lifeFolderMarker(waifuId)), storage.dataPath(lifePaths.wakeupsMarker(waifuId))]) {
+  // The wakeups layout too (§30.3, `living-cast-wakeups-v1`): a `reminders.json` she writes later is
+  // her own file; and no day file (§38, `living-cast-no-schedule-v1`): nor is a `life/schedule.json`.
+  for (const file of [storage.dataPath(lifePaths.lifeFolderMarker(waifuId)), storage.dataPath(lifePaths.wakeupsMarker(waifuId)), storage.dataPath(lifePaths.noScheduleMarker(waifuId))]) {
     const exists = await stat(file).then(() => true, () => false);
     if (!exists) await atomicWriteJson(file, { version: 1, state: "done" });
   }
@@ -309,11 +308,6 @@ export class HomeStore {
     return { entries: readWakeupEntries(text), side, text };
   }
 
-  /** Her day as saved (`~/life/schedule.json`, §21.2); a file that fails the checks is no plan. */
-  async readDay(): Promise<DayPlan | undefined> {
-    return readDayPlan(await this.files.readText(this.life(DAY_SCHEDULE_FILE)).catch(() => undefined));
-  }
-
   // ---- checks shared by every writer -------------------------------------------------------------------
 
   /** The special-file checks for one write: the (maybe rewritten) bytes and the side files to save. */
@@ -329,14 +323,6 @@ export class HomeStore {
       return { data, profile: checked.fields };
     }
     if (data !== undefined && !isTextBytes(data)) throw new HomeError(`error: ${specialFileName(special)} must be text (JSON)`, "special");
-    if (special === "schedule") {
-      // Her day (§21.2): deleting it is no plan today; busy blocks stay in her waking hours.
-      if (data === undefined) return {};
-      const waifu = await readWaifu(this.storage, this.waifuId);
-      const checked = checkDayScheduleText(data.toString("utf8"), { bedTime: waifu.availability.bedTime });
-      if (!checked.ok) throw new HomeError(checked.error, "special");
-      return { data };
-    }
     const text = data === undefined ? "[]\n" : data.toString("utf8");
     const { entries: previous, side } = await this.readWakeups();
     const checked = await checkWakeupsText(text, this.wakeupContext(env, previous, side));
@@ -643,7 +629,7 @@ export class HomeStore {
       // Her special files: the result of the whole set is checked once.
       const side: { wakeupIds?: WakeupSide; profile?: ProfileFields } = {};
       let wakeupsWritten: SpecialResult["wakeupsWritten"];
-      for (const name of [WAKEUPS_FILE, PROFILE_FILE, DAY_SCHEDULE_FILE] as const) {
+      for (const name of [WAKEUPS_FILE, PROFILE_FILE] as const) {
         const target = this.life(name);
         const write = [...effective].reverse().find((step) => step.kind === "write" && step.path.virtual === target.virtual);
         const removed = effective.some((step) => step.kind === "delete" && (step.path.virtual === target.virtual || target.virtual.startsWith(`${step.path.virtual}/`)));
@@ -757,21 +743,6 @@ export class HomeStore {
   }
 
   // ---- the app's own rewrites ------------------------------------------------------------------------------
-
-  /**
-   * Rewrites her day (`~/life/schedule.json`; forget's scrub, §21.6). Only a file that passes its
-   * checks is rewritten, and only when something changed. Returns whether it wrote.
-   */
-  async rewriteDay(transform: (plan: DayPlan) => DayPlan): Promise<boolean> {
-    return this.locked(async () => {
-      const plan = readDayPlan(await this.files.readText(this.life(DAY_SCHEDULE_FILE)).catch(() => undefined));
-      if (!plan) return false;
-      const next = transform(plan);
-      if (JSON.stringify(next) === JSON.stringify(plan)) return false;
-      await this.files.writeBytes(this.life(DAY_SCHEDULE_FILE), Buffer.from(`${JSON.stringify(next, null, 2)}\n`, "utf8"));
-      return true;
-    });
-  }
 
   /**
    * Rewrites her wakeups and their side file together (a timed one fired, a once watch matched, one
@@ -998,11 +969,11 @@ export class HomeStore {
 
   /**
    * Her private files right now: `~/MEMORY.md`, every file it links to, and everything in `~/life/`
-   * (her day, reminders, watches, profile and places, §21.6; `isPrivateFile` covers the whole
-   * folder). Copies under other names are hers to share.
+   * (her wakeups, profile and places, §21.6; `isPrivateFile` covers the whole folder). Copies
+   * under other names are hers to share.
    */
   async privateFiles(): Promise<Set<string>> {
-    const out = new Set([pathKey(this.home(MEMORY_FILE).virtual), ...([DAY_SCHEDULE_FILE, WAKEUPS_FILE, PLACES_FILE, PROFILE_FILE] as const).map((name) => pathKey(this.life(name).virtual))]);
+    const out = new Set([pathKey(this.home(MEMORY_FILE).virtual), ...([WAKEUPS_FILE, PLACES_FILE, PROFILE_FILE] as const).map((name) => pathKey(this.life(name).virtual))]);
     const memory = await this.files.canonical(this.home(MEMORY_FILE));
     const index = await this.files.readText(memory).catch(() => undefined);
     for (const target of markdownLinks(index ?? "")) {

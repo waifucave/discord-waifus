@@ -50,8 +50,6 @@ export const lifePaths = {
   wakes: (waifuId: string) => path.join(lifeDir(waifuId), "wakes.json"),
   /** Her wakeups' side file: id counters, resolutions, fires, errors, routed occurrences (§30.3; not in her folder). */
   wakeupIds: (waifuId: string) => path.join(lifeDir(waifuId), "wakeup-ids.json"),
-  /** Today's timed plans of her day: first seen, fired, skipped (§29; hashes, no plan text). */
-  plansFired: (waifuId: string) => path.join(lifeDir(waifuId), "plans-fired.json"),
   /** Where her downloads came from (§16.2 provenance). */
   filesIndex: (waifuId: string) => path.join(lifeDir(waifuId), "files-index.json"),
   /** Bash change sets being applied (§16.9): `<toolCallId>.json`. */
@@ -64,7 +62,9 @@ export const lifePaths = {
   /** `living-cast-life-folder-v1` is done for her (§21.6): a re-run never moves her files again. */
   lifeFolderMarker: (waifuId: string) => path.join(lifeDir(waifuId), "life-folder-v1.json"),
   /** `living-cast-wakeups-v1` is done for her (§30.3): a re-run never converts her files again. */
-  wakeupsMarker: (waifuId: string) => path.join(lifeDir(waifuId), "wakeups-v1.json")
+  wakeupsMarker: (waifuId: string) => path.join(lifeDir(waifuId), "wakeups-v1.json"),
+  /** `living-cast-no-schedule-v1` is done for her (§38): a re-run never archives a `schedule.json` she writes later. */
+  noScheduleMarker: (waifuId: string) => path.join(lifeDir(waifuId), "no-schedule-v1.json")
 };
 
 /** Storage lock names. `life:<id>` serialises turns, compaction, maintenance and forget scrubs (§5.1). */
@@ -76,7 +76,6 @@ export const lifeLocks = {
   reads: (waifuId: string) => `life-reads:${waifuId}`,
   handles: (waifuId: string) => `life-handles:${waifuId}`,
   wakes: (waifuId: string) => `life-wakes:${waifuId}`,
-  plans: (waifuId: string) => `life-plans:${waifuId}`,
   maintenance: (waifuId: string) => `life-maintenance:${waifuId}`,
   /** Every write to her two folders and their side files (wakeup-ids, files-index). */
   home: (waifuId: string) => `home:${waifuId}`,

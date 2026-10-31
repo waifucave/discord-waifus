@@ -4,7 +4,7 @@
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> are you coming saturday? we need someone on dessert"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call ReadMessages (call_1_ReadMessages) ---
 {"script":"text(await tools.read_messages({ place: \"bake-club/#general\" }))"}
@@ -21,4 +21,4 @@ bake-club/#general (Bake Club › #general)
 - bake-club/#general · from Mina · #a3 "and the sprinkles, the rainbow ones"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]

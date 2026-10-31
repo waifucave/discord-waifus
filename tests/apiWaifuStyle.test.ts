@@ -46,7 +46,7 @@ async function makeAppWithLogger() {
 }
 
 describe("waifu style fields", () => {
-  it("creates with defaults and round-trips customInstructions/scheduleInPrompt", async () => {
+  it("creates with defaults and round-trips customInstructions (scheduleInPrompt is gone, §38)", async () => {
     const { app } = await makeAppWithLogger();
     try {
       const created = await app.inject({
@@ -55,7 +55,8 @@ describe("waifu style fields", () => {
         payload: { id: "styled", name: "Styled", displayName: "Styled" }
       });
       expect(created.statusCode).toBe(201);
-      expect(created.json()).toMatchObject({ customInstructions: "", scheduleInPrompt: true });
+      expect(created.json()).toMatchObject({ customInstructions: "" });
+      expect(created.json()).not.toHaveProperty("scheduleInPrompt");
 
       const put = await app.inject({
         method: "PUT",
@@ -63,16 +64,11 @@ describe("waifu style fields", () => {
         payload: { revision: 0, customInstructions: "Never use emoji.", scheduleInPrompt: false }
       });
       expect(put.statusCode).toBe(200);
-      expect(put.json()).toMatchObject({
-        customInstructions: "Never use emoji.",
-        scheduleInPrompt: false
-      });
+      expect(put.json()).toMatchObject({ customInstructions: "Never use emoji." });
+      expect(put.json()).not.toHaveProperty("scheduleInPrompt");
 
       const get = await app.inject({ method: "GET", url: "/api/waifus/styled" });
-      expect(get.json()).toMatchObject({
-        customInstructions: "Never use emoji.",
-        scheduleInPrompt: false
-      });
+      expect(get.json()).toMatchObject({ customInstructions: "Never use emoji." });
     } finally {
       await app.close();
     }
@@ -88,8 +84,7 @@ describe("waifu style fields", () => {
           id: "keep",
           name: "Keep",
           displayName: "Keep",
-          customInstructions: "Speak softly.",
-          scheduleInPrompt: false
+          customInstructions: "Speak softly."
         }
       });
       const renamed = await app.inject({
@@ -100,8 +95,7 @@ describe("waifu style fields", () => {
       expect(renamed.statusCode).toBe(200);
       expect(renamed.json()).toMatchObject({
         displayName: "Kept",
-        customInstructions: "Speak softly.",
-        scheduleInPrompt: false
+        customInstructions: "Speak softly."
       });
     } finally {
       await app.close();

@@ -63,7 +63,6 @@ import { fireWakeupWatches, type FiredWakeup, type WakeupMessage } from "./wakeu
 import { sharedSandbox } from "./sandbox/index.js";
 import { refsForMessages } from "./messageRefs.js";
 import { homeStoreFor } from "./home/index.js";
-import { aroundIn, type NotAroundReason } from "./busy.js";
 import { TypingHolds, type HoldTiming } from "./intakeHold.js";
 import { newWakeId } from "./wakeQueue.js";
 import { joinMessages } from "./wakeMessages.js";
@@ -608,15 +607,14 @@ export class Intake {
         ...(imageText.some(Boolean) ? { imageText: imageText.filter(Boolean) } : {})
       });
     }
-    // Only the waifus who are around here are offered (§24): the others are left out of every
-    // choice and the `anyone` draw, and the history says why.
+    // Only the waifus who are around are offered (§24, §38: everyone but one over her daily budget):
+    // the others are left out of every choice and the `anyone` draw, and the history says why.
     const cast: DetectorCastMember[] = [];
     const around: WaifuConfig[] = [];
-    const leftOut: Array<{ waifuId: string; why: NotAroundReason | "budget" }> = [];
+    const leftOut: Array<{ waifuId: string; why: "budget" }> = [];
     for (const waifu of waifus) {
-      const why = await this.notAroundWhy(waifu, placeKey, now);
-      if (why) {
-        leftOut.push({ waifuId: waifu.id, why });
+      if (await this.overBudget(waifu, now)) {
+        leftOut.push({ waifuId: waifu.id, why: "budget" });
         continue;
       }
       around.push(waifu);
@@ -733,13 +731,10 @@ export class Intake {
     return chimedIn ? [...woke, chimedIn] : woke;
   }
 
-  /** Why she is not around in this place for the detector (§24); undefined when she is. Over her daily budget she cannot act. */
-  private async notAroundWhy(waifu: WaifuConfig, placeKey: string, now: Date): Promise<NotAroundReason | "budget" | undefined> {
-    const here = await aroundIn(this.deps, waifu, placeKey, now);
-    if (!here.around) return here.why;
+  /** Over her daily budget she cannot act, so the detector leaves her out (§24). */
+  private async overBudget(waifu: WaifuConfig, now: Date): Promise<boolean> {
     const budget = waifu.life.dailyBudgetUsd;
-    if (budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget) return "budget";
-    return undefined;
+    return budget !== null && budget !== undefined && (await this.o.cost.today(waifu.id, now)) >= budget;
   }
 
   /** No chime-in was routed in this room for CHIME_IN_INTERVAL_MS (this process, else the history file). */

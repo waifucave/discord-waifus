@@ -4,7 +4,7 @@
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> can you watch the tarts? 12 minutes"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call Wakeup (call_1_Wakeup) ---
 {"script":"text(await tools.wakeup({ watch: [{ places: \"everywhere\", for: \"12m\", note: \"the tarts come out of the oven\" }] }))"}
@@ -13,7 +13,7 @@
 {"set":[{"id":"w1","kind":"watch","about":"timer, until Sat 24 Oct 14:12"}],"saved":"when your script ends without an error (in ~/life/wakeups.json)"}
 [receipt] wakeup: saved: set w1 (timer, until Sat 24 Oct 14:12) (in ~/life/wakeups.json)
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"on it, timer set\" }] }))"}
@@ -22,7 +22,7 @@
 {"sent":["#a2"],"reactions":[]}
 [receipt] send_message to bake-club/#general: sent #a2; the whole list ran
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 5 assistant ===
 --- text ---
 (sent)
@@ -32,4 +32,4 @@
 - watch timed out · your note: "the tarts come out of the oven"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:13 · awake]
+[Sat 24 Oct 14:13]

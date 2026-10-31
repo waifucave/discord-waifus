@@ -9,8 +9,6 @@
 import { findCuratedModel, type CuratedModel } from "../models/catalog.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeState } from "../shared/schemas/life.js";
-import { bedContextOf } from "./busy.js";
-import { bedPhaseAt } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { lifeBudget } from "./request.js";
 import { pendingWakeCount } from "./wakeQueue.js";
@@ -25,20 +23,18 @@ export type CacheRestInput = {
   now: Date;
   /** Wakes waiting in her queue (a turn is coming anyway). */
   queued: number;
-  /** Her bed time now (§21.6c), when she is in one. */
-  bed?: { phase: "up_late" | "dozing" | "asleep"; windowEnd: Date } | undefined;
 };
 
 /**
  * When the quiet-time rest is due, or undefined when it is not due at all in this epoch's current
  * state: her last request + the route's TTL − `life.cacheRestLeadMinutes`. Needs the rest notice on,
- * a running epoch (no pending start, no compaction backing off or due), no turn running, no rest
+ * a running epoch (no pending start, no compaction backing off), no turn running, no rest
  * turn of either kind in this epoch, and her last request at least `life.cacheRestMinRatio` × the
  * compaction trigger (and below it: at the trigger compaction runs anyway).
  */
 export function cacheRestDueAt(o: Pick<CacheRestInput, "life" | "triggerRatio" | "state" | "model" | "ttlMs">): Date | undefined {
   const { state, life } = o;
-  if (!life.restNotice || o.ttlMs === undefined || !state.systemSnapshot || state.pendingEpochStart || state.dayCompactionDue) return undefined;
+  if (!life.restNotice || o.ttlMs === undefined || !state.systemSnapshot || state.pendingEpochStart) return undefined;
   if (state.status !== "idle" || state.currentTurn) return undefined;
   if (state.restTurn?.epoch === state.epoch || state.cacheRest?.epoch === state.epoch) return undefined;
   const at = state.lastRequestAt ? Date.parse(state.lastRequestAt) : Number.NaN;
@@ -51,8 +47,7 @@ export function cacheRestDueAt(o: Pick<CacheRestInput, "life" | "triggerRatio" |
 
 /**
  * Whether the quiet-time rest is due now (§25): due by `cacheRestDueAt`, her cache not yet expired,
- * nothing queued, compaction not backing off, and not asleep in a bed time that ends within the TTL
- * (the morning's `day` compaction comes first).
+ * nothing queued and compaction not backing off.
  */
 export function cacheRestDueNow(o: CacheRestInput): boolean {
   const due = cacheRestDueAt(o);
@@ -61,12 +56,11 @@ export function cacheRestDueNow(o: CacheRestInput): boolean {
   const expires = Date.parse(o.state.lastRequestAt!) + o.ttlMs;
   if (now < due.getTime() || now >= expires) return false;
   if (o.state.compactionPausedUntil !== undefined && Date.parse(o.state.compactionPausedUntil) > now) return false;
-  if (o.bed?.phase === "asleep" && o.bed.windowEnd.getTime() - now <= o.ttlMs) return false;
   return true;
 }
 
-/** The decision for her, read from her state, queue, route and bed time. Never for a waifu without her own bot. */
-export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "timeZone" | "now">, waifu: WaifuConfig, model: CuratedModel, state: LifeState): Promise<boolean> {
+/** The decision for her, read from her state, queue and route. Never for a waifu without her own bot. */
+export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "now">, waifu: WaifuConfig, model: CuratedModel, state: LifeState): Promise<boolean> {
   if (!waifu.botId) return false;
   const config = deps.config();
   // From the curated catalog the life was given (deps.catalog()), never a fresh read of winter's.
@@ -74,9 +68,7 @@ export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "
   const base = { life: config.life, triggerRatio: config.compaction.triggerRatio, state, model, ttlMs };
   // Cheap checks first: the scheduler asks at every tick.
   if (!cacheRestDueAt(base)) return false;
-  const now = deps.now();
-  const bed = bedPhaseAt(waifu.availability, now, deps.timeZone, bedContextOf(deps, state));
-  return cacheRestDueNow({ ...base, now, queued: await pendingWakeCount(deps.storage, waifu.id), bed });
+  return cacheRestDueNow({ ...base, now: deps.now(), queued: await pendingWakeCount(deps.storage, waifu.id) });
 }
 
 /**
@@ -85,7 +77,7 @@ export async function cacheRestDue(deps: Pick<LifeDeps, "storage" | "config" | "
  * poke her again every 15 s).
  */
 export async function cacheRestDueFor(
-  deps: Pick<LifeDeps, "storage" | "config" | "timeZone" | "now" | "catalog" | "models">,
+  deps: Pick<LifeDeps, "storage" | "config" | "now" | "catalog" | "models">,
   waifu: WaifuConfig,
   state: LifeState,
   o: { spentToday?: (waifuId: string, now: Date) => Promise<number> } = {}

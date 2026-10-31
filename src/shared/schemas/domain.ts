@@ -33,49 +33,6 @@ export type ModelChoice = z.infer<typeof ModelChoiceSchema>;
 const OptionalModelChoiceSchema = z.union([ModelChoiceSchema, z.null()]).optional().transform((value) => value ?? undefined);
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 
-const TimeOfDaySchema = z
-  .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use 24-hour HH:mm time.");
-export type TimeOfDay = z.infer<typeof TimeOfDaySchema>;
-
-const WaifuBedTimeSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    start: TimeOfDaySchema.default("23:00"),
-    end: TimeOfDaySchema.default("07:00")
-  })
-  .superRefine((value, ctx) => {
-    if (value.enabled && value.start === value.end) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["end"],
-        message: "Bed time end must differ from its start."
-      });
-    }
-  })
-  .default({
-    enabled: false,
-    start: "23:00",
-    end: "07:00"
-  });
-export type WaifuBedTime = z.infer<typeof WaifuBedTimeSchema>;
-
-// Only her bed time is the owner's (spec §21 S3, §21.6c): her busy times come from her own
-// `~/life/schedule.json`. The owner-set busy blocks were archived and dropped by the
-// `living-cast-drop-busy-v1` migration; a stray `busy` key is stripped. `bedTime` was `sleep`
-// before `living-cast-bed-time-v1` renamed it.
-export const WaifuAvailabilitySchema = z
-  .object({
-    bedTime: WaifuBedTimeSchema
-  })
-  .default({
-    bedTime: {
-      enabled: false,
-      start: "23:00",
-      end: "07:00"
-    }
-  });
-export type WaifuAvailability = z.infer<typeof WaifuAvailabilitySchema>;
 
 export const ProviderCredentialsSchema = z.object({
   providerId: ProviderIdSchema,
@@ -181,16 +138,16 @@ export const WaifuConfigSchema = RevisionedRecordSchema.extend({
     .union([WaifuNicknamesSchema, z.null()])
     .optional()
     .transform((value) => value ?? undefined),
-  availability: WaifuAvailabilitySchema,
+  // Her bed time (`availability`) and `scheduleInPrompt` are gone (spec §38): the
+  // `living-cast-no-schedule-v1` migration archived and dropped them; stray keys are stripped.
   // Prompt settings the life harness reads (Living cast §8).
   customInstructions: z.string().max(4000).default(""),
-  scheduleInPrompt: z.boolean().default(true),
   // Her name, display name and server nicknames wake her as whole words (Living cast §4.1 `name`);
   // off for names that are common words.
   wakeOnName: z.boolean().default(true),
   // Living cast §4.4: her daily budget (local day, USD); null = none.
   life: WaifuLifeSettingsSchema.default(() => ({ dailyBudgetUsd: null })),
-  // Phase 5 DM settings (spec 9.1); Living cast adds `sleepNotice` (§4.5).
+  // Phase 5 DM settings (spec 9.1).
   dm: WaifuDmSettingsSchema.default(() => defaultWaifuDmSettings())
 });
 export type WaifuConfig = z.infer<typeof WaifuConfigSchema>;

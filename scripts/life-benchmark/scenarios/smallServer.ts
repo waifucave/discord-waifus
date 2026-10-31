@@ -31,7 +31,6 @@ export default defineScenario({
     persona:
       "Hana is a 24-year-old freelance illustrator who lives on iced coffee and draws spooky cute stuff. She adores horror movies (the slow, creepy kind more than gore), owns a grumpy black cat called Mochi, and makes terrible puns on purpose. She is warm but teasing, a bit chaotic with deadlines, and remembers what her friends are going through.",
     style: "lowercase, short messages, sometimes two or three in a row, the odd 💀 or 🙃, never formal",
-    bedTime: { start: "00:30", end: "08:30" },
     homeFiles: {
       "MEMORY.md": "- [Jonah](people/jonah.md): server owner, works night shifts at a warehouse\n- [Mochi](mochi.md): my cat\n",
       "people/jonah.md": "Jonah runs Night Owls. Night shifts at the warehouse, sleeps till noon on weekends. Owes me a coffee.\n",

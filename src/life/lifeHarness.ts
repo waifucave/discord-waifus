@@ -5,7 +5,6 @@
 
 import { createHash } from "node:crypto";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
-import { dayPlanLines, type DayPlan } from "./home/daySchedule.js";
 import { benchmarkBlockA } from "./benchmarkHook.js";
 import { SUMMARY_FACTS } from "./rest.js";
 
@@ -47,7 +46,7 @@ You have your own folder, your home. Keep notes there like a diary, as soon as y
 
 Keep track of people like a friend would, with Wakeup. When you ask someone something or are waiting on an answer, watch for it for a sensible time: their reply wakes you, and if it never comes, you may follow up once. If that gets no answer either, let it go: they saw it, and silence, or an answer that steps around the question, is an answer. Never ask other people to answer for someone, or chase the question through them. When someone mentions plans, an exam or a game tonight, set a wakeup to ask how it went. When someone tells you something hard, check in once, then let them come back to you: one "no pressure" message after another is pressure. For example: you ask Kevin if he's coming Saturday, so you watch for Kevin in that room for a few hours; nothing, so you ask once more, and then you drop it; his exam is Friday, so an at: [{ when: "fri 19:00", … }] asks how it went. When you've written somewhere twice or more with no answer, you're told so: wait for them. Your filters can be your own code when words aren't enough. All your wakeups are in ~/life/wakeups.json: look there before adding one you already have, and change them there with Edit (or cancel them). A watch always ends, and you are told when it does, so it also works as a timer.
 
-Your day is in ~/life/schedule.json: you write it each morning and may change it during the day; while you're busy only direct messages and people talking to you reach you, the rest waits for your phone checks. When you want a fresh start (after big changes to your notes or your day, or when old conversations have run their course), end a turn with only <summary>…</summary>: your context resets to that summary; your home and files stay as they are.
+When you want a fresh start (after big changes to your notes, or when old conversations have run their course), end a turn with only <summary>…</summary>: your context resets to that summary; your home and files stay as they are.
 
 You can start a conversation yourself when you have something to share or ask: in your rooms, or in private chats with people who have written to you before, never with anyone else.
 
@@ -71,28 +70,11 @@ function section(tag: string, body: string): string {
   return `<${tag}>\n${body.trim()}\n</${tag}>`;
 }
 
-/** Stands in for today's plan when block A is hashed: her own edits never force a compaction (§21.2). */
-export const DAY_PLAN_PLACEHOLDER = "(today's plan)";
-
 /**
- * `<schedule>` (§21.5, §21.6c): her bed time (the owner's, fixed) and today's plan from her
- * `~/life/schedule.json` as it was when the epoch began, or "No plan for today yet." `day: "hash"`
- * renders the placeholder instead (the harness hash).
+ * Block A: life harness, identity, persona, custom instructions. (Her bed time and today's plan were
+ * a `<schedule>` section here until spec §38.)
  */
-function scheduleText(waifu: WaifuConfig, timeZone: string, day: DayPlan | undefined | "hash"): string {
-  const lines: string[] = [];
-  const bedTime = waifu.availability.bedTime;
-  if (bedTime.enabled) lines.push(`Your bed time is ${bedTime.start}–${bedTime.end}.`);
-  lines.push(...(day === "hash" ? [DAY_PLAN_PLACEHOLDER] : dayPlanLines(day)));
-  lines.push(`Times are local (${timeZone}).`);
-  return lines.join("\n");
-}
-
-/**
- * Block A: life harness, identity, persona, schedule, custom instructions. `day`: today's plan (her
- * `~/life/schedule.json` when it is for today); `"hash"` for the harness hash, which leaves it out.
- */
-export function buildBlockA(waifu: WaifuConfig, facts: IdentityFacts, timeZone: string, o: { tmpRetentionDays?: number; day?: DayPlan | "hash" } = {}): string {
+export function buildBlockA(waifu: WaifuConfig, facts: IdentityFacts, o: { tmpRetentionDays?: number } = {}): string {
   const identity: string[] = [`Your name is ${waifu.name}.`];
   if (waifu.displayName && waifu.displayName !== waifu.name) identity.push(`People see you as "${waifu.displayName}".`);
   const nicknames = facts.serverNicknames.filter((nick) => nick && nick !== waifu.name && nick !== waifu.displayName);
@@ -104,8 +86,6 @@ export function buildBlockA(waifu: WaifuConfig, facts: IdentityFacts, timeZone: 
   }
   const parts = [lifeText(o), section("identity", identity.join("\n"))];
   if (waifu.persona.trim()) parts.push(section("persona", waifu.persona));
-  const schedule = waifu.scheduleInPrompt ? scheduleText(waifu, timeZone, o.day) : undefined;
-  if (schedule) parts.push(section("schedule", schedule));
   if (waifu.customInstructions.trim()) parts.push(section("custom_instructions", waifu.customInstructions));
   return benchmarkBlockA(parts.join("\n\n"));
 }

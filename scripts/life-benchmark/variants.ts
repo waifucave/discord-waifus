@@ -215,7 +215,7 @@ export function shippedTexts(scenarios: readonly Scenario[], o: { model: ModelPi
   for (const scenario of scenarios) {
     const config = runConfig(scenario, o.model, { web: o.web });
     const waifu = scenarioWaifu(scenario, o.model);
-    out.blockA.push(buildBlockA(waifu, { serverNicknames: [], others: [] }, scenario.start.timeZone, { tmpRetentionDays: config.life.tmp.retentionDays }));
+    out.blockA.push(buildBlockA(waifu, { serverNicknames: [], others: [] }, { tmpRetentionDays: config.life.tmp.retentionDays }));
     out.tools.push(...modelTools(names, config));
     out.summaries.dreamSystem.push(dreamSystem(waifu));
   }

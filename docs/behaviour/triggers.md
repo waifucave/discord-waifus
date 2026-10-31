@@ -2,7 +2,7 @@
 
 Every wake has a reason (`WakeReasonSchema` in `src/shared/schemas/life.ts`): `mention`, `name`,
 `role`, `everyone`, `watch`, `watch_timeout`, `dm`, `detector`, `reminder`, `plan`, `wakeup_error`, `morning`,
-`owner`, `followup`. Wakes are produced by intake (Discord messages), the scheduler (her files, her day) and
+`owner`, `followup`. Wakes are produced by intake (Discord messages), the scheduler (her files) and
 the owner, then pass the wake router's guards and land in her queue
 ([life-and-turns.md](life-and-turns.md)).
 
@@ -33,14 +33,14 @@ the owner, then pass the wake router's guards and land in her queue
 | `watch_timeout` | A watch's or page's `until` passed (scheduler tick, every 15 s). A `once` watch that already fired never times out. | Scheduler | `Scheduler.wakeups` |
 | `reminder` | A timed wakeup (`at` or `every` in `~/life/wakeups.json`) came due (scheduler tick). Routed under a fixed id per occurrence, then an `at` is removed (an `every` stays). A late `at` after downtime fires once at the first tick; an `every` fires its latest occurrence since it started counting. | Scheduler | `Scheduler.wakeups` |
 | `wakeup_error` | Her code (a watch's filter or a page's check) failed three times in a row: the wakeup is stopped (`disabled` in her file) and she is told `- wakeup w4 stopped: TypeError: … (line 2)`. | At once | `src/life/wakeups/run.ts` `applyRuns` |
-| `plan` | A plan with `at` in today's `~/life/schedule.json` reached its time (scheduler tick). Fires once per plan (time + hash of its text), up to 15 minutes late; not when written after its time or when its time is in her bed time. All plans due at one tick are one wake, one line each: `- plan · 17:30 · "<what>"`. See [day-and-bed-time.md](day-and-bed-time.md#timed-plans). | Scheduler | `Scheduler.plans` |
+| `plan` | **Unreleased (on main), §38: no longer produced.** Her day file's timed plans woke her until 3.8.0; a `plan` wake queued or deferred before the upgrade is still delivered, one line per plan: `- plan · 17:30 · "<what>"`. | — | `notifications.ts` `soloLine` |
 | `detector` | Jev picked her for a burst nobody was addressed in (`waifu_<i>`, the `anyone` draw, `all`), or picked her to chime in. See [detector.md](detector.md). | After the burst and the detector call | `Intake.runDetector` |
-| `morning` | Her day starts (bed time end, or `life.dayStartHourLocal`), or deferred wakes are released. Enqueued directly, not through the router. See [day-and-bed-time.md](day-and-bed-time.md). | Scheduler | `Scheduler.morning` |
+| `morning` | The batch of what waited while she was over her daily budget, released once she is under it again (the reason kept its name from her morning, §38); also releases what a 3.8 queue deferred for her bed time, at the first tick. Enqueued directly, not through the router. See [reachability-and-budget.md](reachability-and-budget.md). | Scheduler | `Scheduler.releaseDeferred` |
 | `owner` | `/wake` (Discord), the dashboard's Wake button, `waifus wake`, `POST /api/waifus/:id/wake`, the assistant's `wake_waifu`. Note ≤ 500 characters, shown as `- nudge · "<note>"`. | At once | `LivingCast.ownerWake` |
 | follow-up | Not a queued wake: a turn that failed with a model error gets one follow-up turn 60 s later. | Life loop | `Life.failTurn` |
 
 There are no proactive wakes besides these: she starts conversations only from inside a turn she
-already has (her wakeups, timed plans and morning are how she plans ahead).
+already has (her wakeups are how she plans ahead).
 
 ### Staggering
 
@@ -93,23 +93,21 @@ Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
 - **Queued wakes for one place** render as one group of lines in the next turn (joined by message
   id, reasons merged; [life-and-turns.md](life-and-turns.md)). Past 200 queued wakes, a new wake for a
   place that already has one is merged into it as a counter (`MAX_IMMEDIATE_WAKES`, `mergeInto`).
-- A wake whose id is already queued, held or deferred is never added again (catch-up, a re-routed
+- A wake whose id is already queued or deferred is never added again (catch-up, a re-routed
   reminder, a re-queued turn).
 
 ## The wake router's guards, in order
 
-`src/life/wakeRouter.ts` `WakeRouter.routeNow`. Outcomes: `queued`, `deferred`, `held`, `quiet`,
-`dropped`.
+`src/life/wakeRouter.ts` `WakeRouter.routeNow`. Outcomes: `queued`, `deferred`, `quiet`,
+`dropped`. **Unreleased (on main), §38:** there is no sleep guard (4, 4a) and no busy guard (4b)
+any more; she is reachable at any hour ([reachability-and-budget.md](reachability-and-budget.md)).
 
 | # | Guard | Effect | Applies to owner wakes? |
 |---|---|---|---|
 | 1 | **Paused** app, or the room wake's server `paused`, or she is disabled / has no bot | `dropped` | Yes |
 | 2 | **DM rate limit** (`dm` wakes): `dm.rateLimit` per person per waifu (default 30 replies per 60 min) | `dropped`; the limit notice is sent once per limited period when `dm.notifyWhenLimited` (no model call) | n/a |
 | 3 | **Per-user wake limit** (rooms; reasons `mention`, `name`, `role`, `everyone`, `detector`): more than `life.maxWakesPerUserPerHour` (20) wakes from one person to one waifu in the last hour | `quiet`: becomes a `- +N more from <name> (<place>)` line that rides on her next turn and never starts one (`admitUserWake`) | Skipped |
-| 4 | **Bed time, asleep**: only `reminder`, `plan`, `wakeup_error` and `owner` get through | Everything else `deferred` (reason `sleep`) to the morning; a `dm` wake also triggers the sleep notice once per bed time per person | Skipped |
-| 4a | **Bed time, up late or dozing**: gets through if any reason is in the busy set (`mention`, `name`, `dm`, `owner`, `reminder`, `plan`, `watch`, `watch_timeout`, `wakeup_error`, `morning`) or she sent in that place in the last `life.busyEngagedMinutes` (10 min) | Else `deferred` (reason `sleep`); no sleep notice | Skipped |
-| 4b | **Busy block** of today's `~/life/schedule.json` (only outside bed time): gets through if any reason is in the busy set, or the place is open for her in this block (`busyOpen`) | Else `held` until her next phone check in the block, else the block's end | Skipped |
-| 5 | **Daily budget** `life.dailyBudgetUsd` (default none) reached for the local day | `deferred` (reason `budget`) to the next local day | Skipped |
+| 5 | **Daily budget** `life.dailyBudgetUsd` (default none) reached for the local day | `deferred` (reason `budget`) until she is under budget again (her next local day), then released as one batch | Skipped |
 | 6 | **Room loop guard** `life.maxWaifuTriggeredTurns` (default 0 = off): waifu-authored wakes in a place after that many waifu messages have woken someone since the last person's message there; each message counts once however many it wakes | `dropped` (it never blocks a send) | Skipped |
 
 Then the wake is queued and her life is poked.
@@ -126,8 +124,8 @@ Details:
   `[system] turn ended: daily budget reached`, unless it has an owner wake). Her spend counts every
   ledger line with her waifu id (life, compaction, dream/maintenance, web digests) for the host's
   local day; detector calls are not hers (`src/life/budget.ts` `DailyCost`).
-- A deferred batch, whatever deferred it, is never released as a `morning` wake while she is over
-  budget (`Scheduler.morning`).
+- A deferred batch is never released while she is over budget (`Scheduler.releaseDeferred`); one a
+  3.8 queue deferred for her bed time waits for her budget the same way.
 - Guard 3 is per room wake only (`context.guildId`); DMs have their own rate limit (guard 2).
 
 ## Catch-up after downtime, pause and reload
@@ -146,8 +144,7 @@ Details:
 
 ## Spec differs
 
-- §4.5/D10 said sleep defers every wake including reminders; the code (§21.6c, §29) lets
-  `reminder`, `plan`, `wakeup_error` and `owner` through while asleep and lets the busy set through while up late or dozing.
+- §4.4 guard 4 (sleep) and §4.5 are superseded by §38: there is no sleep (or busy) guard.
 - §4.4 lists guard 1 as "paused server or app"; the code also drops every wake (owner included) for
   a disabled waifu or one without her own bot.
 - §4.1 calls the follow-up a wake reason; as built a failed turn's follow-up is a turn with no wakes

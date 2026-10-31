@@ -142,7 +142,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
 | DELETE | `/api/waifus/:waifuId/life/needs-review/:itemId` | Dismiss a review line. | `forget` |
 | POST | `/api/waifus/:waifuId/life/reset` | Reset her short-term memory: a fresh epoch, no summary ({confirm: true}). | `life` |
 | POST | `/api/waifus/:waifuId/link-bot` | Create or link her Discord bot entry. | `bot` |
-| POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips her bed time and budget). | `life` |
+| POST | `/api/waifus/:waifuId/wake` | Wake her now with an optional note (skips her budget). | `life` |
 | GET | `/api/waifus/:waifuId/wakeups` | Her wakeups (~/life/wakeups.json) with their sources, parsed; a wakeup watching a DM (and an everywhere watch's state) is redacted unless a local includePrivate=1. | `life` |
 | DELETE | `/api/waifus/:waifuId/wakeups/:wakeupId` | Remove one wakeup from her life/wakeups.json (she is not told). | `life` |
 
@@ -176,8 +176,8 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   `orchestrator`); each entry needs `enabled`; a sent `waifus` array replaces the list, omitted
   tokens are kept per id. `POST /api/waifus/:id/link-bot {applicationId?}` ensures her bot entry and
   links it in one call.
-- **A waifu's life** (`life` topic): `GET /api/waifus/:id/life` is her status (`availability.state` awake, busy or asleep,
-  with `bed`: `up_late`, `dozing` or `asleep` in her bed time; idle or mid-turn; epoch, queue, today's cost and budget, last compaction, counts of review
+- **A waifu's life** (`life` topic): `GET /api/waifus/:id/life` is her status (idle or mid-turn; no availability since §38: she has no day schedule or bed
+  time; epoch, queue, today's cost and budget, last compaction, counts of review
   lines and queued forget scrubs). `GET /api/waifus/:id/life/log?epoch&before&limit` pages her life
   log (newest last; default 50, at most 200; old epochs are kept 7 days). Content from private chats
   (DM notifications; every tool call, result and her own text in a turn that touched a DM; a call
@@ -192,7 +192,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   (lines from private chats, her summary or her queue read `[private chat redacted]` unless the
   owner reveals them on the host); `DELETE …/life/needs-review/:itemId` dismisses one.
 - **Her files** (`life` topic; spec §16.11): her home `/home/<name>` (`~`: notes, `MEMORY.md`, and
-  `life/` with `schedule.json` (her day), `wakeups.json` (her wakeups), `profile.json` and the
+  `life/` with `wakeups.json` (her wakeups), `profile.json` and the
   read-only `places.md`) and `/tmp` (downloads, deleted 7 days
   after the last write). `GET /api/waifus/:id/files?root=home|tmp|transcripts&dir=` lists one folder →
   `{root, dir, display, parent, entries: [{name, path, kind: file|dir, size, modified, private?,
@@ -203,7 +203,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   hash, text?, tooLarge?, readOnly?, special?, private?}` (`text` for a UTF-8 file up to 1 MiB);
   `?raw=1` answers the bytes (images by their magic bytes, inline; anything else as an attachment;
   `nosniff`, sandboxed). `PUT {text, expectedHash?}` writes a text file under her Edit tool's checks:
-  `life/places.md` 400 `ReadOnlyFile`, a broken `life/schedule.json`, `life/wakeups.json`
+  `life/places.md` 400 `ReadOnlyFile`, a broken `life/wakeups.json`
   (her functions compiled too) or `life/profile.json` 400 `InvalidFile` with
   the line and column (nothing saved), over 256 KiB or a full home 413 `HomeLimit`, a binary file
   400 `NotTextFile`, a name differing only by case 409 `NameCollision`; `expectedHash` is the `hash`
@@ -254,7 +254,7 @@ Every route with its one-line purpose and the help topic that explains it (`GET 
   `GET /api/detector/history?guildId` its recent decisions in one server (`choice`,
   `probabilities`, `woke`, and when present `authorWaifuId` for a waifu's message, `chimeIn`
   `{choice, probabilities, woke?}` and `leftOut` `[{waifuId, why}]`: cast members who were not
-  around there, `why` one of `busy`, `bed time`, `asleep`, `budget`; `choice` is `nobody_around`
+  around there, `why` `budget` (entries from before 3.9 may also say `busy`, `bed time` or `asleep`); `choice` is `nobody_around`
   when nobody was, and no question was asked).
 - `GET /api/owner-notices`: what needs the owner's attention (the notices, unfinished forget jobs,
   migrations that left unreadable data alone, kept copies of unreadable forget records, queued
@@ -290,10 +290,10 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/mio \
   its model keeps reasoning state the installed winter cannot replay through OpenRouter (none is,
   with the installed winter). Contributor (training) variants are only ever an
   explicit choice. Gateway-era `params`, `contextWindow` and `tools` fields are ignored on write.
-- **Nested settings merge**: waifu `availability`/`dm` deep-merge (`availability.bedTime` keeps the
-  fields a patch leaves out; a stray `availability.busy` or `availability.sleep` is dropped). Arrays
+- **Nested settings merge**: waifu `dm` and `life` deep-merge (a stray `availability`,
+  `scheduleInPrompt` or `dm.sleepNotice` from an older client is dropped, §38). Arrays
   and server `channels` replace wholesale.
-  Waifu `verbosity`, `customInstructions` and `scheduleInPrompt` are plain optional fields: omit
+  Waifu `verbosity` and `customInstructions` are plain optional fields: omit
   them and the stored value is kept. A waifu body may still carry `promptLayout`; it is accepted,
   ignored and logged once (the layout editor was removed). A channel PUT that omits a field keeps its current value.
 - **Image fetching (app config `discord.images`)**: one fetcher downloads Discord images for both

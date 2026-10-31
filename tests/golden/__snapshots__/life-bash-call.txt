@@ -4,7 +4,7 @@
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> kevin passed his exam!!"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- tool call Bash (call_1_Bash) ---
 {"command":"cat ~/people/kevin.md && echo '- passed the chemistry exam!' >> ~/people/kevin.md && grep -c exam ~/people/kevin.md"}
@@ -17,7 +17,7 @@
 exit 0
 changed: ~/people/kevin.md
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"KEVIN!!\" }, { text: \"knew you'd pass\" }] }))"}
@@ -26,4 +26,4 @@ changed: ~/people/kevin.md
 {"sent":["#a2","#a3"],"reactions":[]}
 [receipt] send_message to bake-club/#general: sent #a2 #a3; the whole list ran
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]

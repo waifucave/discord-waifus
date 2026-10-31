@@ -45,8 +45,6 @@ const NON_DEFAULT: Record<string, string> = {
   "app.compaction.triggerRatio": "0.75",
   "app.compaction.emergencyRatio": "0.95",
   "app.detector.target": "laya:english",
-  "waifu.availability.bedTime.start": "22:15",
-  "waifu.availability.bedTime.end": "06:45",
   "waifu.dm.rateLimit": '{"maxReplies":12,"windowMinutes":30}'
 };
 

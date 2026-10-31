@@ -199,6 +199,19 @@ describe("data root and config", () => {
     expect(config.ocr.engine).toBe("auto");
   });
 
+  it("loads a config.toml with the [life] keys of her day and bed time, without them (spec §38)", async () => {
+    const root = await makeTempRoot();
+    roots.push(root);
+    await ensureDataLayout(root);
+    await writeFile(
+      path.join(root, "config.toml"),
+      [`schemaVersion = ${CURRENT_SCHEMA_VERSION}`, "", "[life]", "morningLinesPerPlace = 12", "dayStartHourLocal = 9", "busyEngagedMinutes = 20", "bedDozeMinutes = 30", "dreamAfterAsleepMinutes = 5", "maintenanceHourLocal = 4", ""].join("\n")
+    );
+    const config = await loadAppConfig(root);
+    expect(config.life.maintenanceHourLocal).toBe(4);
+    for (const key of ["morningLinesPerPlace", "dayStartHourLocal", "busyEngagedMinutes", "bedDozeMinutes", "dreamAfterAsleepMinutes"]) expect(config.life).not.toHaveProperty(key);
+  });
+
   it("keeps legacy Tesseract OCR configs as system Tesseract", async () => {
     const root = await makeTempRoot();
     roots.push(root);
@@ -242,9 +255,10 @@ describe("data root and config", () => {
     const firstPath = path.join(root, "user", "waifus", first.id, "waifu.json");
     const seeded = JSON.parse(await readFile(firstPath, "utf8"));
     expect(seeded.displayName).toBe(first.displayName);
-    expect(seeded.availability.bedTime.enabled).toBe(true);
-    // Only her bed time is the owner's: her busy times are her own day file (spec §21 S3).
-    expect(seeded.availability).not.toHaveProperty("busy");
+    // No bed time and no day file any more (spec §38): she is around at any hour.
+    expect(seeded).not.toHaveProperty("availability");
+    expect(seeded).not.toHaveProperty("scheduleInPrompt");
+    expect(seeded.dm).not.toHaveProperty("sleepNotice");
     expect(seeded).not.toHaveProperty("tools");
     expect(seeded).not.toHaveProperty("params");
     expect(seeded).not.toHaveProperty("contextWindow");
@@ -297,7 +311,8 @@ describe("data root and config", () => {
       expect([...username].length, waifu.id).toBeLessThanOrEqual(32);
       expect(username).toBe(username.trim());
       expect(username).not.toMatch(/[@#:]|```|discord|clyde|everyone|here/i);
-      expect(WaifuConfigSchema.parse({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: "2026-10-25T00:00:00.000Z", ...waifu }).availability).toEqual(waifu.availability);
+      expect(waifu).not.toHaveProperty("availability");
+      expect(WaifuConfigSchema.parse({ schemaVersion: CURRENT_SCHEMA_VERSION, revision: 0, updatedAt: "2026-10-25T00:00:00.000Z", ...waifu }).persona).toBe(waifu.persona);
     }
   });
 
@@ -345,7 +360,7 @@ describe("data root and config", () => {
     expect(waifu).not.toHaveProperty("promptLayout");
   });
 
-  it("keeps only her bed time in waifu availability: a stray busy key is dropped (spec §21 S3)", () => {
+  it("an older waifu document with a bed time, busy blocks, scheduleInPrompt and a sleep notice still loads, without them (spec §38)", () => {
     const waifu = WaifuConfigSchema.parse({
       schemaVersion: CURRENT_SCHEMA_VERSION,
       revision: 0,
@@ -357,8 +372,12 @@ describe("data root and config", () => {
       availability: {
         bedTime: { enabled: true, start: "23:00", end: "07:00" },
         busy: [{ start: "09:00", end: "10:00", reason: "class" }]
-      }
+      },
+      scheduleInPrompt: false,
+      dm: { allowDms: true, sleepNotice: "asleep, back at 8" }
     });
-    expect(waifu.availability).toEqual({ bedTime: { enabled: true, start: "23:00", end: "07:00" } });
+    expect(waifu).not.toHaveProperty("availability");
+    expect(waifu).not.toHaveProperty("scheduleInPrompt");
+    expect(waifu.dm).toEqual({ allowDms: true, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" });
   });
 });

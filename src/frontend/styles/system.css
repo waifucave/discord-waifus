@@ -558,7 +558,6 @@ select.cell { padding-right: 34px; background-position: right 16px center; }
 .cast-mosaic { flex: 1; --cols: 4; --row: 220px; }
 .cast-mosaic .add-tile { display: flex; align-items: center; justify-content: center; font-size: 44px; color: var(--mute); text-align: center; }
 .fgrid.model-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); }
-.fgrid.sleep-row { grid-template-columns: minmax(0, 1fr) 160px 160px; }
 .nick-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px 14px; align-items: center; }
 .list-rows { display: flex; flex-direction: column; gap: 6px; }
 .image-pick { display: flex; align-items: center; gap: 10px; }
@@ -696,8 +695,6 @@ select.cell { padding-right: 34px; background-position: right 16px center; }
   .fgrid.pair-action > .fcell { grid-column: auto !important; }
   .life-stats, .life-actions, .fgrid.pair-action, .fgrid.key-row, .fgrid.model-pair, .fgrid.controls-row, .fgrid.cols-2, .fgrid.cols-3, .fgrid.cols-4, .fgrid.model-row { grid-template-columns: minmax(0, 1fr); }
   .fgrid.model-row > :first-child { grid-column: auto; }
-  .fgrid.sleep-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .fgrid.sleep-row > :first-child { grid-column: 1 / -1; }
   .nick-row { grid-template-columns: minmax(0, 1fr); }
   .nick-row > .btn { justify-self: start; }
   .fgrid > .btn, .life-actions > button { min-height: 52px; }

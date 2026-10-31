@@ -44,7 +44,7 @@ something first"); nothing is written.
 | `~/MEMORY.md` | Index of her notes, one short line per note linking to it | Markdown | Her (and the dream) | Yes | Yes | Path/size rules only | Copy in her prompt updates at the next epoch; stale-copy note in her result |
 | `~/` (anything else) | Her notes, any layout | Text or any file | Her (and the dream) | Yes | Yes | Path/size rules | — |
 | `~/life/` | Her daily machinery (all files here are private: never attached) | folder | App + her | Its files as below | The folder can't be removed while it holds `places.md` | — | — |
-| `~/life/schedule.json` | Her day ([day-and-bed-time.md](day-and-bed-time.md)) | JSON object | Her (each morning) | Yes | Yes (= no plan) | Strict JSON + field rules, busy not in bed time | Live for routing, Jev and the time line; prompt copy at next compaction |
+| `~/life/<anything else>` | Hers, like a note, but private (never attached) and left alone by her dream. **Unreleased (on main), §38:** this includes `~/life/schedule.json`, her day until 3.8.0 (the upgrade archived it; [reachability-and-budget.md](reachability-and-budget.md)) | any | Her | Yes | Yes | Path/size rules only | — |
 | `~/life/wakeups.json` | Her wakeups (`Wakeup` adds and cancels; see below) | JSON array, one entry per line: `{id?, kind: at\|every\|watch\|page, when?, places?, filter?, url?, check?, options?, note, state?, disabled?}` | Her + app (fires, removes an `at` and a once watch, ends watches and pages, saves her code's `state`, disables after errors) | Yes (Edit's patch must match the file as it is now) | Yes (= no wakeups) | Strict JSON ≤ 60 KiB as saved (the app's stop reasons may take it to 64 KiB); each entry as `Wakeup` checks it (times, places, names, her functions compiled in the sandbox); ≤ 20 timed, 10 watches, 3 pages; note ≤ 200, state ≤ 4 KiB; ids `t<n>`/`w<n>`/`p<n>` matching the kind; a once watch that already fired can't come back | New entries get the next id, `for` becomes `until`, `at`'s time becomes a local time, and the file is rewritten one entry per line; places and `from` names resolved in `life/wakeup-ids.json`; changing a stopped wakeup's code turns it back on |
 | `~/life/profile.json` | Her Discord profile: `name` (read-only), `username`, `bio`, `nicknames` keyed by server slug | JSON object | Her + app (rewritten from her config) | Yes, outside sessions | **No** | Discord username rules, bio ≤ 400, nickname 1–32, known servers, `name` unchanged | Saved to her config, then profile sync runs; the result says when Discord will show it |
 | `~/life/places.md` | Her rooms, her servers' emojis and her DMs | Markdown | App only (≤ 1/min, every turn start, when a new place folds in) | **No** (`places.md is kept up to date for you and can't be changed`) | **No** | — | — |
@@ -53,7 +53,7 @@ something first"); nothing is written.
 | `/transcripts/…` | Transcripts | rendered Markdown | App | **No** (`EROFS: transcripts are read-only`) | **No** | — | `cp` out into her folders works |
 
 Sources: `src/life/home/pathRules.ts` (`LIFE_FILES`), `src/life/home/homeStore.ts` `checkSpecial`,
-`src/life/home/specialFiles.ts`, `src/life/home/daySchedule.ts`, `src/life/home/profileFile.ts`,
+`src/life/home/specialFiles.ts`, `src/life/home/profileFile.ts`,
 `src/life/tools/files.ts`.
 
 - **Changes to her special files** go through `Edit`'s patch (or Bash): a patch's lines must match the
@@ -62,7 +62,7 @@ Sources: `src/life/home/pathRules.ts` (`LIFE_FILES`), `src/life/home/homeStore.t
   that fired is gone for good: writing it back is `error: wakeups.json entry w1: it already fired once
   and was removed; leave it out`. (The retired `Write` tool needed a current Read of wakeups.json and
   profile.json before replacing them; its code is kept for old log lines.)
-- **profile.json in sessions**: nightly dreaming and a forget's notes scrub refuse Edit/Bash
+- **profile.json in sessions**: daily dreaming and a forget's notes scrub refuse Edit/Bash
   changes to it (`error: profile.json isn't changed while tidying; leave it as it is`); the forget
   scrub never edits it.
 - **Dreaming** refuses every change under `~/life/` (`DREAM_LIFE_REFUSED`).
@@ -245,7 +245,7 @@ wakeup to `~/life/wakeups.json` (or cancels one). Up to 40 items per call, 4 cal
   one, a good run resets the count; three in a row stop the wakeup (`disabled` in her file, with the
   reason, at most 300 characters and 290 bytes as JSON; the 4 KiB the app keeps above her own 60 KiB
   is for these, so a stop is always written) and she gets a `wakeup_error` wake (`- wakeup w4 stopped: TypeError:
-  … (line 2)`), which gets through busy and bed time like a reminder; for a watch on a DM or on
+  … (line 2)`), queued like a reminder; for a watch on a DM or on
   "everywhere" it is a DM wake (its error may quote a DM). Changing its code (in her file) turns it
   back on. Her wakeups are hers alone: whatever fails in them never stops a message reaching another
   waifu, nor her other scheduler steps (each step runs on its own).
@@ -367,7 +367,7 @@ a whole file longer than the 20,000-character script is written with Bash.
   before the next begins: journalled under the call, her special files in `~/life/` checked as they would be after
   it (wakeups compiled, ids given), the limits, case collisions, and nothing changed under her since it
   was read. Any problem throws `tools.apply_patch: …; nothing was changed`. It returns `Updated: M ~/MEMORY.md,
-  A ~/people/mina.md, D ~/old.md` (`M ~/new.md (from ~/old.md)` for a move), plus the notes her day,
+  A ~/people/mina.md, D ~/old.md` (`M ~/new.md (from ~/old.md)` for a move), plus the notes
   `MEMORY.md` and `profile.json` get (as Bash's), and its receipt (`[receipt] apply_patch 1: saved M
   ~/MEMORY.md`).
 - A file whose bytes are a private chat's transcript day she was shown keeps its DM origin; touching a

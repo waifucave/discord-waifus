@@ -12,12 +12,6 @@ import { compareIds } from "../discord/rawMessage.js";
 import { snowflakeTime } from "../discord/refStore.js";
 import { clockText, dayText, dayTimeText, localDayKey } from "./clock.js";
 import { messagesOf } from "./wakeMessages.js";
-import { PLAN_WAKE_TEXT } from "./home/daySchedule.js";
-
-/** The release line of held wakes (§21.4): first in the notification that brings them. */
-export function releaseLine(released: NonNullable<Wake["released"]>): string {
-  return released.kind === "phone" ? `- phone check (busy: ${released.why})` : `- free again (${released.why} is over)`;
-}
 
 export const PREVIEW_CHARS = 60;
 /** At most this many lines per place in one notification block (§20; `life.notificationLinesPerPlace`). */
@@ -198,7 +192,8 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
       // §16.4: `reminder (Sat 24 Oct 14:20): "<note>"`, the time it was due (its date with its weekday, §23.2).
       return [`- reminder (${dayTimeText(new Date(wake.at), view.timeZone)}): ${quote(wake.note ?? "")}`];
     case "plan":
-      // §29: `plan · 17:30 · "<what>"`, one line per plan whose time came (no place; she decides).
+      // §29: `plan · 17:30 · "<what>"`, one line per plan whose time came (no place; she decides). Only
+      // a plan wake queued before her day file went (§38) still comes.
       return (wake.plans ?? []).map((plan) => `- ${REASON_LABELS.plan} · ${plan.at} · ${quote(plan.what)}`);
     case "watch_timeout":
       // §16.5: a watch always ends at its timeout, so an empty one is a timer.
@@ -219,18 +214,8 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
   }
 }
 
-/**
- * The lines of one notification block: places in arrival order, one line per message within a place.
- * Wakes released from a busy hold (§21.4) come with one first line saying why they arrive now
- * (`- phone check (busy: …)`, or `- free again (… is over)` when any came at a block's end).
- */
+/** The lines of one notification block: places in arrival order, one line per message within a place. */
 export function notificationLines(wakes: readonly Wake[], view: NotificationView): string[] {
-  const released = wakes.flatMap((wake) => (wake.released ? [wake.released] : []));
-  const head = released.length === 0 ? [] : [releaseLine([...released].reverse().find((entry) => entry.kind === "free") ?? released[released.length - 1]!)];
-  return [...head, ...wakeLines(wakes, view)];
-}
-
-function wakeLines(wakes: readonly Wake[], view: NotificationView): string[] {
   const groups = new Map<string, Wake[]>();
   const order: Array<{ kind: "place"; key: string } | { kind: "solo"; wake: Wake }> = [];
   for (const wake of wakes) {
@@ -267,25 +252,7 @@ export function renderNotifications(
   return `<notifications>\n${lines.join("\n")}\n</notifications>`;
 }
 
-/**
- * The morning wake's first line (§21.3, S2): she writes today's schedule before anything else. The
- * overnight batch follows it when there is one.
- */
-export function morningGreeting(o: { now: Date; timeZone: string; bedTime?: { start: string; end: string }; overnight: boolean }): string {
-  return [
-    `[system] Good morning, it's ${dayText(o.now, o.timeZone)}.`,
-    "Before anything else, write today's schedule in ~/life/schedule.json: when you'll be busy and why, when you'll check your phone while busy, your mood, your plans.",
-    PLAN_WAKE_TEXT,
-    "Your day is yours to plan: keep it believable for who you are.",
-    ...(o.bedTime ? [`Your bed time (${o.bedTime.start}–${o.bedTime.end}) is fixed.`] : []),
-    ...(o.overnight ? ["Then deal with what came in overnight."] : [])
-  ].join(" ");
-}
-
-/** At most this many message lines per DM or room in the morning summary (§23; `life.morningLinesPerPlace`). */
-export const MORNING_LINES_PER_PLACE = 8;
-
-/** One message of the morning summary (§23): a DM's message, or a room message that addressed her. */
+/** One message of the batch (§23): a DM's message, or a room message that addressed her. */
 export type MorningLine = { id: string; fromName?: string; preview: string; reasons: readonly WakeReason[]; at?: Date };
 
 export type MorningPlace = {
@@ -297,39 +264,36 @@ export type MorningPlace = {
   lines?: readonly MorningLine[];
   /** Lines older than `lines` that were not kept. */
   earlier?: number;
-  /** When the night's messages there came (the counts line's span). */
+  /** When the batch's messages there came (the counts line's span). */
   span?: { from: Date; to: Date };
 };
 
-/** The morning summary's reasons, in label order: what addressed her in a room. */
+/** The batch's reasons, in label order: what addressed her in a room. */
 const ADDRESSED: readonly WakeReason[] = ["mention", "name", "role", "everyone"];
 
 /**
- * The `morning` batch lines (§4.7, §23), built when her bed time (or budget pause) ends: DMs with one
- * line per message, then rooms by most mentions (counts with the night's span, then one line per
- * message that addressed her), then watch matches, watch timeouts, reminders, plans and the rest. Times
- * are her local `HH:MM`, with the day (`Tue 17 Nov 23:40`) when not on the morning's day; every line has its ref.
+ * The `morning` batch lines (§4.7, §23, §38: the reason kept its name), built when her budget pause
+ * ends, or at the first tick after the upgrade for what waited for her bed time's morning: DMs with
+ * one line per message, then rooms by most mentions (counts with the span of their messages, then
+ * one line per message that addressed her), then watch matches, watch timeouts, reminders, plans and
+ * the rest. Times are her local `HH:MM`, with the day (`Tue 17 Nov 23:40`) when not on the release's
+ * day; every line has its ref.
  */
 export function morningBatch(
   o: {
-    reason: "sleep" | "budget";
     since: Date;
     until: Date;
     places: readonly MorningPlace[];
     items: readonly Wake[];
-    /** Lines per DM or room (§23); `MORNING_LINES_PER_PLACE` when absent. */
+    /** Lines per DM or room (§23; `life.notificationLinesPerPlace`); `NOTIFICATION_LINES_PER_PLACE` when absent. */
     linesPerPlace?: number;
   },
   view: NotificationView
 ): string[] {
-  const morningDay = localDayKey(o.until, view.timeZone);
-  const timeOf = (date: Date) => (localDayKey(date, view.timeZone) === morningDay ? clockText(date, view.timeZone) : dayTimeText(date, view.timeZone));
-  const header =
-    o.reason === "sleep"
-      ? `- while you were asleep (${clockText(o.since, view.timeZone)}–${clockText(o.until, view.timeZone)}):`
-      : `- while you were away (since ${timeOf(o.since)}):`;
-  const lines = [header];
-  const cap = Math.max(1, o.linesPerPlace ?? MORNING_LINES_PER_PLACE);
+  const releaseDay = localDayKey(o.until, view.timeZone);
+  const timeOf = (date: Date) => (localDayKey(date, view.timeZone) === releaseDay ? clockText(date, view.timeZone) : dayTimeText(date, view.timeZone));
+  const lines = [`- while you were away (since ${timeOf(o.since)}):`];
+  const cap = Math.max(1, o.linesPerPlace ?? NOTIFICATION_LINES_PER_PLACE);
   // The newest `cap` lines; the first says how many earlier ones were left out.
   const messageLines = (place: MorningPlace, line: (entry: MorningLine, head: string[]) => string): string[] => {
     const all = place.lines ?? [];
@@ -422,7 +386,7 @@ export function morningBatch(
       lines.push(`  · ${item.note ?? "something from before still needs you"}`);
     } else if (item.reason === "morning" && item.batch) {
       // An earlier batch she never read (her budget ran out first): its lines without its header
-      // (and without the morning greeting, §21.3).
+      // (and without a morning greeting one saved before §38 may still start with).
       lines.push(...item.batch.filter((line) => !line.startsWith("[system]")).slice(1));
     }
   }

@@ -34,6 +34,7 @@ import { migrateLivingCastBedTime, migrateLivingCastDropBusy, migrateLivingCastL
 import { DROP_REST_NOTICE_RATIO_STEP_ID, migrateLivingCastDropRestNoticeRatio } from "./migrationSteps/livingCastRestNoticeRatio.js";
 import { migrateLivingCastSendCap, SEND_CAP_STEP_ID } from "./migrationSteps/livingCastSendCap.js";
 import { migrateLivingCastWakeups, WAKEUPS_STEP_ID } from "./migrationSteps/livingCastWakeups.js";
+import { migrateLivingCastNoSchedule, NO_SCHEDULE_STEP_ID } from "./migrationSteps/livingCastNoSchedule.js";
 import { migrateLivingCastWebTurnCap, WEB_TURN_CAP_STEP_ID } from "./migrationSteps/livingCastWebTurnCap.js";
 import { migrateLivingCastMemoriesToNotes } from "./migrationSteps/livingCastMemoriesToNotes.js";
 import { migrateLivingCastArchiveDirector } from "./migrationSteps/livingCastArchiveDirector.js";
@@ -187,7 +188,8 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   // Typing-aware holds (spec §4.2): debounce values still at an earlier default move to the new ones.
   { id: "living-cast-typing-holds-v1", frequency: "once", run: migrateLivingCastTypingHolds },
   // Her day (spec §21.6): her app-managed files move into ~/life/ (and lives start a new epoch), and
-  // the owner-set busy blocks are archived and dropped (her own ~/life/schedule.json replaces them).
+  // the owner-set busy blocks are archived and dropped (her own ~/life/schedule.json replaced them
+  // until §38).
   { id: "living-cast-life-folder-v1", frequency: "once", run: (dataRoot) => migrateLivingCastLifeFolder(dataRoot) },
   { id: "living-cast-drop-busy-v1", frequency: "once", run: (dataRoot) => migrateLivingCastDropBusy(dataRoot) },
   // Bed time (spec §21.6c): the owner's availability.sleep is renamed availability.bedTime (archived first).
@@ -201,6 +203,10 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
   // Wakeup(script) (spec §30.3): her reminders.json and watches.json become ~/life/wakeups.json (old
   // files archived, side files follow), and lives on the old tools start a new epoch.
   { id: WAKEUPS_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastWakeups(dataRoot) },
+  // No schedule, no bed time (spec §38): her bed time, scheduleInPrompt and the sleep notice leave
+  // every waifu.json and the day's settings leave config.toml (archived first); her ~/life/schedule.json
+  // is archived and begun lives start a new epoch.
+  { id: NO_SCHEDULE_STEP_ID, frequency: "once", run: (dataRoot) => migrateLivingCastNoSchedule(dataRoot) },
   {
     // Runs LAST: every step above may still leave a file's schemaVersion at 1 even once its shape
     // is current. Stamping here — after all shape conversions — is what lets the next boot's

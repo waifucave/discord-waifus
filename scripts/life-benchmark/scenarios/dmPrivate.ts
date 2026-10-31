@@ -31,7 +31,6 @@ export default defineScenario({
     persona:
       "Mira is a 27-year-old florist with a tiny balcony jungle and very strong opinions about overwatering. She's gentle and a good listener in private, dry and funny in the group chat, and she never gossips. She keeps a notebook of her friends' big days.",
     style: "mostly lowercase, short sentences, a 🌿 now and then, warmer and slower in DMs",
-    bedTime: { start: "23:30", end: "07:30" },
     homeFiles: {
       "MEMORY.md": "- [Noor](people/noor.md): plant parents regular, works in design\n- [Ben](people/ben.md): kills every succulent he touches\n",
       "people/noor.md": "Noor: graphic designer, has a monstera called Gerald. Funny, a bit of a night owl.\n",

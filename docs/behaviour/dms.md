@@ -28,11 +28,10 @@ re-logs only the bots whose DM set changed. DM-eligible bots register a DM-only 
   (`dmMaxWaitMs`). One `dm` wake per burst, one notification line per message.
 - Her wakeup watches on the DM's messages are matched after the hold and ride on the same wake
   (`dm, watch · dm/kevin · "match" · from Kevin · #a3 "…" · your note: "…"`).
-- Then the router: rate limit (below) → bed time → busy → budget.
-  - **Awake or busy**: a DM always gets through (it is in the busy set).
-  - **Up late or dozing**: gets through.
-  - **Asleep**: deferred to her morning summary; the sleep notice goes out once per bed time.
-  - **Over budget**: deferred to the next local day.
+- Then the router: rate limit (below) → budget. **Unreleased (on main), §38:** at any hour a DM
+  reaches her (no bed time, no busy block, no sleep notice).
+  - **Over budget**: deferred until she is under budget again (her next local day), then in the
+    budget's batch ([reachability-and-budget.md](reachability-and-budget.md)).
 - A DM wake is direct: if she writes text but sends nothing, the unsent-reply nudge runs once.
 
 ## Rate limit
@@ -51,17 +50,15 @@ re-logs only the bots whose DM set changed. DM-eligible bots register a DM-only 
   the built-in "I need a little break — talk to you in about {retryInMinutes} minutes!"
   (`DEFAULT_LIMIT_NOTICE`). No model call.
 - Counters live in `user/dms/<userId>/limits/<waifuId>.json` (`replyTimestamps` ≤ 1,000,
-  `limitNoticeSentAt`, `floorMessageId`, `sleepNoticeSentFor`, `autoMessageIds` ≤ 50), separate from
+  `limitNoticeSentAt`, `floorMessageId`, `autoMessageIds` ≤ 50), separate from
   the DM state so a person's `/forget` never resets the limiter.
 
-## Sleep notice
+## No sleep notice any more
 
-`dm.sleepNotice` (≤ 300 chars, default empty = none). Sent only when her phase is **asleep** and a
-DM wake is deferred, once per bed time per person (`sleepNoticeSentFor` = that bed time's start)
-(`WakeRouter.maybeSleepNotice`). Not sent while up late or dozing (DMs reach her then). No model call,
-not rate-counted.
-
-Both automatic notices get a ref and show in her `ReadMessages` as `[auto] <text>`.
+**Unreleased (on main), §38:** `dm.sleepNotice` is gone with her bed time (the upgrade archives it;
+an old limits file's `sleepNoticeSentFor` is dropped when read). The limit notice is the only
+automatic DM. Automatic notices get a ref and show in her `ReadMessages` as `[auto] <text>` (old
+sleep notices included).
 
 ## When she may write in a DM (D11)
 
@@ -102,14 +99,13 @@ On a DM-eligible bot, in the DM only (`src/discord/client.ts` `buildDmCommandPay
 - Done: "Done: I deleted our private chat." (+ "…and everything else I remember about you is marked
   to be forgotten." for `everything`).
 - At most once per **6 hours** per person (either scope) runs the life scrub at once; inside the
-  window the DM data still goes at once and the life scrub waits for her nightly maintenance; her
+  window the DM data still goes at once and the life scrub waits for her daily maintenance; her
   turn is never aborted then.
 
 What each scope removes is in [privacy-and-forget.md](privacy-and-forget.md).
 
 ## Spec differs
 
-- §4.5 says the sleep notice goes out when a DM is deferred "for sleep" in a sleep window; as built
-  only the asleep phase defers DMs and sends it.
+- §4.5's sleep notice is superseded by §38 (no bed time, no sleep notice).
 - `src/orchestration/dm/rateLimit.ts`'s header comment says a reply is "one run that sent at least
   one chunk"; the code counts the first DM send per turn per person.

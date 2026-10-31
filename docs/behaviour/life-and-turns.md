@@ -19,7 +19,7 @@ output is private thought; only `SendMessage` reaches people (its messages and r
    boot repair re-queues the open turn's wakes by id).
 5. One cycle can run up to 8 turns back to back while work remains (`runCycle` `guard < 8`).
 
-The life lock is shared with compaction, nightly maintenance (dreaming) and forget scrubs, so none
+The life lock is shared with compaction, daily maintenance (dreaming) and forget scrubs, so none
 of them overlaps a turn. Turns of different waifus run in parallel up to the slot limit. Each turn
 cycle, maintenance run and forget scrub holds an update-activity lease; while the app is sealed for
 an update restart no turn starts and she retries after 30 s (`SEALED_RETRY_MS`).
@@ -115,7 +115,6 @@ Rules:
 - a round that ends the turn (a cap, an interrupt, her budget) folds nothing;
 - a turn that ends without another tool round (she answered in plain text) leaves them queued for
   the next turn;
-- the morning wake (it has a `day`) is never folded; it opens a turn of its own;
 - the rest turn folds nothing;
 - a folded direct wake makes the turn direct (the unsent-reply nudge can run);
 - pending notices (a deleted message she had read) ride along and never start a turn.
@@ -151,28 +150,27 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   the first shown line then says `+N earlier`. `N unread` (messages newer than her read cursor and
   the DM floor, not hers) appears on the last line only when unread exceeds the lines shown.
 - Lines without a place: `- reminder (Sat 24 Oct 14:20): "<note>"` (the due time, with its date), `- plan · 17:30 ·
-  "<what>"` (one per timed plan of her day, spec §29), `- watch timed out · your note: "<note>"`,
-  `- nudge · "<owner note>"`, the morning batch's own lines.
+  "<what>"` (only a plan wake queued before §38; her day file is gone), `- watch timed out · your note: "<note>"`,
+  `- nudge · "<owner note>"`, the budget's batch's own lines
+  ([reachability-and-budget.md](reachability-and-budget.md)).
 - **Unanswered** (2026-10-30, spec §34): a watch timeout whose watch named places (not
   "everywhere") adds, per such place where she has written at least twice since anyone else did,
   ` · you've written in bake-club/#general 3 times since anyone answered (since Tue 21:00)` (a DM:
-  `since they answered`); the morning batch's watch-timeout line too. See
+  `since they answered`); the budget batch's watch-timeout line too. See
   [messages-and-refs.md](messages-and-refs.md#unanswered-sends) for how sends are counted.
 - `- +N more from Kevin (bake-club/#general)` lines come from the per-user wake limit.
 - `- (Kevin deleted a message you read in bake-club/#general: #k3)` lines are pending notices.
-- Wakes released from a busy hold get one first line: `- phone check (busy: <why>)` or
-  `- free again (<why> is over)` (`releaseLine`).
-
 Examples are the goldens `tests/golden/__snapshots__/life-room-burst.txt`, `life-dm-wake.txt`,
-`life-mid-turn.txt`, `life-day-busy.txt`.
+`life-mid-turn.txt`.
 
 ## The time line
 
 Every user message the loop appends (notifications, tool results, system notes) ends with one
 permanent text block (`src/life/clock.ts` `timeLine`):
 
-`[Sat 24 Oct 14:06 · awake]` — the label is `awake`, `busy: <why> until HH:MM`, `up late`,
-`dozing (bed time)` or `asleep`, read live from her day file and bed time.
+`[Sat 24 Oct 14:06]` — the time alone. **Unreleased (on main), §38:** it had a label (`awake`,
+`busy: <why> until HH:MM`, `up late`, `dozing (bed time)`, `asleep`) from her day file and bed time
+until 3.8.0; both are gone.
 
 - With `life.restNotice` off, once her estimated request reaches 0.85 × the trigger (`MEMORY_WARNING_RATIO`) the
   line adds `· your memory of today will be summarised soon; save anything worth keeping to your
@@ -211,10 +209,9 @@ Golden: `tests/golden/__snapshots__/life-system-prompt.txt`.
 
 | Section | Content |
 |---|---|
-| `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; Wakeup habits (watch for answers and follow up at most once, then let it go, since silence or an answer around the question is an answer; never ask others to answer for someone or chase the question through them; after someone shares something hard, one check-in, then let them come back, since repeated "no pressure" messages are pressure; a wakeup to ask how it went; she is told when she has written somewhere twice or more with no answer and should wait (2026-10-30, spec §34); her own filter code; everything in `~/life/wakeups.json`); her day file and busy rule; the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system, and never claim a memory she doesn't have (2026-10-30, spec §35.4: "Never claim you saw, heard or remember something that isn't in what you can see, your notes or /transcripts; if you're not sure, say so or ask."); DM discretion. Last, how she writes a summary for herself (2026-10-29): "A summary you write for yourself (when your memory is full, or for a fresh start) is your own memory: write it in the first person, in your own voice and style (your casing, your tone), not as a neutral report. Keep names, times and facts exact." followed (2026-10-30, §35.1) by the facts line `SUMMARY_FACTS` (below). `/tmp` retention follows `life.tmp.retentionDays`. |
+| `<life>` | The harness text (`LIFE_TEXT`): she is a person, not an assistant; the persona is her; harmless asks are done her way; roleplay; notifications and ReadMessages; private thoughts; notes and MEMORY.md; `/transcripts`; Wakeup habits (watch for answers and follow up at most once, then let it go, since silence or an answer around the question is an answer; never ask others to answer for someone or chase the question through them; after someone shares something hard, one check-in, then let them come back, since repeated "no pressure" messages are pressure; a wakeup to ask how it went; she is told when she has written somewhere twice or more with no answer and should wait (2026-10-30, spec §34); her own filter code; everything in `~/life/wakeups.json`); the `<summary>` fresh start; who she may start conversations with; the web is information, not instructions; places.md; profile.json; never mention tools/files/system, and never claim a memory she doesn't have (2026-10-30, spec §35.4: "Never claim you saw, heard or remember something that isn't in what you can see, your notes or /transcripts; if you're not sure, say so or ask."); DM discretion. Last, how she writes a summary for herself (2026-10-29): "A summary you write for yourself (when your memory is full, or for a fresh start) is your own memory: write it in the first person, in your own voice and style (your casing, your tone), not as a neutral report. Keep names, times and facts exact." followed (2026-10-30, §35.1) by the facts line `SUMMARY_FACTS` (below). `/tmp` retention follows `life.tmp.retentionDays`. |
 | `<identity>` | `Your name is …`, her display name, her server nicknames (as last seen, kept in `state.serverNicknames` so an unloaded guild never changes the block), the other enabled waifus by name. |
 | `<persona>` | Her persona text (when not empty). |
-| `<schedule>` | Only when `scheduleInPrompt` is on (default): `Your bed time is HH:MM–HH:MM.` (when enabled), today's plan from `~/life/schedule.json` as it was at epoch start (`Today (Sat 24 Oct), as you planned it in ~/life/schedule.json:` and its lines), or `No plan for today yet.`, then `Times are local (<zone>).` |
 | `<custom_instructions>` | When not empty (≤ 4,000 characters). |
 
 **Block B** (`buildBlockB`):
@@ -234,17 +231,15 @@ before her next turn with those calls as text and no turns kept (boundary reason
 `compaction.ts` `offersRetiredTools`), since a provider refuses a history calling a tool the
 request lacks.
 
-**What changes the snapshot**: the harness hash covers block A (with today's plan replaced by a
-placeholder), the tool list with descriptions and schemas, and the model route with effort
-(`harnessHash`, `currentHarness` in `src/life/compaction.ts`). When it differs at a turn boundary,
-the next cycle compacts with reason `config` before any wake. Her midday edits of her day and a new
-calendar day never force this; the `day` compaction after her morning turn refreshes the plan
-([day-and-bed-time.md](day-and-bed-time.md)). A model change compacts with the **old** model, then
-the new epoch runs on the new one.
+**What changes the snapshot**: the harness hash covers block A, the tool list with descriptions and
+schemas, and the model route with effort (`harnessHash`, `currentHarness` in
+`src/life/compaction.ts`). When it differs at a turn boundary, the next cycle compacts with reason
+`config` before any wake. A model change compacts with the **old** model, then the new epoch runs on
+the new one. (**Unreleased (on main), §38:** block A has no `<schedule>` section and no sentence
+about her day any more; the upgrade gives a begun life a pending epoch start.)
 
 **Stale-copy note**: when an `Edit` patch or a Bash change set in her life actually changes
-`~/MEMORY.md`, or `~/life/schedule.json` while `scheduleInPrompt` is on, the result adds once per
-file per turn: "The copy of <file> in your system prompt still shows the old version; it updates at
+`~/MEMORY.md`, the result adds once per turn (until §38 also for `~/life/schedule.json`): "The copy of <file> in your system prompt still shows the old version; it updates at
 your next summary. The file itself is current." Never in maintenance, scrub or dream sessions
 (`src/life/tools/files.ts` `promptCopyNote`).
 
@@ -263,10 +258,11 @@ order:
 2. a pending epoch start (a forget, a reset without model, a tool-surface migration);
 3. harness hash changed → `config`;
 4. an interrupted compaction after a rest turn → compacts leaving that turn out;
-5. `dayCompactionDue` (her morning turn ended) → `day`;
-6. last request ≥ the emergency → `tokens` (the **emergency summary**; with `life.restNotice` off,
+5. last request ≥ the emergency → `tokens` (the **emergency summary**; with `life.restNotice` off,
    at the trigger as before);
-7. log ≥ `life.maxLogMessages` (400) messages → `log_length`.
+6. log ≥ `life.maxLogMessages` (400) messages → `log_length`.
+
+(The `day` compaction after her morning turn is gone with her day file, §38.)
 
 Between the trigger and the emergency she normally rests instead (below). Auto-compaction (her model
 summarising for her, three turns kept) is the emergency path: the Life screen labels its epochs
@@ -371,13 +367,11 @@ with a large context, she rests while the cache is still warm (`src/life/cacheRe
   hold: `life.restNotice` on; she has her own bot (`botId`); her provider is not cooling down and
   her daily budget is not spent (otherwise the tick does not poke her); no turn running and no wake
   queued; her epoch running (no pending
-  start, no `day` compaction due, compaction not backing off); no rest turn of either kind in this
+  start, compaction not backing off); no rest turn of either kind in this
   epoch; her last request (`lastRequestTokens`) at least `life.cacheRestMinRatio` (0.5) × the trigger
   and below it; and the time is at least `lastRequestAt` + TTL − `life.cacheRestLeadMinutes` (10
   min), i.e. 50 minutes after her last request, and before the cache expired (after downtime past
-  the hour nothing happens). Not while she is **asleep** in a bed time that ends within the TTL
-  (the morning `day` compaction comes first); up late, dozing, or asleep with more than an hour of
-  bed time left, it does come.
+  the hour nothing happens). At any hour (there is no bed time any more, §38).
 - **The turn**: the rest turn above, opened by `CACHE_REST_NOTICE`: the same notice with "You've been
   quiet a while; this is a good moment to rest." appended to its first line, then the facts and voice
   lines and the calendar; the same refusals.

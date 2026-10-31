@@ -254,8 +254,9 @@ describe("runMigrations", () => {
     const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
     expect(raw).not.toHaveProperty("promptSections");
     expect(raw).not.toHaveProperty("promptLayout");
-    expect(raw.scheduleInPrompt).toBe(false);
-    expect(WaifuConfigSchema.parse(raw).scheduleInPrompt).toBe(false);
+    // §38: the choice leaves waifu.json, kept in the archive.
+    expect(raw).not.toHaveProperty("scheduleInPrompt");
+    expect((await readJson<Record<string, unknown>>(root, "user/.archive/living-cast/no-schedule/yuki.json")).scheduleInPrompt).toBe(false);
   });
 
   it("drops a W1 layout tree; a schedule disabled inside a group survives as scheduleInPrompt: false", async () => {
@@ -292,10 +293,11 @@ describe("runMigrations", () => {
     await runMigrations(root);
     const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
     expect(raw).not.toHaveProperty("promptLayout");
-    expect(raw.scheduleInPrompt).toBe(false);
+    expect(raw).not.toHaveProperty("scheduleInPrompt");
+    expect((await readJson<Record<string, unknown>>(root, "user/.archive/living-cast/no-schedule/yuki.json")).scheduleInPrompt).toBe(false);
   });
 
-  it("drops a W2 layout with everything enabled and leaves scheduleInPrompt at its default", async () => {
+  it("drops a W2 layout with everything enabled and writes no scheduleInPrompt", async () => {
     const root = await makeTempRoot();
     roots.push(root);
     await writeJson(root, "user/waifus/yuki/waifu.json", {
@@ -319,7 +321,7 @@ describe("runMigrations", () => {
     const raw = await readJson<Record<string, unknown>>(root, "user/waifus/yuki/waifu.json");
     expect(raw).not.toHaveProperty("promptLayout");
     expect(raw).not.toHaveProperty("scheduleInPrompt");
-    expect(WaifuConfigSchema.parse(raw).scheduleInPrompt).toBe(true);
+    expect(WaifuConfigSchema.parse(raw)).not.toHaveProperty("scheduleInPrompt");
 
     // Idempotent: a second run finds nothing to drop.
     const second = await runMigrations(root);

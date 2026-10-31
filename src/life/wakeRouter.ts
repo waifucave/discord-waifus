@@ -1,19 +1,13 @@
-// The wake router (Living cast spec §4.4, §4.5): every wake candidate passes the guards in order —
+// The wake router (Living cast spec §4.4, §38): every wake candidate passes the guards in order —
 //
 //   1. paused server or app: drop
 //   2. DM rate limit: a limited user's DM wake is dropped; the fixed limit notice goes out once per
 //      limited period (no model call)
 //   3. per-user wake limit (guilds): past `life.maxWakesPerUserPerHour`, the wake becomes one
 //      "+N more from Kevin" line that rides along with her next turn
-//   4. bed time (§21.6c): asleep, everything but her reminders, her timed plans (§29) and the
-//      owner's wakes is deferred to the morning (DMs get the sleep notice once per bed time per
-//      user); up late or dozing, what
-//      doesn't talk to her is deferred too, unless she sent in that place in the last
-//      `life.busyEngagedMinutes` (`busy.ts`)
-//   4b. busy (§21.4): in a busy block of her `~/life/schedule.json`, a wake that doesn't talk to
-//      her (detector picks, chime-ins, @everyone and role mentions, follow-ups) is held until her
-//      next phone check or the block's end, unless she is chatting in that place (`busy.ts`)
-//   5. daily budget: defer to the next local day
+//   (4. sleep and 4b. busy holds are gone with her bed time and her day file, §38: she is
+//      reachable at any hour)
+//   5. daily budget: defer until she is under budget again (her next local day)
 //   6. room loop guard (`life.maxWaifuTriggeredTurns`, off by default): waifu-authored messages stop
 //      producing wakes in a place after that many since the last human message there
 //
@@ -29,11 +23,7 @@ import type { Wake } from "../shared/schemas/life.js";
 import { assignConversationRefs } from "../discord/refStore.js";
 import type { DailyCost } from "./budget.js";
 import type { LifeDeps } from "./deps.js";
-import { admitUserWake, deferWake, enqueueWake, holdWake } from "./wakeQueue.js";
-import { availabilityFor, getsThroughAsleep, getsThroughBusy, placeOpen, sentRecently } from "./busy.js";
-import { busyAt } from "./home/daySchedule.js";
-import { dayPlanFor } from "./home/index.js";
-import { readLifeState } from "./lifeStore.js";
+import { admitUserWake, deferWake, enqueueWake } from "./wakeQueue.js";
 
 export const STAGGER_MAX_MS = 20_000;
 const MAX_AUTO_IDS = 50;
@@ -49,7 +39,7 @@ export type RouteContext = {
   stagger?: boolean;
 };
 
-export type RouteOutcome = "queued" | "deferred" | "held" | "quiet" | "dropped";
+export type RouteOutcome = "queued" | "deferred" | "quiet" | "dropped";
 
 /**
  * §4.4 guard 6: waifu-authored messages per place since the last human message there. Each message
@@ -166,32 +156,10 @@ export class WakeRouter {
       });
       if (!admitted) return "quiet";
     }
-    // 4. bed time (§21.6c): asleep, only her reminders and plans get through (the owner's already did); up late
-    // or dozing, what doesn't talk to her waits for the morning unless she was just chatting there.
-    const state = await readLifeState(deps.storage, waifuId);
-    const availability = await availabilityFor(deps, waifu, now, state);
-    if (availability.state === "asleep" && !getsThroughAsleep(wake)) {
-      await deferWake(deps.storage, waifuId, wake, "sleep", now);
-      if (wake.reason === "dm" && context.dmUserId && waifu.dm.sleepNotice.trim()) await this.maybeSleepNotice(waifu, context.dmUserId, availability.windowStart);
-      return "deferred";
-    }
-    if (availability.bed && availability.bed.phase !== "asleep" && !getsThroughBusy(wake) && !sentRecently(state.recentSends, wake.placeKey, now, deps.config().life.busyEngagedMinutes)) {
-      await deferWake(deps.storage, waifuId, wake, "sleep", now);
-      return "deferred";
-    }
-    // 4b. busy (§21.4, S4): in a busy block of her day, what doesn't talk to her waits for her next
-    // phone check (else the block's end), unless she is chatting in that place right now.
-    if (!getsThroughBusy(wake) && !availability.bed) {
-      const busy = busyAt(await dayPlanFor(deps, waifu), now, deps.timeZone);
-      if (busy && !placeOpen(state.busyOpen, wake.placeKey, now, busy.end)) {
-        await holdWake(deps.storage, waifuId, { ...wake, heldUntil: busy.release.toISOString(), heldFor: busy.why });
-        return "held";
-      }
-    }
     // 5. daily budget
     const budget = waifu.life.dailyBudgetUsd;
     if (budget !== null && budget !== undefined && (await this.o.cost.today(waifuId, now)) >= budget) {
-      await deferWake(deps.storage, waifuId, wake, "budget", now);
+      await deferWake(deps.storage, waifuId, wake, now);
       return "deferred";
     }
     // 6. room loop guard
@@ -207,17 +175,6 @@ export class WakeRouter {
     await enqueueWake(this.o.deps.storage, waifuId, wake);
     this.o.poke(waifuId);
     return "queued";
-  }
-
-  private async maybeSleepNotice(waifu: WaifuConfig, userId: string, windowStart: Date): Promise<void> {
-    const limits = await readDmLimit(this.o.deps.storage, userId, waifu.id);
-    const window = windowStart.toISOString();
-    if (limits.sleepNoticeSentFor === window) return;
-    await this.sendAutoNotice(waifu, userId, waifu.dm.sleepNotice.trim().slice(0, 300), (current, messageId) => ({
-      ...current,
-      sleepNoticeSentFor: window,
-      autoMessageIds: [...current.autoMessageIds, messageId].slice(-MAX_AUTO_IDS)
-    }));
   }
 
   /** A fixed automatic DM (no model call, not counted by the rate limit), rendered `[auto] …` for her. */

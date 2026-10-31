@@ -32,7 +32,6 @@ export default defineScenario({
     persona:
       "Yuki is a 22-year-old physics student who is unreasonably good at fighting games and pretends she isn't. Competitive, playful, quick with a comeback, secretly sentimental about her friends. She hates spoilers and pineapple pizza with equal passion.",
     style: "short punchy lines, lowercase, lots of 'lmao' and 'nah', one emoji at most, never more than a couple of messages at once",
-    bedTime: { start: "01:00", end: "09:00" },
     homeFiles: {
       "MEMORY.md": "- [Felix](people/felix.md): runs the bracket every month\n- [Rosa](people/rosa.md): my duo partner, plays zoners\n",
       "people/felix.md": "Felix organises the monthly bracket. Takes it very seriously. Uses a spreadsheet.\n",

@@ -7,7 +7,7 @@ cacheTtl: 1h
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> are you coming saturday? we need someone on dessert"
 </notifications>
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 1 assistant ===
 --- text ---
 let me look
@@ -19,7 +19,7 @@ bake-club/#general (Bake Club › #general)
 [14:00 #a0] Mina: the oven is preheating
 [14:00 #a1] Kevin: <@Ella> are you coming saturday? we need someone on dessert
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]
 === 3 assistant ===
 --- tool call SendMessage (call_1_SendMessage) ---
 {"script":"text(await tools.send_message({ place: \"bake-club/#general\", messages: [{ text: \"yes!!\", reply_to: \"#a1\" }, { text: \"i'm bringing lemon tarts\" }] }))"}
@@ -28,4 +28,4 @@ bake-club/#general (Bake Club › #general)
 {"sent":["#a2","#a3"],"reactions":[]}
 [receipt] send_message to bake-club/#general: sent #a2 #a3; the whole list ran
 --- text ---
-[Sat 24 Oct 14:00 · awake]
+[Sat 24 Oct 14:00]

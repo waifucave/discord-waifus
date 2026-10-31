@@ -131,7 +131,6 @@ export const ScenarioSchema = z.object({
     persona: z.string().min(1),
     /** How she writes; becomes her custom instructions. */
     style: z.string().default(""),
-    bedTime: z.object({ start: z.string().regex(/^\d{2}:\d{2}$/u), end: z.string().regex(/^\d{2}:\d{2}$/u) }).optional(),
     /** Discord user id of her bot. */
     botUserId: z.string().regex(SNOWFLAKE_RE).default("990000000000000001"),
     /** Her home at the start: path under ~ → text. */

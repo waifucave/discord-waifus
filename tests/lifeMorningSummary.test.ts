@@ -1,8 +1,11 @@
-// The morning summary shows what came in, with times (Living cast spec §23): the night's DMs one
-// line per message, rooms with the night's span and one line per message that addressed her, watch
-// matches with their message's time and ref; at most `life.morningLinesPerPlace` per DM or room (the
-// newest, the first saying `+N earlier`); every ref resolves in SendMessage and React; DM lines are
-// redacted one by one (D14); a budget pause batch reads the same.
+// The batch shows what came in, with times (Living cast spec §23; since §38 only her daily budget
+// defers wakes, so the batch is the one she gets when she is under budget again): DMs one line per
+// message, rooms with the span of their messages and one line per message that addressed her, watch
+// matches with their message's time and ref; at most `life.notificationLinesPerPlace` per DM or room
+// (the newest, the first saying `+N earlier`); every ref resolves in SendMessage and React; DM lines
+// are redacted one by one (D14).
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { snowflakeAt } from "../src/discord/refStore.js";
 import { readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "../src/life/lifeStore.js";
@@ -29,13 +32,13 @@ const ROOM_2 = "g_100000000000000001_200000000000000099";
 const DM_MINA = `dm_${MINA_USER}_ella`;
 const at = (iso: string) => Date.parse(iso);
 const idAt = (iso: string, n = 0) => (BigInt(snowflakeAt(at(iso))) + BigInt(n)).toString();
-const EMPTY: WakeQueue = { immediate: [], held: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as never;
+const EMPTY: WakeQueue = { immediate: [], deferred: { places: {}, items: [] }, quiet: [], userWakes: {} } as never;
 
 function view(refs: Record<string, string> = {}, handles: Record<string, string> = {}): NotificationView {
   return { timeZone: "UTC", handle: (key) => handles[key] ?? key, unread: () => undefined, ref: (_key, id) => refs[id] };
 }
 
-describe("the morning summary (§23)", () => {
+describe("the batch (§23)", () => {
   it("golden: the spec's example (DMs, rooms by most mentions with their span and lines, a watch match with time and ref, a timeout)", async () => {
     const d3 = idAt("2026-10-27T02:14:10Z");
     const d4 = idAt("2026-10-27T02:15:20Z");
@@ -72,7 +75,7 @@ describe("the morning summary (§23)", () => {
       { id: "w-s", reason: "watch", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Lianne", messageId: c55, matched: "sushi", note: "Lianne wants to try the new sushi place", at: "2026-10-27T05:12:00.000Z" }
     ];
     const lines = morningBatch(
-      { reason: "sleep", since: new Date(at("2026-10-27T01:42:00Z")), until: new Date(at("2026-10-27T08:30:00Z")), places, items },
+      { since: new Date(at("2026-10-27T01:42:00Z")), until: new Date(at("2026-10-27T08:30:00Z")), places, items },
       view({ [d3]: "d3", [d4]: "d4", [c41]: "c41", [c55]: "c55", [c70]: "c70" }, handles)
     );
     await expect(`<notifications>\n${lines.join("\n")}\n</notifications>\n`).toMatchFileSnapshot("./golden/__snapshots__/life-morning-summary.txt");
@@ -88,7 +91,7 @@ describe("the morning summary (§23)", () => {
       earlier: 2,
       lines: ids.map((id, index) => ({ id, preview: `message ${index + 1}`, reasons: ["dm"], at: new Date(at("2026-10-27T03:00:00Z")) }))
     };
-    const lines = morningBatch({ reason: "sleep", since: new Date(at("2026-10-27T01:00:00Z")), until: new Date(at("2026-10-27T08:30:00Z")), places: [place], items: [], linesPerPlace: 8 }, view({}, { [DM_KEY]: "dm/kevin" }));
+    const lines = morningBatch({ since: new Date(at("2026-10-27T01:00:00Z")), until: new Date(at("2026-10-27T08:30:00Z")), places: [place], items: [], linesPerPlace: 8 }, view({}, { [DM_KEY]: "dm/kevin" }));
     expect(lines.slice(1)).toEqual([
       "  · DMs:",
       '    · dm/kevin · +5 earlier · 03:00 "message 4"',
@@ -96,14 +99,14 @@ describe("the morning summary (§23)", () => {
     ]);
   });
 
-  it("a time on another day than the morning's has its weekday and date; a DM with no kept lines keeps a count", () => {
+  it("a time on another day than the release's has its weekday and date; a DM with no kept lines keeps a count", () => {
     const late = idAt("2026-10-26T23:50:00Z");
     const places: MorningPlace[] = [
       { placeKey: DM_KEY, kind: "dm", mentions: 0, messages: 1, lines: [{ id: late, preview: "still up?", reasons: ["dm"], at: new Date(at("2026-10-26T23:50:00Z")) }] },
       { placeKey: DM_MINA, kind: "dm", mentions: 0, messages: 3 },
       { placeKey: ROOM_KEY, kind: "room", mentions: 0, messages: 5, span: { from: new Date(at("2026-10-26T23:10:00Z")), to: new Date(at("2026-10-27T00:20:00Z")) } }
     ];
-    const lines = morningBatch({ reason: "sleep", since: new Date(at("2026-10-26T23:00:00Z")), until: new Date(at("2026-10-27T07:00:00Z")), places, items: [] }, view({ [late]: "a4" }, { [DM_KEY]: "dm/kevin", [DM_MINA]: "dm/mina", [ROOM_KEY]: "bake-club/#general" }));
+    const lines = morningBatch({ since: new Date(at("2026-10-26T23:00:00Z")), until: new Date(at("2026-10-27T07:00:00Z")), places, items: [] }, view({ [late]: "a4" }, { [DM_KEY]: "dm/kevin", [DM_MINA]: "dm/mina", [ROOM_KEY]: "bake-club/#general" }));
     expect(lines.slice(1)).toEqual(["  · DMs:", '    · dm/kevin · Mon 26 Oct 23:50 #a4 "still up?"', "    · dm/mina: 3 messages", "  · bake-club/#general: 5 messages (Mon 26 Oct 23:10–00:20)"]);
   });
 
@@ -123,11 +126,11 @@ describe("the morning summary (§23)", () => {
       at: now.toISOString()
     };
     const pick: Wake = { id: "w2", reason: "detector", placeKey: ROOM_KEY, messageId: idAt("2026-10-27T03:05:00Z"), preview: "who wants cake", fromName: "Mina", at: now.toISOString() };
-    let queue = withDeferred(withDeferred(EMPTY, burst, "sleep", now), pick, "sleep", now);
+    let queue = withDeferred(withDeferred(EMPTY, burst, now), pick, now);
     expect(queue.deferred.places[ROOM_KEY]!.lines!.map((line) => line.preview)).toEqual(["ella are you up", "<@Ella> hello"]);
     for (let index = 0; index < MAX_WAKE_MESSAGES + 5; index += 1) {
       const id = idAt("2026-10-27T04:00:00Z", index);
-      queue = withDeferred(queue, { id: `d${index}`, reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id, preview: `dm ${index}`, at: now.toISOString() }, "sleep", now);
+      queue = withDeferred(queue, { id: `d${index}`, reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id, preview: `dm ${index}`, at: now.toISOString() }, now);
     }
     const dm = queue.deferred.places[DM_KEY]!;
     expect(dm.lines).toHaveLength(MAX_WAKE_MESSAGES);
@@ -149,7 +152,7 @@ describe("the morning summary (§23)", () => {
       ],
       at: now.toISOString()
     };
-    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, wake, "sleep", now));
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, wake, now));
     await scrubWakeQueue(w.storage, "ella", { userId: KEVIN, placeKeys: new Set([DM_KEY]), mentions: (text) => text.includes("Kevin") });
     const lines = (await readLifeFile(w.storage, "ella", "wakes")).deferred.places[ROOM_KEY]!.lines!;
     expect(lines.map((line) => [line.fromName, line.preview])).toEqual([["Mina", "(removed)"]]);
@@ -158,7 +161,7 @@ describe("the morning summary (§23)", () => {
   it("D14: each DM line loses its preview on its own; room lines stay", () => {
     const text = [
       "<notifications>",
-      "- during your bed time (00:30–08:30):",
+      "- while you were away (since 00:30):",
       "  · DMs:",
       '    · dm/kevin · +2 earlier · 02:14 #d3 "secret one"',
       '    · dm/kevin · 02:15 #d4 "secret two"',
@@ -168,7 +171,7 @@ describe("the morning summary (§23)", () => {
     ].join("\n");
     expect(redactDmNotifications(text).split("\n")).toEqual([
       "<notifications>",
-      "- during your bed time (00:30–08:30):",
+      "- while you were away (since 00:30):",
       "  · DMs:",
       `    · dm/kevin · +2 earlier · 02:14 #d3 "${DM_REDACTED}"`,
       `    · dm/kevin · 02:15 #d4 "${DM_REDACTED}"`,
@@ -178,18 +181,18 @@ describe("the morning summary (§23)", () => {
     ]);
   });
 
-  it("a budget pause batch reads the same, under its own header", () => {
+  it("its header says since when, with the day when that was another day; there is no sleep header any more (§38)", () => {
     const id = idAt("2026-10-27T03:00:00Z");
     const places: MorningPlace[] = [{ placeKey: DM_KEY, kind: "dm", mentions: 0, messages: 1, lines: [{ id, preview: "hey", reasons: ["dm"], at: new Date(at("2026-10-27T03:00:00Z")) }] }];
-    const o = { since: new Date(at("2026-10-27T01:00:00Z")), until: new Date(at("2026-10-27T08:30:00Z")), places, items: [] };
-    const asleep = morningBatch({ ...o, reason: "sleep" }, view({ [id]: "a0" }, { [DM_KEY]: "dm/kevin" }));
-    const away = morningBatch({ ...o, reason: "budget" }, view({ [id]: "a0" }, { [DM_KEY]: "dm/kevin" }));
-    expect(away[0]).toBe("- while you were away (since 01:00):");
-    expect(away.slice(1)).toEqual(asleep.slice(1));
+    const o = { places, items: [] };
+    const sameDay = morningBatch({ ...o, since: new Date(at("2026-10-27T01:00:00Z")), until: new Date(at("2026-10-27T08:30:00Z")) }, view({ [id]: "a0" }, { [DM_KEY]: "dm/kevin" }));
+    expect(sameDay).toEqual(["- while you were away (since 01:00):", "  · DMs:", '    · dm/kevin · 03:00 #a0 "hey"']);
+    const nextDay = morningBatch({ ...o, since: new Date(at("2026-10-27T01:00:00Z")), until: new Date(at("2026-10-28T00:05:00Z")) }, view({ [id]: "a0" }, { [DM_KEY]: "dm/kevin" }));
+    expect(nextDay).toEqual(["- while you were away (since Tue 27 Oct 01:00):", "  · DMs:", '    · dm/kevin · Tue 27 Oct 03:00 #a0 "hey"']);
   });
 
-  it("the refs in her morning resolve: she replies to the mention and reacts to the DM", async () => {
-    const w = await sleeperWorld(
+  it("the refs in her batch resolve: she replies to the mention and reacts to the DM", async () => {
+    const w = await spenderWorld(
       toolTurn([
         {
           name: "SendMessage",
@@ -201,20 +204,20 @@ describe("the morning summary (§23)", () => {
           }
         }
       ]),
-      textTurn("(morning done)")
+      textTurn("(batch done)")
     );
     const dm = await nightDm(w, "2026-10-24T02:00:00Z", "are you coming saturday?");
     const mention = await nightMention(w, "2026-10-24T03:00:00Z", "save me a lemon tart");
-    await morning(w);
+    await nextDay(w);
     const text = JSON.stringify(w.anthropic.calls[1]!.request.messages);
-    expect(text).toContain('· dm/kevin · 02:00 #a0 \\"are you coming saturday?\\"');
-    expect(text).toContain('· mention · 03:00 #a0 from Mina \\"<@Ella> save me a lemon tart\\"');
+    expect(text).toContain('· dm/kevin · Sat 24 Oct 02:00 #a0 \\"are you coming saturday?\\"');
+    expect(text).toContain('· mention · Sat 24 Oct 03:00 #a0 from Mina \\"<@Ella> save me a lemon tart\\"');
     expect(w.discord.sent.find((sent) => sent.content === "saving you the best one")).toMatchObject({ replyToMessageId: mention.id });
     expect(w.discord.reactions).toContainEqual(expect.objectContaining({ messageId: dm.id, emoji: "👍" }));
   }, 30_000);
 });
 
-describe("the morning summary's privacy (§23, D14, review)", () => {
+describe("the batch's privacy (§23, D14, review)", () => {
   /** Everything of her life log as the owner sees it, with or without the local reveal. */
   async function ownerView(w: LifeWorld, includePrivate: boolean): Promise<string> {
     const epoch = (await readLifeState(w.storage, "ella")).epoch;
@@ -224,28 +227,28 @@ describe("the morning summary's privacy (§23, D14, review)", () => {
     return JSON.stringify(lines.map((line) => viewLogLine(line, scan, { includePrivate }).view)) + printLifeLines(lines, { private: includePrivate });
   }
 
-  it("a morning whose batch shows a DM line is a DM turn: her text there is hidden without the local reveal", async () => {
-    const w = await sleeperWorld(textTurn("kevin wants to meet at the lake at noon"));
+  it("a batch that shows a DM line is a DM turn: her text there is hidden without the local reveal", async () => {
+    const w = await spenderWorld(textTurn("kevin wants to meet at the lake at noon"));
     await nightDm(w, "2026-10-24T02:00:00Z", "are you free tomorrow? secret plans");
-    await morning(w);
+    await nextDay(w);
     const queueView = await ownerView(w, false);
     expect(queueView).not.toContain("meet at the lake");
     expect(queueView).not.toContain("secret plans");
     expect(await ownerView(w, true)).toContain("meet at the lake");
   }, 30_000);
 
-  it("a morning with only room lines stays an ordinary turn", async () => {
-    const w = await sleeperWorld(textTurn("mina wants a lemon tart"));
+  it("a batch with only room lines stays an ordinary turn", async () => {
+    const w = await spenderWorld(textTurn("mina wants a lemon tart"));
     await nightMention(w, "2026-10-24T03:00:00Z", "save me a lemon tart");
-    await morning(w);
+    await nextDay(w);
     expect(await ownerView(w, false)).toContain("mina wants a lemon tart");
   }, 30_000);
 
-  it("an earlier unread batch with a DM line keeps the morning it rides in a DM turn", async () => {
+  it("an earlier unread batch with a DM line keeps the batch it rides in a DM turn", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    const earlier: Wake = { id: "w-old", reason: "morning", batch: ["- during your bed time (00:30–08:30):", "  · DMs:", '    · dm/kevin · 02:00 #a0 "secret"'], dm: true, at: w.clock.now().toISOString() };
-    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, earlier, "budget", w.clock.now()));
+    const earlier: Wake = { id: "w-old", reason: "morning", batch: ["- while you were away (since 00:30):", "  · DMs:", '    · dm/kevin · 02:00 #a0 "secret"'], dm: true, at: w.clock.now().toISOString() };
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, earlier, w.clock.now()));
     await w.cast.scheduler.tick();
     const [released] = (await readLifeFile(w.storage, "ella", "wakes")).immediate;
     expect(released).toMatchObject({ reason: "morning", dm: true });
@@ -254,14 +257,15 @@ describe("the morning summary's privacy (§23, D14, review)", () => {
   });
 
   it("DM lines at or below the DM's forget floor and lines from a forgotten person are left out", async () => {
-    const w = await sleeperWorld(textTurn("(morning)"));
+    const w = await spenderWorld(textTurn("(batch)"));
     const dm = await nightDm(w, "2026-10-24T02:00:00Z", "my old secret");
     await nightDm(w, "2026-10-24T02:30:00Z", "and a new one");
     await nightMention(w, "2026-10-24T03:00:00Z", "the plan is on", { authorId: MINA_USER, authorName: "Mina" });
     // A DM floor written by a /forget whose scrub has not run, and Mina forgotten meanwhile.
     await updateDmLimit(w.storage, KEVIN, "ella", (current) => ({ ...current, floorMessageId: dm.id }));
     await recordForgottenPerson(w.storage, MINA_USER, new Date(at("2026-10-24T04:00:00Z")));
-    w.clock.ms = at("2026-10-24T08:31:00Z");
+    w.clock.ms = at("2026-10-25T00:05:00Z");
+    w.cast.cost.invalidate();
     await w.cast.scheduler.tick();
     const batch = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!.batch!.join("\n");
     expect(batch).not.toContain("my old secret");
@@ -270,7 +274,7 @@ describe("the morning summary's privacy (§23, D14, review)", () => {
   }, 30_000);
 
   it("a rate-limited DM /forget drops the DM's waiting lines at once, before its scrub runs", async () => {
-    const w = await sleeperWorld(textTurn("(morning)"));
+    const w = await spenderWorld(textTurn("(batch)"));
     await nightDm(w, "2026-10-24T02:00:00Z", "forget this please");
     expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places[DM_KEY]!.lines).toHaveLength(1);
     // Inside the 6-hour window: the scrub only queues (it would wait for her dream).
@@ -292,7 +296,7 @@ describe("the morning summary's privacy (§23, D14, review)", () => {
       reason: "morning",
       dm: true,
       batch: [
-        "- during your bed time (00:30–08:30):",
+        "- while you were away (since 00:30):",
         "  · DMs:",
         `    · ${handle} · 02:00 #a0 "a secret"`,
         "  · bake-club/#general: 2 mentions, 5 messages (01:00–03:00)",
@@ -307,39 +311,38 @@ describe("the morning summary's privacy (§23, D14, review)", () => {
     await updateLifeState(w.storage, "ella", (state) => ({ ...state, scrubbedAt: { [KEVIN]: new Date(w.clock.ms - 60_000).toISOString() } }));
     await w.cast.prepareForget({ waifuId: "ella", userId: KEVIN, source: "dm", scope: "everything" });
     const [left] = (await readLifeFile(w.storage, "ella", "wakes")).deferred.items;
-    expect(left!.batch).toEqual(["- during your bed time (00:30–08:30):", "  · bake-club/#general: 2 mentions, 5 messages (01:00–03:00)", '    · mention · 03:10 #a5 from Mina "<@Ella> hi"']);
+    expect(left!.batch).toEqual(["- while you were away (since 00:30):", "  · bake-club/#general: 2 mentions, 5 messages (01:00–03:00)", '    · mention · 03:10 #a5 from Mina "<@Ella> hi"']);
   }, 30_000);
 });
 
-describe("the morning batch's bookkeeping (review)", () => {
-  it("when the deferred wakes keep changing, nothing is released that tick (no day started); the next tick takes them all", async () => {
-    const w = await sleeperWorld(textTurn("(morning)"));
+describe("the batch's bookkeeping (review)", () => {
+  it("when the deferred wakes keep changing, nothing is released that tick; the next tick takes them all", async () => {
+    const w = await spenderWorld(textTurn("(batch)"));
     await nightDm(w, "2026-10-24T02:00:00Z", "first");
-    const scheduler = w.cast.scheduler as unknown as { morningView: (...args: unknown[]) => Promise<unknown> };
-    const original = scheduler.morningView.bind(scheduler);
+    const scheduler = w.cast.scheduler as unknown as { batchView: (...args: unknown[]) => Promise<unknown> };
+    const original = scheduler.batchView.bind(scheduler);
     let built = 0;
-    const spy = vi.spyOn(scheduler, "morningView").mockImplementation(async (...args: unknown[]) => {
+    const spy = vi.spyOn(scheduler, "batchView").mockImplementation(async (...args: unknown[]) => {
       const view = await original(...args);
       // A DM arrives while each attempt is built.
       built += 1;
       await updateLifeFile(w.storage, "ella", "wakes", (queue) =>
-        withDeferred(queue, { id: `late${built}`, reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: idAt("2026-10-24T08:00:00Z", built), preview: `late ${built}`, at: w.clock.now().toISOString() }, "sleep", w.clock.now())
+        withDeferred(queue, { id: `late${built}`, reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: idAt("2026-10-24T08:00:00Z", built), preview: `late ${built}`, at: w.clock.now().toISOString() }, w.clock.now())
       );
       return view;
     });
-    const before = (await readLifeState(w.storage, "ella")).lastDayStart;
-    w.clock.ms = at("2026-10-24T08:31:00Z");
+    w.clock.ms = at("2026-10-25T00:05:00Z");
+    w.cast.cost.invalidate();
     await w.cast.scheduler.tick();
     expect(built).toBe(5);
     const queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(queue.immediate.filter((wake) => wake.reason === "morning")).toEqual([]);
     expect(queue.deferred.places[DM_KEY]!.lines).toHaveLength(6);
-    expect((await readLifeState(w.storage, "ella")).lastDayStart).toBe(before);
     spy.mockRestore();
     await w.cast.scheduler.tick();
-    const day = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!;
-    expect(day).toMatchObject({ id: "w-day-2026-10-24", dm: true });
-    expect(day.batch!.filter((line) => line.startsWith("    · dm/"))).toHaveLength(6);
+    const batch = (await readLifeFile(w.storage, "ella", "wakes")).immediate.find((wake) => wake.reason === "morning")!;
+    expect(batch).toMatchObject({ reason: "morning", dm: true });
+    expect(batch.batch!.filter((line) => line.startsWith("    · dm/"))).toHaveLength(6);
   }, 30_000);
 
 
@@ -347,26 +350,26 @@ describe("the morning batch's bookkeeping (review)", () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
     const now = w.clock.now();
     const first: Wake = { id: "d1", reason: "dm", placeKey: DM_KEY, fromUserId: KEVIN, messageId: idAt("2026-10-24T13:00:00Z"), preview: "one", at: now.toISOString() };
-    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, first, "sleep", now));
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, first, now));
     const read = (await readLifeFile(w.storage, "ella", "wakes")).deferred;
-    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, { ...first, id: "d2", messageId: idAt("2026-10-24T13:01:00Z"), preview: "two" }, "sleep", now));
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, { ...first, id: "d2", messageId: idAt("2026-10-24T13:01:00Z"), preview: "two" }, now));
     const taken = await takeDeferred(w.storage, "ella", () => ({ id: "m", reason: "morning", batch: ["x"], at: now.toISOString() }), read);
     expect(taken).toEqual({ wake: undefined, conflict: true });
     expect((await readLifeFile(w.storage, "ella", "wakes")).deferred.places[DM_KEY]!.lines).toHaveLength(2);
     expect((await takeDeferred(w.storage, "ella", () => undefined, (await readLifeFile(w.storage, "ella", "wakes")).deferred)).conflict).toBe(false);
   });
 
-  it("an afternoon line moved into the night does not stretch the night's span; old DM wakes count as earlier", async () => {
+  it("a room's batch starts no earlier than 10 minutes before the pause: an older line keeps its day but not the span; old DM wakes count as earlier", async () => {
     const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot" }] });
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    // The deferred batch as a night left it: since 22:00, a mention held from 14:00 moved into it,
-    // and a DM whose first two wakes were deferred before lines were kept (an upgrade night).
+    // The deferred batch as an older version left it: since 22:00, a mention from 14:00 moved into
+    // it, and a DM whose first two wakes were deferred before lines were kept (an upgrade night).
     const afternoon = idAt("2026-10-24T14:00:00Z");
     const night = idAt("2026-10-25T02:00:00Z");
     await updateLifeFile(w.storage, "ella", "wakes", (queue) => ({
       ...queue,
       deferred: {
-        reason: "sleep",
+        reason: "budget",
         since: "2026-10-24T22:00:00.000Z",
         places: {
           [ROOM_KEY]: { mentions: 1, messages: 0, dms: 0, detector: 0, fromUserIds: [MINA_USER], names: {}, lines: [{ id: afternoon, fromUserId: MINA_USER, fromName: "Mina", preview: "<@Ella> you around?", reasons: ["mention"] }] },
@@ -384,11 +387,14 @@ describe("the morning batch's bookkeeping (review)", () => {
   });
 });
 
-const SLEEPER = { id: "ella", name: "Ella", botId: "ella-bot", availability: { bedTime: { enabled: true, start: "00:30", end: "08:30" } }, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } };
+const SPENDER = { id: "ella", name: "Ella", botId: "ella-bot", life: { dailyBudgetUsd: 0.5 }, dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "" } };
 
-/** A sleeper whose life has begun (an evening reminder turn); `morning` is her next scripted turn. */
-async function sleeperWorld(...morningTurns: Parameters<typeof script>): Promise<LifeWorld> {
-  const w = await lifeWorld(roots, { waifus: [SLEEPER], scripts: script(textTurn("(evening)"), ...morningTurns) });
+/**
+ * She spent her budget for Sat 24 Oct early that day, after her life began (an evening reminder turn
+ * the day before): what comes in on the 24th waits for the 25th. `nextDay` is her next scripted turn.
+ */
+async function spenderWorld(...nextTurns: Parameters<typeof script>): Promise<LifeWorld> {
+  const w = await lifeWorld(roots, { waifus: [SPENDER], scripts: script(textTurn("(evening)"), ...nextTurns) });
   vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
   w.clock.ms = at("2026-10-23T20:00:00Z");
   await w.cast.scheduler.tick();
@@ -396,6 +402,9 @@ async function sleeperWorld(...morningTurns: Parameters<typeof script>): Promise
   w.clock.ms = at("2026-10-23T20:10:00Z");
   await w.cast.scheduler.tick();
   await w.cast.life("ella").runNow();
+  await mkdir(path.join(w.root, "user/usage"), { recursive: true });
+  await appendFile(path.join(w.root, "user/usage", "2026-10-24.jsonl"), `${JSON.stringify({ at: "2026-10-24T00:10:00.000Z", waifuId: "ella", purpose: "life", costUsd: 0.75 })}\n`);
+  w.cast.cost.invalidate();
   return w;
 }
 
@@ -418,8 +427,10 @@ async function nightMention(w: LifeWorld, iso: string, text: string, o: { author
   return message;
 }
 
-async function morning(w: LifeWorld): Promise<void> {
-  w.clock.ms = at("2026-10-24T08:31:00Z");
+/** Her next local day, under budget again: the batch is released and she reads it. */
+async function nextDay(w: LifeWorld): Promise<void> {
+  w.clock.ms = at("2026-10-25T00:05:00Z");
+  w.cast.cost.invalidate();
   await w.cast.scheduler.tick();
   await w.cast.life("ella").runNow();
 }

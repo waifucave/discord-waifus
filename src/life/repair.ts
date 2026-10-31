@@ -25,7 +25,6 @@ import { timeLine } from "./clock.js";
 import type { LifeDeps } from "./deps.js";
 import { appendLifeLog, compactIntents, lifeLogTorn, readIntents, readLifeFile, readLifeLog, readLifeState, rewriteLifeLog, updateLifeState } from "./lifeStore.js";
 import { homeStoreFor } from "./home/index.js";
-import { availabilityFor } from "./busy.js";
 import { parseStrictJson } from "./home/specialFiles.js";
 import { specialJsonFile } from "./home/pathRules.js";
 import { wakeupChangeDigest } from "./tools/wakeup.js";
@@ -374,7 +373,7 @@ export async function repairLife(deps: LifeDeps, waifuId: string): Promise<Repai
     await rewriteLifeLog(deps.storage, waifuId, state.epoch, lines);
   }
   const waifu = await readWaifu(deps.storage, waifuId).catch(() => undefined);
-  const timeText = waifu ? timeLine({ now: deps.now(), timeZone: deps.timeZone, status: await availabilityFor(deps, waifu, deps.now(), state) }) : undefined;
+  const timeText = waifu ? timeLine({ now: deps.now(), timeZone: deps.timeZone }) : undefined;
   const last = lines[lines.length - 1];
   const message = (last?.message ?? undefined) as unknown as ProviderMessageLike | undefined;
   const append = async (kind: LifeLogLine["kind"], content: ContentBlockLike[]) => {

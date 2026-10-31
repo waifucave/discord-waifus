@@ -50,7 +50,7 @@ export const COMMANDS: readonly CommandSpec[] = Object.freeze([
   },
   {
     name: "wake",
-    summary: "Wake a waifu now, with an optional note she sees (an owner wake skips her bed time and budget).",
+    summary: "Wake a waifu now, with an optional note she sees (an owner wake skips her budget).",
     usage: ["waifus wake WAIFU [NOTE…]"],
     topic: "life"
   },

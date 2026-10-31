@@ -8,7 +8,7 @@ import { ModelPicker } from "../components/ModelPicker";
 import { WaifuStyleFields, waifuStyleBlocksSave } from "../components/WaifuStyleFields";
 import { Notice } from "../components/Notice";
 import { violationsFromApiError, type SaveErrorViolation } from "../api/violations";
-import { DailyBudgetField, OwnDayNote, BedTimeFields, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
+import { DailyBudgetField, WaifuDmFields, WakeOnNameField } from "../components/WaifuLifeFields";
 import { SectionHead } from "../components/SectionHead";
 import { WaifuDiscordProfileFields } from "../components/WaifuDiscordProfileFields";
 import { waifuDirty, waifuPatch, waifuProblems } from "./castEdit";
@@ -172,7 +172,6 @@ function CharacterEditor({
         persona: "",
         enabled: true,
         customInstructions: "",
-        scheduleInPrompt: true,
         wakeOnName: true,
         life: { dailyBudgetUsd: null }
       });
@@ -196,10 +195,8 @@ function CharacterEditor({
           persona: draft.persona ?? "",
           ...(draft.model ? { model: draft.model } : {}),
           customInstructions: draft.customInstructions,
-          scheduleInPrompt: draft.scheduleInPrompt,
           ...(draft.wakeOnName !== undefined ? { wakeOnName: draft.wakeOnName } : {}),
           ...(draft.life ? { life: draft.life } : {}),
-          ...(draft.availability ? { availability: draft.availability } : {}),
           ...(draft.dm ? { dm: draft.dm } : {})
         });
         onNavigate("cast", undefined, created.id);
@@ -369,21 +366,11 @@ function CharacterEditor({
           </div>
         )}
 
-        {/* ---------- Schedule ---------- */}
-        <SectionHead index={creating ? "03" : "04"} title="Schedule" hint="When she is around, and what wakes her." />
+        {/* ---------- Waking ---------- */}
+        <SectionHead index={creating ? "03" : "04"} title="Waking" hint="What wakes her. She is around at any hour." />
         <div className="fgrid cols-2">
-          <div className="fcell">
-            <span className="field-label">Schedule in her prompt</span>
-            <label className="checkbox-chip">
-              <input type="checkbox" checked={draft.scheduleInPrompt ?? true} onChange={(e) => set({ scheduleInPrompt: e.target.checked })} />
-              Show her schedule in her prompt
-            </label>
-            <span className="field-hint">When on, her prompt shows her bed time and today's plan (the one she wrote this morning).</span>
-          </div>
           <WakeOnNameField draft={draft} onChange={set} />
         </div>
-        <BedTimeFields draft={draft} onChange={set} />
-        <OwnDayNote />
 
         {/* ---------- Direct messages ---------- */}
         <SectionHead index={creating ? "04" : "05"} title="Direct messages" hint="Whether she answers DMs to her bot, and how often." />

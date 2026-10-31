@@ -263,7 +263,7 @@ function LifeDetail({ waifuId, onNavigate }: { waifuId: string; onNavigate: (vie
           <div className="fgrid life-actions">
             <div className="fcell">
               <label className="field-label" htmlFor={noteId}>
-                Wake her (an owner wake skips her bed time and budget)
+                Wake her (an owner wake skips her budget)
               </label>
               <input id={noteId} className="input" maxLength={500} placeholder="A note she sees (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
             </div>

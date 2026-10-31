@@ -18,7 +18,7 @@
 // in parallel up to `life.maxConcurrentTurns`.
 
 import { isDmPlaceKey, wakeShowsDm } from "./lifeView.js";
-import { availabilityFor, noteSend } from "./busy.js";
+import { noteSend } from "./recentSends.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
 import { withPlaceRecord } from "./placeRecorder.js";
 import { homeStoreFor, refreshPlacesFile } from "./home/index.js";
@@ -33,7 +33,7 @@ import { promptTokensOf } from "../orchestration/usageLedger.js";
 import { readWaifu } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
 import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schemas/life.js";
-import { calendarStrip, dayStartAt, timeLine } from "./clock.js";
+import { calendarStrip, timeLine } from "./clock.js";
 import { compactLife, compactRetiredTools, currentHarness, newTurnId, offersRetiredTools, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
 import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
@@ -374,9 +374,7 @@ export class Life {
     const config = this.deps.config();
     const trigger = config.compaction.triggerRatio * lifeBudget(model, config.life.maxContextTokens);
     // The rest notice replaces the "memory nearly full" warning (§19.2); with it off, the warning stays.
-    // Busy from her day file, read on every use (§21.2); her bed time phase from her last send (§21.6c).
-    const now = this.deps.now();
-    const line = timeLine({ now, timeZone: this.deps.timeZone, status: await availabilityFor(this.deps, waifu, now), memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
+    const line = timeLine({ now: this.deps.now(), timeZone: this.deps.timeZone, memoryWarning: !config.life.restNotice && estimate >= MEMORY_WARNING_RATIO * trigger });
     // A summary she wrote that was not used is explained once, on her next time line (§21.6b, §25).
     const state = await readLifeState(this.deps.storage, this.waifuId);
     const refused = state.selfSummaryRefused;
@@ -470,11 +468,7 @@ export class Life {
     const deps = this.deps;
     const harness = await currentHarness(deps, waifu, model);
     if (!state.systemSnapshot) {
-      const started = await startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "first", summarized: false, strippedBlocks: 0, first: true });
-      // Her life begins with whatever woke her: her first morning wake is the next day's (§21.3).
-      if (started.lastDayStart !== undefined) return started;
-      const dayStart = dayStartAt(waifu, deps.now(), deps.timeZone, deps.config().life.dayStartHourLocal).toISOString();
-      return updateLifeState(deps.storage, this.waifuId, (current) => (current.lastDayStart === undefined ? { ...current, lastDayStart: dayStart } : current));
+      return startEpoch(deps, this.waifuId, { harness, summary: state.summary, kept: [], readIds: [], reason: "first", summarized: false, strippedBlocks: 0, first: true });
     }
     if ((state.pendingEpochStart && state.pendingEpochReason === "tools") || (!state.pendingEpochStart && offersRetiredTools(state))) {
       const old = state.modelRoute ? findCuratedModel(state.modelRoute, deps.catalog()) : undefined;
@@ -500,10 +494,6 @@ export class Life {
     if (paused) return state;
     // She had her rest turn and its compaction was interrupted: compact now, leaving that turn out (§19.4).
     if (state.restTurn?.epoch === state.epoch) return this.compact(waifu, state, lines, harness, "tokens", signal, { openTurnId: state.restTurn.turnId });
-    // Her morning turn ended: her new day's plan goes into block A (§21.3), once. An epoch of at most
-    // the kept turns that fit the kept budget (it began this morning: an upgrade's or another
-    // compaction's) keeps them whole and its summary: no second summary right after the first.
-    if (state.dayCompactionDue) return this.compact(waifu, state, lines, harness, "day", signal, { keepWholeIfFits: true });
     const budget = lifeBudget(model, config.life.maxContextTokens);
     const messageLines = lines.filter((line) => line.message !== null).length;
     // The emergency summary (§26): with the rest notice on, only at compaction.emergencyRatio.
@@ -519,7 +509,7 @@ export class Life {
     harness: HarnessNow,
     reason: string,
     signal: AbortSignal,
-    o: { openTurnId?: string; truncate?: boolean; keepWholeIfFits?: boolean } = {}
+    o: { openTurnId?: string; truncate?: boolean } = {}
   ): Promise<LifeState> {
     // A model change compacts with the old model (§5.2); without it, the new one.
     const old = state.modelRoute ? findCuratedModel(state.modelRoute, this.deps.catalog()) : undefined;
@@ -534,7 +524,6 @@ export class Life {
       reason,
       ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}),
       ...(o.truncate ? { truncate: true } : {}),
-      ...(o.keepWholeIfFits ? { keepWholeIfFits: true } : {}),
       // Over budget: the summary request leaves the last results out instead of resending them (M1).
       ...(reason === "budget" || reason === "overflow" ? { shrinkLastResults: true } : {}),
       omit: { deleted: await this.deletedOmissions(state), people: [] },
@@ -565,10 +554,9 @@ export class Life {
     const followUpDue = state.failedTurn !== undefined && !state.failedTurn.followUpDone && nowMs - Date.parse(state.failedTurn.at) >= FOLLOW_UP_DELAY_MS;
     const queued = await pendingWakeCount(deps.storage, this.waifuId);
     // A rest turn may be due with nothing queued: it follows the turn that filled her memory (§19.2),
-    // or she has been quiet until shortly before her prompt cache expires (§25). So may the
-    // compaction after her morning turn (§21.3).
+    // or she has been quiet until shortly before her prompt cache expires (§25).
     const quietRest = queued === 0 && !followUpDue && (await cacheRestDue(deps, waifu, model, state));
-    if (queued === 0 && !followUpDue && !this.restDue(state, model) && !state.dayCompactionDue && !quietRest) return "idle";
+    if (queued === 0 && !followUpDue && !this.restDue(state, model) && !quietRest) return "idle";
     // Her provider is cooling down after a quota or billing error: the wakes wait in the queue and
     // she is poked again when the cooldown ends (review I6).
     const cooling = deps.models.cooldownRemainingMs?.(model.providerId);
@@ -577,11 +565,11 @@ export class Life {
       this.retryAfter(cooling + 1_000);
       return "idle";
     }
-    // Her daily budget is spent (wakes queued before it ran out, or a morning batch released over
-    // it): every wake but the owner's waits for her next local day, like guard 5 (§4.4).
+    // Her daily budget is spent (wakes queued before it ran out, or a batch released over it): every
+    // wake but the owner's waits for her next local day, like guard 5 (§4.4).
     const budgetLeftUsd = await this.budgetLeft(waifu);
     if (budgetLeftUsd !== undefined && budgetLeftUsd <= 0) {
-      const kept = await deferImmediate(deps.storage, this.waifuId, "budget", deps.now(), (wake) => wake.reason === "owner");
+      const kept = await deferImmediate(deps.storage, this.waifuId, deps.now(), (wake) => wake.reason === "owner");
       if (kept === 0) {
         deps.logger.info("Life daily budget reached; wakes deferred", { category: "life", waifuId: this.waifuId });
         return "idle";
@@ -984,11 +972,10 @@ export class Life {
       if (run.typing && sent) {
         for (const place of sentPlaces) run.typing.keeper.sent(place);
       }
-      // Her last send starts her bed time clock again (§21.6c); while she is busy, a place she answers
-      // in after a wake that got through stays open (§21.4).
+      // Her latest send per place: a repeating watch's spacing gives way there (§30.6).
       if (sent) {
         for (const place of sentPlaces) {
-          await noteSend(deps, run.waifu, place, run.wakes).catch((error: unknown) => {
+          await noteSend(deps, this.waifuId, place).catch((error: unknown) => {
             deps.logger.warn("Could not note a send", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
           });
         }
@@ -1012,9 +999,7 @@ export class Life {
    */
   private async foldWakes(run: TurnRun): Promise<ContentBlockLike[]> {
     const deps = this.deps;
-    // Her morning wake opens a turn of its own (§21.3: compacted after it): it waits for the next one.
-    const { wakes: ready, quiet } = await peekImmediate(deps.storage, this.waifuId);
-    const wakes = ready.filter((wake) => wake.day === undefined);
+    const { wakes, quiet } = await peekImmediate(deps.storage, this.waifuId);
     const state = await readLifeState(deps.storage, this.waifuId);
     const notices = state.pendingNotices;
     if (wakes.length === 0 && quiet.length === 0 && notices.length === 0) return [];
@@ -1041,23 +1026,17 @@ export class Life {
 
   private async finishIdle(run: TurnRun, rounds: number, reason: string): Promise<TurnOutcome> {
     const deps = this.deps;
-    // Her morning turn ended (§21.3): the next cycle compacts with reason `day`, so block A shows
-    // today's plan, written or not. An interrupted turn (its wakes go back) or one cut short by a
-    // compaction (a new epoch already) asks again.
-    const morning = reason !== "interrupted" && !reason.startsWith("compaction:") && run.wakes.some((wake) => wake.day !== undefined);
     run.state = await updateLifeState(deps.storage, this.waifuId, (current) => ({
       ...current,
       status: "idle",
       currentTurn: undefined,
-      lastTurnEndedAt: deps.now().toISOString(),
-      ...(morning ? { dayCompactionDue: true } : {})
+      lastTurnEndedAt: deps.now().toISOString()
     }));
     await compactIntents(deps.storage, this.waifuId, new Set()).catch(() => undefined);
     this.host.hooks?.onTurnEnd?.(this.waifuId, { turnId: run.turnId, rounds, reason, sent: run.scratch.sentPlaces.size > 0 });
     deps.logger.info("Life turn ended", { category: "life", waifuId: this.waifuId, turnId: run.turnId, rounds, reason, sent: run.scratch.sentPlaces.size > 0 });
     run.endReason = reason;
     if (reason === "interrupted") return "idle";
-    if (morning) return "again";
     // Her memory is nearly full: the next cycle is her rest turn, before any queued wake (§19.2).
     if (!run.rest && this.restDue(run.state, run.model)) return "again";
     return (await pendingWakeCount(deps.storage, this.waifuId)) > 0 ? "again" : "idle";

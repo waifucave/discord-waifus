@@ -71,7 +71,7 @@ describe("help topics", () => {
     expect(resolveTopic("wake")).toMatchObject({ kind: "command" });
     for (const name of topicNames()) expect(resolveTopic(name), name).toBeDefined();
     expect(resolveTopic("nonsense.key")).toBeUndefined();
-    expect(suggestTopics("waifu.dm.sleepNotise")).toContain("waifu.dm.sleepNotice");
+    expect(suggestTopics("waifu.dm.limitNotise")).toContain("waifu.dm.limitNotice");
   });
 });
 
@@ -95,9 +95,9 @@ describe("GET /api/help", () => {
     const provider = (await app.inject({ method: "GET", url: "/api/help/provider.apiKey" })).json();
     expect(provider).toMatchObject({ kind: "key", key: { flags: ["secret"], path: "apiKey" } });
     expect(JSON.stringify(provider)).not.toContain("[REDACTED]");
-    const markdown = await app.inject({ method: "GET", url: "/api/help/waifu.dm.sleepNotice?format=md" });
+    const markdown = await app.inject({ method: "GET", url: "/api/help/waifu.dm.limitNotice?format=md" });
     expect(markdown.headers["content-type"]).toMatch(/text\/markdown/u);
-    expect(markdown.body).toContain("# waifu.dm.sleepNotice");
+    expect(markdown.body).toContain("# waifu.dm.limitNotice");
     const missing = await app.inject({ method: "GET", url: "/api/help/life.maxSendsPerTrun" });
     expect(missing.statusCode).toBe(404);
     expect(missing.json().details.suggestions).toContain("app.life.maxSendsPerTurn");

@@ -3,14 +3,8 @@ import type { WaifuConfig } from "../api/types";
 type Draft = Partial<WaifuConfig>;
 type Patch = (patch: Draft) => void;
 
-const DEFAULT_BED_TIME = { enabled: false, start: "23:00", end: "07:00" };
-const DEFAULT_DM = { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" };
+const DEFAULT_DM = { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" };
 const DEFAULT_RATE_LIMIT = { maxReplies: 30, windowMinutes: 60 };
-
-function availabilityOf(draft: Draft) {
-  const availability = draft.availability ?? { bedTime: DEFAULT_BED_TIME };
-  return { availability, bedTime: availability.bedTime ?? DEFAULT_BED_TIME };
-}
 
 /** Her name in a message wakes her (Living cast §4.1). */
 export function WakeOnNameField({ draft, onChange }: { draft: Draft; onChange: Patch }) {
@@ -50,45 +44,7 @@ export function DailyBudgetField({ draft, onChange }: { draft: Draft; onChange: 
   );
 }
 
-/** Her nightly bed time (§4.5, §21.6c): the switch, then from and until. */
-export function BedTimeFields({ draft, onChange }: { draft: Draft; onChange: Patch }) {
-  const { availability, bedTime: sleep } = availabilityOf(draft);
-  const setSleep = (next: Partial<typeof sleep>) => onChange({ availability: { ...availability, bedTime: { ...sleep, ...next } } });
-  return (
-    <div className="fgrid sleep-row">
-      <div className="fcell">
-        <span className="field-label">Bed time</span>
-        <label className="checkbox-chip">
-          <input type="checkbox" checked={sleep.enabled} onChange={(e) => setSleep({ enabled: e.target.checked })} />
-          {sleep.enabled ? "She goes to bed every night" : "She has no bed time"}
-        </label>
-        <span className="field-hint">She may stay up late while she keeps chatting, then dozes (only people talking to her get through) and falls asleep (only her reminders and your wakes). The rest waits for the morning, when she plans her day.</span>
-      </div>
-      <div className="fcell">
-        <label className="field-label" htmlFor="waifu-sleep-start">From</label>
-        <input id="waifu-sleep-start" className="input" type="time" value={sleep.start} disabled={!sleep.enabled} onChange={(e) => setSleep({ start: e.target.value })} />
-      </div>
-      <div className="fcell">
-        <label className="field-label" htmlFor="waifu-sleep-end">Until</label>
-        <input id="waifu-sleep-end" className="input" type="time" value={sleep.end} disabled={!sleep.enabled} onChange={(e) => setSleep({ end: e.target.value })} />
-      </div>
-    </div>
-  );
-}
-
-/** Her busy times are her own (§21 S3): she plans her day every morning; only her bed time is yours. */
-export function OwnDayNote() {
-  return (
-    <div className="cell fcell">
-      <span className="field-label">Her day</span>
-      <span className="field-hint">
-        Every morning she writes her own day in ~/life/schedule.json: when she is busy and why, when she checks her phone, her mood and plans (see it under Life → her files). While she is busy, DMs and people talking to her still reach her; the rest waits for her phone checks.
-      </span>
-    </div>
-  );
-}
-
-/** Direct messages (spec 9.1, Living cast §4.5). */
+/** Direct messages (spec 9.1). */
 export function WaifuDmFields({ draft, onChange }: { draft: Draft; onChange: Patch }) {
   const dm = draft.dm ?? DEFAULT_DM;
   const set = (next: Partial<typeof dm>) => onChange({ dm: { ...dm, ...next } });
@@ -132,11 +88,6 @@ export function WaifuDmFields({ draft, onChange }: { draft: Draft; onChange: Pat
           <label className="field-label" htmlFor="waifu-limit-notice">Limit notice</label>
           <input id="waifu-limit-notice" className="input" maxLength={300} placeholder="built-in notice" value={dm.limitNotice} onChange={(e) => set({ limitNotice: e.target.value })} />
           <span className="field-hint">Tokens: {"{name}"}, {"{user}"}, {"{retryInMinutes}"}. Empty = the built-in notice.</span>
-        </div>
-        <div className="fcell">
-          <label className="field-label" htmlFor="waifu-sleep-notice">Sleep notice</label>
-          <input id="waifu-sleep-notice" className="input" maxLength={300} placeholder="no notice" value={dm.sleepNotice} onChange={(e) => set({ sleepNotice: e.target.value })} />
-          <span className="field-hint">Sent once per night when a DM waits for her morning. Empty = none.</span>
         </div>
       </div>
     </>

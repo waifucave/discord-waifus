@@ -7,7 +7,7 @@ The rule lives in `src/life/lifeView.ts` (`scanDmContent`, `viewLogLine`, `wakeS
 
 **What counts as DM content**
 
-- A **DM turn**: a turn whose wakes include a DM place (`dmWakes`, also a morning batch that shows
+- A **DM turn**: a turn whose wakes include a DM place (`dmWakes`, also a budget batch that shows
   anything from a DM: `wake.dm`, and a `wakeup_error` or `watch_timeout` wake of a watch on a DM or
   on "everywhere" (not a plain `[]` timer), whose error or note may quote one), or in which any tool call resolved to a DM place (`dmCalls`,
   recorded while the tools ran; a tool script (§32) is also one when it names a DM anywhere in its
@@ -103,7 +103,7 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    **Pending model steps.** Steps 2 and 4 are the only ones that need a model. When either could not
    run (no model) or failed, every other step still runs (step 5 checks her files only while step 2
    waits) and the queued scrub is kept for those steps alone (`pendingSteps: ["summary", "notes"]` in
-   `pending-scrubs.json`). They run again at the next scrub run (her nightly maintenance, an owner
+   `pending-scrubs.json`). They run again at the next scrub run (her daily maintenance, an owner
    scrub at start) and before her next turn (`LivingCast.summaryStepsBeforeTurn`, after the
    compaction backoff); a run with no model changes and reports nothing. When the summary step runs
    the epoch starts and the summary is checked (`summaryScrub: "done"`); when only the notes session
@@ -116,7 +116,7 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    removed whole (her
    code's waiting state is saved first so it is checked too; a watch word that is only part of one of
    their names is listed for review), a
-   queued or deferred `plan` wake's plan texts naming them → `(removed)`, her day file texts, open places, her DM read cursor and handle, `maintenance.jsonl` lines, earlier review
+   queued or deferred `plan` wake's plan texts naming them → `(removed)`, her recent-send time for their DM, her DM read cursor and handle, `maintenance.jsonl` lines, earlier review
    lines, the host's recent web queries naming them, her archive slice, her transcripts' DM and her
    dream cursor's DM entry.
 4. **Notes scrub**: a session with her identity and persona (30 rounds) removes everything about
@@ -124,8 +124,8 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
    `notesModel: "dream"`). Fails, or neither model is offered → pending (see step 2;
    `notesScrub: "pending"`); without a model one review line says so ("no notes session has run
    yet…"), and meanwhile step 5's line and sentence removal is what her notes get. A queued DM scrub
-   runs at nightly maintenance with or without a model (also after a bed time she stayed up
-   through): everything but the pending model steps is done that night. A waifu who never gets a
+   runs at her daily maintenance with or without a model: everything but the pending model steps is
+   done that day. A waifu who never gets a
    model again keeps those steps queued (Home lists queued forget scrubs).
 5. **Verify and start the epoch**: a note marked as theirs (`<!-- user:<id> -->`) or a `people/` note
    headed by a unique name is deleted whole with its MEMORY.md links; every home text file (not the
@@ -148,7 +148,7 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
 
 - `conversation`: the DM data at once (DM conversation, refs, images and OCR, DM transcript at or
   below the floor, archived context; the floor is raised first; rate-limit counters stay), her files
-  from that DM, the DM's deferred morning lines and intake mark; then her summary without the DM,
+  from that DM, the DM's deferred budget-batch lines and intake mark; then her summary without the DM,
   the DM's wakes, her wakeups watching it, her read cursor at the floor, her dream-cursor DM entry, and
   the epoch starts at once (old log gone). Without a model for the summary (or a failed call), the
   summary and epoch wait as in step 2 (`pendingSteps: ["summary"]`).
@@ -157,14 +157,14 @@ Then for **every waifu with a life or a home**, the life scrub (`src/life/forget
   waifus are untouched).
 - **6-hour window**: a person's `/forget` (either scope) runs the life scrub at most once per 6 hours
   (`DM_SCRUB_RATE_MS`). Inside the window the DM data and files still go at once; the life scrub waits
-  for her nightly maintenance and her turn is not aborted.
+  for her daily maintenance and her turn is not aborted.
 - Neither scope resets the rate-limit counters; floors only go up.
 
 ### Floors
 
 Every forget writes a floor message id (`floorMessageId`, the smallest snowflake at the forget's
 time) into that person's limits file. The conversation cache (`setFloor`), ReadMessages, the
-transcript writer, catch-up, previews and the morning summary never show anything at or below it.
+transcript writer, catch-up, previews and the budget batch never show anything at or below it.
 
 ## What forget does not remove
 

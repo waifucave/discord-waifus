@@ -43,7 +43,6 @@ import { withThreadChannels } from "./stores/threads.js";
 import { DiscordProfileSync } from "../discord/profileSync.js";
 
 export type { CastRuntimeOptions } from "./runtimeShared.js";
-export { currentlyDoingForWaifu } from "./timeOfDay.js";
 
 /** Spec 9.6: `/api/runtime` `discord.dm`. */
 export type DmRuntimeStatus = {
@@ -553,7 +552,7 @@ export class CastRuntime {
     return ids;
   }
 
-  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips her bed time and budget (§4.5). Only this server's cast. */
+  /** `/wake <waifu> [note]` (§10.4): an `owner` wake, which skips her budget (§4.4). Only this server's cast. */
   async handleWakeCommand(event: DiscordWakeCommandEvent): Promise<void> {
     const waifu = await this.findWaifu(event.waifuId);
     if (!waifu) return event.respond("I don't know that waifu.");

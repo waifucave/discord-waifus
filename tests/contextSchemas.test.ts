@@ -146,9 +146,10 @@ describe("DM schemas", () => {
       allowDms: false,
       rateLimit: { maxReplies: 30, windowMinutes: 60 },
       notifyWhenLimited: true,
-      limitNotice: "",
-      sleepNotice: ""
+      limitNotice: ""
     });
+    // The sleep notice went with her bed time (§38): an old one is dropped when read.
+    expect(WaifuDmSettingsSchema.parse({ sleepNotice: "zzz" })).not.toHaveProperty("sleepNotice");
   });
 
   it("treats rateLimit null as unlimited, not as 'use the default'", () => {
@@ -159,17 +160,16 @@ describe("DM schemas", () => {
     expect(() => WaifuDmSettingsSchema.parse({ rateLimit: { maxReplies: 0, windowMinutes: 60 } })).toThrow();
     expect(() => WaifuDmSettingsSchema.parse({ rateLimit: { maxReplies: 5, windowMinutes: 10081 } })).toThrow();
     expect(() => WaifuDmSettingsSchema.parse({ limitNotice: "x".repeat(301) })).toThrow();
-    expect(() => WaifuDmSettingsSchema.parse({ sleepNotice: "x".repeat(301) })).toThrow();
   });
 
-  it("parses DM state and limiter counters (Living cast: no run records; sleep notice and auto ids)", () => {
+  it("parses DM state and limiter counters (Living cast: no run records; auto ids; an old sleep notice record is dropped)", () => {
     const state = DmStateSchema.parse({ ...base, waifuId: "ella", userId: "3", botId: "ella", recentRuns: [], pendingTriggerMessageId: "1" });
     expect(state).not.toHaveProperty("recentRuns");
     expect(state).not.toHaveProperty("pendingTriggerMessageId");
     const limits = DmLimitStateSchema.parse({ ...base, waifuId: "ella", userId: "3" });
     expect(limits.replyTimestamps).toEqual([]);
     expect(limits.autoMessageIds).toEqual([]);
-    expect(DmLimitStateSchema.parse({ ...base, waifuId: "ella", userId: "3", sleepNoticeSentFor: AT }).sleepNoticeSentFor).toBe(AT);
+    expect(DmLimitStateSchema.parse({ ...base, waifuId: "ella", userId: "3", sleepNoticeSentFor: AT })).not.toHaveProperty("sleepNoticeSentFor");
     expect(() =>
       DmLimitStateSchema.parse({ ...base, waifuId: "ella", userId: "3", replyTimestamps: Array(1001).fill(AT) })
     ).toThrow();

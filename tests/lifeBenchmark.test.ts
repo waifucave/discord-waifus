@@ -108,18 +108,20 @@ describe("a dry run end to end (tiny scenario, scripted fake model)", () => {
     const dir = path.join(outDir, "runs", summary.runs[0]!.runId);
     const events = (await readFile(path.join(dir, "transcript.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as TranscriptEvent);
     const types = new Set(events.map((event) => event.type));
-    for (const type of ["start", "people", "sent", "wake", "call", "tool_call", "tool_result", "notifications", "compaction", "maintenance", "checkpoint", "end"]) expect(types, type).toContain(type);
+    // No compaction in this short run since §38 (no morning, so no `day` compaction).
+    for (const type of ["start", "people", "sent", "wake", "call", "tool_call", "tool_result", "notifications", "maintenance", "checkpoint", "end"]) expect(types, type).toContain(type);
     // What reached the fake server, where; the DM stayed a DM.
     expect(events.filter((event) => event.type === "sent").map((event) => event.type === "sent" && [event.place, event.text])).toEqual([
       ["#general", "cinnamon buns all week 🥐"],
       ["#general", "football, obviously ⚽"],
       ["dm:mina", "good luck vibes for wednesday!"]
     ]);
-    // Her reminder fired at its time, and the morning came with her bed time's end.
+    // Her reminder fired at its time.
     expect(events.some((event) => event.type === "wake" && event.reason === "reminder" && event.at === "2026-11-03T09:00:00.000Z")).toBe(true);
-    // Summaries are saved with their inputs: the nightly dream and the morning batch.
+    // Summaries are saved with their inputs: the daily dream (no morning batch since §38).
     const summaries = JSON.parse(await readFile(path.join(dir, "summaries.json"), "utf8")) as Array<{ kind: string; input: { text: string } }>;
-    expect(summaries.map((entry) => entry.kind)).toEqual(expect.arrayContaining(["dream", "morning"]));
+    expect(summaries.map((entry) => entry.kind)).toContain("dream");
+    expect(summaries.map((entry) => entry.kind)).not.toContain("morning");
     expect(summaries.find((entry) => entry.kind === "dream")!.input.text).toContain("/transcripts/dm/mina/2026-11-02.md");
     // Her home at the end: the note and the wakeups file the fake model wrote through her tools.
     const home = JSON.parse(await readFile(path.join(dir, "home.json"), "utf8")) as Record<string, string>;
@@ -231,9 +233,9 @@ describe("probes", () => {
       { type: "sent", at: at("d2 08:31"), place: "#general", dm: false, text: "football", messageId: "3" }
     ];
     expect(evaluateProbes(scenario, { events, summaries: [], home: {}, checkpoints: [] })[0]!.passed).toBeNull();
-    const compacted: TranscriptEvent = { type: "compaction", at: at("d2 07:30"), fromEpoch: 1, toEpoch: 2, reason: "day", summarized: true };
+    const compacted: TranscriptEvent = { type: "compaction", at: at("d2 07:30"), fromEpoch: 1, toEpoch: 2, reason: "tokens", summarized: true };
     expect(evaluateProbes(scenario, { events: [...events.slice(0, 2), compacted, events[2]!], summaries: [], home: {}, checkpoints: [] })[0]!.passed).toBe(true);
-    // A day compaction that kept every turn (no summary) is not a summary.
+    // A compaction that kept every turn (no summary) is not a summary.
     expect(evaluateProbes(scenario, { events: [...events.slice(0, 2), { ...compacted, summarized: false }, events[2]!], summaries: [], home: {}, checkpoints: [] })[0]!.passed).toBeNull();
   });
 

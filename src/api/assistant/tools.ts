@@ -340,7 +340,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "get_waifu",
-    description: "Full config of one waifu (persona, model, availability, DM and style settings).",
+    description: "Full config of one waifu (persona, model, DM and style settings, daily budget).",
     parameters: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -380,8 +380,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     description:
       "Update fields on an existing waifu. Pass only the fields to change under `changes`; everything else is kept as it is. " +
       "`model` is {providerId, modelId, effort?} from list_models (null unsets it). Style fields: " +
-      "`customInstructions` (extra prompt text, max 4000 chars) and `scheduleInPrompt` (boolean, whether her " +
-      "schedule is mentioned in the prompt). Discord profile fields, synced to her own bot by the app: `username` (her bot's " +
+      "`customInstructions` (extra prompt text, max 4000 chars). Discord profile fields, synced to her own bot by the app: `username` (her bot's " +
       "Discord username, 2–32 chars, no @ # : ``` and not containing 'discord' or 'clyde'; Discord allows about 2 changes an hour; " +
       "unset leaves her bot's current name alone, her `name` stays her identity in prompts and wake words), `bio` (her About Me, the application " +
       "description, max 400 chars) and `nicknames` (object of server id → nickname, 1–32 chars, replaced whole); null unsets each. " +
@@ -967,7 +966,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "get_life",
     description:
-      "A waifu's life (Living cast): awake, asleep or mid-turn, her wake queue, today's cost and budget, her last " +
+      "A waifu's life (Living cast): idle or mid-turn, her wake queue, today's cost and budget, her last " +
       "compaction and turn, and with `log: true` the newest life-log lines (tool calls show their name and arguments). " +
       "Content from private chats (DMs) is never shown to you; such lines say they were redacted.",
     parameters: {
@@ -993,7 +992,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "wake_waifu",
     description:
       "Wake a waifu now as the owner, with an optional note she sees (max 500 characters). An owner wake skips her " +
-      "sleep and budget; with Discord offline it waits in her queue. Apply directly when the user asks.",
+      "daily budget; with Discord offline it waits in her queue. Apply directly when the user asks.",
     parameters: {
       type: "object",
       properties: { waifuId: { type: "string" }, note: { type: "string" } },
@@ -1013,7 +1012,7 @@ const ASSISTANT_TOOLS: AssistantTool[] = [
     name: "list_files",
     description:
       "List a folder of a waifu's own computer (Living cast §16): her home (`/home/<name>`, `~`: her notes in any " +
-      "layout, MEMORY.md her index; life/ holds schedule.json her day (written each morning), wakeups.json (her wakeups), profile.json and places.md kept by the app) " +
+      "layout, MEMORY.md her index; life/ holds wakeups.json (her wakeups), profile.json and places.md kept by the app) " +
       "or /tmp (files people sent, deleted after the number of days its usage.retentionDays says, 7 by default, since the last write), " +
       "or /transcripts (read-only: everything said where she is, one file per place per day, kept forever). Entries have name, path, kind, size and " +
       "modified time. Files and transcripts from private chats are never shown to you: they appear as `[private chat redacted]`.",

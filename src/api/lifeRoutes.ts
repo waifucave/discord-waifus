@@ -8,8 +8,6 @@
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { availabilityAt, DEFAULT_BED_CONTEXT } from "../life/clock.js";
-import { dayPlanOf } from "../life/home/index.js";
 import { dismissNeedsReview, readNeedsReview, withoutPrivateReview } from "../life/forget.js";
 import { listLogEpochs, readLifeFile, readLifeLog, readLifeState } from "../life/lifeStore.js";
 import { scanDmContent, viewLogLine } from "../life/lifeView.js";
@@ -33,8 +31,6 @@ export type LifeRouteOptions = {
   isPaused: () => boolean;
   now?: () => Date;
   timeZone?: string;
-  /** The bed time settings (§21.6c: `life.busyEngagedMinutes`, `life.bedDozeMinutes`); defaults without it. */
-  bedSettings?: () => Promise<{ busyEngagedMinutes: number; bedDozeMinutes: number }>;
 };
 
 const LOG_DEFAULT_LIMIT = 50;
@@ -117,10 +113,6 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
       readPendingScrubs(o.storage, waifuId, { logger: { warn: () => undefined } }).catch(() => [])
     ]);
     const lines = await readLifeLog(o.storage, waifuId, state.epoch);
-    const settings = await o.bedSettings?.().catch(() => undefined);
-    const bed = settings ? { engagedMinutes: settings.busyEngagedMinutes, dozeMinutes: settings.bedDozeMinutes } : DEFAULT_BED_CONTEXT;
-    const availability = availabilityAt(waifu.availability, at, zone, { day: await dayPlanOf(o.storage, waifu), bed: { ...bed, lastSentAt: state.lastSentAt } });
-    const bedPhase = availability.bed ? { bed: availability.bed.phase } : {};
     const cast = o.cast();
     const sameDay = usage.day === localDayKey(at, zone);
     return {
@@ -130,12 +122,6 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
       model: waifu.model ?? null,
       hasBot: Boolean(waifu.botId),
       runtime: { running: cast !== undefined, busy: cast?.lifeBusy(waifuId) ?? false, paused: o.isPaused() },
-      availability:
-        availability.state === "busy"
-          ? { state: "busy" as const, reason: availability.reason, until: availability.until, ...bedPhase }
-          : availability.state === "asleep"
-            ? { state: "asleep" as const, until: availability.windowEnd.toISOString(), ...bedPhase }
-            : { state: "awake" as const, ...bedPhase },
       started: state.systemSnapshot !== null,
       status: state.status,
       currentTurn: state.currentTurn
@@ -214,7 +200,7 @@ export function registerLifeRoutes(app: FastifyInstance, o: LifeRouteOptions): v
     };
   });
 
-  // An owner wake (§4.1 `owner`): skips her bed time and budget. Discord offline (or the cast stopping
+  // An owner wake (§4.1 `owner`): skips her budget. Discord offline (or the cast stopping
   // for a reload): it waits in her queue.
   app.post("/api/waifus/:waifuId/wake", async (request) => {
     const waifuId = waifuIdOf(request.params);

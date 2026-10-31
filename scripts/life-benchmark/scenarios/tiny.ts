@@ -18,7 +18,6 @@ export default defineScenario({
     name: "Ella",
     persona: "Ella is a cheerful baker who loves bad puns and early mornings.",
     style: "lowercase, short lines, the odd emoji",
-    bedTime: { start: "23:30", end: "07:30" },
     homeFiles: { "MEMORY.md": "- [Kevin](people/kevin.md): plays football on tuesdays\n", "people/kevin.md": "Kevin plays football on tuesdays.\n" }
   },
   events: [

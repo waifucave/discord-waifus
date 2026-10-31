@@ -18,9 +18,7 @@ const EDITABLE = [
   "username",
   "bio",
   "nicknames",
-  "availability",
   "customInstructions",
-  "scheduleInPrompt",
   "wakeOnName",
   "life",
   "dm"
@@ -46,21 +44,15 @@ export function waifuDirty(remote: WaifuConfig | undefined, draft: Partial<Waifu
   return remote !== undefined && Object.keys(waifuPatch(remote, draft)).length > 1;
 }
 
-const TIME = /^([01]\d|2[0-3]):[0-5]\d$/u;
-
 /** Client-side checks that mirror the schema, so Save says what is wrong before the server does. */
 export function waifuProblems(draft: Partial<WaifuConfig>): string[] {
   const problems: string[] = [];
-  const bedTime = draft.availability?.bedTime;
-  if (bedTime?.enabled && (!TIME.test(bedTime.start) || !TIME.test(bedTime.end))) problems.push("Bed time uses 24-hour HH:mm.");
-  if (bedTime?.enabled && bedTime.start === bedTime.end) problems.push("Bed time must end at a different time than it starts.");
   const budget = draft.life?.dailyBudgetUsd;
   if (budget !== undefined && budget !== null && !(budget > 0 && budget <= 10_000)) problems.push("The daily budget is more than $0 and at most $10,000 (empty = no budget).");
   const limit = draft.dm?.rateLimit;
   if (limit && (!Number.isInteger(limit.maxReplies) || limit.maxReplies < 1 || limit.maxReplies > 1000)) problems.push("DM replies per window: 1 to 1000.");
   if (limit && (!Number.isInteger(limit.windowMinutes) || limit.windowMinutes < 1 || limit.windowMinutes > 10080)) problems.push("DM window: 1 to 10080 minutes.");
   if ((draft.dm?.limitNotice ?? "").length > 300) problems.push("The limit notice is at most 300 characters.");
-  if ((draft.dm?.sleepNotice ?? "").length > 300) problems.push("The sleep notice is at most 300 characters.");
   if (draft.username !== undefined) {
     const problem = discordUsernameProblem(draft.username);
     if (problem) problems.push(problem);

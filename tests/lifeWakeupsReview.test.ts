@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { scrubOtherState } from "../src/life/forget.js";
 import { HomeStore } from "../src/life/home/homeStore.js";
 import { homeStoreFor } from "../src/life/home/index.js";
-import { readLifeFile } from "../src/life/lifeStore.js";
+import { readLifeFile, updateLifeFile } from "../src/life/lifeStore.js";
+import { withDeferred } from "../src/life/wakeQueue.js";
 import { withPlaceRecord } from "../src/life/placeRecorder.js";
 import { sharedSandbox } from "../src/life/sandbox/index.js";
 import { lifeTool, offeredToolNames } from "../src/life/tools/index.js";
@@ -92,11 +93,12 @@ describe("one waifu's wakeups never reach anyone else (review 1)", () => {
     expect((await readLifeFile(w.storage, "ella", "wakes")).immediate.filter((wake) => wake.reason === "watch")).toEqual([]);
   }, 30_000);
 
-  it("her wakeups step failing never stops her other scheduler steps (a timed plan still fires)", async () => {
+  it("her wakeups step failing never stops her other scheduler steps (a deferred batch is still released)", async () => {
     const w = await lifeWorld(roots);
     vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
-    await writeHerFile(w, "life/schedule.json", JSON.stringify({ date: "2026-10-24", plans: [{ at: "14:05", what: "bake the tarts" }] }));
     await w.cast.scheduler.tick();
+    // A reminder deferred while she was over a budget the owner has since removed.
+    await updateLifeFile(w.storage, "ella", "wakes", (queue) => withDeferred(queue, { id: "w-r", reason: "reminder", note: "bake the tarts", at: w.clock.now().toISOString() }, w.clock.now()));
     w.clock.ms = Date.parse("2026-10-24T14:06:00.000Z");
     const failing = vi.spyOn(HomeStore.prototype, "readWakeups").mockRejectedValueOnce(new Error("unreadable"));
     const warn = vi.spyOn(w.cast.deps.logger, "warn");
@@ -104,7 +106,7 @@ describe("one waifu's wakeups never reach anyone else (review 1)", () => {
     const queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(failing).toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith("Life scheduler tick failed", expect.objectContaining({ step: "wakeups", message: "unreadable" }));
-    expect(queue.immediate.map((wake) => wake.reason)).toContain("plan");
+    expect(queue.immediate.map((wake) => wake.reason)).toContain("morning");
   });
 });
 

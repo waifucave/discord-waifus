@@ -58,9 +58,7 @@ export type {
   GuildRolesFile,
   ModelChoice,
   ProviderId,
-  WaifuAvailability,
-  WaifuConfig,
-  WaifuBedTime
+  WaifuConfig
 } from "../../shared/schemas/domain";
 export type { WaifuDmSettings } from "../../shared/schemas/dm";
 export type { ThreadRecord, ThreadsFile } from "../../shared/schemas/threads";

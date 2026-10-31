@@ -30,16 +30,17 @@ Code: `src/life/intake.ts` `Intake.runDetector`; question, answer and draw in
 
 ## Who it is offered (§24)
 
-Only cast members who are **around in that place** (`src/life/busy.ts` `aroundIn`, plus
-`Intake.notAroundWhy`):
+Only cast members who are **around** (`Intake.overBudget`). **Unreleased (on main), §38:** with no
+day schedule and no bed time, that is every cast member except one over her daily budget, at any
+hour:
 
-| Her state | Around in this place? | `leftOut.why` |
+| Her state | Around? | `leftOut.why` |
 |---|---|---|
-| Awake (no busy block, outside bed time) | Yes | — |
-| Busy block | Only if `busyOpen` has this place for this block (she sent here after a wake that got through) | `busy` |
-| Bed time, up late or dozing | Only if she sent here in the last `life.busyEngagedMinutes` (10 min). Dozing therefore always leaves her out. | `bed time` |
-| Asleep | Never | `asleep` |
+| Under her daily budget (or none set) | Yes | — |
 | Over her daily budget | Never | `budget` |
+
+(Until 3.8.0 a busy block, her bed time and being asleep also left her out, with `busy`,
+`bed time` and `asleep`; older history entries keep those reasons and still read.)
 
 Also left out silently: waifus with no model, the author of a waifu's burst. Everyone offered is
 shown as `availability: "awake"`. When nobody is around: **no call** (and no fallback), nothing wakes
@@ -100,8 +101,8 @@ it) — `CHIME_IN_INSTRUCTIONS`: `waifu_<i>` for a candidate who would naturally
 
 ## After the answer
 
-Every wake it produces goes through the wake router like any other (busy holds, bed time, budget,
-per-user limit, room loop guard for waifu-authored bursts). A detector wake carries every message
+Every wake it produces goes through the wake router like any other (budget, per-user limit, room
+loop guard for waifu-authored bursts). A detector wake carries every message
 of the burst as lines, all labelled as the pick.
 
 ## History
@@ -116,4 +117,4 @@ answer, `fallback:anyone`/`fallback:none`, or `nobody_around`. Served by
 
 - Before §24 (and in §4.3) the `anyone` draw weighted busy ×1 and asleep ×0 and `all` woke every cast
   waifu in the channel; as built only waifus around are candidates, all weighted ×3 ×
-  recency, and `all` wakes only them.
+  recency, and `all` wakes only them. Since §38 "around" means "under her daily budget".

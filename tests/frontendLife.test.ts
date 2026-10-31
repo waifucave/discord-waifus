@@ -50,11 +50,12 @@ describe("Life timeline", () => {
 
   it("names her state from her status", () => {
     const base = { enabled: true, hasBot: true, model: { providerId: "anthropic", modelId: "claude-haiku-5-5" }, runtime: { running: true, busy: false, paused: false }, status: "idle" as const };
-    expect(stateLabel({ ...base, availability: { state: "awake" } }).word).toBe("Awake");
-    expect(stateLabel({ ...base, availability: { state: "asleep", until: "07:00" } })).toMatchObject({ word: "Asleep", detail: "until 07:00" });
-    expect(stateLabel({ ...base, status: "turn", availability: { state: "awake" } }).word).toBe("Mid-turn");
-    expect(stateLabel({ ...base, model: null, availability: { state: "awake" } }).word).toBe("No model");
-    expect(stateLabel({ ...base, hasBot: false, availability: { state: "awake" } }).word).toBe("No bot");
+    // She is around at any hour (§38): awake unless mid-turn, paused or unable to post.
+    expect(stateLabel(base).word).toBe("Awake");
+    expect(stateLabel({ ...base, runtime: { ...base.runtime, paused: true } }).word).toBe("Paused");
+    expect(stateLabel({ ...base, status: "turn" }).word).toBe("Mid-turn");
+    expect(stateLabel({ ...base, model: null }).word).toBe("No model");
+    expect(stateLabel({ ...base, hasBot: false }).word).toBe("No bot");
   });
 
   it("recent sends and wakes come from the host log and never name a DM's person", () => {
@@ -100,13 +101,12 @@ describe("Cast editor", () => {
     expect(waifuPatch(stored, { ...stored })).toEqual({ revision: 4 });
     expect(waifuPatch(stored, { ...stored, wakeOnName: false, life: { dailyBudgetUsd: 3 } })).toEqual({ revision: 4, wakeOnName: false, life: { dailyBudgetUsd: 3 } });
     expect(waifuPatch(stored, { ...stored, model: undefined })).toEqual({ revision: 4, model: null });
-    const dm = { ...stored.dm, sleepNotice: "zzz, back in the morning" };
+    const dm = { ...stored.dm, limitNotice: "slow down, back soon" };
     expect(waifuPatch(stored, { ...stored, dm })).toEqual({ revision: 4, dm });
   });
 
-  it("explains schedule, budget and DM problems before saving", () => {
+  it("explains budget and DM problems before saving", () => {
     expect(waifuProblems(stored)).toEqual([]);
-    expect(waifuProblems({ ...stored, availability: { bedTime: { enabled: true, start: "23:00", end: "23:00" } } })).toHaveLength(1);
     expect(waifuProblems({ ...stored, life: { dailyBudgetUsd: 0 } })).toHaveLength(1);
     expect(waifuProblems({ ...stored, dm: { ...stored.dm, rateLimit: { maxReplies: 0, windowMinutes: 60 } } })).toHaveLength(1);
   });

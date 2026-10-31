@@ -33,14 +33,14 @@ export type RunStatus = "done" | "max_usd" | "error";
 export type SummaryCapture = {
   id: string;
   at: string;
-  /** rest | cache_rest | self (hers) | compaction (any app-run compaction) | dream (the nightly notes changes) | morning (the overnight batch, no model). */
-  kind: "rest" | "cache_rest" | "self" | "compaction" | "dream" | "morning";
+  /** rest | cache_rest | self (hers) | compaction (any app-run compaction) | dream (the daily notes changes). */
+  kind: "rest" | "cache_rest" | "self" | "compaction" | "dream";
   /** The compaction reason when the app summarised (`trigger`, `day`, …). */
   reason?: string;
   fromEpoch?: number;
   toEpoch?: number;
   route?: string;
-  /** What the model was given: system blocks and messages (images dropped). Absent for `morning` (no model). */
+  /** What the model was given: system blocks and messages (images dropped). */
   input: { system?: string[]; messages?: unknown[]; tools?: unknown[]; text: string };
   /** The model's text (her summary) or, for a dream, the notes it changed. */
   output: string;

@@ -71,7 +71,7 @@ export type ResourceTopic = { id: string; title: string; summary: string; descri
 export type KeyInfo = {
   group: SettingGroupId;
   path: string;
-  /** `app.life.maxSendsPerTurn`, `waifu.dm.sleepNotice`. */
+  /** `app.life.maxSendsPerTurn`, `waifu.dm.limitNotice`. */
   id: string;
   type: "boolean" | "integer" | "number" | "string" | "enum" | "string-list" | "json";
   enum?: string[];

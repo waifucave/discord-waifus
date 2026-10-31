@@ -79,7 +79,7 @@ describe("SendMessage (§6.3, §16.3.2, §32.2, D11)", () => {
   });
 
   it("never cold-DMs; a DM opens once the user wrote, until undeliverable, forgotten or rate-limited", async () => {
-    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "", sleepNotice: "" } }] });
+    const w = await lifeWorld(roots, { waifus: [{ id: "ella", name: "Ella", botId: "ella-bot", dm: { allowDms: true, rateLimit: { maxReplies: 1, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" } }] });
     let ctx = await ctxFor(w);
     expect((await send(ctx, `dm_${KEVIN}_ella`, [{ text: "hey kevin" }])).isError).toBe(true);
     await kevinDms(w);

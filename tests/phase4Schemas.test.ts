@@ -60,7 +60,6 @@ describe("pre-Phase-4 files still parse", () => {
     expect(old).not.toHaveProperty("verbosity");
     expect(old).toMatchObject({
       customInstructions: "",
-      scheduleInPrompt: true,
       dm: { allowDms: false, rateLimit: { maxReplies: 30, windowMinutes: 60 }, notifyWhenLimited: true, limitNotice: "" }
     });
   });
@@ -185,13 +184,13 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
     }
   });
 
-  it("waifu PUT keeps customInstructions, scheduleInPrompt and dm unless sent", async () => {
+  it("waifu PUT keeps customInstructions and dm unless sent", async () => {
     const { app } = await makeApp();
     try {
       await app.inject({ method: "POST", url: "/api/waifus", payload: { id: "ella", name: "Ella", displayName: "Ella" } });
       const url = "/api/waifus/ella";
       let waifu = (await app.inject({ method: "GET", url })).json();
-      expect(waifu).toMatchObject({ scheduleInPrompt: true, dm: { allowDms: false } });
+      expect(waifu).toMatchObject({ dm: { allowDms: false } });
 
       const seeded = await app.inject({
         method: "PUT",
@@ -199,7 +198,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         payload: {
           revision: waifu.revision,
           customInstructions: "Be kind.",
-          scheduleInPrompt: false,
           dm: { allowDms: true, rateLimit: null, limitNotice: "slow down" }
         }
       });
@@ -207,7 +205,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       waifu = seeded.json();
       expect(waifu).toMatchObject({
         customInstructions: "Be kind.",
-        scheduleInPrompt: false,
         dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "slow down" }
       });
 
@@ -217,7 +214,6 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
       waifu = unrelated.json();
       expect(waifu).toMatchObject({
         customInstructions: "Be kind.",
-        scheduleInPrompt: false,
         dm: { allowDms: true, rateLimit: null, notifyWhenLimited: true, limitNotice: "slow down" }
       });
 
@@ -227,7 +223,7 @@ describe("partial PUTs never manufacture Phase 4 defaults", () => {
         url,
         payload: { revision: waifu.revision, dm: { notifyWhenLimited: false } }
       });
-      expect(dm.json().dm).toEqual({ allowDms: true, rateLimit: null, notifyWhenLimited: false, limitNotice: "slow down", sleepNotice: "" });
+      expect(dm.json().dm).toEqual({ allowDms: true, rateLimit: null, notifyWhenLimited: false, limitNotice: "slow down" });
 
       // rateLimit is a replace-wholesale leaf; null is a real value.
       const limited = await app.inject({

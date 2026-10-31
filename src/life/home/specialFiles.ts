@@ -3,8 +3,8 @@
 //
 //   error: wakeups.json line 7, column 3: expected "," or "]"
 //
-// The files' own checks live beside their files (wakeups: ../wakeups/file.ts; her day:
-// daySchedule.ts; her profile: profileFile.ts). The reminder and watch files before §30 are read
+// The files' own checks live beside their files (wakeups: ../wakeups/file.ts; her profile:
+// profileFile.ts). The reminder and watch files before §30 are read
 // only by the migrations (src/backend/migrationSteps/legacySchemas.ts).
 
 import { localParts } from "../clock.js";

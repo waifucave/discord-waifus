@@ -106,12 +106,16 @@ describe("settings registry", () => {
     for (const key of ["life.webFetch.model", "models.allowed", "models.maxOutputUsdPerMTok", "detector.target", "discord.dm.resumeWindowMinutes", "compaction.enabled", "compaction.triggerRatio", "compaction.waitTimeoutMs"]) {
       expect(findKey(key), key).toBeDefined();
     }
-    for (const key of ["waifu.model", "waifu.life.dailyBudgetUsd", "waifu.dm.sleepNotice", "waifu.wakeOnName", "server.detector.target", "channel.threads"]) {
+    for (const key of ["waifu.model", "waifu.life.dailyBudgetUsd", "waifu.dm.limitNotice", "waifu.wakeOnName", "server.detector.target", "channel.threads"]) {
       expect(findKey(key), key).toBeDefined();
     }
     expect(findKey("app.life.maxSendsPerTurn")).toMatchObject({ type: "integer", default: 15 });
     expect(findKey("waifu.life.dailyBudgetUsd")).toMatchObject({ nullable: true, default: null });
     expect(findKey("waifu.verbosity")).toBeUndefined();
+    // Her day and bed time are gone (§38).
+    for (const key of ["waifu.availability.bedTime.enabled", "waifu.scheduleInPrompt", "waifu.dm.sleepNotice", "app.life.morningLinesPerPlace", "app.life.dayStartHourLocal", "app.life.busyEngagedMinutes", "app.life.bedDozeMinutes", "app.life.dreamAfterAsleepMinutes"]) {
+      expect(findKey(key), key).toBeUndefined();
+    }
     expect(findKey("app.ocr.engine")).toMatchObject({ type: "enum" });
   });
 

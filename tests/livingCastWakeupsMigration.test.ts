@@ -228,7 +228,7 @@ describe("living-cast-wakeups-v1 (§30.3)", () => {
     const at = ids.indexOf(WAKEUPS_STEP_ID);
     expect(MIGRATION_STEPS[at]!.frequency).toBe("once");
     expect(at).toBeGreaterThan(ids.indexOf(SEND_CAP_STEP_ID));
-    expect(at).toBe(ids.length - 2);
+    expect(at).toBeLessThan(ids.length - 1);
     expect(ids.at(-1)).toMatch(/^stamp-schema-version-/u);
   });
 });

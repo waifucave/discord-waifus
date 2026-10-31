@@ -8,8 +8,8 @@
 // never wakes her).
 // `chime_in` (asked only when some cast member is awake and the room's chime-in interval allows it):
 // `waifu_<i>` for each awake cast member, or `nobody`; used only when the addressee is `human`.
-// The cast is only the waifus who are around in that place (§24): awake, or busy / in her bed time
-// with the place open for her; the others are left out of every choice and the `anyone` draw.
+// The cast is only the waifus who are around (§24, §38: every waifu but one over her daily
+// budget); the others are left out of every choice and the `anyone` draw.
 // The state is the one-shot state shape trimmed: date, now, the cast (option, id, names, persona
 // ≤ 300 chars, availability) and the last 12 messages (OCR text included, `replyTo` naming the author
 // a Discord reply answers, ≤ 8,000 characters, newest kept). Targets are the existing native-choice
@@ -32,8 +32,8 @@ export const CHIME_IN_INTERVAL_MS = 10 * 60_000;
 export const NOBODY_AROUND = "nobody_around";
 
 /**
- * Her availability in the state. Production only offers cast members who are around in the place
- * (§24), always `awake`; the other values remain for the decision benchmark's older cases.
+ * Her availability in the state. Production only offers cast members who are around (§24), always
+ * `awake`; the other values remain for the decision benchmark's older cases.
  */
 export type DetectorAvailability = "awake" | "busy" | "asleep";
 

@@ -39,13 +39,13 @@ function waifuIdArg(raw: string | undefined): string {
 
 const WAKE_OUTCOMES: Record<WakeResult["outcome"], string> = {
   queued: "woken: her turn starts shortly",
-  deferred: "queued for later: she is asleep or over her budget",
+  deferred: "queued for later: she is over her budget",
   quiet: "merged into a wake already waiting",
   dropped: "not woken: the cast is paused or she is disabled",
   queued_offline: "queued: Discord is offline, the wake runs when the cast connects"
 };
 
-/** `waifus wake WAIFU [NOTE…]`: an owner wake (skips her bed time and budget), with a note she sees. */
+/** `waifus wake WAIFU [NOTE…]`: an owner wake (skips her budget), with a note she sees. */
 export async function wakeCommand(ctx: CliContext, args: readonly string[], o: { stdin?: boolean } = {}): Promise<ExitCode> {
   const waifuId = waifuIdArg(args[0]);
   const note = (o.stdin ? ((await ctx.readStdin()) ?? "") : args.slice(1).join(" ")).trim();
@@ -101,22 +101,11 @@ export function renderLogLine(line: LifeLog["lines"][number]): string[] {
 }
 
 function statusLines(status: LifeStatus): string[] {
-  const a = status.availability;
-  const availability =
-    a.bed === "up_late"
-      ? "up late (bed time)"
-      : a.bed === "dozing"
-        ? `dozing (bed time${a.until ? ` until ${a.until}` : ""})`
-        : a.state === "awake"
-          ? "awake"
-          : a.state === "asleep"
-            ? `asleep${a.until ? ` until ${a.until}` : ""}`
-            : `busy${a.reason ? ` (${a.reason}` : ""}${a.until ? ` until ${a.until}` : ""}${a.reason ? ")" : ""}`;
   const model = status.model ? `${status.model.providerId}/${status.model.modelId}${status.model.effort ? `@${status.model.effort}` : ""}` : "(none)";
   const lines = [
     `${status.displayName} (${status.waifuId})${status.enabled ? "" : " [disabled]"}`,
     `  model:        ${model}${status.hasBot ? "" : "  (no bot: she cannot post until she has one)"}`,
-    `  state:        ${availability}; ${status.status === "turn" ? "mid-turn" : "idle"}${status.runtime.paused ? "; cast paused" : ""}${status.runtime.running ? "" : "; Discord offline"}`,
+    `  state:        ${status.status === "turn" ? "mid-turn" : "idle"}${status.runtime.paused ? "; cast paused" : ""}${status.runtime.running ? "" : "; Discord offline"}`,
     `  life:         ${status.started ? `epoch ${status.epoch} since ${status.epochStartedAt}, ${status.logLines} log lines` : "not started yet"}`,
     `  last turn:    ${status.lastTurnEndedAt ?? "never"}${status.failedTurnAt ? `  (last failed turn ${status.failedTurnAt})` : ""}`,
     `  queue:        ${status.queue.immediate} now, ${status.queue.deferred.items} deferred${status.queue.deferred.reason ? ` (${status.queue.deferred.reason})` : ""}, ${status.queue.quiet} quiet`,
