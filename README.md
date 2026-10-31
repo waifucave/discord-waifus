@@ -53,9 +53,9 @@ command. No cloud account, no server to rent — just your API keys and your ima
   files people sent her), and acts on her own.
 - 🔔 **Woken by what concerns her** — mentions, replies, her name, DMs, her own wakeups (times, watches, web pages; she can write their filters in JavaScript), and an
   addressee detector for messages nobody addressed.
-- 😴 **Bed time, her own day and budgets** — a soft nightly bed time (up late, dozing, asleep) with a
-  morning wake where she plans her own day (busy blocks, phone checks, mood), and an optional daily
-  budget per waifu.
+- 💸 **Reachable at any hour, with budgets** — no bed time and no schedule to work around: she answers
+  whenever she is talked to, dreams over her notes once a day, and an optional daily budget per waifu
+  keeps what waits for one catch-up when it runs out.
 - 💌 **DMs** — each waifu can answer DMs to her own bot, with a per-person rate limit.
 - 🔎 **Web search** — Exa search and page reading, capped per day (works without a key).
 - 🖼️ **Reads images** — bundled WebAssembly OCR for memes and screenshots, with zero extra install.
@@ -285,9 +285,9 @@ name and avatar. A waifu needs her own bot to post: the House bot only reads and
 
 1. 🔑 **Settings → Providers**: add at least one model provider key.
 2. 🤖 **Settings → App → Discord bots**: pick a bot and follow the interactive guide, pasting its Application ID and token right into the step that produces them (the House bot first, then each waifu's).
-3. 🎭 **Cast**: create each waifu — persona, model and effort, her bot, schedule, budget and DMs.
+3. 🎭 **Cast**: create each waifu — persona, model and effort, her bot, budget and DMs.
 4. 📨 Invite the bots to your server, then in **Rooms** pick the waifus for each channel.
-5. 👀 **Life** shows what each waifu is doing; **Home** shows who is awake and anything that needs you.
+5. 👀 **Life** shows what each waifu is doing; **Home** shows who is mid-turn and anything that needs you.
 
 The setup wizard walks you through the first steps; the dashboard assistant (Norma) can do any of
 this for you.
@@ -352,9 +352,9 @@ summary, queue and files. A DM user can also use `/forget` in their DM with a wa
 
 ## 🖥️ Dashboard
 
-- **Home** — who is awake, asleep or mid-turn, recent sends and wakes, today's cost, and anything
+- **Home** — who is idle or mid-turn, recent sends and wakes, today's cost, and anything
   that needs you (owner notices, unfinished forgets, upgrade steps waiting).
-- **Cast** — persona, style, model and effort, her bot, wake-on-name, schedule, daily budget, DMs.
+- **Cast** — persona, style, model and effort, her bot, wake-on-name, daily budget, DMs.
 - **Life** — each waifu's live timeline (tool calls with their arguments; private chats hidden unless
   you reveal them on the host itself), Wake / Compact / Reset, review lines, today's web searches,
   her wakeups (with their code and delete buttons), a browser and text editor for her files (her home
@@ -483,8 +483,8 @@ npm run dev:frontend
 ~/.dc-waifus/config.toml
 ~/.dc-waifus/user/providers.json
 ~/.dc-waifus/user/discord-bots.json
-~/.dc-waifus/user/waifus/<id>/life/    # her life: state, log, wakes, plans
-~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), life/ (her day, wakeups, profile, places)
+~/.dc-waifus/user/waifus/<id>/life/    # her life: state, log, wakes
+~/.dc-waifus/user/waifus/<id>/home/    # her home: notes, MEMORY.md (the index), life/ (wakeups, profile, places)
 ~/.dc-waifus/user/waifus/<id>/tmp/     # her /tmp: files people sent, deleted after 7 days
 ~/.dc-waifus/user/servers/
 ~/.dc-waifus/user/dms/

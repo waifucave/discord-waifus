@@ -1,6 +1,6 @@
 # Waifus
 
-Everything configurable on a character: persona, style, model, schedule, DMs.
+Everything configurable on a character: persona, style, model, budget, DMs.
 
 ## Core fields
 
@@ -14,18 +14,15 @@ Everything configurable on a character: persona, style, model, schedule, DMs.
   `effort` must be one the route lists. `null` unsets it.
 - `botId` — which Discord bot entry (Settings → App → Discord bots) she posts with (without one she cannot post).
 - `username`, `bio`, `nicknames` — her own bot's Discord profile (see "Discord profile" below).
-- `availability` — `bedTime` (`enabled`, `start`, `end`, HH:mm local): her bed time, a soft one (up
-  late while she keeps chatting, then dozing, then asleep; see life.md "Her day"). Her busy times
-  are her own, in `~/life/schedule.json`; there are no owner-set busy blocks.
+- There is no bed time and no day schedule (since 3.9.0, planned; spec §38): she is reachable at
+  any hour, and only her daily budget makes wakes wait (see life.md "Reachable at any hour"). An
+  `availability` or `scheduleInPrompt` sent by an older client is ignored.
 - `customInstructions` — optional free text (max 4000 characters, default empty) appended to her
   prompt after the persona, for extra behaviour rules that don't belong in the character sketch.
-- `scheduleInPrompt` — boolean, default true. When false, her `<schedule>` (her bed time and
-  today's plan) is left out of the prompt. Shown in the dashboard as "Mention her schedule in the prompt".
 - `dm` — private chats with her own bot (see discord-setup.md "Direct messages"):
   `allowDms` (default false), `rateLimit` (`{maxReplies, windowMinutes}`, default 30 per 60, `null`
   = unlimited, counted per Discord user), `notifyWhenLimited` (default true) and `limitNotice` (max
-  300 characters, "" = the built-in notice), `sleepNotice` (sent once per bed time to someone who
-  DMs her while she is asleep, "" = none).
+  300 characters, "" = the built-in notice). The sleep notice went with her bed time.
 
 ## Discord profile
 
@@ -66,11 +63,10 @@ at upgrade; writes that still send them are accepted and ignored.
 > **Living cast.** She lives one continuous life: wakes (mentions, replies, her name, DMs, her
 > wakeups (timed ones, watches, pages), the addressee detector), reads before answering, may stay quiet, and keeps
 > notes in her own folder (her home `/home/<name>`, backed by `user/waifus/<id>/home/`, with
-> `MEMORY.md` as the index, and her day and wakeups in `~/life/schedule.json` and
-> `~/life/wakeups.json`;
+> `MEMORY.md` as the index, and her wakeups in `~/life/wakeups.json`;
 > files people send land in her `/tmp`; what was said where she is stays readable in her
-> read-only `/transcripts`), and a nightly dream checks her notes against what was said that day. See the life doc. She plans her
-> own day each morning, has a soft bed time (what waits comes in the morning), stops at her daily budget
+> read-only `/transcripts`), and a daily dream checks her notes against what was said that day. See the life doc. She is
+> reachable at any hour (no day schedule, no bed time), stops at her daily budget
 > (`life.dailyBudgetUsd`) and can search and read the web.
 
 Images are fetched with the app config `discord.images` limits; only images up to 3.75 MiB are
@@ -79,10 +75,10 @@ ever sent inline, larger ones become their OCR text or `[image]`.
 ## Customizing the prompt
 
 The prompt layout editor was removed: the prompt structure is fixed. Customize a waifu through the
-persona and `customInstructions` (plus `scheduleInPrompt`). How long and how she writes belongs in
+persona and `customInstructions`. How long and how she writes belongs in
 the persona; the reply style setting (`verbosity`) was removed on 2026-10-25 and is ignored if sent. Existing waifus were
-migrated: a disabled schedule block became `scheduleInPrompt: false`, and any other layout choice
-was dropped. API clients may still send `promptLayout` for one release; it is ignored.
+migrated: a disabled schedule block became `scheduleInPrompt: false` (itself gone since §38, with
+her day schedule), and any other layout choice was dropped. API clients may still send `promptLayout` for one release; it is ignored.
 
 ## Creating a good waifu
 

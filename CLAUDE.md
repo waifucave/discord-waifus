@@ -55,7 +55,7 @@ Discord runtime and supervises its own remote-role helper child.
 
 **Living cast (spec `docs/specs/2026-10-24-living-cast-design.md`; L1–L4 done; L3's own
 choices are listed in spec §14.4, L4's "as built" notes in §16, which overrides §6 and §7.1–§7.3;
-her day, busy holds and bed time in §21 with its as-built §21.9; her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4; following up once and her unanswered-sends line (`src/life/unanswered.ts`) in §34 with its as-built §34.4; summaries keeping guesses, plans and open threads as said (`SUMMARY_FACTS`), the calendar strip (`calendarStrip`), the dream's new-people line and the benchmark's mention repair in §35 with its as-built §35.6; the House bot's `/norma` and Settings → Permissions in §36 with its as-built §36.4; the waifu role the House bot gives every waifu bot (`src/discord/waifuRole.ts`, `discord.waifuRole`) in §37)**: each waifu is an autonomous agent with one continuous
+her day, busy holds and bed time in §21 with its as-built §21.9 (all removed by §38: no day schedule, no bed time, reachable at any hour; its as-built list is in §38); her wakeups in §30 with its as-built §30.6; her web tool in §31 with its as-built §31.4; her tools as scripts calling `tools.*` in §32 with its contract details §32.3a and as-built §32.4; following up once and her unanswered-sends line (`src/life/unanswered.ts`) in §34 with its as-built §34.4; summaries keeping guesses, plans and open threads as said (`SUMMARY_FACTS`), the calendar strip (`calendarStrip`), the dream's new-people line and the benchmark's mention repair in §35 with its as-built §35.6; the House bot's `/norma` and Settings → Permissions in §36 with its as-built §36.4; the waifu role the House bot gives every waifu bot (`src/discord/waifuRole.ts`, `discord.waifuRole`) in §37)**: each waifu is an autonomous agent with one continuous
 life; there is no director. `CastRuntime` (`src/orchestration/runtime.ts`) keeps the Discord
 lifecycle, guild/channel sync, threads, DM eligibility, forget and pause/resume, and owns one
 `LivingCast` (`src/life/livingCast.ts`): House bot → **intake** (`intake.ts`: typing-aware holds in
@@ -71,19 +71,14 @@ everything else, a person's burst or a waifu's own burst (her lines per place, 1
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
 chime-in for 10 minutes (`CHIME_IN_INTERVAL_MS`), `chime_in`; with `human` a chime-in pick gets a soft
-`detector` wake with `chimeIn`; only waifus around in the place are candidates (spec §24, `busy.ts`
-`aroundIn`: awake, or busy / in bed time with the place open for her; the rest are in the history's
-`leftOut` with why; nobody around = no call, choice `nobody_around`; the `anyone` draw is ×3 × recency
+`detector` wake with `chimeIn`; only waifus around are candidates (spec §24/§38, `intake.ts`
+`overBudget`: every cast member except one over her daily budget; the rest are in the history's
+`leftOut` with `why: "budget"`; nobody around = no call, choice `nobody_around`; the `anyone` draw is ×3 × recency
 over them); the state carries each line's
 `minutesAgo` (a stale address to someone gone 30+ minutes reads as `anyone`); no loop cap on
 waifu-only rounds beyond the optional room loop guard and daily budgets) → **wake router** (`wakeRouter.ts`, guards in spec order: paused, DM rate limit,
-per-user wake limit, bed time (§21.6c: asleep, only `reminder`, `plan`, `wakeup_error` and `owner` get through, the rest is
-deferred to the morning with the DM sleep notice; up late or dozing, the busy set (`busy.ts`
-`getsThroughBusy`) and places she sent to in the last `life.busyEngagedMinutes` get through, the
-rest is deferred; the phase comes from `lastSentAt`, `clock.ts` `bedPhaseAt`), busy holds (§21.4:
-in a block of her `~/life/schedule.json` the rest is held in `wakes.json` `held` until her next
-phone check or the block's end, except in places open in `busyOpen`), budget, room loop guard;
-the owner skips 3–6; `@everyone` wakes are
+per-user wake limit, budget (deferred to one batch, see the scheduler), room loop guard (guards 4
+sleep and 4b busy holds are gone since §38, the numbers are kept); the owner skips 3–6; `@everyone` wakes are
 staggered) → the persistent **wake queue** (`wakeQueue.ts`, `wakes.json`) → the **life loop**
 (`lifeLoop.ts`: one turn at a time per waifu under the `life:<id>` lock, taken before a host-wide
 `life.maxConcurrentTurns` slot; notifications (`notifications.ts`: one line per message with its ref,
@@ -113,15 +108,15 @@ caching on an `anthropic`-family provider or on OpenRouter with an `anthropic/` 
 winter sends the 1-hour TTL for; anything else never gets it; OpenRouter may still serve such a
 model from an upstream that keeps only 5 minutes) the scheduler's tick pokes her life when she is idle with nothing queued, her last
 request (`lastRequestTokens`, `lastRequestAt`) was at least `life.cacheRestMinRatio` × the trigger,
-and it is `life.cacheRestLeadMinutes` before that request + TTL (not after it expired; not asleep in
-a bed time ending within the TTL). The life loop then runs the rest turn with `CACHE_REST_NOTICE`
+and it is `life.cacheRestLeadMinutes` before that request + TTL (not after it expired). The life loop then runs the rest turn with `CACHE_REST_NOTICE`
 (the notice's first line plus one sentence, then the voice line `SUMMARY_VOICE` and the facts line `SUMMARY_FACTS` that end both notices and the compaction instruction, followed in the request by the calendar strip and the time line): accepted, epoch reason `cache_rest`; ignored, nothing else happens
 (the turn stays in her log). `state.cacheRest` allows one per epoch, apart from `state.restTurn`.
 Any turn whose final reply is only `<summary>…</summary>` (§21.6b, `rest.ts` `selfSummaryOf`) starts
 such an epoch too (reason `self`) when it passes `life.restSummaryMinChars`,
 `life.selfSummaryMinRatio` × the trigger and `life.selfSummaryCooldownMinutes`; otherwise her next
-time line says once why (`selfSummaryRefused`). An Edit/Bash change of `~/life/schedule.json` or
-`MEMORY.md` in a life turn notes that the prompt's copy updates at her next summary.
+time line says once why (`selfSummaryRefused`). An Edit/Bash change of `MEMORY.md` in a life turn
+notes that the prompt's copy updates at her next summary (`~/life/schedule.json` is an ordinary
+file since §38: no check, no note).
 Intake keeps per-place high-water marks (`app/intake-marks.json`, `intakeMarks.ts`, plus the
 pause start) so catch-up never re-wakes a message it already handled; a mark never passes a message
 still held (a staggered wake, a debouncing burst, a running detector call), and every forget path
@@ -230,8 +225,8 @@ Her folders are `/home/<slug>` and `/tmp`, backed by `user/waifus/<id>/home/` an
 `src/life/home/` holds the one path-rules module (`pathRules.ts`), link-refusing file access
 (`herFiles.ts`), the store every write path goes through (`homeStore.ts`: limits, case collisions,
 `life/places.md` read-only, the strict JSON checks of the special files in `~/life/` (`wakeups.json` in
-`src/life/wakeups/file.ts`, `profile.json` in `profileFile.ts`, her day `schedule.json` in
-`daySchedule.ts`; `specialFiles.ts` the shared JSON parser) with line/column errors, Bash change sets journalled in `life/pending-changes/` and applied all or
+`src/life/wakeups/file.ts`, `profile.json` in `profileFile.ts`; `specialFiles.ts` the shared JSON
+parser; a `schedule.json` there is an ordinary file since §38) with line/column errors, Bash change sets journalled in `life/pending-changes/` and applied all or
 nothing, `/tmp` expiry and size cap, the provenance index `life/files-index.json`, private files),
 `places.md` generation (`index.ts`) and PDF text in its own worker (`pdf.ts`). `Bash` is just-bash
 3.6.0 (exact pin) with WebAssembly CPython in a worker thread per call over an in-memory copy of
@@ -261,32 +256,26 @@ SSRF-checked page fetcher, always `privateAddressPolicy: "deny"`, with the page'
 and, for `Web`, a binary body's bytes; the cache wrapper keeps winter's entries whole; `page.ask`'s
 digest call, purpose `web`). Per-waifu data: `user/waifus/<id>/life/` (`state.json`,
 `log/<epoch>.jsonl`, `intents.jsonl`, `reads.json`, `handles.json`, `wakes.json`, `wakeup-ids.json`,
-`wakeups-v1.json`, `plans-fired.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
-`needs-review.json`, `usage.json`) and her home `user/waifus/<id>/home/` (`MEMORY.md` index at the root; `life/` with her day
-`schedule.json`, `wakeups.json`, `profile.json`, `places.md`; spec §21, §30). Boot repairs every life (`repair.ts`: finishes
+`wakeups-v1.json`, `no-schedule-v1.json`, `files-index.json`, `pending-changes/`, `maintenance.jsonl`, `dream-cursor.json`, `pending-scrubs.json`,
+`needs-review.json`, `usage.json`) and her home `user/waifus/<id>/home/` (`MEMORY.md` index at the root; `life/` with
+`wakeups.json`, `profile.json`, `places.md`; spec §21, §30, §38). Boot repairs every life (`repair.ts`: finishes
 journalled change sets first), runs queued
 owner forget scrubs, then catches up (`resumeWindowMinutes`); the scheduler (`scheduler.ts`, 15 s tick)
 runs her wakeups (`Scheduler.wakeups`, spec §30.2: a due `at`/`every` is a `reminder` wake routed
 under a deterministic wake id before an `at` is removed; watch and page ends are `watch_timeout`;
 pages are checked; her code's state is saved at most once a minute; a file changed outside
-`HomeStore` is resolved again), fires her
-timed plans (spec §29, `Scheduler.plans`: a plan with `at` in today's `~/life/schedule.json` is one
-`plan` wake at that time, the plans of one tick together, each once by `<at> <hash of what>` in
-`life/plans-fired.json`; up to 15 min late; not when written after its time (first seen = the
-previous tick) or inside her bed time; `plan` gets through busy and bed time like `reminder`), releases held wakes at her phone checks, refreshes `places.md` (≤1/min;
-also at every turn start), expires `/tmp` (first tick, then hourly), sends the day wake when her
-bed time ends (else at `life.dayStartHourLocal`; id `w-day-<date>`: the greeting asking her to
-write `~/life/schedule.json`, then the overnight batch (spec §23, `notifications.ts` `morningBatch`: DMs
-one line per message with time, ref and preview, rooms by most mentions with the night's span and one
-line per message that addressed her, watch matches with their message's time and ref; at most
-`life.morningLinesPerPlace` per DM or room, the first saying `+N earlier`; the lines come from
+`HomeStore` is resolved again), releases what a 3.8 queue still holds (`held` wakes as ordinary
+wakes, `releaseLegacyHeld`), releases the budget's deferred wakes as one batch once she is under
+budget again (`Scheduler.releaseDeferred`, spec §23/§38: reason `morning` kept as the name, `batch`
+lines from `notifications.ts` `morningBatch` under `- while you were away (since …):`: DMs one line
+per message with time, ref and preview, rooms by most mentions with their span and one line per
+message that addressed her, watch matches with their message's time and ref; at most
+`life.notificationLinesPerPlace` per DM or room, the first saying `+N earlier`; the lines come from
 `wakes.json` `deferred.places[*].lines`, the newest 50 per place, refs via `messageRefs.ts`; DM-floor and
-forgotten people's lines left out; a batch showing a DM sets the wake's `dm`, so the turn is a DM turn, D14); never folded mid-turn; the turn after it
-sets `dayCompactionDue`, so the next cycle compacts with reason `day` (an epoch of at most three
-turns is kept whole, no summary) and block A shows today's plan; the harness hash leaves the plan out, so midday edits never force a compaction) and starts
-maintenance once she has been asleep `life.dreamAfterAsleepMinutes` in her bed time (once per bed
-time; a bed time without one runs only pending scrubs when it ends; no bed time:
-`life.maintenanceHourLocal`): pending scrubs, then the
+forgotten people's lines left out; a batch showing a DM sets the wake's `dm`, so the turn is a DM turn,
+D14; built from `deferred` as read and taken only if unchanged, 5 tries per tick), refreshes
+`places.md` (≤1/min; also at every turn start), expires `/tmp` (first tick, then hourly) and starts
+maintenance once a local day at `life.maintenanceHourLocal` for every waifu: pending scrubs, then the
 **dream** (never writes under `~/life/`), `dream.ts`: a memory keeper session with no life log and no persona, `life.dreamModel` else her
 model, over the window of transcript lines after `life/dream-cursor.json`, split by
 `life.dreamWindowMaxChars`; the cursor moves only when a session finishes; an empty window calls no model;
@@ -385,7 +374,15 @@ or weekly reminder an `every`), `schedule-ids.json`/`watch-ids.json` become `lif
 (counters, resolutions, fires, routed wake ids renamed), the old files are archived under
 `user/.archive/living-cast/wakeups/<id>/`, and a life whose epoch snapshot offers `WatchFor` or
 `ScheduleWake` gets a pending epoch start (reason `tools`); its per-waifu marker `life/wakeups-v1.json`
-(also written by `HomeStore`, like the life-folder marker) records `convert`, `archive`, `epoch`. Retired data shapes the migrations
+(also written by `HomeStore`, like the life-folder marker) records `convert`, `archive`, `epoch`. §38
+added `living-cast-no-schedule-v1` (`migrationSteps/livingCastNoSchedule.ts`, once, after the
+wakeups step): each `waifu.json` loses `availability`, `scheduleInPrompt` and `dm.sleepNotice`
+(archived first under `user/.archive/living-cast/no-schedule/<id>.json`), `config.toml` loses the
+five `[life]` keys of her day and bed time (archived first), and per waifu, once by the marker
+`life/no-schedule-v1.json` (also written by `HomeStore`), her `home/life/schedule.json` is archived
+under `no-schedule/<id>/`, `life/plans-fired.json` deleted and a begun life gets a pending epoch
+start (reason `tools`); saved `held`/sleep-deferred wakes are released by the scheduler, old state
+keys dropped when read. Retired data shapes the migrations
 still read live in `migrationSteps/legacySchemas.ts`; nothing else imports it. Legacy-step tests
 run `MIGRATION_STEPS` minus the L2 ids; `tests/livingCastMigrations.test.ts` covers the L2 steps on
 a realistic main-era root (`tests/fixtures/main-era-config.toml` is main's config as written). The
@@ -435,7 +432,7 @@ PUT shim in `src/api/server.ts`.
   before any DM data goes; the hashes go once the file step ran under her life lock): the owner's
   forget-user an `owner_forget` entry per life (runs now, or when that life next starts if Discord
   is offline), a DM `/forget` a `dm_forget_everything` / `dm_forget_conversation` entry (runs now,
-  or at nightly maintenance inside the 6-hour window, spec §7.3, with or without her model); an
+  or at her daily maintenance inside the 6-hour window, spec §7.3, with or without her model); an
   entry is cleared only when its scrub finished: the summary without the person and the notes session
   run on her model, else `life.dreamModel` (`forget.ts` `scrubModelOf`); with neither, or a failed or
   aborted call, those steps alone stay queued (`pendingSteps: ["summary", "notes"]`; her summary and

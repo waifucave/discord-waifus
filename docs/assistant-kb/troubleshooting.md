@@ -15,8 +15,7 @@ Common failures, what they look like, and where to look.
 
 Each waifu decides for herself whether to answer: she is woken by mentions, replies, her name,
 DMs, her wakeups, or the addressee detector, reads the conversation and may choose to stay
-quiet. She also does not wake while asleep in her bed time (only her timed wakeups and your wakes do; while
-she dozes or is busy only people talking to her get through), over her daily budget, or while the
+quiet. She also does not wake over her daily budget (there is no bed time or day schedule any more), or while the
 server is paused, and a message first waits a moment of quiet (1.5 seconds in a room, 2.5 in a
 DM; longer while the person is still typing, at most 10 seconds in a room and a minute in a DM).
 
@@ -24,7 +23,7 @@ If nothing ever replies, check in order: `GET /api/status` — is `discord.conne
 `waifuBotCount` > 0? Does the channel list at least one waifu (Rooms), and is the server not
 `paused`? Does she have a model (`GET /api/runtime` → `models.warnings`) and its provider a key?
 Then look at her life: the dashboard's Life screen, `waifus life <id> --log` or
-`GET /api/waifus/:id/life` show whether she was woken, whether wakes wait (asleep, over budget)
+`GET /api/waifus/:id/life` show whether she was woken, whether wakes wait (over budget)
 and what she did in her last turns (she may have read the room and chosen to stay quiet).
 
 ## She doesn't answer DMs
@@ -116,7 +115,7 @@ instead of retrying. Top up the account; no restart is needed.
 - a migration step that left an unreadable file alone (it runs again at the next start; fix or
   remove the file it names);
 - kept copies of an unreadable forget record (`*.corrupt-<time>`, deleted after 7 days);
-- forget scrubs still queued for a waifu (they run when her life next starts or at nightly
+- forget scrubs still queued for a waifu (they run when her life next starts or at daily
   maintenance);
 - a waifu linked to a Discord bot that is missing, turned off or has no token (her sends fail;
   a waifu with no bot linked cannot post at all: the House bot never speaks for her).

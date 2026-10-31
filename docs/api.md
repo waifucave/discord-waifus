@@ -294,9 +294,10 @@ A waifu's model is `model: { providerId, modelId, effort? }` (or `null`). A `PUT
 `tools.toolUse` and `personaDigest` fields were removed by the `living-cast-models-v1` migration;
 request bodies that still carry them are accepted and the fields are ignored.
 
-A `PUT` is partial: omitted fields keep their stored values. The nested settings `availability`,
-`dm` (incl. `sleepNotice`) and `life` (`dailyBudgetUsd`, `null` = no budget) are merged key by
-key; `wakeOnName` is a plain boolean.
+A `PUT` is partial: omitted fields keep their stored values. The nested settings `dm` and `life`
+(`dailyBudgetUsd`, `null` = no budget) are merged key by key; `wakeOnName` is a plain boolean.
+Since §38 (no day schedule, no bed time) `availability`, `scheduleInPrompt` and `dm.sleepNotice`
+are no longer fields: a body that still carries them is accepted and they are ignored.
 
 Asset uploads accept raw `image/png`, `image/jpeg`, `image/webp`, or `image/gif` request bodies up to 8 MB. Files are stored in `user/waifus/<waifu-id>/`. Nothing reads them yet: they are not applied to the Discord bot's avatar/banner and the dashboard neither uploads nor displays them.
 
@@ -353,7 +354,7 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
   place) is always `[private chat redacted]` in this response; read it with
   `GET …/life/needs-review?includePrivate=1` on the host. A scrub
   whose notes session failed stays queued (`queued: true`) and runs again at her next start or
-  nightly maintenance. With Discord offline (no cast runtime) the scrubs are queued and run when
+  daily maintenance. With Discord offline (no cast runtime) the scrubs are queued and run when
   each life next starts; the response then lists those waifus in `livesQueued`. `dryRun` reports
   the DM counts without deleting or scrubbing. Not covered: Discord history itself, what she
   already said in rooms, usage-ledger lines and app logs (ids only), cached guild images, and any
@@ -368,8 +369,7 @@ Member and emoji refresh endpoints use the configured House bot token. Member re
 
 Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
 
-- `GET /api/waifus/:waifuId/life[?includePrivate=1]` — her status: `availability`
-  (`awake | busy | asleep`, with `reason`/`until`), `runtime` (`running`: Discord connected and her
+- `GET /api/waifus/:waifuId/life[?includePrivate=1]` — her status: `runtime` (`running`: Discord connected and her
   life hosted; `busy`; `paused`), `status` (`idle | turn`), `currentTurn`, `epoch`,
   `epochStartedAt`, `logLines`, `lastTurnEndedAt`, `lastCompaction`, `lastMaintenanceAt`,
   `failedTurnAt`, `queue` (`immediate`, `deferred`, `quiet`, the first 50 `wakes`), `today` (`day`,
@@ -389,8 +389,8 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
   call its name) with `redacted: true`; `redactedBlocks` counts them. `includePrivate=1` works only
   for a request on the host itself: over Remote Access, and for the dashboard assistant, it is
   **403** `PrivateContentLocalOnly`.
-- `POST /api/waifus/:waifuId/wake` `{note?}` (≤ 500 characters) — an owner wake (skips her sleep
-  and budget) → `{waifuId, outcome: queued | deferred | quiet | dropped | queued_offline, wakeId?}`;
+- `POST /api/waifus/:waifuId/wake` `{note?}` (≤ 500 characters) — an owner wake (skips her budget
+  and per-user wake limit) → `{waifuId, outcome: queued | deferred | quiet | dropped | queued_offline, wakeId?}`;
   with Discord offline, or while the cast is stopping for a reload, the wake waits in her queue
   (`queued_offline`).
 - `POST /api/waifus/:waifuId/life/compact` — summarise her life now and start a new epoch → `{state:
@@ -412,8 +412,8 @@ Every route validates `:waifuId` (`assertSafeId`); an unknown waifu is 404.
 ## Her files, reminders and watches
 
 Each waifu has her own folders (spec §16): her home `/home/<slug>` (`~`; on disk
-`user/waifus/<id>/home/`: her notes, `MEMORY.md`, `schedule.json`, `watches.json` and the read-only
-`places.md` the app keeps) and `/tmp` (`user/waifus/<id>/tmp/`: downloads and scratch files, each
+`user/waifus/<id>/home/`: her notes, `MEMORY.md` and `life/` with `wakeups.json`, `profile.json` and
+the read-only `places.md` the app keeps; a `life/schedule.json` is an ordinary file since §38) and `/tmp` (`user/waifus/<id>/tmp/`: downloads and scratch files, each
 deleted 7 days after it was last written). Paths are her paths, never host paths; links are never
 listed, read or written through. Every write passes the same path rules, limits and checks as her
 Write tool.
@@ -435,7 +435,7 @@ Write tool.
   (folders made as needed). `expectedHash` is the `hash` last read (409 `Conflict` when the file
   changed; `null` = it must not exist yet; left out = last writer wins) → `{waifuId, path, display,
   hash, size, created, rewritten}`. Refusals carry her store's own message: `places.md` 400
-  `ReadOnlyFile`; a `schedule.json` or `watches.json` that fails its check 400 `InvalidFile`
+  `ReadOnlyFile`; a `wakeups.json` or `profile.json` that fails its check 400 `InvalidFile`
   (`watches.json line 7, column 3: expected "," or "]"`, `watches.json entry w3: timeout is in the
   past`; nothing is saved); over 256 KiB or a full home/`/tmp` 413 `HomeLimit`; replacing a binary
   file 400 `NotTextFile`; a name that differs from another only by case 409 `NameCollision`.

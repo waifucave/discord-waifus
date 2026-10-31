@@ -33,8 +33,7 @@ get this). When she has been quiet, nothing is queued for her, and her last requ
 `life.cacheRestLeadMinutes` (default 10) before that cache expires, with one more sentence ("You've
 been quiet a while; this is a good moment to rest."), so she writes her summary while her context is
 still cheap to read. Accepted, Life shows "rested (her own summary, before her cache went cold)"; if
-she ignores it nothing else happens (the normal triggers stay). Once per epoch, never while she is
-asleep in a bed time that ends within the hour (the morning resets her anyway), and never with
+she ignores it nothing else happens (the normal triggers stay). Once per epoch, and never with
 `life.restNotice = false`.
 
 **A fresh start of her own.** She can also reset herself: a turn whose final reply is only
@@ -44,7 +43,7 @@ request was at least `life.selfSummaryMinRatio` (0.3) of the compaction trigger,
 began at least `life.selfSummaryCooldownMinutes` (120) ago. Otherwise nothing resets and her next
 time line says once why her summary was not used.
 
-**Notifications.** Several messages in one place (a burst, or wakes queued while she was busy)
+**Notifications.** Several messages in one place (a burst, or wakes queued while she was in a turn)
 are one wake and one turn, but she sees one notification line per message, in order, each with
 its reason, the place, the sender, its ref and a short preview: a mention, her name, `@everyone`
 or a watch match is on the line of the message it belongs to, and a message around it that was
@@ -66,57 +65,42 @@ item is its own message (so she can write several short lines like people do), w
 Each message counts against `life.maxSendsPerTurn` (default 15). When a message is much longer than
 what people in that place usually write, her result says so (nothing is refused for length).
 
-**The morning summary.** What waited for her morning (her bed time, or a budget pause) comes as one
-summary with times: each DM one line per message (time, ref, preview), each room its counts with
-the night's time span and then one line per message that talked to her (a mention or reply, her
-name, a role or `@everyone`; ordinary chatter stays a count), rooms with the most mentions first,
-then watch matches (with the matching message's time and ref), timed-out watches, her timed wakeups and
-timed plans (a budget pause defers those).
-Times are her local `HH:MM`, with the weekday and date (`Mon 26 Oct 23:50`) when not on the morning's day. At most
-`life.morningLinesPerPlace` (default 8) lines per DM or room, the newest, the first saying
-`+N earlier`. Every line has its ref, so she can reply or react without reading first; DM lines are
-redacted in the owner's views like any DM notification, and a morning that shows anything from a DM
-is a DM turn (what she does in it is private too). Lines from a forgotten person or below a DM's
-forget floor are never shown.
+**The budget's batch.** What waited while she was over her daily budget comes as one summary
+with times once she is under it again (her next local day, or the owner raised or removed her
+budget): `- while you were away (since …):`, then each DM one line per message (time, ref,
+preview), each room its counts with the time span and then one line per message that talked to her
+(a mention or reply, her name, a role or `@everyone`; ordinary chatter stays a count), rooms with the
+most mentions first, then watch matches (with the matching message's time and ref), timed-out
+watches and her timed wakeups. Times are her local `HH:MM`, with the weekday and date
+(`Mon 26 Oct 23:50`) when not on the release's day. At most `life.notificationLinesPerPlace`
+(default 8) lines per DM or room, the newest, the first saying `+N earlier`. Every line has its
+ref, so she can reply or react without reading first; DM lines are redacted in the owner's views
+like any DM notification, and a batch that shows anything from a DM is a DM turn (what she does in
+it is private too). Lines from a forgotten person or below a DM's forget floor are never shown.
 
-## Her day
+## Reachable at any hour
 
-Every morning she writes her own day in `~/life/schedule.json`: when her bed time ends (or at
-`life.dayStartHourLocal`, 8 by default, without one) a morning wake asks her to plan it before
-anything else, followed by what waited overnight; after that turn her context is compacted (reason
-`day`) so her prompt's `<schedule>` shows today's plan. The file is a JSON object: `date`
-(today, YYYY-MM-DD), `mood`, `busy` (blocks `{from, to, why}`, HH:MM, no overlaps, never in her bed
-time), `phoneChecks` (HH:MM), `plans` (`{at?, what}`) and `note`; a broken one is refused with its
-line and column. She may change it during the day; an Edit or Bash change to it (or to
-MEMORY.md) tells her the prompt's copy updates at her next summary.
+Since 3.9.0 (planned; spec §38, the owner's request) a waifu has **no day schedule and no bed
+time**. She is reachable at any hour: there is no morning wake, no `~/life/schedule.json` plan, no
+busy blocks or phone checks, no up late / dozing / asleep and no automatic sleep notice. Only her
+daily budget (and the owner's pause, her DM rate limit, the per-user wake limit and the room loop
+guard) makes a wake wait. The addressee detector offers every waifu in that place except one over
+her daily budget; when nobody is around, a message for "anyone" wakes nobody. The detector history
+lists who was left out and why (`leftOut`, now only `budget`; older entries may say `busy`,
+`bed time` or `asleep`).
 
-**Timed plans.** A plan with `at` wakes her once at that time (a `plan` wake: `- plan · 17:30 ·
-"<what>"`, all plans due at one moment together), up to 15 minutes late (later it is skipped). A
-plan written after its time, or whose time is inside her bed time, does not wake her; editing a
-plan's text or time makes it a new plan. The app keeps only hashes of the plans that fired
-(`life/plans-fired.json`). Plans without a time stay notes. Her wakeups are for what must happen.
-
-**Busy.** In a busy block DMs, mentions, replies, her name, the owner's wakes, her timed wakeups,
-timed plans and watches reach her at once; detector picks, chime-ins, `@everyone` and role mentions and follow-ups
-are held until her next phone check in the block (else its end) and arrive together with a line
-saying why. A place where something that got through woke her and she then sent stays open for
-`life.busyEngagedMinutes` (10) after her latest send there.
-
-**Bed time** (`availability.bedTime`, the owner's) is soft. In it she is *up late* while her last
-send is under `life.busyEngagedMinutes` old (people talking to her, and places she just sent to,
-reach her), then *dozing* until `life.bedDozeMinutes` (60) after the later of the bed time's start
-and her last send (like busy, but what waits is kept for the morning), then *asleep*: only her own
-timed wakeups (and stopped-wakeup notices) and the owner's wakes reach her, a DM gets the sleep notice once per bed time, and
-everything else waits for the morning wake at the bed time's end. A send of hers starts the clock
-again. The addressee detector only offers waifus who are around in that place: awake, or busy or
-up late or dozing in a place she sent to in the last `life.busyEngagedMinutes` (she joined in
-there). The others (busy, in bed time, asleep or over budget) are left out of its choices and of
-its "anyone" draw; when nobody is around, a message for "anyone" wakes nobody. The detector history
-lists who was left out and why (`leftOut`).
+The upgrade from 3.8 archives each waifu's bed time, "Mention her schedule in the prompt" and
+sleep notice (to `user/.archive/living-cast/no-schedule/`), drops the five settings of her day
+and bed time (`life.dayStartHourLocal`, `life.busyEngagedMinutes`, `life.bedDozeMinutes`,
+`life.dreamAfterAsleepMinutes`, `life.morningLinesPerPlace`), archives her `~/life/schedule.json`
+and gives her a fresh epoch (summarised) since her prompt changed. Wakes that were waiting for her
+morning or held for a busy block are delivered at the first scheduler tick (as one batch, or kept
+for her budget when she is over it). A `~/life/schedule.json` she writes afterwards is an ordinary
+file of hers: the app does not read or check it.
 
 ## Seeing it
 
-- Dashboard → Life: her status (awake, busy, up late, dozing or asleep; idle or mid-turn), her queue, today's cost
+- Dashboard → Life: her status (idle or mid-turn), her queue, today's cost
   against her budget, and a live timeline of her life log.
 - `waifus life <id> [--log]`, or `GET /api/waifus/:id/life` and `GET /api/waifus/:id/life/log`.
 - `/print life`, `/print system_prompt` and `/print notes` (her `MEMORY.md`) (House bot, owner
@@ -133,8 +117,8 @@ it stays hidden.
 
 ## Acting on it
 
-- **Wake**: an owner wake with an optional note she sees. It skips her per-user wake limit, bed
-  time, busy holds, budget and room loop guard, but is dropped while the app is paused or when she is
+- **Wake**: an owner wake with an optional note she sees. It skips her per-user wake limit, budget
+  and room loop guard, but is dropped while the app is paused or when she is
   disabled or has no bot of her own. With Discord offline, or the cast reloading, it waits in her
   queue (`queued_offline`).
 - **Compact**: summarise her life now and start a new epoch. Needs Discord connected and a model.
@@ -152,14 +136,14 @@ all or nothing) and a simulated Bash (nothing she runs can reach the host or the
   (one line per note, copied into her prompt at each epoch start). The files the app reads are in
   `~/life/` (SendMessage never attaches them, like MEMORY.md and her notes; a `~/life/` folder of
   her own from before 3.3.0 was renamed `~/life-notes/`):
-  `schedule.json` her day (see "Her day"), `wakeups.json` her wakeups (see "Her wakeups");
+  `wakeups.json` her wakeups (see "Her wakeups");
   `places.md` lists her rooms and private chats and is kept up to date by the app
   (read-only); `profile.json` is her Discord profile (`name` shown read-only,
   `username`, `bio`, `nicknames` keyed by server as her places name it, like `bake-club`): the
   same values as her waifu config, so her edit changes her config (and her bot), and a dashboard
   edit rewrites the file. A bad edit (Discord's username rules, a bio over 400 characters, a nickname
   over 32, an unknown server, a changed `name`) is refused and nothing changes; it can't be deleted
-  and her nightly dream never changes it.
+  and her daily dream never changes it.
 - **`/tmp`**: files people sent (ReadMessages downloads attachments there) and scratch files, each
   deleted `life.tmp.retentionDays` days (7 by default) after it was last written.
 - **`/transcripts`** (read-only): everything said where she is, kept forever, one file per place per
@@ -187,7 +171,7 @@ text editor and image previews, and her wakeups with delete buttons), `waifus fi
 <id> [path] [--root tmp|transcripts]`, `waifus wakeups <id>`, or the routes `GET /api/waifus/:id/files`,
 `GET|PUT|DELETE /api/waifus/:id/files/<path>` and `GET /api/waifus/:id/wakeups`. A save
 from the dashboard or the API passes the same checks as her own Edit tool: `life/places.md` is refused,
-`life/schedule.json`, `life/wakeups.json` and `life/profile.json` must stay valid (a broken one is refused with its line and
+`life/wakeups.json` and `life/profile.json` must stay valid (a broken one is refused with its line and
 column, and nothing is saved; her wakeups' functions are compiled first), and a file changed since it was read is a conflict. Transcripts are
 read-only there too (`PUT`/`DELETE` answer 400 `ReadOnlyFile`).
 
@@ -246,9 +230,8 @@ of the new version (a reminder `r4` is now `t4`; the old files are archived).
 
 ## Dreaming
 
-Once she has been asleep `life.dreamAfterAsleepMinutes` (15) in her bed time (at most once per bed
-time; a night she is never asleep that long has no dream, and the next one covers both days), or at
-`life.maintenanceHourLocal` for a waifu with no bed time, her memory is tended by a dream: a separate memory keeper with no life log and no persona, using
+Every day at `life.maintenanceHourLocal` (default 5, local time), for every waifu, her memory is
+tended by a dream: a separate memory keeper with no life log and no persona, using
 `life.dreamModel` when it is set (Settings → Life, "Dream model") and her own model otherwise. It
 reads the dream window, everything said in her transcripts since her last dream, then:
 
@@ -263,11 +246,11 @@ reads the dream window, everything said in her transcripts since her last dream,
 - keeps MEMORY.md short with valid links.
 
 Her dream cursor (`life/dream-cursor.json`) moves only when a dream finishes, so a failed or
-interrupted one is read again the next night. A long window (over `life.dreamWindowMaxChars`
+interrupted one is read again the next day. A long window (over `life.dreamWindowMaxChars`
 characters) runs in several sessions, oldest days first; each session has at most
-`life.dreamMaxRounds` tool rounds. A night with nothing new calls no model. Each dream adds one
+`life.dreamMaxRounds` tool rounds. A day with nothing new calls no model. Each dream adds one
 line to her `maintenance.jsonl` (window start, places, lines, sessions, what changed). Queued forget
-scrubs still run first (after a bed time without a dream, they run alone when it ends). Dreaming never
+scrubs still run first. Dreaming never
 changes anything under `~/life/`. `waifus help dreaming` explains it on the command line.
 
 ## Forgetting a person
