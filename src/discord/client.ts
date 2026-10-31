@@ -444,6 +444,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   /** §37: one waifu-role pass at a time per server; a server whose pass failed is warned about once. */
   private readonly waifuRoleQueues = new Map<string, Promise<void>>();
   private readonly waifuRoleWarned = new Set<string>();
+  /** Servers with a retry of the waifu role queued (one at a time, however many role events arrive). */
+  private readonly waifuRoleRetrying = new Set<string>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
   // Living cast §10.4 (D-a): the application's owner or team members run /wake and /print.
@@ -695,6 +697,23 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
         if (this.waifuRoleQueues.get(guildId) === next) this.waifuRoleQueues.delete(guildId);
       });
     }
+  }
+
+  /**
+   * §37: a server where the waifu role last failed (no Manage Roles, its role too low) is tried again
+   * when the House bot's permissions may have changed there: a role was updated (permissions or
+   * order) or the House bot's own roles changed. Servers where it worked are left alone.
+   */
+  private retryWaifuRole(guildId: string): void {
+    if (!this.waifuRoleWarned.has(guildId) || this.waifuRoleRetrying.has(guildId)) return;
+    this.waifuRoleRetrying.add(guildId);
+    this.ensureWaifuRoles({ guildId });
+    const queued = this.waifuRoleQueues.get(guildId);
+    if (!queued) {
+      this.waifuRoleRetrying.delete(guildId);
+      return;
+    }
+    void queued.finally(() => this.waifuRoleRetrying.delete(guildId));
   }
 
   // ---- her profile (Living cast §17) -------------------------------------------------------------
@@ -1566,10 +1585,13 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     client.on(Events.GuildCreate, (guild) => {
       this.ensureWaifuRoles(botId === this.options.house.id ? { guildId: guild.id } : { guildId: guild.id, botId });
     });
+    // §37: the owner gave the House bot Manage Roles (or moved its role up) where the waifu role failed.
+    if (botId === this.options.house.id) client.on(Events.GuildRoleUpdate, (_old, role) => this.retryWaifuRole(role.guild.id));
     // The bot's own member (roles for the Living cast `role` wake, §10.2). Discord sends the current
     // user's member updates on every bot, with or without the members intent.
     client.on(Events.GuildMemberUpdate, (_old, member) => {
       if (!client.user || member.id !== client.user.id) return;
+      if (botId === this.options.house.id) this.retryWaifuRole(member.guild.id);
       const event = { botId, guildId: member.guild.id, roleIds: [...member.roles.cache.keys()].filter((roleId) => roleId !== member.guild.id) };
       for (const listener of this.botRolesListeners) this.dispatchTo(listener, event);
     });

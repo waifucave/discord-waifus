@@ -113,7 +113,8 @@ connects (that bot), when a waifu bot joins a server (that bot there) and when t
 never removed, and the House bot and people are never touched. It needs Manage Roles and the role
 below the House bot's own (its Administrator invite gives the first; a role it creates is at the
 bottom); a failure is logged once per server (`Could not give the waifu role`) and tried again at the
-next connect or join. The role reaches the life as the bot's member update, so mentioning it wakes
+next connect or join, and by itself as soon as any role in that server changes (permissions or
+order) or the House bot is given a role: no restart needed after you fix its permissions. The role reaches the life as the bot's member update, so mentioning it wakes
 every waifu there (`role`, [triggers.md](triggers.md)).
 
 ## Discord profile sync

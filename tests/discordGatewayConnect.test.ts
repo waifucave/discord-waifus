@@ -632,6 +632,103 @@ describe("DiscordJsGateway: the waifu role (§37)", () => {
     expect(w.roles.size).toBe(1);
   });
 
+  it("tries again by itself once the House bot may have Manage Roles: a role update or its own roles changing", async () => {
+    const w = roleWorld();
+    let allowed = false;
+    let fetches = 0;
+    const guildRoles = w.roles;
+    const factory: FakeClients["factory"] = (input) => {
+      const client = w.factory(input);
+      if (input.kind === "house") {
+        const fetchGuild = (client.guilds as unknown as { fetch: (id: string) => Promise<{ roles: { create: (o: { name: string }) => Promise<unknown>; fetch: () => Promise<unknown> } }> }).fetch;
+        (client.guilds as unknown as { fetch: (id: string) => Promise<unknown> }).fetch = async (id: string) => {
+          const guild = await fetchGuild(id);
+          const create = guild.roles.create;
+          const fetch = guild.roles.fetch;
+          return {
+            ...guild,
+            roles: {
+              fetch: async () => {
+                fetches += 1;
+                return fetch();
+              },
+              create: async (options: { name: string }) => {
+                if (!allowed) throw new Error("Missing Permissions");
+                return create(options);
+              }
+            }
+          };
+        };
+      }
+      return client;
+    };
+    const warn = vi.fn();
+    const gateway = new DiscordJsGateway({ house: bot("house"), waifus: [bot("mina")], waifuRole: "waifu", createClient: factory, logger: { ...quietLogger(), warn } });
+    gateways.push(gateway);
+    await gateway.connect();
+    await settle();
+    expect(guildRoles.size).toBe(0);
+    expect(warn).toHaveBeenCalledWith("Could not give the waifu role", expect.objectContaining({ guildId: "100", message: "Missing Permissions" }));
+
+    // A role changes but the House bot still can't: tried again, no second warning.
+    const houseClient = w.created.get("house")!;
+    houseClient.emit(Events.GuildRoleUpdate, {} as never, { guild: { id: "100" } } as never);
+    await settle();
+    expect(guildRoles.size).toBe(0);
+    expect(warn.mock.calls.filter(([message]) => message === "Could not give the waifu role")).toHaveLength(1);
+
+    // The owner gives its role Manage Roles: the next role update gives Mina the role.
+    allowed = true;
+    houseClient.emit(Events.GuildRoleUpdate, {} as never, { guild: { id: "100" } } as never);
+    await settle();
+    expect(w.memberRoles.get("mina-user")).toEqual(new Set(["r1"]));
+
+    // Done there: later role updates and the House bot's own member updates fetch nothing.
+    const after = fetches;
+    houseClient.emit(Events.GuildRoleUpdate, {} as never, { guild: { id: "100" } } as never);
+    houseClient.emit(Events.GuildMemberUpdate, {} as never, { id: "house-user", user: { id: "house-user", username: "house" }, guild: { id: "100" }, roles: { cache: new Map() } } as never);
+    await settle();
+    expect(fetches).toBe(after);
+  });
+
+  it("a failed server is tried again when the House bot is given a new role", async () => {
+    const w = roleWorld();
+    let allowed = false;
+    const factory: FakeClients["factory"] = (input) => {
+      const client = w.factory(input);
+      if (input.kind === "house") {
+        const fetchGuild = (client.guilds as unknown as { fetch: (id: string) => Promise<{ roles: { create: (o: { name: string }) => Promise<unknown> } }> }).fetch;
+        (client.guilds as unknown as { fetch: (id: string) => Promise<unknown> }).fetch = async (id: string) => {
+          const guild = await fetchGuild(id);
+          const create = guild.roles.create;
+          return {
+            ...guild,
+            roles: {
+              ...guild.roles,
+              create: async (options: { name: string }) => {
+                if (!allowed) throw new Error("Missing Permissions");
+                return create(options);
+              }
+            }
+          };
+        };
+      }
+      return client;
+    };
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("mina")], waifuRole: "waifu", createClient: factory });
+    await gateway.connect();
+    await settle();
+    expect(w.memberRoles.has("mina-user")).toBe(false);
+    allowed = true;
+    // Another bot's member update is not the House bot's: nothing yet.
+    w.created.get("house")!.emit(Events.GuildMemberUpdate, {} as never, { id: "someone", user: { id: "someone", username: "someone" }, guild: { id: "100" }, roles: { cache: new Map() } } as never);
+    await settle();
+    expect(w.memberRoles.has("mina-user")).toBe(false);
+    w.created.get("house")!.emit(Events.GuildMemberUpdate, {} as never, { id: "house-user", user: { id: "house-user", username: "house" }, guild: { id: "100" }, roles: { cache: new Map([["admin", {}]]) } } as never);
+    await settle();
+    expect(w.memberRoles.get("mina-user")).toEqual(new Set(["r1"]));
+  });
+
   it("does nothing when discord.waifuRole is empty", async () => {
     const w = roleWorld();
     const gateway = makeGateway({ house: bot("house"), waifus: [bot("mina")], waifuRole: "", createClient: w.factory });

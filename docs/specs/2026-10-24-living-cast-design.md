@@ -4849,8 +4849,10 @@ The House bot gives every waifu that joins a server a role `waifu`.
 - When: the House bot connects (every waifu bot, every shared server), a waifu bot connects (that bot),
   a waifu bot joins a server (that bot there), the House bot joins a server (every waifu bot there).
   Background, one pass at a time per server; a failure (no Manage Roles, a role above the House bot's)
-  is logged once per server and tried again at the next connect or join. The House bot's
-  Administrator invite (2026-10-30) gives Manage Roles.
+  is logged once per server and tried again at the next connect or join, and by itself as soon as
+  a role changes in that server or the House bot's own roles change (owner request 2026-10-31: the
+  owner gives it Manage Roles or moves its role up, and the role follows without a restart). The
+  House bot's Administrator invite (2026-10-30) gives Manage Roles.
 - The bot's member update carries the new role to the life (§10.2), so a mention of the role wakes
   every waifu there (`role`).
 

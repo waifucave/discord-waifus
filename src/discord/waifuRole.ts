@@ -2,7 +2,8 @@
 // bot a role (`discord.waifuRole`, default "waifu") in each server they share, creating it when the
 // server has none. It runs when the bots connect and when a bot joins a server; it never removes the
 // role, never touches the House bot or anyone else, and a failure (no Manage Roles, the role above the
-// House bot's own) is logged and tried again at the next connect or join. A role change reaches the
+// House bot's own) is logged and tried again at the next connect or join, or when a role changes there
+// (the gateway's `retryWaifuRole`). A role change reaches the
 // app as the bot's member update, so an @-mention of the role wakes every waifu there (§10.2).
 
 /** The slice of a discord.js `Guild` this needs (tests pass a fake). */
