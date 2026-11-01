@@ -5078,4 +5078,4 @@ tags kept by the redaction).
 
 ### 40.3 Release
 
-Planned 3.9.2; not released yet.
+Released in 3.9.2.
