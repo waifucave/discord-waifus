@@ -66,6 +66,11 @@ Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
   that person arrives. Only typing by a person **with a message in the pending burst**, in that same
   channel/thread/DM, holds it. Bots and other people never hold anything (`TypingHolds.typing`,
   `Intake.onTyping`). Typing comes from the House bot's and DM bots' raw `TYPING_START` packets.
+- **Unreleased (on main), §45:** a message from someone who was typing there in the last **10 s**
+  (one Discord typing event) waits at least `afterTypingMs` (**5 s**) before the burst fires, still
+  within the cap. Discord sends typing at most every ~10 s, so lines a phone user sends a few seconds
+  apart show no new typing in between; they now stay one burst, one notification, one detector
+  call (`TYPING_EVENT_MS`, `TypingHolds.message`).
 - **One room burst per place**: every person's message joins it, direct or not. A burst is "direct"
   when any message in it produced a direct reason for anyone; a direct burst never reaches the
   detector.

@@ -10,7 +10,8 @@
 //      goes to the addressee detector (a person's burst, or a cast member's: then she is left out).
 // Every human message joins its place's burst, which is held by a typing-aware timer (`intakeHold.ts`):
 // it fires `serverMs` after the last message, later while an author of the burst is typing there
-// (`typingHoldMs` per typing event), at most `serverMaxWaitMs` after its first message. A human
+// (`typingHoldMs` per typing event; a message sent after typing waits `afterTypingMs`, §45), at most
+// `serverMaxWaitMs` after its first message. A human
 // message's direct wakes wait for the burst too, merged per waifu, so "@Aria" followed by "what do
 // you think about…" is one wake previewing the question. Watches and waifu-authored messages' direct
 // wakes are routed at once; a waifu's messages also join her own burst per place (`serverMs` quiet,
@@ -223,8 +224,8 @@ export class Intake {
   private timing(kind: "server" | "dm"): HoldTiming {
     const debounce = this.deps.config().discord.debounce;
     return kind === "server"
-      ? { quietMs: debounce.serverMs, maxWaitMs: debounce.serverMaxWaitMs, typingHoldMs: debounce.typingHoldMs }
-      : { quietMs: debounce.dmMs, maxWaitMs: debounce.dmMaxWaitMs, typingHoldMs: debounce.typingHoldMs };
+      ? { quietMs: debounce.serverMs, maxWaitMs: debounce.serverMaxWaitMs, typingHoldMs: debounce.typingHoldMs, afterTypingMs: debounce.afterTypingMs }
+      : { quietMs: debounce.dmMs, maxWaitMs: debounce.dmMaxWaitMs, typingHoldMs: debounce.typingHoldMs, afterTypingMs: debounce.afterTypingMs };
   }
 
   /**

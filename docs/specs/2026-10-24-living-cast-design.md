@@ -130,7 +130,8 @@ must not feel slow):
   or not) is typing in that same channel, thread or DM, it waits: a typing event counts as "still
   typing" for `discord.debounce.typingHoldMs` (6000), or until a message from that person arrives
   (the message is what they were typing; the quiet time then starts again from it). It fires at
-  `max(last message + quiet, latest typing event + typingHoldMs)`.
+  `max(last message + quiet, latest typing event + typingHoldMs)`. (§45: a message from someone
+  who was typing there in the last 10 s waits at least `afterTypingMs`.)
 - **Caps**: never later than `serverMaxWaitMs` (10000) after the burst's first message in a room,
   `dmMaxWaitMs` (60000) in a DM, however long they keep typing or writing.
 - Typing by anyone with no message in the burst (another person in the room), by a bot or by a
@@ -1279,6 +1280,7 @@ repaired, as before; the point is that the repaired file is then converted.
 | `discord.debounce.serverMs` / `serverMaxWaitMs` | 1500 / 10000 (§4.2) |
 | `discord.debounce.dmMs` / `dmMaxWaitMs` | 2500 / 60000 (§4.2) |
 | `discord.debounce.typingHoldMs` | 6000 (§4.2; 0 ignores typing) |
+| `discord.debounce.afterTypingMs` | 5000 (§45; 0 = off) |
 | `discord.dm.resumeWindowMinutes` | 60 (now the boot catch-up window) |
 | Waifu: `model`, `life.dailyBudgetUsd` (none), `dm.sleepNotice` (""), `wakeOnName` (true) | |
 
@@ -1308,6 +1310,7 @@ Bounds (validated by the config schema):
 | `discord.debounce.serverMs` / `serverMaxWaitMs` | 0–30000 / 0–120000 |
 | `discord.debounce.dmMs` / `dmMaxWaitMs` | 0–120000 / 0–300000 |
 | `discord.debounce.typingHoldMs` | 0–30000 |
+| `discord.debounce.afterTypingMs` | 0–30000 (§45) |
 
 ### 11.4 Release
 
@@ -5251,5 +5254,44 @@ large, or too many messages: summarised as before). The compaction-request golde
 compact (a persona change no longer summarises); `life-system-prompt.txt`, `life-rest-epoch.txt`.
 
 ### 44.3 Release
+
+Released in 3.10.2.
+
+## 45. A follow-up stays with whoever was asked; quick lines stay one burst (owner request, 2026-11-01)
+
+In Winter's Secret Room at 21:49 K wrote "Hey it's truth or dare", "You chose truth", "So answer
+it" (4 s and 3 s apart, from a phone), pressing Lumi again after "Hey Lumi answer" at 20:44. Each
+line fired as its own burst (no typing event between them: Discord sends one at most every ~10 s);
+Jev answered `anyone` for each (67–81%: Lumi's last line was 65 minutes old, so the 30-minute
+"probably away" rule applied to her); the draw woke Lumi once and Sora twice, and Sora answered
+twice in one turn (the third line arrived as a new notification mid-turn), though "Hey Lumi answer"
+was in what she was shown.
+
+### 45.1 Decisions
+
+- **After typing** (`TypingHolds`, `discord.debounce.afterTypingMs`, default 5000, 0–30000, 0 =
+  off): every typing event is kept per place and person for `TYPING_EVENT_MS` (10 s, one Discord
+  typing event), whether or not a burst is pending; a message from someone with one there waits at
+  least `afterTypingMs` before its burst fires (`quietUntil`), still capped by `serverMaxWaitMs` /
+  `dmMaxWaitMs` from the first message. Rooms and DMs; waifu bursts are never held. Cost: a person's
+  typed message wakes someone up to 3.5 s later than before.
+- **Jev** (`ADDRESSEE_INSTRUCTIONS`): the 30-minute rule is for people only (actor `user`): a cast
+  member is never away, so a message aimed at her stays hers however long ago she last wrote, and an
+  unnamed follow-up to what someone was asking or pressing a cast member about ("you chose truth",
+  "so answer it") is for her. The `anyone` criterion says "a person (not a cast member)".
+- **Her life text** (block A, after the "maybe for you" sentence): "Look at who they were just
+  talking to: a follow-up like "so answer it" or "and you?" belongs to whoever they were asking or
+  pressing, so don't answer in their place." (A block A change: carried over as §44 when it fits.)
+
+### 45.2 Tests
+
+`tests/lifeWakes.test.ts` (three lines 4 s and 3 s apart after one typing event are one burst, one
+detector call, one wake with three lines; a message with no typing in the last 10 s waits only the
+quiet time; the mention + follow-up hold now waits after typing); goldens `detector-state.txt`,
+`life-system-prompt.txt`, `life-rest-epoch.txt`; settings range and defaults
+(`tests/settingsRegistry.test.ts`, `tests/debounceAndRateLimit.test.ts`,
+`tests/livingCastMigrations.test.ts`).
+
+### 45.3 Release
 
 Unreleased (on main).

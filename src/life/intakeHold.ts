@@ -9,8 +9,18 @@
 //   due = min(firstAt + max(quietMs, maxWaitMs), max(lastMessageAt + quietMs, latest typing end))
 //
 // `quietMs = 0` with nobody typing fires synchronously (as the plain debouncer did).
+//
+// After typing (§45): a message from someone who was typing there in the last `TYPING_EVENT_MS`
+// waits at least `afterTypingMs` before the burst fires. Discord sends a typing event at most every
+// ~10 s, so a phone user sending lines a few seconds apart shows no new typing for the second line;
+// without this, every line was its own burst and woke someone on its own.
+//
+//   due = min(cap, max(lastMessageAt + quietMs, latest typing end, quietUntil))
 
-export type HoldTiming = { quietMs: number; maxWaitMs: number; typingHoldMs: number };
+export type HoldTiming = { quietMs: number; maxWaitMs: number; typingHoldMs: number; afterTypingMs?: number };
+
+/** How long one Discord typing event says someone is typing (Discord's own indicator). */
+export const TYPING_EVENT_MS = 10_000;
 
 type Entry = {
   firstAt: number;
@@ -19,6 +29,8 @@ type Entry = {
   authors: Set<string>;
   /** Per author: when their latest typing event stops counting. */
   typingUntil: Map<string, number>;
+  /** A message after typing (§45): the burst fires no earlier than this. */
+  quietUntil: number;
   timing: HoldTiming;
   fire: () => unknown;
   timer?: ReturnType<typeof setTimeout>;
@@ -26,6 +38,8 @@ type Entry = {
 
 export class TypingHolds<K> {
   private readonly pending = new Map<K, Entry>();
+  /** Per place, per person: their latest typing event there, kept `TYPING_EVENT_MS`, burst or not. */
+  private readonly typedAt = new Map<K, Map<string, number>>();
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -35,13 +49,15 @@ export class TypingHolds<K> {
    */
   message(key: K, o: { authorId?: string; timing: HoldTiming }, fire: () => unknown): void {
     const now = this.now();
-    const entry = this.pending.get(key) ?? { firstAt: now, lastMessageAt: now, authors: new Set<string>(), typingUntil: new Map<string, number>(), timing: o.timing, fire };
+    const entry = this.pending.get(key) ?? { firstAt: now, lastMessageAt: now, authors: new Set<string>(), typingUntil: new Map<string, number>(), quietUntil: 0, timing: o.timing, fire };
     entry.lastMessageAt = now;
     entry.timing = o.timing;
     entry.fire = fire;
     if (o.authorId) {
       entry.authors.add(o.authorId);
       entry.typingUntil.delete(o.authorId);
+      const typed = this.recentTyping(key, now)?.get(o.authorId);
+      if (typed !== undefined && (o.timing.afterTypingMs ?? 0) > 0) entry.quietUntil = Math.max(entry.quietUntil, now + o.timing.afterTypingMs!);
     }
     this.pending.set(key, entry);
     this.arm(key, entry);
@@ -52,9 +68,11 @@ export class TypingHolds<K> {
    * returns whether it did.
    */
   typing(key: K, userId: string): boolean {
+    const now = this.now();
+    this.typedAt.set(key, (this.recentTyping(key, now) ?? new Map<string, number>()).set(userId, now));
     const entry = this.pending.get(key);
     if (!entry || !entry.authors.has(userId) || entry.timing.typingHoldMs <= 0) return false;
-    entry.typingUntil.set(userId, this.now() + entry.timing.typingHoldMs);
+    entry.typingUntil.set(userId, now + entry.timing.typingHoldMs);
     this.arm(key, entry);
     return true;
   }
@@ -70,7 +88,17 @@ export class TypingHolds<K> {
     const quiet = Math.max(0, quietMs);
     let typingEnd = 0;
     for (const until of entry.typingUntil.values()) typingEnd = Math.max(typingEnd, until);
-    return Math.min(entry.firstAt + Math.max(quiet, maxWaitMs), Math.max(entry.lastMessageAt + quiet, typingEnd));
+    return Math.min(entry.firstAt + Math.max(quiet, maxWaitMs), Math.max(entry.lastMessageAt + quiet, typingEnd, entry.quietUntil));
+  }
+
+  /** The typing events in `key` still within `TYPING_EVENT_MS` (older ones dropped; none: undefined). */
+  private recentTyping(key: K, now: number): Map<string, number> | undefined {
+    const seen = this.typedAt.get(key);
+    if (!seen) return undefined;
+    for (const [userId, at] of seen) if (now - at > TYPING_EVENT_MS) seen.delete(userId);
+    if (seen.size > 0) return seen;
+    this.typedAt.delete(key);
+    return undefined;
   }
 
   private arm(key: K, entry: Entry): void {
@@ -107,6 +135,7 @@ export class TypingHolds<K> {
   cancelAll(): void {
     for (const entry of this.pending.values()) if (entry.timer) clearTimeout(entry.timer);
     this.pending.clear();
+    this.typedAt.clear();
   }
 
   keys(): K[] {

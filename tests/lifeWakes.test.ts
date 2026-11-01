@@ -302,9 +302,10 @@ describe("typing-aware holds (§4.2)", () => {
     typing(w, KEVIN);
     await advance(w, 2_500);
     expect(await reasons(w, "ella")).toEqual([]);
-    // The follow-up arrives: Kevin is no longer typing; the burst fires 1.5 s later.
+    // The follow-up arrives: Kevin is no longer typing, but he typed it, so the burst waits
+    // `afterTypingMs` (5 s, §45), here cut by the 10 s cap from the ping: 2.5 s later.
     const question = await post(w, "what do you think about lemon tarts?");
-    await advance(w, 1_400);
+    await advance(w, 2_400);
     expect(await reasons(w, "ella")).toEqual([]);
     await advance(w, 200);
     const wakes = (await queued(w, "ella")).immediate;
@@ -314,6 +315,35 @@ describe("typing-aware holds (§4.2)", () => {
     // The follow-up rode on the direct burst: no detector call for it.
     expect(w.detector.calls).toEqual([]);
     expect(await reasons(w, "mina")).toEqual([]);
+  });
+
+  it("lines sent a few seconds apart after typing are one burst, though Discord sent no typing between them (§45)", async () => {
+    const w = await fakeTimers();
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    typing(w, KEVIN);
+    await advance(w, 2_000);
+    await post(w, "hey it's truth or dare");
+    await advance(w, 4_000);
+    await post(w, "you chose truth");
+    await advance(w, 3_000);
+    await post(w, "so answer it");
+    // 5 s after it, cut by the 10 s cap from the first line: 3 s.
+    await advance(w, 2_900);
+    expect(w.detector.calls).toHaveLength(0);
+    await advance(w, 200);
+    expect(w.detector.calls).toHaveLength(1);
+    const wakes = (await queued(w, "ella")).immediate;
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]!.messages?.map((line) => line.preview)).toEqual(["hey it's truth or dare", "you chose truth", "so answer it"]);
+  });
+
+  it("a message with no typing in the last 10 s waits only the quiet time (§45)", async () => {
+    const w = await fakeTimers();
+    typing(w, KEVIN);
+    await advance(w, 10_100);
+    await post(w, `<@${ELLA_BOT}> hi`, { mentions: { [ELLA_BOT]: "Ella" } });
+    await advance(w, 1_600);
+    expect(await reasons(w, "ella")).toEqual(["mention"]);
   });
 
   it("a typing event counts for 6 s: once it lapses without a message the wake fires", async () => {

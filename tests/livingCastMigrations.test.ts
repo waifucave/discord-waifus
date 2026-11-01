@@ -305,7 +305,7 @@ describe("Living cast L2 data migrations on a main-era root", () => {
     const config = AppConfigSchema.parse(parseToml(migrated.get("config.toml")!));
     expect(config.life).toMatchObject({ maintenanceHourLocal: 4, maxInlineImagesPerEpoch: 20, maxConcurrentTurns: 6 });
     // The DM timers at the old defaults move to the typing-hold ones; the room timers too (living-cast-typing-holds-v1).
-    expect(config.discord.debounce).toEqual({ serverMs: 1_500, serverMaxWaitMs: 10_000, dmMs: 2_500, dmMaxWaitMs: 60_000, typingHoldMs: 6_000 });
+    expect(config.discord.debounce).toEqual({ serverMs: 1_500, serverMaxWaitMs: 10_000, dmMs: 2_500, dmMaxWaitMs: 60_000, typingHoldMs: 6_000, afterTypingMs: 5_000 });
     const rawConfig = parseToml(migrated.get("config.toml")!) as Record<string, Record<string, unknown>>;
     expect(rawConfig).not.toHaveProperty("memory");
     expect(rawConfig.discord).not.toHaveProperty("deletedMessages");

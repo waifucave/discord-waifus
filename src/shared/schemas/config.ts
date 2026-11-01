@@ -77,22 +77,25 @@ const DiscordImagesConfigSchema = z
 // fires `serverMs` after its last message, a DM `dmMs` after the person's last message; while an
 // author of the pending burst is typing there (a typing event counts for `typingHoldMs` unless a
 // message from them arrives first) it waits, at most `serverMaxWaitMs` / `dmMaxWaitMs` from the
-// burst's first message.
+// burst's first message. A message from someone who was typing there in the last 10 s waits at
+// least `afterTypingMs` (§45: lines sent a few seconds apart from a phone stay one burst).
 const DEBOUNCE_FIELDS = {
   serverMs: z.number().int().min(0).max(30_000),
   serverMaxWaitMs: z.number().int().min(0).max(120_000),
   dmMs: z.number().int().min(0).max(120_000),
   dmMaxWaitMs: z.number().int().min(0).max(300_000),
-  typingHoldMs: z.number().int().min(0).max(30_000)
+  typingHoldMs: z.number().int().min(0).max(30_000),
+  afterTypingMs: z.number().int().min(0).max(30_000)
 };
-export const DEFAULT_DEBOUNCE = { serverMs: 1500, serverMaxWaitMs: 10_000, dmMs: 2500, dmMaxWaitMs: 60_000, typingHoldMs: 6000 };
+export const DEFAULT_DEBOUNCE = { serverMs: 1500, serverMaxWaitMs: 10_000, dmMs: 2500, dmMaxWaitMs: 60_000, typingHoldMs: 6000, afterTypingMs: 5000 };
 const DiscordDebounceConfigSchema = z
   .object({
     serverMs: DEBOUNCE_FIELDS.serverMs.default(DEFAULT_DEBOUNCE.serverMs),
     serverMaxWaitMs: DEBOUNCE_FIELDS.serverMaxWaitMs.default(DEFAULT_DEBOUNCE.serverMaxWaitMs),
     dmMs: DEBOUNCE_FIELDS.dmMs.default(DEFAULT_DEBOUNCE.dmMs),
     dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.default(DEFAULT_DEBOUNCE.dmMaxWaitMs),
-    typingHoldMs: DEBOUNCE_FIELDS.typingHoldMs.default(DEFAULT_DEBOUNCE.typingHoldMs)
+    typingHoldMs: DEBOUNCE_FIELDS.typingHoldMs.default(DEFAULT_DEBOUNCE.typingHoldMs),
+    afterTypingMs: DEBOUNCE_FIELDS.afterTypingMs.default(DEFAULT_DEBOUNCE.afterTypingMs)
   })
   .default({ ...DEFAULT_DEBOUNCE });
 export type DebounceConfig = z.infer<typeof DiscordDebounceConfigSchema>;
@@ -469,7 +472,8 @@ export const UpdateAppConfigBodySchema = z.object({
       serverMaxWaitMs: DEBOUNCE_FIELDS.serverMaxWaitMs.optional(),
       dmMs: DEBOUNCE_FIELDS.dmMs.optional(),
       dmMaxWaitMs: DEBOUNCE_FIELDS.dmMaxWaitMs.optional(),
-      typingHoldMs: DEBOUNCE_FIELDS.typingHoldMs.optional()
+      typingHoldMs: DEBOUNCE_FIELDS.typingHoldMs.optional(),
+      afterTypingMs: DEBOUNCE_FIELDS.afterTypingMs.optional()
     }).strict().optional(),
     dm: z.object({
       resumeWindowMinutes: DM_RUNTIME_FIELDS.resumeWindowMinutes.optional()

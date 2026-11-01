@@ -414,7 +414,8 @@ PUT shim in `src/api/server.ts`.
   unless the channel's `threads` is `"off"` (`stores/threads.ts`, `threads.json`).
 - *Debounce* (`discord.debounce.*`): the intake's typing-aware holds (`src/life/intakeHold.ts`:
   `serverMs` 1.5 s / `serverMaxWaitMs` 10 s in rooms, `dmMs` 2.5 s / `dmMaxWaitMs` 60 s in DMs,
-  `typingHoldMs` 6 s per typing event). `src/orchestration/debounce.ts` keeps the plain keyed
+  `typingHoldMs` 6 s per typing event, `afterTypingMs` 5 s after a message from someone typing in
+  the last 10 s, spec §45). `src/orchestration/debounce.ts` keeps the plain keyed
   debouncer.
 - *DMs* (`src/orchestration/dm/`): eligibility (`computeDmEligibility`: enabled waifu with a model,
   the only enabled waifu on an enabled waifu bot) decides which bots log in with

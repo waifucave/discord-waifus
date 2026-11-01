@@ -178,6 +178,7 @@ Defaults (ranges and every other key: `docs/assistant-kb/settings.md`; schemas
 | Holds | `discord.debounce.serverMs` / `serverMaxWaitMs` | 1.5 s / 10 s | Room burst |
 | | `discord.debounce.dmMs` / `dmMaxWaitMs` | 2.5 s / 60 s | DM burst |
 | | `discord.debounce.typingHoldMs` | 6 s | Per typing event |
+| | `discord.debounce.afterTypingMs` | 5 s | After a message sent while typing (§45) |
 | | `discord.dm.resumeWindowMinutes` | 60 | Boot catch-up window |
 | Context | `life.maxContextTokens` | 96,000 | Budget cap |
 | | `compaction.triggerRatio` | 0.7 | The rest point: her rest notice (with `life.restNotice` off, compaction) |

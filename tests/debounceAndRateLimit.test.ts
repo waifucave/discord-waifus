@@ -163,7 +163,7 @@ describe("Phase 5 settings", () => {
   it("defaults discord.debounce and discord.dm and accepts partial updates without defaults", () => {
     const config = AppConfigSchema.parse({});
     // Living cast §4.2, §11.3: typing-aware holds; the DM quiet timer is 2.5 s, capped at 60 s (max 300 s).
-    expect(config.discord.debounce).toEqual({ serverMs: 1500, serverMaxWaitMs: 10000, dmMs: 2500, dmMaxWaitMs: 60000, typingHoldMs: 6000 });
+    expect(config.discord.debounce).toEqual({ serverMs: 1500, serverMaxWaitMs: 10000, dmMs: 2500, dmMaxWaitMs: 60000, typingHoldMs: 6000, afterTypingMs: 5000 });
     expect(() => UpdateAppConfigBodySchema.parse({ discord: { debounce: { typingHoldMs: 30001 } } })).toThrow();
     expect(config.discord.dm).toEqual({ resumeWindowMinutes: 60 });
     expect(UpdateAppConfigBodySchema.parse({ discord: { debounce: { serverMs: 0 } } })).toEqual({ discord: { debounce: { serverMs: 0 } } });

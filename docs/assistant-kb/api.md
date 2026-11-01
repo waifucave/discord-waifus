@@ -305,7 +305,7 @@ curl -s -X PUT http://127.0.0.1:3888/api/waifus/mio \
   once base64-encoded); a larger one is shown as its OCR text or `[image]`.
 - **Living cast settings**: `discord.debounce` (a room burst wakes `serverMs` 1.5 s after its last
   message, a DM `dmMs` 2.5 s; while the person is still typing it waits, `typingHoldMs` 6 s per
-  typing event, capped at `serverMaxWaitMs` 10 s / `dmMaxWaitMs` 60 s), `discord.dm.resumeWindowMinutes` (the boot catch-up window), `life.*` (turn,
+  typing event, and a message sent while typing waits `afterTypingMs` 5 s, capped at `serverMaxWaitMs` 10 s / `dmMaxWaitMs` 60 s), `discord.dm.resumeWindowMinutes` (the boot catch-up window), `life.*` (turn,
   context, image, send, wake, watch and maintenance limits; `life.webFetch.*` for page reading),
   `search.*` (web search caps; 0 disables) and `detector.target`. DMs and their rate limit are
   configured per waifu (`dm.*`, waifus.md). `GET /api/runtime` reports `discord.dm`:

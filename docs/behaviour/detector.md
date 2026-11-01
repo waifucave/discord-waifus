@@ -76,11 +76,13 @@ A JSON state (`detectorQuestion`; golden `tests/golden/__snapshots__/detector-st
 |---|---|---|
 | `waifu_<i>` | For that cast member | She gets a `detector` wake ("maybe for you") |
 | `human` | For another person who is still around | Nothing, unless a chime-in is picked |
-| `anyone` | Open to the room; one answer is enough. Also a message aimed at a person whose own last message is **30+ minutes** old (they are probably away) | One waifu drawn among those around (not watched), weight `3 × (1 + ln(1 + minutes since she last spoke here / 10))`, never-spoke = 24 h (`drawAnyone`) |
+| `anyone` | Open to the room; one answer is enough. Also a message aimed at a person whose own last message is **30+ minutes** old (they are probably away); never a cast member, who is never away (§45) | One waifu drawn among those around (not watched), weight `3 × (1 + ln(1 + minutes since she last spoke here / 10))`, never-spoke = 24 h (`drawAnyone`) |
 | `all` | The whole cast, or several together | Every waifu around here (not watched, not the author) gets a `detector` wake with `forAll` ("for all of you"), staggered 0–20 s when several |
 | `none` | Not conversational (bot command, link dump, bare emoji) | Nothing |
 
-The 30-minute "stale address" rule and the follow-up rule ("when a cast member has just been
+The 30-minute "stale address" rule (people only, §45: a message aimed at a cast member, or an
+unnamed follow-up to what someone was asking or pressing her about, stays hers however long ago she
+last wrote) and the follow-up rule ("when a cast member has just been
 talking with that person, an unnamed follow-up is for her") are instructions to the model, judged
 from `minutesAgo`; there is no code-side timer. For a waifu's burst: her remark to a person → that
 person (`human`), a question to another cast member → that one, a goodbye → `none`.
