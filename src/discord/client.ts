@@ -33,7 +33,7 @@ import { compareIds, pageMessagesSince, toRawDiscordMessage, withoutAuthors, typ
 import type { ConversationRef } from "../orchestration/context/keys.js";
 import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
 import { ApplicationOwners, ownerIdsOf, type ApplicationOwnerLike, type OwnerCheck } from "./applicationOwners.js";
-import { ensureWaifuRole, type WaifuRoleGuild } from "./waifuRole.js";
+import { ensureWaifuRole, madeOnlyBy, type WaifuRoleGuild } from "./waifuRole.js";
 import type { BotProfileHandle, BotProfileUser } from "./profileSync.js";
 import type {
   DiscordConnectionScope,
@@ -452,6 +452,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly waifuRoleWarned = new Set<string>();
   /** Servers with a retry of the waifu role queued (one at a time, however many role events arrive). */
   private readonly waifuRoleRetrying = new Set<string>();
+  /** §41: waifu roles found not to be the House bot's alone (made by someone else, or edited since): left as they are. */
+  private readonly waifuRolesNotOurs = new Set<string>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
   // Living cast §10.4 (D-a): the application's owner or team members run /wake and /print.
@@ -687,10 +689,18 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
       if (userIds.length === 0) continue;
       const run = async () => {
         try {
-          const guild = await house.guilds.fetch(guildId);
-          const { created, added } = await ensureWaifuRole(guild as unknown as WaifuRoleGuild, userIds, roleName);
+          const guild = (await house.guilds.fetch(guildId)) as unknown as WaifuRoleGuild;
+          // §41: an existing role gets the waifu permissions only while it is the House bot's alone.
+          const ours = async (roleId: string) => {
+            if (this.waifuRolesNotOurs.has(roleId)) return false;
+            const mine = await madeOnlyBy(guild, roleId, house.user!.id);
+            if (!mine) this.waifuRolesNotOurs.add(roleId);
+            return mine;
+          };
+          const { created, added, granted } = await ensureWaifuRole(guild, userIds, roleName, { ours });
           this.waifuRoleWarned.delete(guildId);
           if (created || added.length > 0) this.options.logger?.info("Waifu role given", { guildId, role: roleName, created, bots: added.length });
+          if (granted) this.options.logger?.info("Waifu role given the waifu permissions", { guildId, role: roleName });
         } catch (error) {
           if (this.waifuRoleWarned.has(guildId)) return;
           this.waifuRoleWarned.add(guildId);
@@ -1119,6 +1129,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const channel = guild.channels?.cache?.get(input.channelId);
     const me = guild.members?.me;
     if (!channel || !me || !("permissionsFor" in channel)) return undefined;
+    // §41: a timed-out bot can't post or type anywhere in the server until it ends.
+    if (me.isCommunicationDisabled?.()) return false;
     const permissions = channel.permissionsFor(me);
     if (!permissions) return undefined;
     const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
@@ -1487,6 +1499,12 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const channel = await client.channels.fetch(input.channelId);
     if (!channel || !("send" in channel)) {
       throw new Error(`Discord channel ${input.channelId} is not sendable.`);
+    }
+    // §41: a timed-out bot is refused by Discord as "Missing Permissions"; say why instead.
+    const me = "guild" in channel ? channel.guild?.members?.me : undefined;
+    if (me?.isCommunicationDisabled?.() && me.communicationDisabledUntil) {
+      const timedOutUntil = me.communicationDisabledUntil.toISOString();
+      throw Object.assign(new Error(`Timed out in this server until ${timedOutUntil}`), { timedOutUntil });
     }
     const denormalized = denormalizeModelContentForDiscord(input.content, {
       ...cache,

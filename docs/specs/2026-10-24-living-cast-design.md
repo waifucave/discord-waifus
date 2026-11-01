@@ -5079,3 +5079,47 @@ tags kept by the redaction).
 ### 40.3 Release
 
 Released in 3.9.2.
+
+
+## 41. The House bot fixes a waifu bot's permissions; a timeout is shown, never lifted (owner request, 2026-11-01)
+
+Seen on Beta on 2026-11-01: Lumi's and Stupid hoe's bots joined Winter's Secret Room from a link
+without permissions (no role of their own: only @everyone's rights), and Lumi's bot in Kingdom
+16062 was timed out for 7 days by a moderator; `canPost` (§39) still said yes there, so she was
+woken, typed, and her send failed as "Missing Permissions".
+
+### 41.1 Decisions
+
+- **The waifu role (§37) carries the waifu permissions** (`WAIFU_ROLE_PERMISSIONS`, the waifu
+  invite's set in `src/frontend/utils/discord.ts`, pinned by a test). A new role is created with
+  those the House bot has (all with Administrator; none when its own member is unknown), because
+  Discord refuses a role with rights its creator lacks.
+- **An existing role gets the missing ones only while it is the House bot's alone**: the audit log
+  (View Audit Log, last 100 `RoleCreate` and `RoleUpdate` entries) shows the House bot created it
+  and nobody else has updated it. Added to what the role has, never removed; logged `Waifu role
+  given the waifu permissions`. A server's own `waifu` role, one a person edited, or one whose
+  creation is older than Discord keeps (45 days) is never edited, so the bot never fights a
+  server's choices; the gateway remembers such a role for the process and doesn't read the audit
+  log again for it. This repairs the roles 3.9.1 and 3.9.2 created with @everyone's rights.
+- A channel that denies @everyone still blocks a bot without a role of its own; the role can't
+  fix that and doesn't try (no channel overwrites).
+- **A timeout is never lifted**: it is a moderator's decision. `canPost` says no while the bot's
+  own member is timed out (`isCommunicationDisabled`), so she isn't woken in that server's rooms
+  (§39's rules; her watches still fire) until it ends, by itself, from the clock.
+- **A send from a timed-out bot is refused before Discord** (`sendWaifuMessage`, an error with
+  `timedOutUntil`): her result says `the message could not be sent: you're timed out in this server
+  until <day time in her zone>, so you can't post anywhere in it before then`; logged `Life send
+  failed: her bot is timed out there` with `until`.
+
+### 41.2 Tests
+
+`tests/waifuRole.test.ts` (the set equals the invite's; a new role carries only what the House bot
+has; an existing role gets the missing ones only when `ours` says so; `madeOnlyBy` with the House
+bot's, someone else's, an edited and an unreadable audit log); `tests/discordGatewayConnect.test.ts`
+(a House-made role is topped up through the gateway, someone else's is left alone with the audit log
+read once; `canPost` false while timed out; a timed-out send refused with `timedOutUntil`);
+`tests/lifeTools.test.ts` (her result names the end of the timeout in her time).
+
+### 41.3 Release
+
+Not released yet.

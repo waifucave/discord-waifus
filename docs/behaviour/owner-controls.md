@@ -107,7 +107,14 @@ House bot, in servers (`src/discord/client.ts`, `src/discord/applicationOwners.t
 `src/discord/waifuRole.ts`, `DiscordJsGateway.ensureWaifuRoles` (spec §37): the House bot gives every
 waifu bot the role named `discord.waifuRole` (default `waifu`; `""` turns it off) in each server they
 share. It looks the role up by name (case-insensitive) and creates it, mentionable, when the server
-has none. It runs in the background when the House bot connects (every waifu bot), when a waifu bot
+has none. The role carries a waifu bot's invite permissions (View Channels, Send Messages, Send
+Messages in Threads, Read Message History, Add Reactions, Attach Files, Use External Emojis, Embed
+Links, Change Nickname; §41), so a bot invited without permissions (no role of its own) can still
+talk where @everyone isn't blocked by a channel. A new role is created with those the House bot has
+(all of them with Administrator). A role the House bot made without them (3.9.1, 3.9.2) gets the
+missing ones added (`Waifu role given the waifu permissions`) only while the audit log shows the
+House bot created it and nobody else has edited it since; a server's own `waifu` role, or one
+someone changed, is never edited. It runs in the background when the House bot connects (every waifu bot), when a waifu bot
 connects (that bot), when a waifu bot joins a server (that bot there) and when the House bot joins one
 (every waifu bot there); one pass at a time per server. A bot that has the role is left alone; it is
 never removed, and the House bot and people are never touched. It needs Manage Roles and the role

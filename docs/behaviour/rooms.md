@@ -67,6 +67,9 @@ up from the pause start ([triggers.md](triggers.md)).
 - a mention whose only mistake is its closing bracket (`<@Priya}`, `<@Priya)`, `<@Priya]`, or
   `<@Priya` with none) is repaired to `<@Priya>` first when Priya is a known member of the server
   (`repairMalformedMentions`), then resolves like any `<@Name>`; an unknown name stays as written;
+- her bot timed out in that server by a moderator (§41) → `error: the message could not be sent:
+  you're timed out in this server until <day time>, so you can't post anywhere in it before then`;
+  she isn't woken there until it ends ([detector.md](detector.md)); the app never lifts a timeout;
 - Discord 50001/50013 (no access/permission) → `error: the message could not be sent: Discord says
   you can't post in this room right now; that can change, so try again later`;
 - at most `life.maxSendPlacesPerTurn` (3) places and `life.maxSendsPerTurn` (15) messages per turn

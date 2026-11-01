@@ -17,7 +17,7 @@ import { readDmFloor, readDmLimitIfExists, readDmState, updateDmLimit, updateExi
 import { readActiveChatParticipants } from "../../orchestration/stores/participants.js";
 import type { RawDiscordMessage } from "../../shared/schemas/discordMessage.js";
 import type { OutgoingFile } from "../../discord/client.js";
-import { clockText, datedDayKey, dayText, localDayKey } from "../clock.js";
+import { clockText, datedDayKey, dayText, dayTimeText, localDayKey } from "../clock.js";
 import { keptForText } from "../lifeHarness.js";
 import { sha256 } from "../home/homeStore.js";
 import { isLifeDirPath, pathKey, safeFileName, type HerPath } from "../home/pathRules.js";
@@ -833,6 +833,12 @@ function isNoAccess(error: unknown): boolean {
   return code === 50001 || code === "50001" || code === 50013 || code === "50013";
 }
 
+/** The gateway's refusal for a timed-out bot (§41): when the timeout ends. */
+function timedOutUntil(error: unknown): string | undefined {
+  const until = (error as { timedOutUntil?: unknown } | null)?.timedOutUntil;
+  return typeof until === "string" ? until : undefined;
+}
+
 /** Discord's 40005 (request entity too large): the files are over the server's upload limit. */
 function isTooLarge(error: unknown): boolean {
   const { code, status } = (error as { code?: unknown; status?: unknown } | null) ?? {};
@@ -1183,6 +1189,10 @@ export async function runSend(
         reason = "they can't receive your messages right now";
       } else if (send.files.length > 0 && isTooLarge(error)) {
         reason = "the message could not be sent: the files are too large for Discord here; send fewer or smaller ones";
+      } else if (timedOutUntil(error)) {
+        // §41: a server's moderator timed her bot out; nothing to retry before it ends.
+        deps.logger.warn("Life send failed: her bot is timed out there", { waifuId: waifu.id, placeKey: place.placeKey, until: timedOutUntil(error) });
+        reason = `the message could not be sent: you're timed out in this server until ${dayTimeText(new Date(timedOutUntil(error)!), deps.timeZone)}, so you can't post anywhere in it before then`;
       } else {
         deps.logger.warn("Life send failed", { waifuId: waifu.id, placeKey: place.placeKey, message: error instanceof Error ? error.message : String(error) });
         if (isNoAccess(error)) reason = "the message could not be sent: Discord says you can't post in this room right now; that can change, so try again later";

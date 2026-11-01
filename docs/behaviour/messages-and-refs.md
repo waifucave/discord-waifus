@@ -203,7 +203,9 @@ message could not be sent; nothing was sent`.
 
 Errors from Discord: DM 50007 → `they can't receive your messages right now` (DM marked undeliverable);
 40005/413 with files → `the message could not be sent: the files are too large for Discord here; send
-fewer or smaller ones`; 50001/50013 → `the message could not be sent: Discord says you can't post in
+fewer or smaller ones`; her bot timed out in that server (§41, checked before sending) → `the message
+could not be sent: you're timed out in this server until Tue 3 Nov 17:40, so you can't post anywhere
+in it before then` (her time; logged `Life send failed: her bot is timed out there`); 50001/50013 → `the message could not be sent: Discord says you can't post in
 this room right now…`; anything else → `the message could not be sent`.
 
 **Shorter messages (§27.2)**: when a sent message is longer than max(3 × the place's typical length,

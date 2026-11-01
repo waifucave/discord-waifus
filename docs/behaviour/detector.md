@@ -62,8 +62,8 @@ A JSON state (`detectorQuestion`; golden `tests/golden/__snapshots__/detector-st
   ≤ 1,500 chars), newest kept, at most **8,000** characters in all.
 - A forgotten person's old messages appear as name `someone`, text `(removed)`.
 - Candidates are capped at 6 for Laya targets, 16 otherwise (`DETECTOR_MAX_CAST`).
-- A waifu whose bot is not in the server, or can't view the channel and send there (Send Messages
-  in Threads for a thread), is never a candidate, never drawn and never woken for `all` (§39,
+- A waifu whose bot is not in the server, is timed out there (§41), or can't view the channel and
+  send there (Send Messages in Threads for a thread), is never a candidate, never drawn and never woken for `all` (§39,
   `DiscordJsGateway.canPost`; unknown counts as able). Her mentions, name and `@everyone` don't
   wake her there either; her watches still fire. Logged once per place: `Life waifu not woken: her
   bot can't post there`.

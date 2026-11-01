@@ -1,4 +1,5 @@
 import {
+  AuditLogEvent,
   Client,
   Events,
   GatewayIntentBits,
@@ -13,6 +14,7 @@ import {
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscordJsGateway, buildHouseCommandPayloads } from "../src/discord/client.js";
+import { WAIFU_ROLE_PERMISSIONS } from "../src/discord/waifuRole.js";
 import type {
   DiscordBotConnectionStatus,
   DiscordJsGatewayOptions,
@@ -576,8 +578,9 @@ describe("DiscordJsGateway slash commands", () => {
 
 describe("DiscordJsGateway: the waifu role (§37)", () => {
   function roleWorld() {
-    const roles = new Map<string, { id: string; name: string }>();
+    const roles = new Map<string, { id: string; name: string; permissions?: { bitfield: bigint } }>();
     const memberRoles = new Map<string, Set<string>>();
+    const audit = { created: [] as Array<{ targetId: string; executorId: string }>, fetches: 0 };
     const guild = {
       id: "100",
       roles: {
@@ -586,7 +589,14 @@ describe("DiscordJsGateway: the waifu role (§37)", () => {
           const role = { id: `r${roles.size + 1}`, name: options.name };
           roles.set(role.id, role);
           return role;
+        },
+        edit: async (roleId: string, options: { permissions: bigint }) => {
+          roles.set(roleId, { ...roles.get(roleId)!, permissions: { bitfield: options.permissions } });
         }
+      },
+      fetchAuditLogs: async ({ type }: { type: AuditLogEvent }) => {
+        audit.fetches += 1;
+        return { entries: new Map((type === AuditLogEvent.RoleCreate ? audit.created : []).map((entry, i) => [String(i), entry])) };
       },
       members: {
         fetch: async (userId: string) => {
@@ -609,7 +619,7 @@ describe("DiscordJsGateway: the waifu role (§37)", () => {
       if (input.kind === "house") (client.guilds as unknown as { fetch: (id: string) => Promise<unknown> }).fetch = async () => guild;
       return client;
     };
-    return { roles, memberRoles, factory, created, cached };
+    return { roles, memberRoles, factory, created, cached, audit, guild };
   }
   const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -729,6 +739,30 @@ describe("DiscordJsGateway: the waifu role (§37)", () => {
     expect(w.memberRoles.get("mina-user")).toEqual(new Set(["r1"]));
   });
 
+  it("§41: a waifu role the House bot made without permissions gets them; someone else's is left alone, checked once", async () => {
+    for (const maker of ["house-user", "owner"]) {
+      const w = roleWorld();
+      w.roles.set("r1", { id: "r1", name: "waifu", permissions: { bitfield: PermissionFlagsBits.ViewChannel } });
+      w.audit.created.push({ targetId: "r1", executorId: maker });
+      (w.guild.members as { me?: unknown }).me = { permissions: { bitfield: PermissionFlagsBits.Administrator } };
+      const info = vi.fn();
+      const gateway = new DiscordJsGateway({ house: bot("house"), waifus: [bot("mina"), bot("ella")], waifuRole: "waifu", createClient: w.factory, logger: { ...quietLogger(), info } });
+      gateways.push(gateway);
+      await gateway.connect();
+      await settle();
+      const granted = info.mock.calls.filter(([message]) => message === "Waifu role given the waifu permissions");
+      if (maker === "house-user") {
+        expect(w.roles.get("r1")!.permissions!.bitfield).toBe(WAIFU_ROLE_PERMISSIONS);
+        expect(granted).toHaveLength(1);
+      } else {
+        expect(w.roles.get("r1")!.permissions!.bitfield).toBe(PermissionFlagsBits.ViewChannel);
+        expect(granted).toHaveLength(0);
+        // Every bot's connect ran a pass, but the audit log was read once (two entry types).
+        expect(w.audit.fetches).toBe(2);
+      }
+    }
+  });
+
   it("does nothing when discord.waifuRole is empty", async () => {
     const w = roleWorld();
     const gateway = makeGateway({ house: bot("house"), waifus: [bot("mina")], waifuRole: "", createClient: w.factory });
@@ -768,6 +802,12 @@ describe("DiscordJsGateway.canPost (§39)", () => {
     expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "300" })).toBe(false);
     allowed.add(PermissionFlagsBits.SendMessagesInThreads);
     expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "300" })).toBe(true);
+    // §41: timed out in that server: no, whatever her permissions say, until it ends.
+    let timedOut = true;
+    (guild.members.me as { isCommunicationDisabled?: () => boolean }).isCommunicationDisabled = () => timedOut;
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "200" })).toBe(false);
+    timedOut = false;
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "200" })).toBe(true);
     // A channel it hasn't cached, or a bot that isn't connected: unknown.
     expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "999" })).toBeUndefined();
     expect(gateway.canPost({ botId: "nobody", guildId: "100", channelId: "200" })).toBeUndefined();
@@ -853,6 +893,28 @@ describe("DiscordJsGateway replies", () => {
     });
 
     expect(sent[0]?.reply).toEqual({ messageReference: "123456789012345678", failIfNotExists: false });
+  });
+
+  it("refuses a send from a timed-out bot, saying until when (§41)", async () => {
+    const until = new Date("2026-11-03T16:40:13.493Z");
+    const sent: unknown[] = [];
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("waifu-a")] });
+    (gateway as unknown as { clients: Map<string, unknown> }).clients.set("waifu-a", {
+      channels: {
+        async fetch() {
+          return {
+            guild: { members: { me: { isCommunicationDisabled: () => true, communicationDisabledUntil: until } } },
+            async send(payload: unknown) {
+              sent.push(payload);
+              return { id: "sent-1" };
+            }
+          };
+        }
+      }
+    });
+    await expect(gateway.sendWaifuMessage({ guildId: "guild-1", channelId: "channel-1", content: "hello", senderBotId: "waifu-a", allowedUserMentionIds: [] }))
+      .rejects.toMatchObject({ timedOutUntil: "2026-11-03T16:40:13.493Z" });
+    expect(sent).toEqual([]);
   });
 });
 

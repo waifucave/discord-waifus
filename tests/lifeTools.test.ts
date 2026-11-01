@@ -76,6 +76,9 @@ describe("SendMessage (§6.3, §16.3.2, §32.2, D11)", () => {
     // Missing access says why and that it can change, so she doesn't write the room off.
     w.discord.sendErrors.push(Object.assign(new Error("Missing Access"), { code: 50001 }));
     expect(text(await send(ctx, "bake-club/#general", [{ text: "hi" }]))).toMatch(/can't post in this room right now; that can change/u);
+    // §41: a timeout says until when, in her time.
+    w.discord.sendErrors.push(Object.assign(new Error("Timed out in this server until 2026-11-03T16:40:13.493Z"), { timedOutUntil: "2026-11-03T16:40:13.493Z" }));
+    expect(text(await send(ctx, "bake-club/#general", [{ text: "hi" }]))).toMatch(/you're timed out in this server until Tue 3 Nov \d\d:\d\d, so you can't post anywhere in it before then/u);
   });
 
   it("never cold-DMs; a DM opens once the user wrote, until undeliverable, forgotten or rate-limited", async () => {
