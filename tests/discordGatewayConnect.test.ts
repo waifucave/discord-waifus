@@ -9,11 +9,12 @@ import {
   Message,
   MessageFlags,
   MessageManager,
+  OverwriteType,
   PermissionFlagsBits
 } from "discord.js";
 import type { ClientOptions } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscordJsGateway, buildHouseCommandPayloads } from "../src/discord/client.js";
+import { CHANNEL_ACCESS_REASON, DiscordJsGateway, buildHouseCommandPayloads } from "../src/discord/client.js";
 import { WAIFU_ROLE_PERMISSIONS } from "../src/discord/waifuRole.js";
 import type {
   DiscordBotConnectionStatus,
@@ -811,6 +812,75 @@ describe("DiscordJsGateway.canPost (§39)", () => {
     // A channel it hasn't cached, or a bot that isn't connected: unknown.
     expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "999" })).toBeUndefined();
     expect(gateway.canPost({ botId: "nobody", guildId: "100", channelId: "200" })).toBeUndefined();
+  });
+});
+
+describe("DiscordJsGateway.openChannelFor / closeChannelFor (§42)", () => {
+  function accessWorld(o: { houseOwn?: bigint } = {}) {
+    const overwrites = new Map<string, { allow: { bitfield: bigint }; deny: { bitfield: bigint }; delete: (reason: string) => Promise<void> }>();
+    const created: Array<{ id: string; options: Record<string, boolean>; reason?: string; type?: number }> = [];
+    let herAccess = false;
+    const channel = {
+      id: "300",
+      isThread: () => false,
+      permissionsFor: (member: { id: string }) =>
+        member.id === "house-user"
+          ? { bitfield: o.houseOwn ?? PermissionFlagsBits.Administrator | WAIFU_ROLE_PERMISSIONS, has: () => true }
+          : { bitfield: 0n, has: () => herAccess },
+      permissionOverwrites: {
+        cache: overwrites,
+        create: async (id: string, options: Record<string, boolean>, extra: { reason?: string; type?: number }) => {
+          created.push({ id, options, ...extra });
+          const allow = Object.keys(options).reduce((bits, name) => bits | PermissionFlagsBits[name as keyof typeof PermissionFlagsBits], 0n);
+          overwrites.set(id, { allow: { bitfield: allow }, deny: { bitfield: 0n }, delete: async () => void overwrites.delete(id) });
+        }
+      }
+    };
+    const thread = { id: "301", isThread: () => true, parent: channel };
+    const houseGuild = {
+      id: "100",
+      channels: { cache: new Map<string, unknown>([["300", channel], ["301", thread]]), fetch: async () => null },
+      members: { me: { id: "house-user" }, fetch: async (id: string) => ({ id }) }
+    };
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("lumi"), bot("aria")] });
+    const clients = (gateway as unknown as { clients: Map<string, unknown> }).clients;
+    clients.set("house", { user: { id: "house-user" }, guilds: { cache: new Map([["100", houseGuild]]) } });
+    clients.set("lumi", { user: { id: "lumi-user" }, guilds: { cache: new Map([["100", {}]]) } });
+    clients.set("aria", { user: { id: "aria-user" }, guilds: { cache: new Map() } });
+    return { gateway, overwrites, created, setAccess: (value: boolean) => (herAccess = value) };
+  }
+
+  it("adds an override for her bot alone, with the waifu permissions, where she can't post; a thread opens its channel", async () => {
+    const w = accessWorld();
+    const result = await w.gateway.openChannelFor({ botId: "lumi", guildId: "100", channelId: "301" });
+    expect(result).toEqual({ status: "opened", channelId: "300", botUserId: "lumi-user", allow: WAIFU_ROLE_PERMISSIONS.toString() });
+    expect(w.created).toEqual([{ id: "lumi-user", options: expect.objectContaining({ ViewChannel: true, SendMessages: true, ReadMessageHistory: true }), reason: CHANNEL_ACCESS_REASON, type: OverwriteType.Member }]);
+    // An override for her bot exists now: someone's or ours, it isn't touched again.
+    expect(await w.gateway.openChannelFor({ botId: "lumi", guildId: "100", channelId: "300" })).toEqual({ status: "theirs", channelId: "300" });
+    w.setAccess(true);
+    expect(await w.gateway.openChannelFor({ botId: "lumi", guildId: "100", channelId: "300" })).toEqual({ status: "open", channelId: "300" });
+    // Not in the server, or no such bot.
+    expect(await w.gateway.openChannelFor({ botId: "aria", guildId: "100", channelId: "300" })).toEqual({ status: "not_in_server" });
+    expect(await w.gateway.openChannelFor({ botId: "nobody", guildId: "100", channelId: "300" })).toEqual({ status: "unknown" });
+  });
+
+  it("allows only what the House bot has there itself, without Administrator", async () => {
+    const w = accessWorld({ houseOwn: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ManageRoles });
+    const result = await w.gateway.openChannelFor({ botId: "lumi", guildId: "100", channelId: "300" });
+    expect(result).toMatchObject({ status: "opened", allow: (PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages).toString() });
+  });
+
+  it("removes only an override still exactly as it set it", async () => {
+    const w = accessWorld();
+    const opened = await w.gateway.openChannelFor({ botId: "lumi", guildId: "100", channelId: "300" });
+    const allow = opened.status === "opened" ? opened.allow : "";
+    // Someone added a deny: kept.
+    w.overwrites.get("lumi-user")!.deny.bitfield = PermissionFlagsBits.AddReactions;
+    expect(await w.gateway.closeChannelFor({ guildId: "100", channelId: "300", botUserId: "lumi-user", allow })).toBe("kept");
+    w.overwrites.get("lumi-user")!.deny.bitfield = 0n;
+    expect(await w.gateway.closeChannelFor({ guildId: "100", channelId: "300", botUserId: "lumi-user", allow })).toBe("removed");
+    expect(w.overwrites.size).toBe(0);
+    expect(await w.gateway.closeChannelFor({ guildId: "100", channelId: "300", botUserId: "lumi-user", allow })).toBe("gone");
   });
 });
 

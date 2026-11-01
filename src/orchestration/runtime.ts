@@ -22,6 +22,7 @@ import { ServerConfigSchema, type ServerConfig } from "../shared/schemas/domain.
 import { sharedProviderAlerts, type ProviderAlerts } from "./providerAlerts.js";
 import { sharedUsageLedger, type UsageLedger } from "./usageLedger.js";
 import { PermissionWarningTracker } from "./permissionWarnings.js";
+import { ChannelAccessSync } from "./channelAccess.js";
 import { conversationDirPath, conversationKey, type ConversationRef } from "./context/keys.js";
 import { EMPTY_GUILD_DIRECTORY, renderDiscordMessage } from "./context/messageRender.js";
 import type { CastRuntimeOptions } from "./runtimeShared.js";
@@ -70,6 +71,8 @@ export class CastRuntime {
   readonly cast: LivingCast;
   /** Her own bot's Discord profile, kept equal to her config (Living cast §17). */
   readonly discordProfiles: DiscordProfileSync;
+  /** §42: the House bot opens a channel to a waifu bot cast there that can't post in it. */
+  readonly channelAccess: ChannelAccessSync;
   private unsubscribes: Array<() => void> = [];
   private readonly background = new Set<Promise<unknown>>();
   private stopping = false;
@@ -108,6 +111,7 @@ export class CastRuntime {
       ...(options.ocr?.cachedText ? { ocr: { cachedText: (ref) => options.ocr!.cachedText!(ref), ...(options.ocr.textFor ? { textFor: (ref, o) => options.ocr!.textFor!(ref, o) } : {}) } } : {}),
       ...options.livingCast
     });
+    this.channelAccess = new ChannelAccessSync({ storage: options.storage, discord: () => this.options.discord, logger: options.logger, notices: this.cast.notices });
   }
 
   /** The enabled cast of a channel or tracked thread (inherited casts included). */
@@ -156,12 +160,29 @@ export class CastRuntime {
         else if (event.type === "memberUpsert" && (discord.ownAuthorIds?.() ?? []).includes(event.member.userId)) this.cast.onRolesChanged(event.guildId);
       }),
       // §17: a waifu bot that (re)connects gets her profile; the ones already online are synced below.
-      discord.onWaifuBotReady?.((event) => void this.discordProfiles.syncBot(event.botId))
+      discord.onWaifuBotReady?.((event) => {
+        void this.discordProfiles.syncBot(event.botId);
+        this.syncChannelAccess();
+      }),
+      // §42: a waifu bot that joins a server may be cast in a channel there it can't post in.
+      discord.onWaifuBotJoinedGuild?.(() => this.syncChannelAccess())
     ].filter((unsubscribe): unsubscribe is () => void => Boolean(unsubscribe));
     if (discord.listGuilds) await syncGuilds(this.options);
     await this.cast.start();
     void this.discordProfiles.syncAll().catch((error: unknown) => {
       this.options.logger.warn("Discord profile sync failed", { message: error instanceof Error ? error.message : String(error) });
+    });
+    this.syncChannelAccess();
+  }
+
+  /**
+   * §42: after a write to a server's channels or a waifu's bot link, and when bots connect or join:
+   * open channels to the waifu bots cast there that can't post, close the ones no longer cast.
+   * In the background.
+   */
+  syncChannelAccess(): void {
+    void this.channelAccess.sync().catch((error: unknown) => {
+      this.options.logger.warn("Channel access sync failed", { message: error instanceof Error ? error.message : String(error) });
     });
   }
 

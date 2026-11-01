@@ -140,7 +140,11 @@ start.
 
 - `list_dms` — DM conversations with their rate limit.
 - `get_runtime_status` — includes `discord.warnings` with live per-channel permission failures
-  (e.g. "yuna cannot send in channel … — check the channel permissions in Discord").
+  (e.g. "yuna cannot send in channel … — check the channel permissions in Discord"). Casting a
+  waifu in a channel her bot can't see makes the House bot open it to her bot alone (a channel
+  override, removed again when she is taken out); a warning `<Name> in <server> #<channel>: her bot
+  can't post there…` means it couldn't (no Manage Permissions there, or someone set an override for
+  her bot that it leaves alone).
 - `list_models` — the curated models with their efforts and whether each provider has a key.
 - `get_life` — a waifu's status and recent life log (content from private chats left out).
 - `get_usage` — model calls and cost by day, waifu, purpose or model.

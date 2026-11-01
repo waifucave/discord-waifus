@@ -12,8 +12,10 @@ import {
   GatewayIntentBits,
   MessageFlags,
   Options,
+  OverwriteType,
   Partials,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  PermissionsBitField
 } from "discord.js";
 import type { AutocompleteInteraction, ChatInputCommandInteraction, ClientOptions } from "discord.js";
 import { Logger } from "../backend/logger.js";
@@ -33,7 +35,7 @@ import { compareIds, pageMessagesSince, toRawDiscordMessage, withoutAuthors, typ
 import type { ConversationRef } from "../orchestration/context/keys.js";
 import { attachGatewayFeed, guildSnapshotEvent } from "./gatewayFeed.js";
 import { ApplicationOwners, ownerIdsOf, type ApplicationOwnerLike, type OwnerCheck } from "./applicationOwners.js";
-import { ensureWaifuRole, madeOnlyBy, type WaifuRoleGuild } from "./waifuRole.js";
+import { ensureWaifuRole, madeOnlyBy, WAIFU_ROLE_PERMISSIONS, type WaifuRoleGuild } from "./waifuRole.js";
 import type { BotProfileHandle, BotProfileUser } from "./profileSync.js";
 import type {
   DiscordConnectionScope,
@@ -110,6 +112,19 @@ export type DiscordRuntimeIssue = {
   wasClean?: boolean;
   error?: unknown;
 };
+
+/**
+ * Living cast §42: `openChannelFor`'s answer. `open`: her bot can already view, read and post
+ * there; `theirs`: an override for her bot is already set (someone's choice, left alone);
+ * `opened`: the House bot added one allowing `allow`; `unknown`: a bot not connected or the
+ * channel not found.
+ */
+export type ChannelAccessResult =
+  | { status: "open" | "theirs"; channelId: string }
+  | { status: "opened"; channelId: string; botUserId: string; allow: string }
+  | { status: "not_in_server" | "unknown" };
+
+export const CHANNEL_ACCESS_REASON = "Discord Waifus: the owner cast this waifu here";
 
 export interface DiscordGatewayFacade {
   connect(): Promise<DiscordRuntimeStatus>;
@@ -188,6 +203,19 @@ export interface DiscordGatewayFacade {
    * bot not connected, the channel not cached): callers treat that as "can".
    */
   canPost?(input: { botId: string; guildId: string; channelId: string }): boolean | undefined;
+  /**
+   * Living cast §42: with the House bot, opens a server channel (a thread: its channel) to a waifu
+   * bot that can't view or post there, by an override for her bot alone. Throws what Discord says
+   * when the House bot can't (no Manage Permissions there).
+   */
+  openChannelFor?(input: { botId: string; guildId: string; channelId: string }): Promise<ChannelAccessResult>;
+  /**
+   * Living cast §42: removes an override `openChannelFor` added, only while it is still exactly what
+   * it set (`allow`, nothing denied); someone's change keeps it (`kept`).
+   */
+  closeChannelFor?(input: { guildId: string; channelId: string; botUserId: string; allow: string }): Promise<"removed" | "kept" | "gone" | "unknown">;
+  /** Living cast §42: a waifu bot joined a server. */
+  onWaifuBotJoinedGuild?(listener: (event: { botId: string; guildId: string }) => void): () => void;
   /**
    * Living cast §10.2: a bot's own guild member changed (Discord sends the current user's member
    * updates without the members intent); `roleIds` excludes `@everyone`.
@@ -454,6 +482,7 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
   private readonly waifuRoleRetrying = new Set<string>();
   /** §41: waifu roles found not to be the House bot's alone (made by someone else, or edited since): left as they are. */
   private readonly waifuRolesNotOurs = new Set<string>();
+  private readonly joinedGuildListeners = new Set<(event: { botId: string; guildId: string }) => void>();
   private readonly waifuAutocompleteListeners = new Set<DiscordWaifuAutocompleteListener>();
   private readonly recentMentionRefreshes = new Map<string, number>();
   // Living cast §10.4 (D-a): the application's owner or team members run /wake and /print.
@@ -1137,6 +1166,48 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     return permissions.has([PermissionFlagsBits.ViewChannel, send]);
   }
 
+  async openChannelFor(input: { botId: string; guildId: string; channelId: string }): Promise<ChannelAccessResult> {
+    const house = this.clients.get(this.options.house.id);
+    const her = this.clients.get(input.botId);
+    if (!house?.user || !her?.user || input.botId === this.options.house.id) return { status: "unknown" };
+    const guild = house.guilds.cache.get(input.guildId);
+    if (!guild) return { status: "unknown" };
+    if (!her.guilds.cache.has(input.guildId)) return { status: "not_in_server" };
+    const found = guild.channels.cache.get(input.channelId) ?? (await guild.channels.fetch(input.channelId).catch(() => null));
+    // A thread follows its channel: her access there is the channel's.
+    const channel = found?.isThread() ? found.parent : found;
+    if (!channel || !("permissionOverwrites" in channel)) return { status: "unknown" };
+    const member = await guild.members.fetch(her.user.id);
+    const needed = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages];
+    if (channel.permissionsFor(member)?.has(needed)) return { status: "open", channelId: channel.id };
+    if (channel.permissionOverwrites.cache.has(her.user.id)) return { status: "theirs", channelId: channel.id };
+    // Discord refuses an override granting what the House bot lacks there (Administrator has it all).
+    const me = guild.members.me;
+    const allow = WAIFU_ROLE_PERMISSIONS & (me ? (channel.permissionsFor(me)?.bitfield ?? 0n) : 0n);
+    const options = Object.fromEntries(new PermissionsBitField(allow).toArray().map((name) => [name, true]));
+    await channel.permissionOverwrites.create(her.user.id, options, { reason: CHANNEL_ACCESS_REASON, type: OverwriteType.Member });
+    return { status: "opened", channelId: channel.id, botUserId: her.user.id, allow: allow.toString() };
+  }
+
+  async closeChannelFor(input: { guildId: string; channelId: string; botUserId: string; allow: string }): Promise<"removed" | "kept" | "gone" | "unknown"> {
+    const house = this.clients.get(this.options.house.id);
+    if (!house?.user) return "unknown";
+    const guild = house.guilds.cache.get(input.guildId);
+    if (!guild) return "gone";
+    const channel = guild.channels.cache.get(input.channelId) ?? (await guild.channels.fetch(input.channelId).catch(() => null));
+    if (!channel || !("permissionOverwrites" in channel)) return "gone";
+    const overwrite = channel.permissionOverwrites.cache.get(input.botUserId);
+    if (!overwrite) return "gone";
+    if (overwrite.allow.bitfield.toString() !== input.allow || overwrite.deny.bitfield !== 0n) return "kept";
+    await overwrite.delete(CHANNEL_ACCESS_REASON);
+    return "removed";
+  }
+
+  onWaifuBotJoinedGuild(listener: (event: { botId: string; guildId: string }) => void): () => void {
+    this.joinedGuildListeners.add(listener);
+    return () => this.joinedGuildListeners.delete(listener);
+  }
+
   private emitConversationEvent(event: DiscordConversationEvent): void {
     for (const listener of this.conversationListeners) {
       try {
@@ -1623,6 +1694,8 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     // already in it when the House bot is the one joining).
     client.on(Events.GuildCreate, (guild) => {
       this.ensureWaifuRoles(botId === this.options.house.id ? { guildId: guild.id } : { guildId: guild.id, botId });
+      // §42: a channel she is cast in there may need opening for her bot.
+      if (botId !== this.options.house.id) for (const listener of this.joinedGuildListeners) this.dispatchTo(listener, { botId, guildId: guild.id });
     });
     // §37: the owner gave the House bot Manage Roles (or moved its role up) where the waifu role failed.
     if (botId === this.options.house.id) client.on(Events.GuildRoleUpdate, (_old, role) => this.retryWaifuRole(role.guild.id));

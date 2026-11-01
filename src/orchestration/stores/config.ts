@@ -21,6 +21,23 @@ export async function readWaifu(storage: StorageService, waifuId: string): Promi
   return storage.readJson(path.join("user", "waifus", waifuId, "waifu.json"), WaifuConfigSchema);
 }
 
+/** Every stored server config (`user/servers/<guildId>/server.json`); an unreadable one is left out. */
+export async function listServers(storage: StorageService): Promise<ServerConfig[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(path.join(storage.dataRoot, "user", "servers"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const servers = await Promise.all(
+    entries
+      .filter((entry) => !entry.startsWith("."))
+      .map((entry) => storage.readJson(path.join("user", "servers", entry, "server.json"), ServerConfigSchema).catch(() => undefined))
+  );
+  return servers.filter((server): server is ServerConfig => server !== undefined);
+}
+
 export async function listWaifus(storage: StorageService): Promise<WaifuConfig[]> {
   let entries: string[];
   try {

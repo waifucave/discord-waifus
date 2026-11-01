@@ -13,6 +13,7 @@ import { queueOwnerScrubs, withoutPrivateReview } from "../life/forget.js";
 import { rewriteProfileFile } from "../life/home/index.js";
 import { loadAppConfig, updateAppConfig } from "../config/appConfig.js";
 import { resolveDataPath, userDataPath } from "../config/paths.js";
+import { listServers } from "../orchestration/stores/config.js";
 import { Logger, createLogger, type LogEntry } from "../backend/logger.js";
 import { RuntimeState } from "../backend/runtime.js";
 import { redactRemoteHostDetails, redactSecrets } from "../backend/redaction.js";
@@ -395,7 +396,11 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
 
   const currentCast = () => options.runtimeControl?.getCastRuntime?.() ?? options.castRuntime;
   // Living cast §17: her bot's profile follows her config and images (in the background).
-  const syncDiscordProfile = (waifuId: string) => currentCast()?.syncDiscordProfile?.(waifuId);
+  const syncDiscordProfile = (waifuId: string) => {
+    currentCast()?.syncDiscordProfile?.(waifuId);
+    // §42: her bot link may have changed, so may the channels her bot needs opened.
+    currentCast()?.syncChannelAccess?.();
+  };
   // Her ~/profile.json follows her config (§17.1), with or without the running cast.
   const rewriteProfile = async (waifuId: string) => {
     await rewriteProfileFile(storage, waifuId).catch((error: unknown) => {
@@ -927,7 +932,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
       ...createRevisionedBase(),
       guildId
     });
-    return storage.updateRevisionedJson({
+    const saved = await storage.updateRevisionedJson({
       resourceKey: `server:${guildId}`,
       relativePath: serverRelativePath(guildId),
       schema: ServerConfigSchema,
@@ -949,13 +954,16 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return next;
       }
     });
+    // §42: a waifu cast in a channel her bot can't post in gets it opened (and closed when she leaves).
+    currentCast()?.syncChannelAccess?.();
+    return saved;
   });
 
   app.delete("/api/servers/:guildId/channels/:channelId", async (request) => {
     const { guildId } = parseIdParam(request.params, "guildId");
     const { channelId } = parseIdParam(request.params, "channelId");
     const body = (request.body ?? {}) as { revision?: number };
-    return storage.updateRevisionedJson({
+    const saved = await storage.updateRevisionedJson({
       resourceKey: `server:${guildId}`,
       relativePath: serverRelativePath(guildId),
       schema: ServerConfigSchema,
@@ -966,6 +974,8 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return { ...current, channels };
       }
     });
+    currentCast()?.syncChannelAccess?.();
+    return saved;
   });
 
   app.delete("/api/servers/:guildId", async (request, reply) => {
@@ -979,6 +989,7 @@ export async function createApiServer(options: ApiServerOptions): Promise<Fastif
         return reply.code(404).send({ error: "NotFound", message: `Server ${guildId} is not configured.` });
       }
       await rm(serverPath, { recursive: true, force: true });
+      currentCast()?.syncChannelAccess?.();
       return { accepted: true, message: `Server ${guildId} configuration removed (sessions, rosters and decision history included).` };
     });
   });
@@ -1441,29 +1452,6 @@ async function readWaifu(storage: StorageService, waifuId: string): Promise<Waif
 function waifuRelativePath(waifuId: string): string {
   assertSafeId(waifuId);
   return path.join("user", "waifus", waifuId, "waifu.json");
-}
-
-async function listServers(storage: StorageService): Promise<ServerConfig[]> {
-  const root = userDataPath(storage.dataRoot, "servers");
-  let entries: string[];
-  try {
-    entries = await readdir(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-  const servers = await Promise.all(
-    entries.map(async (entry) => {
-      try {
-        return await storage.readJson(serverRelativePath(entry), ServerConfigSchema);
-      } catch {
-        return undefined;
-      }
-    })
-  );
-  return servers.filter((server): server is ServerConfig => server !== undefined);
 }
 
 function serverRelativePath(guildId: string): string {

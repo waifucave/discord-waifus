@@ -124,6 +124,26 @@ next connect or join, and by itself as soon as any role in that server changes (
 order) or the House bot is given a role: no restart needed after you fix its permissions. The role reaches the life as the bot's member update, so mentioning it wakes
 every waifu there (`role`, [triggers.md](triggers.md)).
 
+## Opening channels for her bot
+
+`src/orchestration/channelAccess.ts` (`ChannelAccessSync`, owned by the cast runtime),
+`DiscordJsGateway.openChannelFor` / `closeChannelFor` (spec §42): when a waifu is cast in a server
+channel (`enabledWaifuIds`) and her own bot is in that server but can't view, read or post there (a
+private channel only some roles see), the House bot adds a channel override for her bot alone,
+allowing the waifu permissions it has there itself (all of them with Administrator), with the
+audit-log reason `Discord Waifus: the owner cast this waifu here`; a thread's override goes on its
+channel. It runs in the background after a server's channels are saved (dashboard, CLI or
+assistant), after a waifu's bot link changes, when the cast runtime starts, when a waifu bot
+connects and when one joins a server. What it added is recorded in `app/channel-access.json`
+(channel, bot, allowed bits, the cast entries it is for). When she is no longer cast there (taken
+out, the channel or server removed, her bot unlinked), the override is removed, but only while it is
+still exactly what it set; an override someone changed, or one someone else set for her bot, is
+never touched (`Closed a channel the House bot had opened for her bot` / left alone). The owner
+gets a notice (`discord.warnings`) when it can't: `<Name> in <server> #<channel>: her bot can't post
+there and the House bot couldn't open it (…)`, or `… someone has set a channel override for it`; it
+clears once she can post or is no longer cast there. Roles are never given or changed for this. An
+unreadable `app/channel-access.json` stops it (nothing opened or closed) with a notice.
+
 ## Discord profile sync
 
 `src/discord/profileSync.ts`, owned by the cast runtime:

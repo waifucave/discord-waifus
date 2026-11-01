@@ -71,7 +71,9 @@ up from the pause start ([triggers.md](triggers.md)).
   you're timed out in this server until <day time>, so you can't post anywhere in it before then`;
   she isn't woken there until it ends ([detector.md](detector.md)); the app never lifts a timeout;
 - Discord 50001/50013 (no access/permission) → `error: the message could not be sent: Discord says
-  you can't post in this room right now; that can change, so try again later`;
+  you can't post in this room right now; that can change, so try again later`. A channel she is
+  cast in that her bot can't see is opened to it by the House bot (§42,
+  [owner-controls.md](owner-controls.md#opening-channels-for-her-bot));
 - at most `life.maxSendPlacesPerTurn` (3) places and `life.maxSendsPerTurn` (15) messages per turn
   (each `m:` line of a script counts one).
 

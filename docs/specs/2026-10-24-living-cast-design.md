@@ -5123,3 +5123,55 @@ read once; `canPost` false while timed out; a timed-out send refused with `timed
 ### 41.3 Release
 
 Not released yet.
+
+
+## 42. The House bot opens a channel to a waifu cast there (owner request, 2026-11-01)
+
+A private channel denies @everyone View Channel and allows some roles; a waifu bot without one of
+them can't see it, whatever the waifu role (§41) carries, because a channel's overrides come after
+server-wide role permissions. The owner chose (2026-11-01) an override for her bot alone over giving
+her a role that has access (such roles often mean more than access: verification, other private
+channels, moderation; several may qualify; one above the House bot's can't be given).
+
+### 42.1 Decisions
+
+- **When**: only for a cast the owner set (`enabledWaifuIds` of a server channel entry, a thread
+  entry with a cast of its own included) and a waifu with her own bot (her `botId`, an enabled
+  waifu bot of the bots file). Run in the background (`CastRuntime.syncChannelAccess`, one pass at a
+  time, calls during a pass make one more) after `PUT /api/servers/:guildId`, `DELETE …/channels/:id`,
+  `DELETE /api/servers/:guildId` and every waifu write that syncs her profile (her bot link), at
+  cast-runtime start, when a waifu bot connects and when one joins a server (`onWaifuBotJoinedGuild`).
+  In every server where the House bot can (the owner did not restrict it to servers they admin).
+- **What** (`openChannelFor`): the House bot resolves the channel (a thread: its parent). Her bot not
+  in the server: nothing (`not_in_server`). She can view, read history and send there: nothing
+  (`open`). An override for her bot already set (by anyone): left alone (`theirs`). Otherwise a
+  member override for her bot allowing `WAIFU_ROLE_PERMISSIONS` & the House bot's own permissions
+  there (Discord refuses granting more; Administrator has all), nothing denied, reason `Discord
+  Waifus: the owner cast this waifu here`. No role is given or changed.
+- **Record**: `app/channel-access.json` `grants[]`: `guildId`, `channelId` (where the override is),
+  `botId`, `botUserId`, `allow` (bitfield string), `for` (the cast entries it serves: a channel and
+  threads of it share one override), `at`. An entry that finds one of ours on its channel (`open` or
+  `theirs`) joins its `for`.
+- **Closing**: a grant whose `for` has no cast left is closed (`closeChannelFor`): removed only while
+  the override is exactly `allow` with nothing denied (`removed`); changed by someone (`kept`) or
+  already gone (`gone`): the record is dropped and the override left; the House bot offline
+  (`unknown`) or an error: kept for the next pass.
+- **Notices** (owner, `discord.warnings`, in memory): `<Name> in <server> #<channel>: her bot can't
+  post there and the House bot couldn't open it (<Discord's message>); …` when opening throws, and
+  `… someone has set a channel override for it; …` for `theirs` without one of ours; cleared when she
+  can post, an override of ours covers it, or she is no longer cast there. An unreadable record:
+  nothing is opened or closed (its overrides could never be closed again), with a notice.
+
+### 42.2 Tests
+
+`tests/channelAccess.test.ts` (opened once and closed when she leaves; an override someone changed
+or set is never removed, with the notice; a refusal's notice cleared once it works; a thread entry
+shares its channel's override; an unreadable record does nothing; calls during a pass coalesce; the
+API routes trigger the sync); `tests/discordGatewayConnect.test.ts` (`openChannelFor`: a member
+override with the waifu permissions, a thread opening its channel, `theirs`, `open`,
+`not_in_server`, only what the House bot has without Administrator; `closeChannelFor`: kept when
+changed, removed when exact, gone).
+
+### 42.3 Release
+
+Not released yet.
