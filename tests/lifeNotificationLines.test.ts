@@ -113,8 +113,8 @@ describe("bursts are one wake with a line per message (§20)", () => {
       at: AT
     };
     expect(renderNotifications({ wakes: [wake] }, view())!.split("\n").slice(2, -2)).toEqual([
-      '- for someone else, you could chime in · bake-club/#general · from Kevin · "mina what are you baking"',
-      '- for someone else, you could chime in · bake-club/#general · from Kevin · "something with lemons?"'
+      '- people are talking: join in if you have something to add · bake-club/#general · from Kevin · "mina what are you baking"',
+      '- people are talking: join in if you have something to add · bake-club/#general · from Kevin · "something with lemons?"'
     ]);
   });
 });

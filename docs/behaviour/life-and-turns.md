@@ -139,7 +139,7 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   (so a line never claims someone else's mention). Labels (`REASON_LABELS`): `mention`, `your name`,
   `role mention`, `@everyone`, `watch`, `watch timed out`, `dm`, `maybe for you` (detector),
   `reminder`, `plan`, `morning`, `nudge` (owner), `follow-up`. A detector wake for `all` reads
-  `for all of you`; a chime-in reads `for someone else, you could chime in`.
+  `for all of you`; a chime-in reads `people are talking: join in if you have something to add` (§43).
 - **The chat since she last looked** (§40): under a place's lines, `  the chat there since you last
   looked:` and the messages after her read cursor up to the newest notified one, as ReadMessages
   lines (`  [14:02 #k3] Kevin: text`, her own as `you`, a forgotten person's `someone: (removed)`),

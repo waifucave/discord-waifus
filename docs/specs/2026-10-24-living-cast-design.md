@@ -332,8 +332,9 @@ One text block in a user turn, followed by the time line (§5.4):
   buffer when the conversation is trusted; a message found in neither gets no ref), so refs stay
   in message order; a send likewise gives the messages before it their refs before its own.
 - Labels: each reason has one label (`mention`, `your name`, `maybe for you` for `detector`, …);
-  a `detector` wake with `forAll` reads `for all of you`, one with `chimeIn` reads `for someone
-  else, you could chime in`. A DM wake that carries a watch match reads `dm, watch · dm/<handle> ·
+  a `detector` wake with `forAll` reads `for all of you`, one with `chimeIn` reads `people are
+  talking: join in if you have something to add` (§43; until 3.10 `for someone else, you could
+  chime in`). A DM wake that carries a watch match reads `dm, watch · dm/<handle> ·
   "<matched>" · from … · your note: "…"`.
 - `morning` (*§38:* only the budget's batch now, headed `- while you were away (since …):`, §23):
 
@@ -5175,3 +5176,42 @@ changed, removed when exact, gone).
 ### 42.3 Release
 
 Released in 3.10.0.
+
+## 43. Waifus join in when they have something to add (owner request, 2026-11-01)
+
+On Beta (Kingdom 16062, 2026-10-29 to 11-01) the waifus almost never spoke unless addressed. Jev
+answered `chime_in: nobody` for about 280 of 300 bursts, at 90–98% on a live exchange between
+people; and every chime-in wake on 11-01 ended without a send. Her prompt told her "if the room
+shows it's meant for someone else, let it be" and "Ignore what isn't for you", while the chime-in
+line itself began "for someone else". The owner wants them to talk not only when addressed but
+whenever they can add something relevant or interesting.
+
+### 43.1 Decisions
+
+- **Her life text** (block A, `LIFE_TEXT`): "maybe for you" stays a guess, but a message the room
+  shows is for someone else is no longer one to "let be", only not one to answer as if it were
+  hers. "You don't have to answer. Ignore what isn't for you…" becomes: she doesn't have to answer
+  everything, but she is part of these rooms, not a spectator: when people are talking and she has
+  something relevant, funny or interesting to add, she joins in like a friend in the group would,
+  even when it wasn't said to her; she lets it go when it's private, a moment between two people,
+  or she'd have nothing to add. The block A change gives every begun life a `config` compaction at
+  her next turn (§16.7).
+- **The chime-in line** (`DETECTOR_CHIME_IN_LABEL`): `people are talking: join in if you have
+  something to add` (no comma, which would read as two reasons).
+- **Jev's `chime_in`** (`CHIME_IN_INSTRUCTIONS`): would one awake cast member naturally join in, as
+  a friend in the group would, with something relevant, funny or interesting to add (the topic fits
+  her persona, or she has a reaction, a joke or an opinion); `nobody` for private matters, a
+  personal moment between two people, plans, errands and logistics, or when none would have anything
+  to add. Its choices read `<Name> would naturally join in.` No longer "`nobody` unless one clearly
+  would". Unchanged: asked only with a `human` addressee, one per room every 10 minutes, a soft wake
+  she may ignore.
+
+### 43.2 Tests
+
+Goldens `life-system-prompt.txt`, `life-rest-epoch.txt`, `detector-state.txt`; the chime-in line in
+`tests/lifeNotificationLines.test.ts` and `tests/lifeWakes.test.ts`. How often they now speak is
+checked on Beta after release (detector history `chimeIn`, `Life turn ended` `sent`).
+
+### 43.3 Release
+
+Unreleased (on main).

@@ -60,8 +60,9 @@ to her own bot, or one of her wakeups wakes the waifu it concerns; a message nob
 addressed goes to the addressee detector (`detector.target`), which picks who it is for, if
 anyone (one waifu, any one of them, or the whole cast when it is for all of them); it only offers waifus who are around (every waifu except one over her daily budget). A message
 aimed at someone who left the chat 30+ minutes ago counts as open to the room. When it is for
-another person, one awake waifu whose interests fit may be nudged to chime in (at most once per
-channel every 10 minutes; she can still stay quiet). A waifu's own message that nobody was named
+another person, one waifu who would have something relevant, funny or interesting to add may be
+nudged to join in, like a friend in the group (at most once per channel every 10 minutes; she can
+still stay quiet). A waifu's own message that nobody was named
 in also goes to the detector, so another waifu can answer her (never herself). Wakes queue per waifu and she handles them one turn at a time: she reads the conversation,
 may stay quiet, and only what she sends reaches people. There is no bed time or day schedule (she is reachable at any hour); after
 her daily budget, wakes wait; the owner's own wakes always go through. Each turn is limited by the

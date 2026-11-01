@@ -86,11 +86,13 @@ from `minutesAgo`; there is no code-side timer. For a waifu's burst: her remark 
 person (`human`), a question to another cast member → that one, a goodbye → `none`.
 
 **`chime_in`** (asked only when some candidate is around and the room's chime-in interval allows
-it) — `CHIME_IN_INSTRUCTIONS`: `waifu_<i>` for a candidate who would naturally join in, or
-`nobody` (favoured; private matters, plans and logistics are `nobody`).
+it) — `CHIME_IN_INSTRUCTIONS`: `waifu_<i>` for a candidate who would naturally join in, as a friend in
+the group would, with something relevant, funny or interesting to add; `nobody` for private
+matters, a personal moment between two people, plans, errands and logistics, or when none would
+have anything to add (§43; until 3.10 `nobody` was favoured unless one "clearly would").
 
 - Used only when the addressee answer is `human`. The picked waifu gets a soft `detector` wake with
-  `chimeIn` ("for someone else, you could chime in"); she may stay quiet.
+  `chimeIn` ("people are talking: join in if you have something to add"); she may stay quiet.
 - At most **one chime-in per room (channel or thread) every 10 minutes**, counted from when one was
   queued (`CHIME_IN_INTERVAL_MS`); after a restart the history file is consulted; re-checked after
   the call. A chime-in that the router does not queue (held, deferred) does not use up the interval.

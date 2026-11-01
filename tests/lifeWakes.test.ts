@@ -449,7 +449,7 @@ describe("addressee detector (§4.3)", () => {
     const [wake] = (await queued(w, "ella")).immediate;
     expect(wake).toMatchObject({ reason: "detector", chimeIn: true, fromName: "Kevin" });
     const view = { handle: () => "bake-club/#general", unread: () => undefined, timeZone: "UTC" };
-    expect(renderNotifications({ wakes: [wake!] }, view)).toContain("- for someone else, you could chime in · bake-club/#general · from Kevin");
+    expect(renderNotifications({ wakes: [wake!] }, view)).toContain("- people are talking: join in if you have something to add · bake-club/#general · from Kevin");
     // Within 10 minutes the question is not even asked.
     w.clock.advance(9 * 60_000);
     await say(w, "Sam also, lemon bars or lemon tarts?");

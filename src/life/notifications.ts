@@ -48,7 +48,7 @@ export const REASON_LABELS: Record<WakeReason, string> = {
 /** A `detector` wake for the whole cast (`all`, §4.3) reads differently from a single pick. */
 export const DETECTOR_ALL_LABEL = "for all of you";
 /** A `detector` chime-in wake (§4.3 `chime_in`): the burst was for someone else. */
-export const DETECTOR_CHIME_IN_LABEL = "for someone else, you could chime in";
+export const DETECTOR_CHIME_IN_LABEL = "people are talking: join in if you have something to add";
 
 /** `"aria are you coming saturday? we need someo…"` (no quotes): the body, then attachments as `[image]`. */
 export function previewText(body: string, imageCount = 0, max = PREVIEW_CHARS): string {
