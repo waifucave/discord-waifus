@@ -96,7 +96,7 @@ describe("the budget's batch (§4.4, §4.7, §23)", () => {
     expect(queue.immediate[0]!.batch).toEqual(["- while you were away (since Sat 24 Oct 14:00):", "  · bake-club/#general: 1 mention, 1 message (Sat 24 Oct 14:00)", '    · mention · Sat 24 Oct 14:00 #a0 from Kevin "<@Ella> hi"']);
     expect(queue.deferred).toEqual({ places: {}, items: [] });
     // Rendered, the batch is its own lines.
-    expect(renderNotifications({ wakes: queue.immediate }, { timeZone: "UTC", handle: (key) => key, unread: () => undefined })).toBe(`<notifications>\n${queue.immediate[0]!.batch!.join("\n")}\n</notifications>`);
+    expect(renderNotifications({ wakes: queue.immediate }, { timeZone: "UTC", handle: (key) => key, unread: () => undefined })).toBe(`<notifications>\n<away-notification>\n${queue.immediate[0]!.batch!.join("\n")}\n</away-notification>\n</notifications>`);
   });
 });
 

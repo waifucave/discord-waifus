@@ -1,6 +1,7 @@
 === 0 user ===
 --- text ---
 <notifications>
+<away-notification>
 - while you were away (since Sat 24 Oct 14:00):
   · DMs:
     · dm/kevin · Sat 24 Oct 14:00 #a0 "hey"
@@ -10,6 +11,7 @@
     · mention · Sat 24 Oct 14:00 #a0 from Kevin "<@Ella> you around?"
   · watch matched · bake-club/#general · "brownie" · from Mina · Sat 24 Oct 14:00 #a1 · your note: "Mina wanted brownie tips"
   · watch timed out (Sat 24 Oct 14:20) · your note: "check if the bake sale flyer is up"
+</away-notification>
 </notifications>
 --- text ---
 [Sun 25 Oct 00:05]

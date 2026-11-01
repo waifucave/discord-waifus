@@ -5056,6 +5056,16 @@ cheap models skip it.
   further back with ReadMessages when she needs more. The harness hash changes, so each life's
   next turn after the upgrade compacts once (reason `config`).
 - §39's detector-only `before` context is replaced by this.
+- **Every notification in its own tag** (owner request, 2026-11-01). Inside `<notifications>`, each
+  place's lines and its chat are wrapped in `<notification-place place="<handle>">` …
+  `</notification-place>`, and every notification that names no place in its kind's tag:
+  `<reminder-notification>`, `<watch-notification>` (a page), `<watch-timeout-notification>`,
+  `<plan-notification>`, `<nudge-notification>` (owner), `<away-notification>` (the budget batch,
+  §23), `<follow-up-notification>`, `<wakeup-error-notification>` (`SOLO_TAGS`; any other reason
+  without a place, `<reason>-notification`). A `+3 more from Kevin` line is in
+  `<more-notification>`, an app notice in `<notice-notification>`. The lines inside are unchanged.
+  The owner's DM redaction counts each tag line as an entry boundary, so a tag is never taken for
+  part of a DM line (and never redacted).
 
 ### 40.2 Tests
 
@@ -5063,7 +5073,8 @@ cheap models skip it.
 cursor; the next short message comes alone; a message longer than its preview comes in full with
 nothing else unread; at most `CHAT_LINES` with the left-out count); `tests/lifeNotificationLines.test.ts`
 (the chat under the place's lines; none when the view gives none; a DM's chat redacted line by
-line, even a line that starts like an entry).
+line, even a line that starts like an entry; each place and each other kind in its own tag, the
+tags kept by the redaction).
 
 ### 40.3 Release
 

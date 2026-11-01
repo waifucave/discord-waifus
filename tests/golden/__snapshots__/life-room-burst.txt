@@ -1,10 +1,12 @@
 === 0 user ===
 --- text ---
 <notifications>
+<notification-place place="bake-club/#general">
 - bake-club/#general · from Kevin · #a0 "ok who is on dessert this time"
 - bake-club/#general · from Mina · #a1 "not me, i'm on the oven"
 - mention · bake-club/#general · from Kevin · #a2 "<@Ella> are you coming saturday?"
 - bake-club/#general · from Kevin · #a3 "we need someone on dessert"
+</notification-place>
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]

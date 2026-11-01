@@ -1,8 +1,10 @@
 === 0 user ===
 --- text ---
 <notifications>
+<notification-place place="dm/kevin">
 - dm · dm/kevin · from Kevin · #a0 "hey ella"
 - dm · dm/kevin · from Kevin · #a1 "my exam got moved to friday, i'm so nervous"
+</notification-place>
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]

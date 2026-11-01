@@ -1,10 +1,12 @@
 === 0 user ===
 --- text ---
 <notifications>
+<notification-place place="bake-club/#general">
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> what temperature for lemon tart?"
   the chat there since you last looked:
   [14:00 #a0] Mina: the oven is preheating
   [14:00 #a1] Kevin: <@Ella> what temperature for lemon tart?
+</notification-place>
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]

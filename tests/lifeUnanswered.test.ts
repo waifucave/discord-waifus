@@ -211,8 +211,8 @@ describe("the unanswered line in her notifications (§34)", () => {
       unread: () => undefined,
       unanswered: (key) => (key === ROOM_KEY ? "you've written in bake-club/#general 3 times since anyone answered (since Tue 21:00)" : undefined)
     };
-    expect(notificationLines([wake], view)).toEqual(['- watch timed out · your note: "asked felix about seed 2" · you\'ve written in bake-club/#general 3 times since anyone answered (since Tue 21:00)']);
-    expect(notificationLines([wake], { ...view, unanswered: () => undefined })).toEqual(['- watch timed out · your note: "asked felix about seed 2"']);
+    expect(notificationLines([wake], view)).toEqual(["<watch-timeout-notification>", '- watch timed out · your note: "asked felix about seed 2" · you\'ve written in bake-club/#general 3 times since anyone answered (since Tue 21:00)', "</watch-timeout-notification>"]);
+    expect(notificationLines([wake], { ...view, unanswered: () => undefined })).toEqual(["<watch-timeout-notification>", '- watch timed out · your note: "asked felix about seed 2"', "</watch-timeout-notification>"]);
     const batch = morningBatch({ reason: "sleep", since: new Date("2026-10-24T00:00:00Z"), until: new Date("2026-10-24T08:00:00Z"), places: [], items: [wake] }, view);
     expect(batch).toContain('  · watch timed out (Sat 24 Oct 17:00) · your note: "asked felix about seed 2" · you\'ve written in bake-club/#general 3 times since anyone answered (since Tue 21:00)');
   });

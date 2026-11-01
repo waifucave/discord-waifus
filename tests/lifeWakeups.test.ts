@@ -403,7 +403,7 @@ describe("watches: object and code filters (§30.2)", () => {
     ]);
     expect(errors.map((wake) => wake.reason)).toEqual(["wakeup_error", "wakeup_error"]);
     expect(renderNotifications({ wakes: [errors[0]!] }, { timeZone: TZ, handle: (key) => key, unread: () => undefined })).toBe(
-      "<notifications>\n- wakeup w1 stopped: TypeError: cannot read property 'here' of undefined (line 1)\n</notifications>"
+      "<notifications>\n<wakeup-error-notification>\n- wakeup w1 stopped: TypeError: cannot read property 'here' of undefined (line 1)\n</wakeup-error-notification>\n</notifications>"
     );
     const entries = await herEntries(w);
     expect(entries.map((entry) => entry["disabled"])).toEqual(["TypeError: cannot read property 'here' of undefined (line 1)", "your filter's state is over 4 KiB; keep less in it"]);
@@ -436,7 +436,7 @@ describe("watches: object and code filters (§30.2)", () => {
       { id: "w2", matched: "a long one", note: "long messages" }
     ]);
     const lines = renderNotifications({ wakes: watches }, { timeZone: TZ, handle: () => "bake-club/#general", unread: () => undefined, ref: () => "k1" })!;
-    expect(lines.split("\n").slice(1, -1)).toEqual([
+    expect(lines.split("\n").slice(2, -2)).toEqual([
       '- watch · bake-club/#general · "cake" · from Kevin · #k1 "the cake is ready" · your note: "cake news"',
       '- watch · bake-club/#general · #k1 · "a long one" · your note: "long messages"'
     ]);
@@ -658,7 +658,7 @@ describe("pages (§30.2)", () => {
       ["p2", "the page changed", "https://example.com/b"],
       ["p3", "price is now 45", "https://example.com/c"]
     ]);
-    expect(renderNotifications({ wakes: [third[1]!] }, { timeZone: TZ, handle: (key) => key, unread: () => undefined })).toBe('<notifications>\n- watch · https://example.com/c · "price is now 45" · your note: "price"\n</notifications>');
+    expect(renderNotifications({ wakes: [third[1]!] }, { timeZone: TZ, handle: (key) => key, unread: () => undefined })).toBe('<notifications>\n<watch-notification>\n- watch · https://example.com/c · "price is now 45" · your note: "price"\n</watch-notification>\n</notifications>');
   });
 
   it("goes through the SSRF-checked fetcher: a private address is never fetched", async () => {

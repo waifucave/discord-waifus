@@ -148,6 +148,11 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   Left out when the lines already show it all (only notified messages, none cut). Once the wakes
   are taken her read cursor moves to the newest notified message. No chat when the forget records
   can't be read. Indented, so the owner's DM redaction hides it with its DM line.
+- **Tags** (§40): each place's lines and chat are inside `<notification-place place="<handle>">`;
+  every other notification is inside its kind's tag (`<reminder-notification>`,
+  `<watch-notification>`, `<watch-timeout-notification>`, `<plan-notification>`,
+  `<nudge-notification>`, `<away-notification>`, `<follow-up-notification>`,
+  `<wakeup-error-notification>`, `<more-notification>`, `<notice-notification>`; `SOLO_TAGS`).
 - **Preview**: the message rendered as a transcript body (mentions as names, attachments as
   `[image]`), whitespace collapsed, first **60 characters** then `…` (`PREVIEW_CHARS`). Quotes
   inside become `'` and line breaks spaces, so a quote always closes on its line.

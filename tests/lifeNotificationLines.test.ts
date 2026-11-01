@@ -66,8 +66,10 @@ describe("bursts are one wake with a line per message (§20)", () => {
     expect(renderNotifications({ wakes }, view({ handle: "dm/kevin" }))).toBe(
       [
         "<notifications>",
+        '<notification-place place="dm/kevin">',
         '- dm, watch · dm/kevin · "poem" · from Kevin · "can you write me a poem about rain" · your note: "ask about the poem"',
         '- dm · dm/kevin · from Kevin · "and bring the cat pic"',
+        "</notification-place>",
         "</notifications>"
       ].join("\n")
     );
@@ -86,7 +88,7 @@ describe("bursts are one wake with a line per message (§20)", () => {
     expect(wakes).toHaveLength(1);
     // The wake's own reasons as before (a mention makes her name redundant); each line keeps its own.
     expect(wakes[0]).toMatchObject({ reason: "mention", reasons: ["mention", "everyone"] });
-    const lines = renderNotifications({ wakes }, view())!.split("\n").slice(1, -1);
+    const lines = renderNotifications({ wakes }, view())!.split("\n").slice(2, -2);
     expect(lines).toEqual([
       '- bake-club/#general · from Kevin · "ok who is on dessert"',
       '- mention · bake-club/#general · from Kevin · "<@Ella> you?"',
@@ -110,7 +112,7 @@ describe("bursts are one wake with a line per message (§20)", () => {
       ],
       at: AT
     };
-    expect(renderNotifications({ wakes: [wake] }, view())!.split("\n").slice(1, -1)).toEqual([
+    expect(renderNotifications({ wakes: [wake] }, view())!.split("\n").slice(2, -2)).toEqual([
       '- for someone else, you could chime in · bake-club/#general · from Kevin · "mina what are you baking"',
       '- for someone else, you could chime in · bake-club/#general · from Kevin · "something with lemons?"'
     ]);
@@ -122,7 +124,7 @@ describe("queued wakes for one place (§20)", () => {
     const watch: Wake = { id: "w1", reason: "watch", watchId: "w1", matched: "brownie", note: "Mina wanted brownie tips", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id(2), preview: "a brownie recipe?", at: AT };
     const mention: Wake = { id: "w2", reason: "mention", placeKey: ROOM_KEY, fromUserId: MINA_USER, fromName: "Mina", messageId: id(1), preview: "<@Ella> hi", at: AT };
     const again: Wake = { id: "w3", reason: "mention", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: id(2), preview: "a brownie recipe?", at: AT };
-    expect(renderNotifications({ wakes: [watch, mention, again] }, view())!.split("\n").slice(1, -1)).toEqual([
+    expect(renderNotifications({ wakes: [watch, mention, again] }, view())!.split("\n").slice(2, -2)).toEqual([
       '- mention · bake-club/#general · from Mina · "<@Ella> hi"',
       '- watch, mention · bake-club/#general · "brownie" · from Kevin · "a brownie recipe?" · your note: "Mina wanted brownie tips"'
     ]);
@@ -152,7 +154,7 @@ describe("lines per place (§20)", () => {
   });
 
   it("the newest `notificationLinesPerPlace`; the first line says how many earlier were left out", () => {
-    const lines = renderNotifications({ wakes: [burst(12)] }, view({ handle: "dm/kevin", lines: 8, unread: 12 }))!.split("\n").slice(1, -1);
+    const lines = renderNotifications({ wakes: [burst(12)] }, view({ handle: "dm/kevin", lines: 8, unread: 12 }))!.split("\n").slice(2, -2);
     expect(lines).toHaveLength(8);
     expect(lines[0]).toBe('- dm · dm/kevin · +4 earlier · from Kevin · "message 5"');
     // Not every unread message is shown: the count stays on the place's last line.
@@ -161,15 +163,15 @@ describe("lines per place (§20)", () => {
   });
 
   it("no unread count when every unread message has its line; the default is 8", () => {
-    const lines = renderNotifications({ wakes: [burst(3)] }, view({ handle: "dm/kevin", unread: 3 }))!.split("\n").slice(1, -1);
+    const lines = renderNotifications({ wakes: [burst(3)] }, view({ handle: "dm/kevin", unread: 3 }))!.split("\n").slice(2, -2);
     expect(lines).toHaveLength(3);
     expect(lines.join("\n")).not.toContain("unread");
-    expect(renderNotifications({ wakes: [burst(9)] }, view({ handle: "dm/kevin" }))!.split("\n")[1]).toContain("+1 earlier");
+    expect(renderNotifications({ wakes: [burst(9)] }, view({ handle: "dm/kevin" }))!.split("\n")[2]).toContain("+1 earlier");
   });
 
   it("a wake keeps at most MAX_WAKE_MESSAGES messages; the rest count as earlier", () => {
     const kept = { ...burst(MAX_WAKE_MESSAGES), earlier: 20 };
-    expect(renderNotifications({ wakes: [kept] }, view({ handle: "dm/kevin", lines: 2 }))!.split("\n")[1]).toContain(`+${20 + MAX_WAKE_MESSAGES - 2} earlier`);
+    expect(renderNotifications({ wakes: [kept] }, view({ handle: "dm/kevin", lines: 2 }))!.split("\n")[2]).toContain(`+${20 + MAX_WAKE_MESSAGES - 2} earlier`);
   });
 
   it("the setting is in the config (default 8) and reaches her notifications", async () => {
@@ -252,11 +254,13 @@ describe("the chat since she last looked (§40)", () => {
     const text = renderNotifications({ wakes: [wake] }, view({ lines: ["[10:05 #bz] you: did you pick a song yet?", "[10:06 #c0] K: I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM [link: Nightcore - Headlights (YouTube)]"], earlier: 2 }))!;
     expect(text.split("\n")).toEqual([
       "<notifications>",
+      '<notification-place place="dm/kevin">',
       `- dm · dm/kevin · from Kevin · #c0 "I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM…"`,
       CHAT_HEADER,
       "  (+2 earlier you haven't read)",
       "  [10:05 #bz] you: did you pick a song yet?",
       "  [10:06 #c0] K: I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM [link: Nightcore - Headlights (YouTube)]",
+      "</notification-place>",
       "</notifications>"
     ]);
   });
@@ -272,5 +276,43 @@ describe("the chat since she last looked (§40)", () => {
     expect(redacted).not.toContain("entry");
     expect(redacted).not.toContain("nor this");
     expect(redacted.split("\n").filter((line) => line === DM_REDACTED)).toHaveLength(3);
+  });
+});
+
+describe("every notification in its own tag (§40)", () => {
+  it("each place in <notification-place>, every other kind in its own tag; the owner's redaction keeps the tags", () => {
+    const wakes: Wake[] = [
+      { id: "w1", reason: "mention", placeKey: ROOM_KEY, fromName: "Kevin", messageId: id(1), preview: "<@Ella> hi", at: AT },
+      { id: "w2", reason: "reminder", note: "water the basil", at: AT },
+      { id: "w3", reason: "dm", placeKey: DM_KEY, fromName: "Kevin", messageId: id(2), preview: "a secret", at: AT },
+      { id: "w4", reason: "watch", url: "https://example.com/c", matched: "45", note: "price", at: AT },
+      { id: "w5", reason: "owner", note: "say hi", at: AT }
+    ];
+    const handles: Record<string, string> = { [ROOM_KEY]: "bake-club/#general", [DM_KEY]: "dm/kevin" };
+    const text = renderNotifications(
+      { wakes, quiet: [{ name: "Mina", count: 3, placeKey: ROOM_KEY }] as never, notices: ["your owner changed your model"] },
+      { handle: (key) => handles[key] ?? key, unread: () => undefined, timeZone: "UTC" }
+    )!;
+    expect(text.split("\n").filter((line) => line.startsWith("<"))).toEqual([
+      "<notifications>",
+      '<notification-place place="bake-club/#general">',
+      "</notification-place>",
+      "<reminder-notification>",
+      "</reminder-notification>",
+      '<notification-place place="dm/kevin">',
+      "</notification-place>",
+      "<watch-notification>",
+      "</watch-notification>",
+      "<nudge-notification>",
+      "</nudge-notification>",
+      "<more-notification>",
+      "</more-notification>",
+      "<notice-notification>",
+      "</notice-notification>",
+      "</notifications>"
+    ]);
+    const redacted = redactDmNotifications(text);
+    expect(redacted).not.toContain("a secret");
+    expect(redacted).toContain('- dm · dm/kevin · from Kevin · "[private chat redacted]"\n</notification-place>\n<watch-notification>');
   });
 });

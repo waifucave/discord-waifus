@@ -1,10 +1,12 @@
 === 0 user ===
 --- text ---
 <notifications>
+<notification-place place="bake-club/#general">
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> are you coming saturday? we need someone on dessert"
   the chat there since you last looked:
   [14:00 #a0] Mina: the oven is preheating
   [14:00 #a1] Kevin: <@Ella> are you coming saturday? we need someone on dessert
+</notification-place>
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]
@@ -20,8 +22,10 @@ bake-club/#general (Bake Club › #general)
 [14:00 #a3] Mina: and the sprinkles, the rainbow ones
 --- text ---
 <notifications>
+<notification-place place="bake-club/#general">
 - mention · bake-club/#general · from Mina · #a2 "<@Ella> can you bring the piping bags too?"
 - bake-club/#general · from Mina · #a3 "and the sprinkles, the rainbow ones"
+</notification-place>
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]

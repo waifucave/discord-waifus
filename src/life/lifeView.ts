@@ -44,8 +44,8 @@ export function wakeShowsDm(wake: { placeKey?: string | undefined; dm?: boolean 
  */
 const DM_NOTIFICATION_LINE = /^\s*[-·] (?:.*(?:· |\(|\s))?<?dm[/_]/iu;
 
-/** A line that starts a notification entry (or the block's tags); anything else continues the line before. */
-const ENTRY_START = /^\s*(?:[-·] |<\/?notifications>)/u;
+/** A line that starts a notification entry (or the block's, a place's or a notification's tags, §40); anything else continues the line before. */
+const ENTRY_START = /^\s*(?:[-·] |<\/?notifications>|<\/?notification-place\b[^>]*>|<\/?[a-z]+(?:-[a-z]+)*-notification>)/u;
 
 /**
  * Notification lines about a DM keep their reason, place and sender up to the first quote; from the

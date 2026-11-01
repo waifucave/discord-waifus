@@ -71,10 +71,12 @@ Private chats: none yet
 === 0 user ===
 --- text ---
 <notifications>
+<notification-place place="bake-club/#general">
 - mention · bake-club/#general · from Kevin · #a5 "<@Ella> did you get lemons?"
   the chat there since you last looked:
   [14:00 #a4] Mina: the oven is preheating
   [14:00 #a5] Kevin: <@Ella> did you get lemons?
+</notification-place>
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]

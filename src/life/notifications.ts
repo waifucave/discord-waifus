@@ -3,7 +3,8 @@
 // order (each with its own reasons, sender, ref and preview; at most `life.notificationLinesPerPlace`,
 // the newest); previews are about 60 characters of the message rendered as a transcript body.
 // Under a place's lines comes the chat there since she last looked (§40), in full, when the previews
-// don't already show all of it. Places are named by her handles (§6.1), the names her tools take.
+// don't already show all of it. Each place's lines are inside their own `<notification-place>` tags,
+// and every other notification inside its kind's (`<reminder-notification>`, `<watch-notification>`, …). Places are named by her handles (§6.1), the names her tools take.
 
 import { renderDiscordMessage } from "../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../orchestration/context/types.js";
@@ -237,6 +238,42 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
   }
 }
 
+/**
+ * A place's lines and its chat inside its own `<notification-place place="<handle>">` tags (§40,
+ * owner request 2026-11-01), so what belongs to which place is never in doubt.
+ */
+function placeBlock(group: Wake[], view: NotificationView): string[] {
+  const handle = view.handle(group[0]!.placeKey!).replace(/["<>]/g, "").replace(/\s*[\r\n]+\s*/g, " ");
+  return [`<notification-place place="${handle}">`, ...placeLines(group, view), "</notification-place>"];
+}
+
+/**
+ * The tag a notification that names no place goes in (§40, owner request 2026-11-01):
+ * `<reminder-notification>`, `<watch-notification>`, `<nudge-notification>`, …
+ */
+export const SOLO_TAGS: Record<WakeReason, string> = {
+  mention: "mention-notification",
+  name: "name-notification",
+  role: "role-notification",
+  everyone: "everyone-notification",
+  watch: "watch-notification",
+  watch_timeout: "watch-timeout-notification",
+  dm: "dm-notification",
+  detector: "detector-notification",
+  reminder: "reminder-notification",
+  plan: "plan-notification",
+  morning: "away-notification",
+  owner: "nudge-notification",
+  followup: "follow-up-notification",
+  wakeup_error: "wakeup-error-notification"
+};
+/** The tag of a "+3 more from Kevin" line and of a notice from the app. */
+export const MORE_TAG = "more-notification";
+export const NOTICE_TAG = "notice-notification";
+
+/** Lines inside `<tag>` … `</tag>` (nothing when there are no lines). */
+const tagged = (tag: string, lines: readonly string[]): string[] => (lines.length === 0 ? [] : [`<${tag}>`, ...lines, `</${tag}>`]);
+
 /** The lines of one notification block: places in arrival order, one line per message within a place. */
 export function notificationLines(wakes: readonly Wake[], view: NotificationView): string[] {
   const groups = new Map<string, Wake[]>();
@@ -254,7 +291,7 @@ export function notificationLines(wakes: readonly Wake[], view: NotificationView
       order.push({ kind: "place", key: wake.placeKey! });
     }
   }
-  return order.flatMap((entry) => (entry.kind === "place" ? placeLines(groups.get(entry.key)!, view) : soloLine(entry.wake, view)));
+  return order.flatMap((entry) => (entry.kind === "place" ? placeBlock(groups.get(entry.key)!, view) : tagged(SOLO_TAGS[entry.wake.reason], soloLine(entry.wake, view))));
 }
 
 export function quietLines(quiet: WakeQueue["quiet"], view: NotificationView): string[] {
@@ -268,8 +305,8 @@ export function renderNotifications(
 ): string | undefined {
   const lines = [
     ...notificationLines(o.wakes, view),
-    ...quietLines(o.quiet ?? [], view),
-    ...(o.notices ?? []).map((notice) => `- ${notice}`)
+    ...quietLines(o.quiet ?? [], view).flatMap((line) => tagged(MORE_TAG, [line])),
+    ...(o.notices ?? []).flatMap((notice) => tagged(NOTICE_TAG, [`- ${notice}`]))
   ];
   if (lines.length === 0) return undefined;
   return `<notifications>\n${lines.join("\n")}\n</notifications>`;

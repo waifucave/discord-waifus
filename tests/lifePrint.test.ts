@@ -208,8 +208,9 @@ describe("/print life", () => {
       ] as never,
       view as never
     );
-    expect(rendered.join("\n").split("\n")).toHaveLength(1);
-    expect(rendered[0]).not.toContain('Kev"in');
+    // The place's line inside its tags (§40): still one line, its quotes closed.
+    expect(rendered.join("\n").split("\n")).toHaveLength(3);
+    expect(rendered[1]).not.toContain('Kev"in');
     expect(redactDmNotifications(rendered.join("\n"))).not.toMatch(/relapsed|malignant|biopsy/u);
     // An old line (rendered before the fix): an unpaired quote in the name, and a note across lines.
     const old = '- dm · dm/kevin · from Kev"in · "I relapsed last night"\n- watch · dm/kevin · "biopsy" · from Kevin · your note: "Kevin\'s biopsy\nresults: malignant, he is scared"\n- mention · bake-club/#general · from Mina · "cake?"';

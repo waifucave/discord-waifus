@@ -274,7 +274,7 @@ describe("mid-turn notifications (§4.6, §5.2)", () => {
     const messages = world.anthropic.calls[1]!.request.messages;
     const blocks = messages[messages.length - 1]!.content as Array<{ type: string; text?: string }>;
     expect(blocks.map((block) => block.type)).toEqual(["tool_result", "text", "text"]);
-    expect(blocks[1]!.text).toMatch(/^<notifications>\n- mention · bake-club\/#general · from Mina · (?:\d+ unread · )?#[0-9a-z]+ "ella can you bring the piping bags\?"\n<\/notifications>$/);
+    expect(blocks[1]!.text).toMatch(/^<notifications>\n<notification-place place="bake-club\/#general">\n- mention · bake-club\/#general · from Mina · (?:\d+ unread · )?#[0-9a-z]+ "ella can you bring the piping bags\?"\n(?:  .*\n)*<\/notification-place>\n<\/notifications>$/);
     expect(blocks[2]!.text).toMatch(/^\[.*\]$/);
     // Taken exactly once: the queue is empty, and one log line shows it.
     expect((await readLifeFile(world.storage, "ella", "wakes")).immediate).toEqual([]);

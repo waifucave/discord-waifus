@@ -454,7 +454,7 @@ describe("the chat since she last looked (§40)", () => {
     const asked = w.discord.post(ROOM, "and the house bot");
     await detectorWake(w, asked);
     await w.cast.life("ella").runNow();
-    expect(blockOf(w, 0)).toMatch(/\n  the chat there since you last looked:\n  \[\d\d:\d\d #a0\] Kevin: who's here\?\n  \[\d\d:\d\d #a1\] Mia: \[joined the server\]\n  \[\d\d:\d\d #a2\] Kevin: and the house bot\n<\/notifications>/u);
+    expect(blockOf(w, 0)).toMatch(/\n  the chat there since you last looked:\n  \[\d\d:\d\d #a0\] Kevin: who's here\?\n  \[\d\d:\d\d #a1\] Mia: \[joined the server\]\n  \[\d\d:\d\d #a2\] Kevin: and the house bot\n<\/notification-place>\n<\/notifications>/u);
     expect((await readLifeFile(w.storage, "ella", "reads")).cursors[ROOM_KEY]?.lastReadMessageId).toBe(asked.id);
     const next = w.discord.post(ROOM, "ella?");
     await detectorWake(w, next);
@@ -481,7 +481,7 @@ describe("the chat since she last looked (§40)", () => {
     await w.cast.life("ella").runNow();
     const chat = blockOf(w, 0).split(`${CHAT_HEADER}\n`)[1]!.split("\n");
     expect(chat[0]).toBe("  (+3 earlier you haven't read)");
-    expect(chat.slice(1, -1)).toHaveLength(CHAT_LINES);
+    expect(chat.slice(1, -2)).toHaveLength(CHAT_LINES);
     expect(chat[1]).toMatch(/Kevin: line 4$/u);
   });
 });
