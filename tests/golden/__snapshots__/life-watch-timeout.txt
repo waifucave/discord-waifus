@@ -2,6 +2,9 @@
 --- text ---
 <notifications>
 - mention · bake-club/#general · from Kevin · #a1 "<@Ella> can you watch the tarts? 12 minutes"
+  the chat there since you last looked:
+  [14:00 #a0] Mina: the oven is preheating
+  [14:00 #a1] Kevin: <@Ella> can you watch the tarts? 12 minutes
 </notifications>
 --- text ---
 [Sat 24 Oct 14:00]

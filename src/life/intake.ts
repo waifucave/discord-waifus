@@ -71,10 +71,6 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 
 
-/** §39: at most this many messages before a detector wake's burst come with it, from the last DETECTOR_CONTEXT_MS. */
-export const DETECTOR_CONTEXT_LINES = 3;
-export const DETECTOR_CONTEXT_MS = 30 * 60_000;
-
 export const EDIT_MENTION_WINDOW_MS = 2 * 60_000;
 const DIRECT_ORDER: WakeReason[] = ["mention", "role", "everyone", "name"];
 
@@ -704,17 +700,6 @@ export class Intake {
     const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
     const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
     const joined = joinMessages([burst.messages.map((message) => ({ id: message.id, fromUserId: message.authorId, fromName: message.fromName, preview: message.preview }))]);
-    // §39: the room's last few messages before the burst ride along, so "maybe for you" comes with
-    // the context the detector saw (a forgotten person's stay "(removed)").
-    const firstBurstId = burst.messageIds[0]!;
-    const before = page.messages
-      .filter((message) => compareIds(message.id, firstBurstId) < 0 && now.getTime() - Date.parse(message.createdAt) <= DETECTOR_CONTEXT_MS)
-      .slice(-DETECTOR_CONTEXT_LINES)
-      .flatMap((message) => {
-        const gone = isRemovedMessage(message, forgotten);
-        const text = messagePreview(message, dir, deps.timeZone, { removed: gone });
-        return text ? [{ id: message.id, fromName: gone ? "someone" : message.authorName, preview: text }] : [];
-      });
     const burstMessages: Partial<Wake> = joined.messages.length > 0 ? { messages: joined.messages, ...(joined.earlier > 0 ? { earlier: joined.earlier } : {}) } : {};
     const wakeFor = (extra: Partial<Wake>): Wake => ({
       id: newWakeId(),
@@ -726,7 +711,6 @@ export class Intake {
       ...(preview !== undefined ? { preview } : {}),
       // One line per message of the burst (§20), each read as the detector's pick.
       ...burstMessages,
-      ...(before.length > 0 ? { before } : {}),
       ...(burst.waifuAuthored ? { waifuAuthored: true } : {}),
       ...extra,
       at: now.toISOString()

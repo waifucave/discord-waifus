@@ -50,8 +50,6 @@ function mergeInto(existing: Wake, wake: Wake): Wake {
     ...(wake.fromUserId ? { fromUserId: wake.fromUserId } : {}),
     ...(wake.fromName ? { fromName: wake.fromName } : {}),
     ...(wake.forAll ? { forAll: true } : {}),
-    // The context before the first burst stays (§39): it is what the merged lines follow.
-    ...(!existing.before && wake.before ? { before: wake.before } : {}),
     at: wake.at
   };
 }

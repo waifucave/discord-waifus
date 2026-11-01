@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, updateLifeFile } from "../src/life/lifeStore.js";
 import { redactDmNotifications, DM_REDACTED } from "../src/life/lifeView.js";
-import { morningBatch, renderNotifications, type NotificationView } from "../src/life/notifications.js";
+import { CHAT_HEADER, morningBatch, renderNotifications, type NotificationView } from "../src/life/notifications.js";
 import { MAX_IMMEDIATE_WAKES, scrubWakeQueue, withImmediate } from "../src/life/wakeQueue.js";
 import { MAX_WAKE_MESSAGES } from "../src/life/wakeMessages.js";
 import type { Wake, WakeQueue } from "../src/shared/schemas/life.js";
@@ -241,5 +241,36 @@ describe("the morning batch and privacy (§20, D14)", () => {
     const [left] = await queued(w);
     expect(left!.messages?.map((message) => message.preview)).toEqual(["(removed)", "<@Ella> look"]);
     expect(JSON.stringify(left)).not.toContain("secret");
+  });
+});
+
+describe("the chat since she last looked (§40)", () => {
+  const wake: Wake = { id: "w1", reason: "dm", placeKey: DM_KEY, fromName: "Kevin", messageId: "9", preview: "I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM…", at: AT };
+  const view = (chat?: { lines: string[]; earlier: number }): NotificationView => ({ handle: () => "dm/kevin", unread: () => undefined, timeZone: "UTC", ref: () => "c0", chat: () => chat });
+
+  it("comes under the place's lines, with how many unread ones were left out", () => {
+    const text = renderNotifications({ wakes: [wake] }, view({ lines: ["[10:05 #bz] you: did you pick a song yet?", "[10:06 #c0] K: I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM [link: Nightcore - Headlights (YouTube)]"], earlier: 2 }))!;
+    expect(text.split("\n")).toEqual([
+      "<notifications>",
+      `- dm · dm/kevin · from Kevin · #c0 "I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM…"`,
+      CHAT_HEADER,
+      "  (+2 earlier you haven't read)",
+      "  [10:05 #bz] you: did you pick a song yet?",
+      "  [10:06 #c0] K: I'd say uhhh this song I guess: https://youtu.be/r1uZAAFLjRM [link: Nightcore - Headlights (YouTube)]",
+      "</notifications>"
+    ]);
+  });
+
+  it("is not there when the lines already show it all", () => {
+    expect(renderNotifications({ wakes: [wake] }, view())!).not.toContain(CHAT_HEADER);
+  });
+
+  it("a DM's chat is redacted for the owner, every line of it (D14)", () => {
+    const text = renderNotifications({ wakes: [wake] }, view({ lines: ["[10:05 #bz] you: - not a new entry", "[10:06 #c0] K: · nor this"], earlier: 0 }))!;
+    const redacted = redactDmNotifications(text);
+    expect(redacted).not.toContain("song");
+    expect(redacted).not.toContain("entry");
+    expect(redacted).not.toContain("nor this");
+    expect(redacted.split("\n").filter((line) => line === DM_REDACTED)).toHaveLength(3);
   });
 });

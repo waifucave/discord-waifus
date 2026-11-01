@@ -140,11 +140,14 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   `role mention`, `@everyone`, `watch`, `watch timed out`, `dm`, `maybe for you` (detector),
   `reminder`, `plan`, `morning`, `nudge` (owner), `follow-up`. A detector wake for `all` reads
   `for all of you`; a chime-in reads `for someone else, you could chime in`.
-- **Just before** (§39): a detector wake carries up to 3 of the room's messages before its burst
-  (from the last 30 minutes, `DETECTOR_CONTEXT_LINES`/`DETECTOR_CONTEXT_MS`), shown under the
-  place's first line as `  just before: Kevin "who's here?" · Mina "[joined the server]"`, so a
-  "maybe for you" comes with the context the detector saw. Left out when earlier lines of the place
-  were cut (`+N earlier`); a forgotten person's reads `someone "(removed)"`.
+- **The chat since she last looked** (§40): under a place's lines, `  the chat there since you last
+  looked:` and the messages after her read cursor up to the newest notified one, as ReadMessages
+  lines (`  [14:02 #k3] Kevin: text`, her own as `you`, a forgotten person's `someone: (removed)`),
+  each cut after 500 characters (`CHAT_BODY_CHARS`); at most 10 (`CHAT_LINES`) from the last 2 hours
+  (`CHAT_WINDOW_MS`), the left-out unread ones counted first (`  (+3 earlier you haven't read)`).
+  Left out when the lines already show it all (only notified messages, none cut). Once the wakes
+  are taken her read cursor moves to the newest notified message. No chat when the forget records
+  can't be read. Indented, so the owner's DM redaction hides it with its DM line.
 - **Preview**: the message rendered as a transcript body (mentions as names, attachments as
   `[image]`), whitespace collapsed, first **60 characters** then `…` (`PREVIEW_CHARS`). Quotes
   inside become `'` and line breaks spaces, so a quote always closes on its line.

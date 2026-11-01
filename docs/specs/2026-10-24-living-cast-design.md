@@ -1917,8 +1917,9 @@ minute, and at every turn start. Writes, edits, `rm` and `mv` of it are refused.
 ### 16.7 Harness changes (§8)
 
 Block A's `<life>` keeps its meaning; the tool sentences become:
-- Notifications come with a short preview and its ref. When the preview alone isn't enough, read
-  the conversation with ReadMessages before you reply; once she has read it and sent, she is done
+- Notifications come with a short preview and its ref; under them comes the chat there since she
+  last looked, in full, when the previews don't show all of it (§40). When she needs more than that,
+  she reads further back with ReadMessages before she replies; once she has read it and sent, she is done
   unless she expects something new (no re-reading the room right after a send just to confirm).
   "maybe for you" is only a guess: if the room shows it's meant for someone else, she lets it be.
   Files people send are saved in `/tmp` for a week; open them with Read.
@@ -5002,7 +5003,8 @@ that line and stayed out of it without reading the room.
   The notification shows it under the place's first line:
   `  just before: K "Who's here" · Lumi "[joined the server]"`, minus messages already shown as
   lines, and not at all when earlier lines were cut (`+N earlier`). No extra model round: she
-  sees the context the detector saw.
+  sees the context the detector saw. *Replaced in 3.9.2 by §40's chat for every wake: intake no
+  longer writes `before` (the schema still reads one queued by 3.9.1, and nothing shows it).*
 
 ### 39.2 Tests
 
@@ -5013,4 +5015,56 @@ unknown).
 
 ### 39.3 Release
 
-With the waifu role's self-retry (§37) in the next release (planned 3.9.1); not released yet.
+Released in 3.9.1 with the waifu role's self-retry (§37).
+
+## 40. Her notification opens the chat: what she hasn't read comes with it (owner request, 2026-11-01)
+
+Seen on Beta on 2026-11-01: K sent Sora a song in a DM ("I'd say uhhh this song I guess:
+https://youtu.be/… it's one of my favourite ones… so damn relaxing", with the link's card). Her
+notification showed 60 characters, up to the URL; she replied "thank you k, i'll listen to it
+properly with the lights off" without reading the message, its link title or anything else. Since
+2026-10-25, of the turns where a notification woke a waifu and she replied, 18 of 33 in rooms and
+13 of 18 in DMs sent before reading anything in that turn (some had read the room earlier in the
+session). Reading first was left to her judgment ("when the preview alone isn't enough"), and the
+cheap models skip it.
+
+### 40.1 Decisions
+
+- **The notification carries the chat since she last looked.** For each place whose wakes name
+  messages, under its notification lines: `  the chat there since you last looked:` and then the
+  messages after her read cursor (`reads.json`, §5.5; never at or below a DM floor) up to the
+  newest notified message, oldest first, as the lines ReadMessages shows (`  [14:02 #k3] Kevin
+  ↩#k1: text`, her own as `you`, a forgotten person's as `someone: (removed)`), each cut after
+  `CHAT_BODY_CHARS` (500) on one line. At most `CHAT_LINES` (10), from the last `CHAT_WINDOW_MS`
+  (2 hours before the newest notified message); unread ones left out are counted first: `  (+3
+  earlier you haven't read)`. Messages come from the conversation buffer and its latest page (the
+  reads the notification already made for refs); attachments show as `[image]` and are not
+  downloaded (ReadMessages does that). Link cards are part of the rendered text, so a link's title
+  shows.
+- **Only when it adds something.** The chat is left out when the notification lines already show
+  all of it: only notified messages, none cut in its preview. So mid-conversation a short reply
+  comes as one line, as before.
+- **Her read cursor moves.** Once the wakes are taken (a turn's first block or a folded one), her
+  cursor for each such place moves to the newest notified message: she has seen the chat up to it
+  (or was told how much she didn't). The next notification there starts after it.
+- **The lines stay as they were** (reasons, sender, ref, 60-character preview), so the morning
+  batch, the owner's views and her old turns read the same. The chat lines are indented, so the
+  owner's DM redaction (D14) treats each as a continuation of the DM line above it and hides it.
+- **Unreadable forget records: no chat** (it could show a forgotten person's words); the previews
+  stay as intake wrote them.
+- **The harness sentence** (§16.7) says the chat comes under the notifications and that she reads
+  further back with ReadMessages when she needs more. The harness hash changes, so each life's
+  next turn after the upgrade compacts once (reason `config`).
+- §39's detector-only `before` context is replaced by this.
+
+### 40.2 Tests
+
+`tests/lifeTurns.test.ts` (a turn's notification shows the unread chat in full and moves her read
+cursor; the next short message comes alone; a message longer than its preview comes in full with
+nothing else unread; at most `CHAT_LINES` with the left-out count); `tests/lifeNotificationLines.test.ts`
+(the chat under the place's lines; none when the view gives none; a DM's chat redacted line by
+line, even a line that starts like an entry).
+
+### 40.3 Release
+
+Planned 3.9.2; not released yet.

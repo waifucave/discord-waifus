@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeLog, readLifeState, updateLifeState } from "../src/life/lifeStore.js";
 import { CUT_OFF_RESULT, FOLLOW_UP_NOTE, REFUSED_RESULT, UNSENT_REPLY_NOTE } from "../src/life/lifeLoop.js";
 import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
+import { CHAT_HEADER, CHAT_LINES, previewText } from "../src/life/notifications.js";
 import { lifeLocks } from "../src/life/paths.js";
 import { TOKEN_ESTIMATOR_VERSION } from "../src/orchestration/context/tokens.js";
 import { ModelClient } from "../src/models/client.js";
@@ -34,6 +35,18 @@ const lastLine = async (w: LifeWorld) => {
   const log = await readLifeLog(w.storage, "ella", state.epoch);
   return log[log.length - 1]!;
 };
+
+/** The last notification block in a model call's messages. */
+const blockOf = (w: LifeWorld, call: number): string => {
+  const texts: string[] = [];
+  JSON.stringify(w.anthropic.calls[call]!.request.messages, (key, value: unknown) => {
+    if (key === "text" && typeof value === "string" && value.includes("<notifications>")) texts.push(value);
+    return value;
+  });
+  return texts.at(-1) ?? "";
+};
+const detectorWake = (w: LifeWorld, message: { id: string; content: string }) =>
+  enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "detector", placeKey: ROOM_KEY, fromUserId: KEVIN, fromName: "Kevin", messageId: message.id, preview: previewText(message.content), at: w.clock.now().toISOString() });
 
 async function untilCalls(w: LifeWorld, count: number): Promise<void> {
   for (let tries = 0; w.anthropic.calls.length < count && tries < 400; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -429,5 +442,46 @@ describe("turn endings", () => {
     const calls = w.anthropic.calls.map((call) => JSON.stringify(call.request.messages));
     expect(calls.some((messages) => messages.includes(FOLLOW_UP_NOTE.slice(0, 30)))).toBe(true);
     expect((await readLifeState(w.storage, "ella")).failedTurn?.followUpDone).toBe(true);
+  });
+});
+
+describe("the chat since she last looked (§40)", () => {
+  it("comes with her notification, in full, and moves her read cursor; caught up, the next message comes alone", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hm"), textTurn("hm")) });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    w.discord.post(ROOM, "who's here?");
+    w.discord.post(ROOM, "[joined the server]", { authorId: "300000000000000077", authorName: "Mia" });
+    const asked = w.discord.post(ROOM, "and the house bot");
+    await detectorWake(w, asked);
+    await w.cast.life("ella").runNow();
+    expect(blockOf(w, 0)).toMatch(/\n  the chat there since you last looked:\n  \[\d\d:\d\d #a0\] Kevin: who's here\?\n  \[\d\d:\d\d #a1\] Mia: \[joined the server\]\n  \[\d\d:\d\d #a2\] Kevin: and the house bot\n<\/notifications>/u);
+    expect((await readLifeFile(w.storage, "ella", "reads")).cursors[ROOM_KEY]?.lastReadMessageId).toBe(asked.id);
+    const next = w.discord.post(ROOM, "ella?");
+    await detectorWake(w, next);
+    await w.cast.life("ella").runNow();
+    expect(blockOf(w, 1)).toContain('#a3 "ella?"');
+    expect(blockOf(w, 1)).not.toContain(CHAT_HEADER);
+  });
+
+  it("a message longer than its preview comes in full, even with nothing else unread", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hm")) });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    const long = "I'd say uhhh this song I guess, it's one of my favourite ones if not my fav. It's so damn relaxing";
+    await detectorWake(w, w.discord.post(ROOM, long));
+    await w.cast.life("ella").runNow();
+    expect(blockOf(w, 0)).toContain(`${CHAT_HEADER}\n`);
+    expect(blockOf(w, 0)).toContain(`] Kevin: ${long}\n`);
+  });
+
+  it(`at most ${CHAT_LINES} lines; the first says how many unread ones were left out`, async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("hm")) });
+    vi.spyOn(w.cast.life("ella"), "poke").mockImplementation(() => undefined);
+    for (let index = 1; index <= 12; index += 1) w.discord.post(ROOM, `line ${index}`);
+    await detectorWake(w, w.discord.post(ROOM, "ella?"));
+    await w.cast.life("ella").runNow();
+    const chat = blockOf(w, 0).split(`${CHAT_HEADER}\n`)[1]!.split("\n");
+    expect(chat[0]).toBe("  (+3 earlier you haven't read)");
+    expect(chat.slice(1, -1)).toHaveLength(CHAT_LINES);
+    expect(chat[1]).toMatch(/Kevin: line 4$/u);
   });
 });

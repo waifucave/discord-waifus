@@ -36,14 +36,17 @@ import type { LifeLogKind, LifeLogLine, LifeState, Wake } from "../shared/schema
 import { calendarStrip, timeLine } from "./clock.js";
 import { compactLife, compactRetiredTools, currentHarness, newTurnId, offersRetiredTools, startEpoch, startPendingEpoch, type HarnessNow } from "./compaction.js";
 import type { LifeDeps } from "./deps.js";
-import { appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
-import { renderNotifications, type NotificationView } from "./notifications.js";
+import { advanceReadCursor, appendIntent, appendLifeLog, compactIntents, readLifeFile, readLifeLog, readLifeState, updateLifeFile, updateLifeState } from "./lifeStore.js";
+import { CHAT_BODY_CHARS, CHAT_LINES, CHAT_WINDOW_MS, previewText, PREVIEW_CHARS, renderNotifications, type NotificationView } from "./notifications.js";
+import { entryLine, type LineView } from "./render.js";
+import { EMPTY_GUILD_DIRECTORY, renderDiscordMessage } from "../orchestration/context/messageRender.js";
+import type { RawDiscordMessage } from "../shared/schemas/discordMessage.js";
 import { unansweredForWakes } from "./unanswered.js";
 import { CACHE_REST_NOTICE, cacheRestIgnoredNote, REST_NOTICE, REST_REFUSED_RESULT, REST_REFUSED_TOOLS, REST_SUMMARY_FRAME, selfSummaryOf, selfSummaryRefusedNote, withCalendar } from "./rest.js";
 import { cacheRestDue } from "./cacheRest.js";
 import { messagesOf } from "./wakeMessages.js";
 import { lifeLocks } from "./paths.js";
-import { selfAuthorIds } from "./people.js";
+import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
 import { collectPlaces, handleOf, refreshPlaces, resolvePlace, withPlaceCache } from "./places.js";
 import { buildLifeRequest, estimateRequest, lifeBudget, PinnedImageMissingError } from "./request.js";
 import type { KeyedMutex, Semaphore } from "./sync.js";
@@ -322,12 +325,21 @@ export class Life {
     return budget - (await this.host.cost.today(this.waifuId, this.deps.now()));
   }
 
-  private async notificationView(wakes: readonly Wake[], quietKeys: readonly string[], selfIdList: readonly string[]): Promise<NotificationView> {
+  /**
+   * Handles, unread counts, refs and the chat since she last looked (§40) for the places a set of
+   * wakes names. `seen` is where her read cursor goes once the notification is hers (§40: the chat
+   * showed her everything up to the newest notified message).
+   */
+  private async notificationView(wakes: readonly Wake[], quietKeys: readonly string[], selfIdList: readonly string[]): Promise<{ view: NotificationView; seen: Map<string, string> }> {
     const deps = this.deps;
     const keys = new Set([...wakes.flatMap((wake) => (wake.placeKey ? [wake.placeKey] : [])), ...quietKeys]);
     const handles = new Map<string, string>();
     const unread = new Map<string, number>();
     const refs = new Map<string, Map<string, string>>();
+    const chats = new Map<string, { lines: string[]; earlier: number }>();
+    const seen = new Map<string, string>();
+    // Unreadable forget records: no chat (it could show a forgotten person's words); the previews stay.
+    const forgotten = await forgottenPeople(deps.storage).catch(() => undefined);
     const cursors = await readLifeFile(deps.storage, this.waifuId, "reads");
     const selfIds = new Set(selfIdList);
     for (const key of keys) {
@@ -356,18 +368,66 @@ export class Life {
       if (notified.length === 0) continue;
       const newest = notified.reduce((a, b) => (compareIds(a, b) >= 0 ? a : b));
       const ids = known.filter((id) => compareIds(id, newest) <= 0);
-      refs.set(key, await assignConversationRefs(deps.storage, key as never, ids, deps.now()).catch(() => new Map<string, string>()));
+      const placeRefs = await assignConversationRefs(deps.storage, key as never, ids, deps.now()).catch(() => new Map<string, string>());
+      refs.set(key, placeRefs);
+      if (!forgotten) continue;
+      const byId = new Map<string, RawDiscordMessage>();
+      for (const message of [...buffered, ...page.messages]) if (!dmFloor || compareIds(message.id, dmFloor) > 0) byId.set(message.id, message);
+      const chat = await this.chatSince({ ref, floor, newest, notified, byId, refs: placeRefs, selfIds, forgotten });
+      if (chat) chats.set(key, chat);
+      seen.set(key, newest);
     }
     // Her ended watches' places: how often she has written there with no answer (§34).
     const unanswered = await unansweredForWakes(deps, { waifuId: this.waifuId, selfAuthorIds: selfIdList, wakes, now: deps.now() });
-    return {
+    const view: NotificationView = {
       timeZone: deps.timeZone,
       linesPerPlace: deps.config().life.notificationLinesPerPlace,
       handle: (key) => handles.get(key) ?? key,
       unread: (key) => unread.get(key),
       ref: (key, messageId) => refs.get(key)?.get(messageId),
-      unanswered: (key) => unanswered.get(key)
+      unanswered: (key) => unanswered.get(key),
+      chat: (key) => chats.get(key)
     };
+    return { view, seen };
+  }
+
+  /**
+   * §40: the chat in a place since she last looked (after her read cursor), up to the newest notified
+   * message, as the lines ReadMessages shows, each cut after CHAT_BODY_CHARS: the last CHAT_LINES of
+   * the last CHAT_WINDOW_MS, with a count of the unread ones left out. Undefined when the notification
+   * lines already show it all (only notified messages, none cut in its preview).
+   */
+  private async chatSince(o: {
+    ref: NonNullable<ReturnType<typeof parseConversationKey>>;
+    floor: string | undefined;
+    newest: string;
+    notified: readonly string[];
+    byId: ReadonlyMap<string, RawDiscordMessage>;
+    refs: ReadonlyMap<string, string>;
+    selfIds: ReadonlySet<string>;
+    forgotten: Awaited<ReturnType<typeof forgottenPeople>>;
+  }): Promise<{ lines: string[]; earlier: number } | undefined> {
+    const deps = this.deps;
+    const unreadUpTo = [...o.byId.values()]
+      .filter((message) => compareIds(message.id, o.newest) <= 0 && (!o.floor || compareIds(message.id, o.floor) > 0))
+      .sort((a, b) => compareIds(a.id, b.id));
+    const newestAt = Date.parse(o.byId.get(o.newest)?.createdAt ?? "");
+    const recent = unreadUpTo.filter((message) => !Number.isFinite(newestAt) || newestAt - Date.parse(message.createdAt) <= CHAT_WINDOW_MS);
+    const shown = recent.slice(-CHAT_LINES);
+    if (shown.length === 0) return undefined;
+    const dir = o.ref.kind === "guild" ? await deps.directory.view(o.ref.guildId).catch(() => EMPTY_GUILD_DIRECTORY) : EMPTY_GUILD_DIRECTORY;
+    const view: LineView = { refs: o.refs, lookup: (id) => o.byId.get(id), selfAuthorIds: [...o.selfIds], timeZone: deps.timeZone };
+    let more = false;
+    const lines = shown.map((message) => {
+      const self = o.selfIds.has(message.authorId);
+      const removed = !self && isRemovedMessage(message, o.forgotten);
+      const rendered = removed ? undefined : renderDiscordMessage(message, dir, deps.timeZone);
+      const body = removed ? "(removed)" : previewText(rendered?.body ?? "", rendered?.images.length ?? 0, CHAT_BODY_CHARS);
+      // A message her notification lines don't show in full: the chat is worth showing.
+      if (!o.notified.includes(message.id) || body.length > PREVIEW_CHARS) more = true;
+      return entryLine({ id: message.id, authorId: message.authorId, authorName: self ? "you" : removed ? "someone" : message.authorName, at: message.createdAt, body, ...(message.referenceMessageId ? { replyToId: message.referenceMessageId } : {}) }, view);
+    });
+    return more ? { lines, earlier: unreadUpTo.length - shown.length } : undefined;
   }
 
   private async timeLineText(waifu: WaifuConfig, estimate: number, model: CuratedModel): Promise<string> {
@@ -595,7 +655,7 @@ export class Life {
     });
     const turnId = newTurnId();
     const selfIds = await selfAuthorIds(deps.storage, waifu);
-    const view = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), selfIds);
+    const { view, seen } = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), selfIds);
     const notices = state.pendingNotices;
     const block = renderNotifications({ wakes, quiet, notices }, view);
     const run: TurnRun = {
@@ -625,6 +685,7 @@ export class Life {
       ...(followUpDue && current.failedTurn ? { failedTurn: { ...current.failedTurn, followUpDone: true } } : {})
     }));
     await takeWakes(deps.storage, this.waifuId, wakes, quiet);
+    await this.markSeen(seen);
     const dmWakes = wakes.some(wakeShowsDm) || quiet.some((line) => isDmPlaceKey(line.placeKey));
     if (dmWakes) await this.markDmTurn(run);
     await this.append(run, "notifications", { role: "user", content }, { dmWakes });
@@ -1010,7 +1071,7 @@ export class Life {
       refreshPlaces(deps.storage, this.waifuId);
       await refreshPlacesFile(deps, run.waifu).catch(() => undefined);
     }
-    const view = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), run.selfIds);
+    const { view, seen } = await this.notificationView(wakes, quiet.flatMap((line) => (line.placeKey ? [line.placeKey] : [])), run.selfIds);
     const block = renderNotifications({ wakes, quiet, notices }, view);
     run.wakes.push(...wakes);
     run.state = await updateLifeState(deps.storage, this.waifuId, (current) => ({
@@ -1021,7 +1082,17 @@ export class Life {
         : current.currentTurn
     }));
     await takeWakes(deps.storage, this.waifuId, wakes, quiet);
+    await this.markSeen(seen);
     return block ? [{ type: "text", text: block }] : [];
+  }
+
+  /** §40: her notification showed her each place's chat up to its newest notified message. */
+  private async markSeen(seen: ReadonlyMap<string, string>): Promise<void> {
+    for (const [placeKey, messageId] of seen) {
+      await advanceReadCursor(this.deps.storage, this.waifuId, placeKey, messageId, this.deps.now()).catch((error: unknown) => {
+        this.deps.logger.warn("Could not move her read cursor", { category: "life", waifuId: this.waifuId, message: error instanceof Error ? error.message : String(error) });
+      });
+    }
   }
 
   private async finishIdle(run: TurnRun, rounds: number, reason: string): Promise<TurnOutcome> {

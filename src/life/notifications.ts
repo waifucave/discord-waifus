@@ -2,7 +2,8 @@
 // a user turn, followed by the time line. Wakes for one place show one line per message, in message
 // order (each with its own reasons, sender, ref and preview; at most `life.notificationLinesPerPlace`,
 // the newest); previews are about 60 characters of the message rendered as a transcript body.
-// Places are named by her handles (§6.1), the names her tools take.
+// Under a place's lines comes the chat there since she last looked (§40), in full, when the previews
+// don't already show all of it. Places are named by her handles (§6.1), the names her tools take.
 
 import { renderDiscordMessage } from "../orchestration/context/messageRender.js";
 import type { GuildDirectoryView } from "../orchestration/context/types.js";
@@ -14,6 +15,14 @@ import { clockText, dayText, dayTimeText, localDayKey } from "./clock.js";
 import { messagesOf } from "./wakeMessages.js";
 
 export const PREVIEW_CHARS = 60;
+/** §40: at most this many messages of the chat since she last looked come with a place's notification. */
+export const CHAT_LINES = 10;
+/** §40: and only those from this long before the newest notified message. */
+export const CHAT_WINDOW_MS = 2 * 60 * 60_000;
+/** §40: each chat line's text is cut after this many characters. */
+export const CHAT_BODY_CHARS = 500;
+/** §40: the line that opens a place's chat. */
+export const CHAT_HEADER = "  the chat there since you last looked:";
 /** At most this many lines per place in one notification block (§20; `life.notificationLinesPerPlace`). */
 export const NOTIFICATION_LINES_PER_PLACE = 8;
 
@@ -71,7 +80,20 @@ export type NotificationView = {
    * places her own ended watches named.
    */
   unanswered?(placeKey: string): string | undefined;
+  /**
+   * §40: the chat in a place since she last looked, up to the newest notified message: its lines
+   * (`[14:02 #k3] Kevin: text`, oldest first) and how many unread ones before them were left out.
+   * Undefined when the notification lines already show everything she hasn't read.
+   */
+  chat?(placeKey: string): { lines: readonly string[]; earlier: number } | undefined;
 };
+
+/** §40: a place's chat under its notification lines (indented, so the owner's DM redaction covers it). */
+function chatLines(placeKey: string, view: NotificationView): string[] {
+  const chat = view.chat?.(placeKey);
+  if (!chat || chat.lines.length === 0) return [];
+  return [CHAT_HEADER, ...(chat.earlier > 0 ? [`  (+${chat.earlier} earlier you haven't read)`] : []), ...chat.lines.map((line) => `  ${line}`)];
+}
 
 /** The ` · you've written in … since anyone answered (…)` parts of an ended watch, one per place that has one. */
 function unansweredParts(wake: Wake, view: NotificationView): string {
@@ -141,11 +163,7 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
   const shown = ordered.slice(-Math.max(1, view.linesPerPlace ?? NOTIFICATION_LINES_PER_PLACE));
   const hidden = earlier + ordered.length - shown.length;
   const unread = view.unread(placeKey);
-  // §39: what the room said just before a detector wake's burst, under its first line (not when
-  // earlier lines were left out: it would no longer be "just before").
-  const contextOf = group.find((wake) => wake.before && wake.before.length > 0)?.before?.filter((message) => !byId.has(message.id)) ?? [];
-  const context = hidden === 0 && contextOf.length > 0 ? `  just before: ${contextOf.map((message) => `${plainName(message.fromName)} ${quote(message.preview)}`).join(" · ")}` : undefined;
-  return shown.flatMap((line, index) => {
+  const lines = shown.flatMap((line, index) => {
     const first = index === 0;
     const reasons = first ? [...loose.reasons] : [];
     addUnique(reasons, line.reasons);
@@ -162,8 +180,9 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
     for (const note of first ? [...new Set([...loose.notes, ...line.notes])] : line.notes) parts.push(`your note: ${quote(note)}`);
     // Several wakeups fired on this message (§30.4): the first is on its line, each other on its own.
     const more = line.wakeups.slice(1).map((fired) => `- ${[REASON_LABELS.watch, view.handle(placeKey), ref ? `#${ref}` : undefined, fired.matched !== undefined ? quote(fired.matched) : undefined, fired.note ? `your note: ${quote(fired.note)}` : undefined].filter(Boolean).join(" · ")}`);
-    return [`- ${parts.join(" · ")}`, ...(first && context ? [context] : []), ...more];
+    return [`- ${parts.join(" · ")}`, ...more];
   });
+  return [...lines, ...chatLines(placeKey, view)];
 }
 
 /** A place's wakes that name no message: one line, as before §20. */
