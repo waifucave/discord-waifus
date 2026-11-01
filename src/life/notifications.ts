@@ -141,6 +141,10 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
   const shown = ordered.slice(-Math.max(1, view.linesPerPlace ?? NOTIFICATION_LINES_PER_PLACE));
   const hidden = earlier + ordered.length - shown.length;
   const unread = view.unread(placeKey);
+  // §39: what the room said just before a detector wake's burst, under its first line (not when
+  // earlier lines were left out: it would no longer be "just before").
+  const contextOf = group.find((wake) => wake.before && wake.before.length > 0)?.before?.filter((message) => !byId.has(message.id)) ?? [];
+  const context = hidden === 0 && contextOf.length > 0 ? `  just before: ${contextOf.map((message) => `${plainName(message.fromName)} ${quote(message.preview)}`).join(" · ")}` : undefined;
   return shown.flatMap((line, index) => {
     const first = index === 0;
     const reasons = first ? [...loose.reasons] : [];
@@ -158,7 +162,7 @@ function placeLines(group: Wake[], view: NotificationView): string[] {
     for (const note of first ? [...new Set([...loose.notes, ...line.notes])] : line.notes) parts.push(`your note: ${quote(note)}`);
     // Several wakeups fired on this message (§30.4): the first is on its line, each other on its own.
     const more = line.wakeups.slice(1).map((fired) => `- ${[REASON_LABELS.watch, view.handle(placeKey), ref ? `#${ref}` : undefined, fired.matched !== undefined ? quote(fired.matched) : undefined, fired.note ? `your note: ${quote(fired.note)}` : undefined].filter(Boolean).join(" · ")}`);
-    return [`- ${parts.join(" · ")}`, ...more];
+    return [`- ${parts.join(" · ")}`, ...(first && context ? [context] : []), ...more];
   });
 }
 

@@ -4978,3 +4978,39 @@ A feature release (planned 3.9.0); not released yet.
 - Behaviour doc `docs/behaviour/day-and-bed-time.md` became `reachability-and-budget.md`.
 - The life benchmark drops bed times from its scenarios and the morning capture; its dry-run cost
   estimate no longer counts a morning turn per simulated day (`days * 2` instead of `days * 3`).
+
+## 39. Only waifus who can post are woken; "maybe for you" comes with what was said just before (owner request, 2026-11-01)
+
+Seen on Beta on 2026-10-31: in Winter's Secret Room "Who's here" woke Lumi through the detector
+while her bot was not in the server yet (her send failed, "Missing Access"), and in Kingdom 16062
+#general her bot lacks Send Messages; Sora, woken "maybe for you" by "And the house bot", saw only
+that line and stayed out of it without reading the room.
+
+### 39.1 Decisions
+
+- **Only a waifu whose bot can post there is woken in a room.** The gateway's `canPost(botId,
+  guildId, channelId)` says: not in the server → no; else View Channel and Send Messages (Send
+  Messages in Threads for a thread) on the bot's own member; unknown (bot not connected, channel
+  not cached) → yes. Intake skips such a waifu for the room's direct wakes (mention, reply, role,
+  `@everyone`, her name) and for the detector (no candidate, no `anyone` draw, no `all`, no
+  chime-in). Her watches still fire (she may want to know, and act elsewhere). Logged once per
+  waifu and place per process (`Life waifu not woken: her bot can't post there`).
+- **A detector wake carries what was said just before.** Up to `DETECTOR_CONTEXT_LINES` (3) of
+  the room's messages before the burst's first message, from the last `DETECTOR_CONTEXT_MS`
+  (30 minutes), from the page the detector already read: `before: [{id, fromName, preview}]` on
+  the wake (a forgotten person's is `someone` / `(removed)`). Merged wakes keep the first `before`.
+  The notification shows it under the place's first line:
+  `  just before: K "Who's here" · Lumi "[joined the server]"`, minus messages already shown as
+  lines, and not at all when earlier lines were cut (`+N earlier`). No extra model round: she
+  sees the context the detector saw.
+
+### 39.2 Tests
+
+`tests/lifeWakes.test.ts` (a bot that can't post is not a candidate, not woken for `all` nor by a
+mention, and is back once it can; a detector wake's `before` and its `just before:` line);
+`tests/discordGatewayConnect.test.ts` (`canPost`: not in the server, no Send Messages, a thread,
+unknown).
+
+### 39.3 Release
+
+With the waifu role's self-retry (§37) in the next release (planned 3.9.1); not released yet.

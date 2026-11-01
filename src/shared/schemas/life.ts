@@ -111,6 +111,8 @@ export const WakeSchema = z.object({
   forAll: z.boolean().optional(),
   /** detector: the burst was for another person; she might chime in (§4.3 `chime_in`). */
   chimeIn: z.boolean().optional(),
+  /** detector: the room's last messages before the burst (§39), oldest first, so she sees what it answers. */
+  before: z.array(z.object({ id: z.string().min(1), fromName: z.string(), preview: z.string() })).max(3).optional(),
   /** The wake came from a message written by another waifu (room loop guard, §4.4). */
   waifuAuthored: z.boolean().optional(),
   // `day` (the morning wake's date), `heldUntil`, `heldFor` and `released` (busy holds) are gone

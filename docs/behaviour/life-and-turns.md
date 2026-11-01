@@ -140,6 +140,11 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   `role mention`, `@everyone`, `watch`, `watch timed out`, `dm`, `maybe for you` (detector),
   `reminder`, `plan`, `morning`, `nudge` (owner), `follow-up`. A detector wake for `all` reads
   `for all of you`; a chime-in reads `for someone else, you could chime in`.
+- **Just before** (§39): a detector wake carries up to 3 of the room's messages before its burst
+  (from the last 30 minutes, `DETECTOR_CONTEXT_LINES`/`DETECTOR_CONTEXT_MS`), shown under the
+  place's first line as `  just before: Kevin "who's here?" · Mina "[joined the server]"`, so a
+  "maybe for you" comes with the context the detector saw. Left out when earlier lines of the place
+  were cut (`+N earlier`); a forgotten person's reads `someone "(removed)"`.
 - **Preview**: the message rendered as a transcript body (mentions as names, attachments as
   `[image]`), whitespace collapsed, first **60 characters** then `…` (`PREVIEW_CHARS`). Quotes
   inside become `'` and line breaks spaces, so a quote always closes on its line.

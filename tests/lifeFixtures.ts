@@ -73,6 +73,8 @@ export class FakeDiscord implements DiscordGatewayFacade {
   readonly typing: string[] = [];
   readonly reactions: Array<{ placeKey: string; messageId: string; emoji: string; botId: string }> = [];
   botRoles: Record<string, string[]> = {};
+  /** Bots that can't post in a channel (§39), as `botId:channelId`; everything else can. */
+  noPost = new Set<string>();
   sendErrors: unknown[] = [];
   private counter = 0n;
 
@@ -205,6 +207,10 @@ export class FakeDiscord implements DiscordGatewayFacade {
 
   async addReaction(input: { botId: string; conversation: ConversationRef; messageId: string; emoji: string }) {
     this.reactions.push({ placeKey: conversationKey(input.conversation), messageId: input.messageId, emoji: input.emoji, botId: input.botId });
+  }
+
+  canPost(input: { botId: string; guildId: string; channelId: string }) {
+    return !this.noPost.has(`${input.botId}:${input.channelId}`);
   }
 
   async fetchBotMemberRoles(input: { botId: string; guildId: string }) {

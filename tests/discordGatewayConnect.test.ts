@@ -739,6 +739,41 @@ describe("DiscordJsGateway: the waifu role (§37)", () => {
   });
 });
 
+describe("DiscordJsGateway.canPost (§39)", () => {
+  it("says whether a waifu bot can post in a channel: not in the server, no Send Messages, a thread, or unknown", async () => {
+    const clients = fakeClients({});
+    const allowed = new Set<bigint>();
+    const channel = (thread: boolean) => ({
+      isThread: () => thread,
+      permissionsFor: () => ({ has: (flags: bigint[]) => flags.every((flag) => allowed.has(flag)) })
+    });
+    const guild = { id: "100", members: { me: { id: "mina-user" } }, channels: { cache: new Map<string, unknown>([["200", channel(false)], ["300", channel(true)]]) } };
+    const factory: FakeClients["factory"] = (input) => {
+      const client = clients.factory(input);
+      Object.defineProperty(client, "user", { value: { id: `${input.bot.id}-user` }, configurable: true });
+      Object.defineProperty(client, "isReady", { value: () => true, configurable: true });
+      if (input.bot.id === "mina") (client.guilds.cache as unknown as Map<string, unknown>).set("100", guild);
+      return client;
+    };
+    const gateway = makeGateway({ house: bot("house"), waifus: [bot("mina"), bot("ella")], createClient: factory });
+    await gateway.connect();
+    // Ella's bot isn't in that server.
+    expect(gateway.canPost({ botId: "ella", guildId: "100", channelId: "200" })).toBe(false);
+    // Mina's is, without Send Messages.
+    allowed.add(PermissionFlagsBits.ViewChannel);
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "200" })).toBe(false);
+    allowed.add(PermissionFlagsBits.SendMessages);
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "200" })).toBe(true);
+    // A thread needs Send Messages in Threads.
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "300" })).toBe(false);
+    allowed.add(PermissionFlagsBits.SendMessagesInThreads);
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "300" })).toBe(true);
+    // A channel it hasn't cached, or a bot that isn't connected: unknown.
+    expect(gateway.canPost({ botId: "mina", guildId: "100", channelId: "999" })).toBeUndefined();
+    expect(gateway.canPost({ botId: "nobody", guildId: "100", channelId: "200" })).toBeUndefined();
+  });
+});
+
 describe("DiscordJsGateway /norma (§36)", () => {
   it("is not an owner command: anyone's /norma reaches the listener (which checks permissions.norma), ephemerally; a long answer is a file", async () => {
     const asked: string[] = [];

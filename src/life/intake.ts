@@ -70,6 +70,11 @@ import type { WakeRouter } from "./wakeRouter.js";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 
+
+/** §39: at most this many messages before a detector wake's burst come with it, from the last DETECTOR_CONTEXT_MS. */
+export const DETECTOR_CONTEXT_LINES = 3;
+export const DETECTOR_CONTEXT_MS = 30 * 60_000;
+
 export const EDIT_MENTION_WINDOW_MS = 2 * 60_000;
 const DIRECT_ORDER: WakeReason[] = ["mention", "role", "everyone", "name"];
 
@@ -144,6 +149,8 @@ export class Intake {
   private readonly inflight = new Set<Promise<unknown>>();
   /** Message ids intake already took (live delivery and catch-up never both route one). */
   private readonly seen = new Set<string>();
+  /** `waifu:guild:channel` already logged as a place her bot can't post in (§39), once per process. */
+  private readonly noPostLogged = new Set<string>();
   private closed = false;
 
   /** True when `messageId` was taken before; otherwise remembers it (the newest 5,000). */
@@ -283,6 +290,22 @@ export class Intake {
     return out;
   }
 
+  /**
+   * Her bot is not in the server or can't post in the channel (§39): a room wake would only end in a
+   * failed send, and a detector pick of her would take the place of one who could answer. Her
+   * watches still fire there. Unknown (not connected, not cached) counts as able.
+   */
+  private cannotPost(waifu: WaifuConfig, guildId: string, channelId: string): boolean {
+    if (!waifu.botId || this.deps.discord()?.canPost?.({ botId: waifu.botId, guildId, channelId }) !== false) return false;
+    const key = `${waifu.id}:${guildId}:${channelId}`;
+    if (!this.noPostLogged.has(key)) {
+      if (this.noPostLogged.size > 1000) this.noPostLogged.clear();
+      this.noPostLogged.add(key);
+      this.deps.logger.info("Life waifu not woken: her bot can't post there", { category: "life", waifuId: waifu.id, guildId, channelId });
+    }
+    return true;
+  }
+
   /** Her name, display name and server nickname (each ≥ 3 characters), for the `name` rule. */
   private namesOf(waifu: WaifuConfig, guildId: string, selfIds: readonly string[]): string[] {
     const nick = selfIds.map((id) => this.deps.directory.memberName(guildId, id)).find((name): name is string => Boolean(name));
@@ -355,7 +378,7 @@ export class Intake {
         at: now.toISOString(),
         ...(input.authorIsWaifu ? { waifuAuthored: true } : {})
       };
-      if (!own) {
+      if (!own && !this.cannotPost(waifu, input.guildId, input.channelId)) {
         const reasons: WakeReason[] = [];
         if (selfIds.some((id) => mentionedUsers.has(id)) || (referenced && selfIds.includes(referenced.authorId))) reasons.push("mention");
         if (waifu.botId && mentionedRoles.size > 0) {
@@ -574,7 +597,10 @@ export class Intake {
     // A cast member's own burst never wakes her: she is not a candidate at all.
     const authorWaifuId = burst.waifuAuthored && burst.authorId ? waifuAuthors.get(burst.authorId) : undefined;
     if (burst.waifuAuthored && !authorWaifuId) return [];
-    const waifus = (await this.castWaifus(burst.castWaifuIds)).filter((waifu) => waifu.model && waifu.id !== authorWaifuId);
+    // §39: one whose bot can't post here is never offered (nor drawn, nor woken for all).
+    const waifus = (await this.castWaifus(burst.castWaifuIds)).filter(
+      (waifu) => waifu.model && waifu.id !== authorWaifuId && !this.cannotPost(waifu, burst.guildId, burst.channelId)
+    );
     if (waifus.length === 0) return [];
     // D-c: a waifu her watch already woke for this burst gets no second wake from the detector.
     const watched = new Set(burst.watched);
@@ -678,6 +704,17 @@ export class Intake {
     const removed = newestMessage ? isRemovedMessage(newestMessage, forgotten) : false;
     const preview = newestMessage ? messagePreview(newestMessage, dir, deps.timeZone, { removed }) : undefined;
     const joined = joinMessages([burst.messages.map((message) => ({ id: message.id, fromUserId: message.authorId, fromName: message.fromName, preview: message.preview }))]);
+    // §39: the room's last few messages before the burst ride along, so "maybe for you" comes with
+    // the context the detector saw (a forgotten person's stay "(removed)").
+    const firstBurstId = burst.messageIds[0]!;
+    const before = page.messages
+      .filter((message) => compareIds(message.id, firstBurstId) < 0 && now.getTime() - Date.parse(message.createdAt) <= DETECTOR_CONTEXT_MS)
+      .slice(-DETECTOR_CONTEXT_LINES)
+      .flatMap((message) => {
+        const gone = isRemovedMessage(message, forgotten);
+        const text = messagePreview(message, dir, deps.timeZone, { removed: gone });
+        return text ? [{ id: message.id, fromName: gone ? "someone" : message.authorName, preview: text }] : [];
+      });
     const burstMessages: Partial<Wake> = joined.messages.length > 0 ? { messages: joined.messages, ...(joined.earlier > 0 ? { earlier: joined.earlier } : {}) } : {};
     const wakeFor = (extra: Partial<Wake>): Wake => ({
       id: newWakeId(),
@@ -689,6 +726,7 @@ export class Intake {
       ...(preview !== undefined ? { preview } : {}),
       // One line per message of the burst (§20), each read as the detector's pick.
       ...burstMessages,
+      ...(before.length > 0 ? { before } : {}),
       ...(burst.waifuAuthored ? { waifuAuthored: true } : {}),
       ...extra,
       at: now.toISOString()

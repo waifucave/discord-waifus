@@ -897,6 +897,41 @@ describe("Jev only sees who is around (§24, §38)", () => {
     expect((await history(w)).at(-1)).toMatchObject({ choice: "all", woke: ["ella"], leftOut: [{ waifuId: "mina", why: "budget" }] });
   });
 
+  it("a waifu whose bot can't post in the room is never offered, drawn or woken there; her watches still fire (§39)", async () => {
+    const w = await world();
+    w.discord.noPost.add(`mina-bot:${CHANNEL}`);
+    w.detector.answer = { choice: "all", probabilities: { all: 1 } };
+    await say(w, "who's here?");
+    expect(w.detector.calls.at(-1)!.candidates).toEqual(["ella"]);
+    expect(await reasons(w, "ella")).toEqual(["detector"]);
+    expect(await reasons(w, "mina")).toEqual([]);
+    // Her name or a mention there wakes nobody either: she couldn't answer.
+    await say(w, `Mina? <@${MINA_BOT}>`, { mentions: { [MINA_BOT]: "Mina" } });
+    expect(await reasons(w, "mina")).toEqual([]);
+    // Once her bot can post there, she is back.
+    w.discord.noPost.clear();
+    await say(w, `<@${MINA_BOT}> now?`, { mentions: { [MINA_BOT]: "Mina" } });
+    expect(await reasons(w, "mina")).toEqual(["mention"]);
+  });
+
+  it("a detector wake carries the room's last messages before the burst, and her notification shows them (§39)", async () => {
+    const w = await world();
+    w.detector.answer = { choice: "none", probabilities: { none: 1 } };
+    await say(w, "who's here?");
+    w.discord.post(ROOM, "[joined the server]", { authorId: MINA_BOT, authorName: "Mina", bot: true });
+    w.detector.answer = { choice: "waifu_0", probabilities: { waifu_0: 1 } };
+    await say(w, "and the house bot");
+    const wake = (await queued(w, "ella")).immediate.at(-1)!;
+    expect(wake.reason).toBe("detector");
+    expect(wake.before?.map((message) => [message.fromName, message.preview])).toEqual([
+      ["Kevin", "who's here?"],
+      ["Mina", "[joined the server]"]
+    ]);
+    const { notificationLines } = await import("../src/life/notifications.js");
+    const text = notificationLines([wake], { handle: () => "bake-club/#general", unread: () => undefined, timeZone: "UTC" }).join("\n");
+    expect(text).toContain(`  just before: Kevin "who's here?" · Mina "[joined the server]"`);
+  });
+
   it("an older history entry that left someone out as busy, in bed time or asleep still reads", async () => {
     const entry = { at: "2026-10-24T14:00:00.000Z", channelId: "1", burstMessageIds: ["2"], choice: "anyone", probabilities: {}, leftOut: [{ waifuId: "mina", why: "bed time" }, { waifuId: "aria", why: "asleep" }, { waifuId: "lumi", why: "busy" }] };
     expect(DetectorHistoryFileSchema.parse({ schemaVersion: 2, revision: 1, updatedAt: entry.at, guildId: GUILD, entries: [entry] }).entries[0]!.leftOut).toEqual(entry.leftOut);

@@ -183,6 +183,12 @@ export interface DiscordGatewayFacade {
   /** Living cast §10.2: the role ids of a waifu bot's own member in a guild (single-member fetch). */
   fetchBotMemberRoles?(input: { botId: string; guildId: string }): Promise<string[] | undefined>;
   /**
+   * Living cast §39: whether a bot can post in a server's channel (in the server, View Channel and
+   * Send Messages, or Send Messages in Threads for a thread). Undefined when it can't be told (the
+   * bot not connected, the channel not cached): callers treat that as "can".
+   */
+  canPost?(input: { botId: string; guildId: string; channelId: string }): boolean | undefined;
+  /**
    * Living cast §10.2: a bot's own guild member changed (Discord sends the current user's member
    * updates without the members intent); `roleIds` excludes `@everyone`.
    */
@@ -1102,6 +1108,21 @@ export class DiscordJsGateway implements DiscordGatewayFacade {
     const me = await guild.members.fetchMe().catch(() => undefined);
     if (!me) return undefined;
     return [...me.roles.cache.keys()].filter((roleId) => roleId !== input.guildId);
+  }
+
+  canPost(input: { botId: string; guildId: string; channelId: string }): boolean | undefined {
+    const client = this.clients.get(input.botId);
+    if (!client?.user || (typeof client.isReady === "function" && !client.isReady())) return undefined;
+    const guild = client.guilds.cache.get(input.guildId);
+    // A connected bot has every server it is in cached: not there, it is not in that server.
+    if (!guild) return false;
+    const channel = guild.channels?.cache?.get(input.channelId);
+    const me = guild.members?.me;
+    if (!channel || !me || !("permissionsFor" in channel)) return undefined;
+    const permissions = channel.permissionsFor(me);
+    if (!permissions) return undefined;
+    const send = channel.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+    return permissions.has([PermissionFlagsBits.ViewChannel, send]);
   }
 
   private emitConversationEvent(event: DiscordConversationEvent): void {
