@@ -21,7 +21,10 @@ use her files, Bash and Wakeup, but SendMessage and Web answer
 summarises for her as before. Compaction summarising for her is the **emergency summary** (Life shows
 "emergency summary (tokens)" and the like): between turns only at `compaction.emergencyRatio`
 (default 0.9, greater than the trigger) of her budget, and when she ignored the notice, on a
-provider overflow, a long log, a model or configuration change, a forget or a manual compact. One rest notice per epoch. What she writes in a rest turn is her
+provider overflow, a long log, a model or configuration change, a forget or a manual compact. A
+model or configuration change (an upgrade that changes her prompt, too) summarises only when her
+turns since the last summary don't all fit: otherwise they all carry over into the new epoch and
+her summary stays word for word (Life shows "config, no summary"). One rest notice per epoch. What she writes in a rest turn is her
 summary, so like her `<life_so_far>` it is hidden in the owner's views unless revealed on the host. `life.restNotice = false` turns it off
 (compaction then summarises for her at the trigger, and her time line warns her that her memory is
 nearly full, as before).

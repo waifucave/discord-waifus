@@ -5214,4 +5214,42 @@ checked on Beta after release (detector history `chimeIn`, `Life turn ended` `se
 
 ### 43.3 Release
 
+Released in 3.10.1.
+
+## 44. She checks before saying something didn't happen; a configuration change keeps her memory (owner request, 2026-11-01)
+
+The 3.10.1 upgrade (§43 changed block A) compacted Sora with reason `config` at 20:27. Her summary
+from 16:10 (also `config`) had the DM of Sat 31 Oct right: K asked whether she ever kissed anyone,
+and she said once, at a party at 16. The new summary, written from that summary and a short epoch,
+turned it into "K's truth: they kissed someone once". Minutes later K said in Winter's Secret Room
+"I asked Sora this yesterday"; she searched `dm/k` for "truth", which missed the question, and told
+K "i don't think you asked me that yesterday", while her `dm-k.md` had it right.
+
+### 44.1 Decisions
+
+- **Her life text** (block A, after the §35.4 sentence): "The other way round too: before you tell
+  someone that something didn't happen or wasn't said, look properly, in your notes and with a grep
+  of /transcripts for the words that matter. Your summary can be wrong, and a search that finds
+  nothing proves nothing; if you still can't find it, say you don't remember it, not that it didn't
+  happen."
+- **A configuration change** (harness hash: block A, tools, or model route) no longer re-summarises
+  when nothing has to be forgotten: `compactLife` with `carryInto` (the model the new epoch runs on;
+  only the loop's `config` compaction passes it) carries every complete turn of the epoch (as
+  `keptTurnLines` does: reasoning stripped, images as text, rest turns left out) and keeps
+  `summary` unchanged, with no summary call, when those turns take at most half the compaction
+  trigger of both the old and the new model and at most half of `life.maxLogMessages` message
+  lines. `lastCompaction` `{reason: "config", summarized: false}`; logged `Life compacted` with
+  `carried: true`. Otherwise (or with a truncate or a deferred epoch) it summarises as before. The
+  rest notice and the emergency summary later work as usual, so she writes her own summary when
+  her memory really is full.
+
+### 44.2 Tests
+
+`tests/lifeCompaction.test.ts` (all turns carried with the summary word for word and no call; a
+persona change between turns opens the next epoch with her earlier turns and no summary call; too
+large, or too many messages: summarised as before). The compaction-request golden is now a manual
+compact (a persona change no longer summarises); `life-system-prompt.txt`, `life-rest-epoch.txt`.
+
+### 44.3 Release
+
 Unreleased (on main).

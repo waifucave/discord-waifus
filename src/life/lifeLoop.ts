@@ -547,7 +547,7 @@ export class Life {
     if (state.pendingEpochStart) return startPendingEpoch(deps, this.waifuId, state, harness);
     const lines = await readLifeLog(deps.storage, this.waifuId, state.epoch);
     if (state.systemSnapshot.harnessHash !== harness.hash) {
-      return this.compact(waifu, state, lines, harness, "config", signal);
+      return this.compact(waifu, state, lines, harness, "config", signal, { carryInto: model });
     }
     const config = deps.config();
     const paused = state.compactionPausedUntil !== undefined && Date.parse(state.compactionPausedUntil) > deps.now().getTime();
@@ -569,7 +569,7 @@ export class Life {
     harness: HarnessNow,
     reason: string,
     signal: AbortSignal,
-    o: { openTurnId?: string; truncate?: boolean } = {}
+    o: { openTurnId?: string; truncate?: boolean; carryInto?: CuratedModel } = {}
   ): Promise<LifeState> {
     // A model change compacts with the old model (§5.2); without it, the new one.
     const old = state.modelRoute ? findCuratedModel(state.modelRoute, this.deps.catalog()) : undefined;
@@ -584,6 +584,7 @@ export class Life {
       reason,
       ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}),
       ...(o.truncate ? { truncate: true } : {}),
+      ...(o.carryInto ? { carryInto: o.carryInto } : {}),
       // Over budget: the summary request leaves the last results out instead of resending them (M1).
       ...(reason === "budget" || reason === "overflow" ? { shrinkLastResults: true } : {}),
       omit: { deleted: await this.deletedOmissions(state), people: [] },

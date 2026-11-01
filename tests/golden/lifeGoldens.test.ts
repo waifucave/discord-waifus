@@ -226,14 +226,13 @@ describe("Living cast goldens", () => {
     await expect(serializeRequest(opening, { tools: false })).toMatchFileSnapshot("./__snapshots__/life-rest-epoch.txt");
   });
 
-  it("a compaction request (her persona changed: the old epoch is summarised first)", async () => {
-    const w = await lifeWorld(roots, { waifus: [ELLA], scripts: [...wakeTurn(), () => textTurn("Saturday bake sale: I'm on dessert (lemon tarts). Kevin asked; Mina's preheating."), () => textTurn("ok")] });
+  it("a compaction request (the owner compacts her: the old epoch is summarised)", async () => {
+    const w = await lifeWorld(roots, { waifus: [ELLA], scripts: [...wakeTurn(), () => textTurn("Saturday bake sale: I'm on dessert (lemon tarts). Kevin asked; Mina's preheating.")] });
     await seedNotes(w);
     await mention(w, "are you coming saturday? we need someone on dessert");
     await w.cast.life("ella").runNow();
-    await writeWaifuConfig(w.storage, { ...ELLA, persona: `${ELLA.persona} Lately she is learning to make croissants.` });
-    await mention(w, "how are the croissants going?");
-    await w.cast.life("ella").runNow();
+    // Not a persona change: since §43 that carries her turns over without a summary.
+    expect((await w.cast.compactNow("ella")).summarized).toBe(true);
     const compaction = w.anthropic.calls[3]!.request;
     const lastIndex = compaction.messages.length - 1;
     await expect(

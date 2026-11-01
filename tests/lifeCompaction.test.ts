@@ -9,7 +9,7 @@ import { enqueueWake, newWakeId } from "../src/life/wakeQueue.js";
 import { readWaifu } from "../src/orchestration/stores/config.js";
 import type { LifeLogLine } from "../src/shared/schemas/life.js";
 import { textTurn } from "./modelFakes.js";
-import { closeWorlds, lifeWorld, script, type LifeWorld } from "./lifeFixtures.js";
+import { closeWorlds, lifeWorld, script, writeWaifuConfig, type LifeWorld } from "./lifeFixtures.js";
 import { removeTempRoot } from "./testUtils.js";
 
 const roots: string[] = [];
@@ -100,6 +100,67 @@ describe("compaction sizes", () => {
     expect(await compact("crumb ".repeat(4_000))).toBe(1);
     // One turn alone over the limit: nothing is kept.
     expect(await compact("crumb ".repeat(12_000))).toBe(0);
+  });
+});
+
+describe("a configuration change keeps her turns and her summary (§43)", () => {
+  it("carries every turn over when they fit, with her summary word for word and no summary call", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("ok")) });
+    const { deps, waifu, route, state, nextHarness } = await compactable(w);
+    const calls = w.anthropic.calls.length;
+    const lines = ["t1", "t2", "t3", "t4", "t5"].flatMap((id) => turn(id, `result ${id}`));
+    const outcome = await compactLife(deps, { waifu, state: { ...state, summary: "K asked me if I ever kissed anyone." }, lines, summaryRoute: route, nextHarness, reason: "config", omit: { deleted: [], people: [] }, carryInto: route });
+    expect(w.anthropic.calls.length).toBe(calls);
+    expect(outcome.summarized).toBe(false);
+    expect(outcome.state.summary).toBe("K asked me if I ever kissed anyone.");
+    expect(outcome.state.lastCompaction).toMatchObject({ reason: "config", summarized: false });
+    const log = await readLifeLog(w.storage, "ella", outcome.state.epoch);
+    expect(log[0]!.boundary).toMatchObject({ reason: "config", keptTurns: 5 });
+    expect(JSON.stringify(log)).toContain("result t1");
+  });
+
+  it("her persona changes between turns: her next turn opens a new epoch with her earlier turns and no summary call", async () => {
+    const w = await lifeWorld(roots, { scripts: script(textTurn("ok"), textTurn("ok again")) });
+    const { state } = await compactable(w);
+    const waifu = await readWaifu(w.storage, "ella");
+    await writeWaifuConfig(w.storage, { ...waifu, persona: `${waifu.persona} Lately she is learning to make croissants.` });
+    await enqueueWake(w.storage, "ella", { id: newWakeId(), reason: "reminder", note: "second", at: w.clock.now().toISOString() });
+    await w.cast.life("ella").runNow();
+    // Two turns, two calls: no summary call in between.
+    expect(w.anthropic.calls.length).toBe(2);
+    const next = await readLifeState(w.storage, "ella");
+    expect(next.epoch).toBe(state.epoch + 1);
+    expect(next.lastCompaction).toMatchObject({ reason: "config", summarized: false });
+    expect(JSON.stringify(w.anthropic.calls[1]!.request.messages)).toContain("first");
+  });
+
+  it("summarises as before when her turns don't all fit", async () => {
+    const w = await lifeWorld(roots, {
+      config: (config) => ({ ...config, life: { ...config.life, maxContextTokens: 32_000 } }),
+      scripts: script(textTurn("ok"), textTurn("Earlier: baking."))
+    });
+    const { deps, waifu, route, state, nextHarness } = await compactable(w);
+    const calls = w.anthropic.calls.length;
+    // Five turns of ~3,000 tokens against a 32,000-token budget (half the trigger: 11,200).
+    const lines = ["t1", "t2", "t3", "t4", "t5"].flatMap((id) => turn(id, "crumb ".repeat(2_000)));
+    const outcome = await compactLife(deps, { waifu, state, lines, summaryRoute: route, nextHarness, reason: "config", omit: { deleted: [], people: [] }, carryInto: route });
+    expect(w.anthropic.calls.length).toBe(calls + 1);
+    expect(outcome.summarized).toBe(true);
+    expect(outcome.state.summary).toBe("Earlier: baking.");
+    const log = await readLifeLog(w.storage, "ella", outcome.state.epoch);
+    expect(log[0]!.boundary!.keptTurns).toBeLessThanOrEqual(KEPT_TURNS);
+  });
+
+  it("summarises as before when the carried log would be over half of life.maxLogMessages", async () => {
+    const w = await lifeWorld(roots, {
+      config: (config) => ({ ...config, life: { ...config.life, maxLogMessages: 50 } }),
+      scripts: script(textTurn("ok"), textTurn("Earlier: baking."))
+    });
+    const { deps, waifu, route, state, nextHarness } = await compactable(w);
+    // Seven turns of four messages: 28, over 25.
+    const lines = ["t1", "t2", "t3", "t4", "t5", "t6", "t7"].flatMap((id) => turn(id, `result ${id}`));
+    const outcome = await compactLife(deps, { waifu, state, lines, summaryRoute: route, nextHarness, reason: "config", omit: { deleted: [], people: [] }, carryInto: route });
+    expect(outcome.summarized).toBe(true);
   });
 });
 

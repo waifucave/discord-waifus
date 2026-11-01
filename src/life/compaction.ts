@@ -11,7 +11,9 @@
 // budget (§26: the emergency summary; she rests at `triggerRatio`, and with `life.restNotice` off
 // this is `triggerRatio` as before), an ignored rest turn, log length ≥ `life.maxLogMessages`, a
 // provider overflow (mid-turn too), a manual compact, a configuration change (A, tools or model), a
-// forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary.
+// forget scrub. `compaction.enabled = false` truncates at the same triggers without a summary. A
+// configuration change carries every turn over instead, with her summary unchanged, when they all
+// fit the kept window (§44: a summary of a summary drifts).
 
 import { isRestNotice, SUMMARY_FACTS, SUMMARY_VOICE, withCalendar } from "./rest.js";
 import { benchmarkSummaryPrompt } from "./benchmarkHook.js";
@@ -425,6 +427,11 @@ export async function compactLife(
     emptySummaryOnFailure?: boolean;
     /** The log is over budget: the summary request leaves the last tool results out (M1). */
     shrinkLastResults?: boolean;
+    /**
+     * A configuration change (§43): the model the new epoch runs on. When all her turns fit its kept
+     * window, they all carry over and her summary stays word for word, with no summary call.
+     */
+    carryInto?: CuratedModel;
     signal?: AbortSignal;
   }
 ): Promise<CompactionOutcome> {
@@ -434,6 +441,34 @@ export async function compactLife(
   let summarized = false;
   // The kept window: at most half the compaction trigger (M2).
   const limit = o.summaryRoute ? 0.5 * settings.triggerRatio * lifeBudget(o.summaryRoute, deps.config().life.maxContextTokens) : Number.POSITIVE_INFINITY;
+  // Images of kept turns are frozen as text: their OCR text when the OCR cache has it.
+  const imageText = new Map<string, string>();
+  for (const image of inlineImagesOf(o.lines)) {
+    if (imageText.has(image.key)) continue;
+    imageText.set(image.key, imageTextFor(await deps.ocr?.cachedText(image.attachment as never).catch(() => undefined)));
+  }
+  const keptOf = (count: number) =>
+    keptTurnLines(o.lines, { keep: count, ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}), deletedIds: new Set(o.state.deletedReadIds), imageText });
+  // Only her prompt, tools or model changed (§43): nothing has to be forgotten, so a summary of her
+  // summary (which drifts a little every time) is written only when her turns don't all fit.
+  if (o.carryInto && !o.truncate && !o.deferEpoch) {
+    const all = keptOf(Number.MAX_SAFE_INTEGER);
+    const carryLimit = Math.min(limit, 0.5 * settings.triggerRatio * lifeBudget(o.carryInto, deps.config().life.maxContextTokens));
+    const messages = all.kept.filter((line) => line.message !== null).length;
+    if (linesTokens(all.kept) <= carryLimit && messages <= deps.config().life.maxLogMessages / 2) {
+      const state = await startEpoch(deps, o.waifu.id, {
+        harness: o.nextHarness,
+        summary: o.state.summary,
+        kept: all.kept,
+        readIds: all.readIds,
+        reason: o.reason,
+        summarized: false,
+        strippedBlocks: all.strippedBlocks
+      });
+      deps.logger.info("Life compacted", { category: "life", waifuId: o.waifu.id, reason: o.reason, summarized: false, carried: true, epoch: state.epoch, keptLines: all.kept.length });
+      return { state, summarized: false };
+    }
+  }
   const canSummarize = settings.enabled && !o.truncate && o.summaryRoute !== undefined && o.state.systemSnapshot !== null;
   if (canSummarize) {
     try {
@@ -472,17 +507,9 @@ export async function compactLife(
     }
   }
   if (!summarized && o.emptySummaryOnFailure) summary = null;
-  // Images of kept turns are frozen as text: their OCR text when the OCR cache has it.
-  const imageText = new Map<string, string>();
-  for (const image of inlineImagesOf(o.lines)) {
-    if (imageText.has(image.key)) continue;
-    imageText.set(image.key, imageTextFor(await deps.ocr?.cachedText(image.attachment as never).catch(() => undefined)));
-  }
   // The kept window shrinks (3 → 0 turns) while it alone would take more than half the compaction
   // trigger, so a new epoch never starts over budget (M2).
   let keep = o.keepTurns ?? KEPT_TURNS;
-  const keptOf = (count: number) =>
-    keptTurnLines(o.lines, { keep: count, ...(o.openTurnId ? { openTurnId: o.openTurnId } : {}), deletedIds: new Set(o.state.deletedReadIds), imageText });
   let keptResult = keptOf(keep);
   while (keep > 0 && linesTokens(keptResult.kept) > limit) {
     keep -= 1;
