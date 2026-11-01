@@ -5122,7 +5122,7 @@ read once; `canPost` false while timed out; a timed-out send refused with `timed
 
 ### 41.3 Release
 
-Not released yet.
+Released in 3.10.0.
 
 
 ## 42. The House bot opens a channel to a waifu cast there (owner request, 2026-11-01)
@@ -5174,4 +5174,4 @@ changed, removed when exact, gone).
 
 ### 42.3 Release
 
-Not released yet.
+Released in 3.10.0.
