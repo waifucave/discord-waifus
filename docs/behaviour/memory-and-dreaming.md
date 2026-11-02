@@ -88,8 +88,8 @@ Code: `src/life/dream.ts` `runDream`; timing `src/life/scheduler.ts` `maintenanc
 **When exactly** (checked every 15 s tick, one run per waifu in the whole process):
 
 Every local day at `life.maintenanceHourLocal`:00 (default 05:00), for every waifu; a day whose hour
-passed while the host was down gets its dream at the first tick after. **Unreleased (on main),
-§38:** until 3.8.0 a waifu with a bed time dreamed once she had been asleep
+passed while the host was down gets its dream at the first tick after. **Since 3.9.0
+(§38):** until 3.8.0 a waifu with a bed time dreamed once she had been asleep
 `life.dreamAfterAsleepMinutes` (15 min) in it instead, and a bed time she stayed up through ran only
 the pending forget scrubs; with no bed time any more, the hour is the rule for everyone.
 

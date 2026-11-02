@@ -181,7 +181,7 @@ Examples are the goldens `tests/golden/__snapshots__/life-room-burst.txt`, `life
 Every user message the loop appends (notifications, tool results, system notes) ends with one
 permanent text block (`src/life/clock.ts` `timeLine`):
 
-`[Sat 24 Oct 14:06]` — the time alone. **Unreleased (on main), §38:** it had a label (`awake`,
+`[Sat 24 Oct 14:06]` — the time alone. **Since 3.9.0 (§38):** it had a label (`awake`,
 `busy: <why> until HH:MM`, `up late`, `dozing (bed time)`, `asleep`) from her day file and bed time
 until 3.8.0; both are gone.
 
@@ -239,7 +239,7 @@ Golden: `tests/golden/__snapshots__/life-system-prompt.txt`.
 `life.bash.python`, `life.bash.maxTimeoutMs`, `life.send.maxFiles`, `life.tmp.retentionDays`).
 `Web` is offered while search or page opening is on (a cap above 0); `Bash` only while
 `life.bash.enabled` (`src/life/tools/index.ts` `offeredToolNames`). An epoch whose snapshot offers a
-tool the app no longer has (**unreleased (on main)**: `WebSearch`/`WebFetch`, which became `Web`) is summarised
+tool the app no longer has (`WebSearch`/`WebFetch`, which became `Web` in 3.6.0) is summarised
 before her next turn with those calls as text and no turns kept (boundary reason `tools`,
 `compaction.ts` `offersRetiredTools`), since a provider refuses a history calling a tool the
 request lacks.
@@ -247,13 +247,13 @@ request lacks.
 **What changes the snapshot**: the harness hash covers block A, the tool list with descriptions and
 schemas, and the model route with effort (`harnessHash`, `currentHarness` in
 `src/life/compaction.ts`). When it differs at a turn boundary, the next cycle compacts with reason
-`config` before any wake. **Unreleased (on main), §44:** when every complete turn of the epoch fits
+`config` before any wake. **Since 3.10.2 (§44):** when every complete turn of the epoch fits
 the kept window (at most half the compaction trigger for both the old and the new model, and at
 most half of `life.maxLogMessages` message lines), they all carry over (reasoning stripped, images
 as text, like kept turns) and her summary stays word for word: no summary call, `lastCompaction`
 `{reason: "config", summarized: false}`, logged `carried: true`. Otherwise it summarises as before.
 A model change compacts with the **old** model, then the new epoch runs on
-the new one. (**Unreleased (on main), §38:** block A has no `<schedule>` section and no sentence
+the new one. (**Since 3.9.0 (§38):** block A has no `<schedule>` section and no sentence
 about her day any more; the upgrade gives a begun life a pending epoch start.)
 
 **Stale-copy note**: when an `Edit` patch or a Bash change set in her life actually changes

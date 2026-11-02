@@ -1,0 +1,122 @@
+<!doctype html>
+<!-- The README banner (docs/images/banner.png). Rendered at 1280×400, 2× scale:
+     node scripts/render-banner.mjs -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 400px; }
+  body {
+    font-family: -apple-system, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+    color: #f4f0ff;
+    background:
+      radial-gradient(circle at 8% 12%, rgba(255, 106, 213, 0.38), transparent 38%),
+      radial-gradient(circle at 46% 108%, rgba(138, 92, 255, 0.42), transparent 45%),
+      radial-gradient(circle at 96% 0%, rgba(88, 101, 242, 0.45), transparent 42%),
+      linear-gradient(135deg, #17112b 0%, #100c1f 55%, #0b0a17 100%);
+    overflow: hidden;
+    position: relative;
+  }
+  .sparkles span { position: absolute; color: rgba(255, 255, 255, 0.55); font-size: 14px; }
+  .left { position: absolute; left: 68px; top: 64px; width: 620px; }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 15px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #ffb3ec; background: rgba(255, 106, 213, 0.12); border: 1px solid rgba(255, 106, 213, 0.35);
+    padding: 6px 14px; border-radius: 999px;
+  }
+  h1 {
+    margin-top: 20px; font-size: 74px; line-height: 1; font-weight: 800; letter-spacing: -0.03em;
+    background: linear-gradient(92deg, #ffffff 0%, #ffd0f3 45%, #c8b8ff 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .tag { margin-top: 18px; max-width: 600px; font-size: 23px; line-height: 1.35; color: #d9d2f2; font-weight: 500; }
+  .tag b { color: #fff; font-weight: 700; }
+  .pills { margin-top: 26px; display: flex; gap: 8px; flex-wrap: nowrap; }
+  .pill {
+    font-size: 14px; font-weight: 600; color: #e9e4ff; white-space: nowrap;
+    background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.14);
+    padding: 6px 11px; border-radius: 10px;
+  }
+  .chat {
+    position: absolute; right: 60px; top: 62px; width: 500px; padding-bottom: 14px;
+    background: rgba(30, 31, 38, 0.92); border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 106, 213, 0.08);
+    overflow: hidden; transform: rotate(-1.2deg);
+  }
+  .bar {
+    height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 18px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-size: 16px; font-weight: 600; color: #f2f3f5;
+  }
+  .bar .hash { color: #80848e; font-size: 22px; font-weight: 500; }
+  .msgs { padding: 12px 18px 0; display: flex; flex-direction: column; gap: 11px; }
+  .msg { display: flex; gap: 12px; align-items: flex-start; }
+  .av {
+    flex: none; width: 38px; height: 38px; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 800; font-size: 16px; color: #fff;
+  }
+  .who { display: flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 600; }
+  .app { font-size: 10px; font-weight: 700; background: #5865f2; color: #fff; padding: 1px 4px; border-radius: 3px; }
+  .time { font-size: 11.5px; color: #949ba4; font-weight: 500; }
+  .text { margin-top: 2px; font-size: 15px; color: #dbdee1; line-height: 1.3; }
+  .typing { margin-top: 2px; padding: 4px 18px 0 68px; font-size: 12.5px; color: #b5bac1; }
+  .typing b { color: #f2f3f5; }
+</style>
+</head>
+<body>
+  <div class="sparkles">
+    <span style="left: 640px; top: 40px">✦</span>
+    <span style="left: 700px; top: 352px; font-size: 10px">✦</span>
+    <span style="left: 30px; top: 350px; font-size: 18px">✧</span>
+    <span style="left: 1240px; top: 372px; font-size: 11px">✦</span>
+  </div>
+
+  <div class="left">
+    <div class="kicker">✦ for your Discord server</div>
+    <h1>Discord Waifus</h1>
+    <p class="tag">AI characters who <b>live</b> in your server: they remember you, tease each other and start the conversation themselves.</p>
+    <div class="pills">
+      <span class="pill">🤖 her own bot</span>
+      <span class="pill">📓 her own memory</span>
+      <span class="pill">💬 talks first</span>
+      <span class="pill">🏠 runs on your machine</span>
+    </div>
+  </div>
+
+  <div class="chat">
+    <div class="bar"><span class="hash">#</span> general</div>
+    <div class="msgs">
+      <div class="msg">
+        <div class="av" style="background: linear-gradient(135deg, #ff7ad9, #b15cff)">A</div>
+        <div>
+          <div class="who"><span style="color: #ff7ad9">Aria</span><span class="app">APP</span><span class="time">Today at 21:04</span></div>
+          <div class="text">sam how did the exam go?? you said friday 👀</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="av" style="background: linear-gradient(135deg, #43b581, #2d8a5e)">S</div>
+        <div>
+          <div class="who"><span style="color: #f2f3f5">sam</span><span class="time">Today at 21:05</span></div>
+          <div class="text">passed. barely. how do you even remember that</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="av" style="background: linear-gradient(135deg, #7ae8ff, #4a8cff)">L</div>
+        <div>
+          <div class="who"><span style="color: #7ae8ff">Lumi</span><span class="app">APP</span><span class="time">Today at 21:05</span></div>
+          <div class="text">she writes everything down. it's a little scary 🙂</div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="av" style="background: linear-gradient(135deg, #ff5c6c, #a3203a)">R</div>
+        <div>
+          <div class="who"><span style="color: #ff6b6b">Riko</span><span class="app">APP</span><span class="time">Today at 21:06</span></div>
+          <div class="text">says the one who forgot my birthday. twice 💀</div>
+        </div>
+      </div>
+    </div>
+    <div class="typing"><b>Aria</b> is typing…</div>
+  </div>
+</body>
+</html>

@@ -1,7 +1,7 @@
 # Owner controls
 
-Everything the owner can see and change about the waifus: the dashboard, the CLI, HTTP, the
-dashboard assistant, Discord slash commands, profile sync and the settings that shape behaviour.
+Everything the owner can see and change about the waifus: the dashboard, the CLI, updating, HTTP,
+the dashboard assistant, Discord slash commands, profile sync and the settings that shape behaviour.
 Every setting has an HTTP path, a CLI path and help; the full generated list is
 `docs/assistant-kb/settings.md` (`npm run docs:settings:generate`).
 
@@ -39,6 +39,63 @@ from argv (`--from-env`, `--stdin`, `--file`, or a hidden prompt).
 
 Exit codes (`src/cli/cliContext.ts`): 0 ok, 1 failure/5xx, 2 usage, 3 host not running or
 unreachable, 4 rejected (400/403/404/428), 5 conflict (409).
+
+## Updating
+
+`waifus update` installs the newest release of the same package (`--npm`, the default) and
+`waifus update --github` the newest GitHub release `.tgz` (a GitHub-release install updates from
+the next release asset). Restart the host (`waifus restart`) and any `waifus remote` afterwards.
+`DC_WAIFUS_HOME=PATH` (or `--data-root`) picks another data root than `~/.dc-waifus`.
+
+**Version numbers** are major.feature.bugfix (since 2.111.1; npm and GitHub tags use the same
+number, `v2.111.1` on GitHub). The move from the old `1.5.x` series to `2.111.1` needed one manual
+`waifus update` and a restart of running hosts and gateways; data, pairings and the automatic-update
+preference were kept.
+
+**3.0.0** was a major release that idle updates never install: install it by hand
+(`npm install -g @waifucave/discord-waifus@3.0.0`, then `waifus restart`). The first start migrates
+each waifu's memories to notes in her home folder, maps old model settings to the curated list
+(anything without an equivalent becomes a notice to pick again) and archives the director's data
+under `~/.dc-waifus/user/.archive/living-cast/`. Downgrading is not supported; `waifus doctor`
+reports any step that left unreadable data alone.
+
+**From the old `@starlight-ai` package**: the same data in `~/.dc-waifus` is kept; run
+`waifus update`, `waifus restart`, `waifus update`. The first update moves the global `waifus`
+command to `@waifucave/discord-waifus`, the restart starts the new package against the same data
+root (pass `--data-root` for a custom one), and the second removes the legacy global package if it
+is still there and relinks the command.
+
+### Automatic updates while idle
+
+Opt-in, on a global npm install only: **Settings → App → Idle-only updates**, or
+`waifus update --auto on|off|status` (`updates.enabled` can't be set with `waifus set`, nor from a
+paired remote device). By default it checks npm `latest` hourly and waits for five minutes without
+active work. Only newer plain patch versions in the current major.feature series are installed;
+feature and major upgrades, prereleases and deprecated releases need a manual update. Source
+checkouts and development or test runtimes are never replaced. Start both the host and any remote
+gateway once with an updater-aware version before turning it on: an old sibling that can't report
+idle blocks updating.
+
+- It coordinates every registered host and remote gateway using that global install, including other
+  data roots: all must have opted in and be quiet. It waits for channel and background jobs,
+  assistant turns, API and file transfers, runtime reloads, and pairing or activation work; status
+  polling and event subscriptions don't count as activity.
+- The package and the current platform's signed helper are staged and verified first; then it
+  reserves a short maintenance window, stops the idle processes, installs the exact staged release
+  and restarts the same roles and data roots. If replacement or verification fails it tries to
+  restore the previous package before restarting. Manual and automatic installs share one
+  transaction lock. Configuration, keys, characters, rooms and pairings are never touched.
+- On macOS, a host or gateway with Remote Access waits to restart while the login keychain is locked
+  (the check never shows a password prompt). An open remote dashboard tab recovers after the restart
+  with its browser key, without pairing again. Remote users can read update status but can't turn it
+  on or schedule restarts.
+- `GET /api/updates` and `waifus update --auto status` show sanitized status. Private history and a
+  crash-recovery journal live under the data root's `app/updates/`; no keys or child-process output
+  are recorded or uploaded. Recovery does not roll back data migrations. If a crash or a failed
+  restore leaves the CLI unusable, reinstall with `npm install -g @waifucave/discord-waifus` and start
+  the roles again.
+- Verified: an isolated native macOS replace-and-restart cycle. Native Windows and Linux cycles are
+  untested (fixture tests are not that proof).
 
 ## HTTP
 

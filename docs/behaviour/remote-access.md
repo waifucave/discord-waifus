@@ -2,8 +2,57 @@
 
 How Remote Access behaves for the owner: opening the host's dashboard from another device over an
 authenticated direct peer connection. Code: `src/remote/`, `src/backend/remoteAccess/`,
-`src/api/remoteAccess.ts`, `src/frontend/remote-shell/`. Setup steps for people are in the README's
-Remote management section and `docs/assistant-kb/remote-access.md`.
+`src/api/remoteAccess.ts`, `src/frontend/remote-shell/`. Setup steps for people are below and in
+`docs/assistant-kb/remote-access.md` (the dashboard assistant's copy).
+
+## Setting it up
+
+The **host** is the computer running your waifus; the **remote** is the one you manage it from.
+Install the current package on both (`npm install -g @waifucave/discord-waifus@latest`).
+
+1. On the host, `waifus start` (or `waifus restart` after an update) and open
+   `http://127.0.0.1:3888` (or its configured port).
+2. **Settings → Remote Access → Start activation**, then **Open activation page**; complete the
+   browser verification and come back. Activation registers this installation with the
+   coordinator; it doesn't trust any device yet.
+3. **Enable remote access**, wait for the helper to be ready, then **Create invitation**. Keep the
+   invitation private; copy its full token or the manual short code.
+4. On the remote, run `waifus remote`. If that installation isn't active yet, choose **Prepare
+   activation → Continue activation in a new tab**, verify, and come back.
+5. Paste the host's invitation in **Full token**, or choose **Short code** and type it, then
+   **Begin pairing**.
+6. Compare the safety phrase and host identity on both dashboards, and approve the request on the
+   host only if they match. This gives the remote device full management of that host.
+7. On the remote, choose the remembered host and **Connect**: its dashboard shows the host's waifus
+   and rooms, not the remote computer's own data.
+
+Later, `waifus remote` connects to the last selected (or only) host and opens its dashboard
+directly (see the connection timeline below); running it again reopens a browser window without
+stopping the gateway. `waifus remote --setup` is for activation, pairing or choosing another host.
+The host must stay running and awake; **Trusted devices** on the host revokes a device.
+`waifus start` and `waifus remote` are separate processes and can run side by side;
+`waifus remote stop` stops only the gateway. Pairings belong to their data root, so an isolated test
+installation grants nothing on your normal one. Remote management can't stop or restart the host
+process: use the host for `waifus stop` and `waifus restart`.
+
+**A host you can't sit at**: with SSH access, forward its loopback dashboard to the same free port
+on the remote (`ssh -N -L 127.0.0.1:3888:127.0.0.1:3888 user@host`), keep that terminal open and use
+`http://127.0.0.1:3888` on the remote for the host-side steps (that page is the forwarded host, not a
+local install; port 3888 must be free locally, and don't stop an unrelated server for it). SSH is
+only a setup aid, never the management transport; close it with Ctrl-C after pairing. On macOS a
+locked login keychain can stop the helper from starting: unlock it locally, or run
+`ssh -t user@host 'security unlock-keychain'` and type the keychain password interactively (never in
+a command, chat or file), then refresh Remote Access; a process started over SSH may need a restart
+from the unlocked session.
+
+The remote downloads and verifies the host's exact dashboard build, so different app versions work
+together when their signed protocols are compatible. Without a usable direct path (for example both
+networks block UDP) the connection stays offline instead of falling back to a relay.
+
+**Validation so far**: native installation, signature, credential storage, IPC and cold-restart
+checks on all five targets, and live-network acceptance on two Macs. Windows and Linux networking,
+network switching and suspend/resume are not live-validated yet, and there has been no 24-hour soak;
+passing native CI doesn't establish those.
 
 ## The helper
 

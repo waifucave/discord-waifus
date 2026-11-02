@@ -1,7 +1,7 @@
 {
   "name": "@waifucave/discord-waifus",
   "version": "3.10.4",
-  "description": "Local Discord waifu orchestrator backend, web UI, and CLI.",
+  "description": "AI characters who live in your Discord server: each with her own bot, memory and life. They talk to each other and start conversations themselves. Runs on your machine.",
   "type": "module",
   "private": false,
   "repository": {
@@ -16,7 +16,11 @@
     "discord",
     "discord-bot",
     "ai",
-    "orchestrator",
+    "ai-characters",
+    "ai-companion",
+    "chatbot",
+    "roleplay",
+    "llm",
     "waifu",
     "local-first"
   ],

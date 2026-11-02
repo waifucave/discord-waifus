@@ -2,8 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Read alongside `AGENTS.md` for repository/release guidelines and the README's Remote management
-section for setup instructions. Keep all three synchronized with current behavior; historical
+Read alongside `AGENTS.md` for repository/release guidelines and `docs/behaviour/remote-access.md`
+("Setting it up") for the Remote Access setup steps. Keep them synchronized with current behavior; historical
 specs and plans describe earlier checkpoints and do not establish present release readiness.
 
 ## TOP PRIORITY: keep `docs/behaviour/` true
@@ -12,6 +12,16 @@ specs and plans describe earlier checkpoints and do not establish present releas
 (triggers, routing, prompts, tools, files and folders, schedules, dreaming, privacy, remote
 behaviour) must update `docs/behaviour/` in the same commit. When those docs and the code disagree,
 the code is right: fix the docs.
+
+## The README is the pitch
+
+`README.md` (also the npm page) is there to make people want to install Discord Waifus: what the
+waifus are like, the banner and screenshots, a quick start, the short setup, the models. How things
+work, step-by-step guides and limits go in `docs/behaviour/` (Remote Access setup in
+`remote-access.md`, updating in `owner-controls.md`, the local Laya detector in `detector.md`), and
+the README links there. When a feature changes what the waifus can do, update the README's "What
+they do" in plain words, never with internals. The banner is `docs/images/banner.png`, rendered from
+`docs/images/banner.html` with `node scripts/render-banner.mjs` (Playwright's Chromium, 1280×400 at 2×).
 
 ## Commands
 
@@ -541,7 +551,7 @@ Coordinator or direct-path failures require diagnosis/retry, not automatic trust
 re-pairing. After ten helper failures in five minutes the supervisor stops fast restarts but keeps
 one slow recovery attempt pending (10 minutes, then every 15, ±10% jitter) until a launch
 authenticates or reconnect/stop/reset/close clears the circuit (`HELPER_CIRCUIT_RECOVERY_DELAYS_MS`). On macOS, a locked login keychain can block helper startup; unlock interactively
-and consult the README for SSH-assisted setup without exposing credentials.
+and see `docs/behaviour/remote-access.md` ("Setting it up") for SSH-assisted setup without exposing credentials.
 
 **Browser session lifetime** (`src/remote/gateway/session.ts`, `browserPersistence.ts`): sessions
 have no idle timeout or eight-hour cutoff. The in-memory cap (1,024 per gateway launch) evicts the

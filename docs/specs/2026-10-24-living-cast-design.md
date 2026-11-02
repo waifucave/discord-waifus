@@ -4957,7 +4957,7 @@ and the goldens `life-morning`, `life-day-morning`, `life-day-busy`, `life-plan`
 
 ### 38.6 Release
 
-A feature release (planned 3.9.0); not released yet.
+Released in 3.9.0.
 
 ### 38.7 As built (2026-10-31)
 
@@ -5355,4 +5355,4 @@ a test turns it on.
 
 ### 46.3 Release
 
-Unreleased (on main).
+Released in 3.10.4.

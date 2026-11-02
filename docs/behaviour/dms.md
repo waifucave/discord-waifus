@@ -28,7 +28,7 @@ re-logs only the bots whose DM set changed. DM-eligible bots register a DM-only 
   (`dmMaxWaitMs`). One `dm` wake per burst, one notification line per message.
 - Her wakeup watches on the DM's messages are matched after the hold and ride on the same wake
   (`dm, watch · dm/kevin · "match" · from Kevin · #a3 "…" · your note: "…"`).
-- Then the router: rate limit (below) → budget. **Unreleased (on main), §38:** at any hour a DM
+- Then the router: rate limit (below) → budget. **Since 3.9.0 (§38):** at any hour a DM
   reaches her (no bed time, no busy block, no sleep notice).
   - **Over budget**: deferred until she is under budget again (her next local day), then in the
     budget's batch ([reachability-and-budget.md](reachability-and-budget.md)).
@@ -55,7 +55,7 @@ re-logs only the bots whose DM set changed. DM-eligible bots register a DM-only 
 
 ## No sleep notice any more
 
-**Unreleased (on main), §38:** `dm.sleepNotice` is gone with her bed time (the upgrade archives it;
+**Since 3.9.0 (§38):** `dm.sleepNotice` is gone with her bed time (the upgrade archives it;
 an old limits file's `sleepNoticeSentFor` is dropped when read). The limit notice is the only
 automatic DM. Automatic notices get a ref and show in her `ReadMessages` as `[auto] <text>` (old
 sleep notices included).

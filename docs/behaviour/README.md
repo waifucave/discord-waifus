@@ -6,10 +6,10 @@ describes the code, not the plans. Where the living-cast spec
 (`docs/specs/2026-10-24-living-cast-design.md`) and the code differ, the code is what is written here
 and the difference is noted ("Spec differs: …").
 
-**Describes:** the code on `main` as released in 3.5.0: everything through the script
-`SendMessage` (§27), server emojis in `places.md` (§28) and timed plans that wake her (§29). Later
-behaviour merged to `main` before its release is marked **unreleased (on main)** where it is described
-(no day schedule and no bed time, §38, planned for 3.9.0).
+**Describes:** the code on `main` as released in 3.10.4: everything through free time and the cast
+answering each other (spec §46). Behaviour merged to `main` before its release is marked
+**unreleased (on main)** where it is described; "since 3.9.0" and the like say when a change shipped.
+The repository README is the pitch for new users; how things work belongs here, not there.
 
 **Rule:** any change to waifu behaviour (triggers, routing, prompts, tools, files and folders,
 schedules, dreaming, privacy, remote behaviour) updates these files in the same commit. When these

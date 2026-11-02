@@ -27,10 +27,25 @@ Code: `src/life/intake.ts` `Intake.runDetector`; question, answer and draw in
   waifu's daily budget). A missing key, an unlisted OpenRouter model or any failure throws and the
   fallback is used; it never retries in a loop (`AddresseeDetector.decide`).
 - Its calls are captured with content in Activity (unlike life calls).
+- The OpenRouter catalog and direct OpenAI decisions need that provider's key (**Settings →
+  Providers**); these models only ever make this choice, never a character's turn.
+- **Local Laya** (experimental): the checkpoints are listed, but Python and the weights are not
+  bundled. Make a separate environment (Python 3.10+), install the runtime and point the host at it:
+
+  ```sh
+  python3 -m venv /absolute/path/to/waifus-laya-env
+  /absolute/path/to/waifus-laya-env/bin/python -m pip install "laya==0.3.20" "torch==2.14.1" "transformers==5.19.0"
+  DC_WAIFUS_LAYA_PYTHON=/absolute/path/to/waifus-laya-env/bin/python waifus restart
+  ```
+
+  (On Windows, the environment's `Scripts/python.exe`.) `DC_WAIFUS_LAYA_PYTHON` is host-local and
+  can't be changed through remote settings. The first local call downloads public weights at a
+  pinned revision. The decision benchmark found many Laya false positives: free and local is not
+  reliable routing.
 
 ## Who it is offered (§24)
 
-Only cast members who are **around** (`Intake.overBudget`). **Unreleased (on main), §38:** with no
+Only cast members who are **around** (`Intake.overBudget`). **Since 3.9.0 (§38):** with no
 day schedule and no bed time, that is every cast member except one over her daily budget, at any
 hour:
 

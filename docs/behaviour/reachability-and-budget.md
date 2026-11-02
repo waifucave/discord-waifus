@@ -1,6 +1,6 @@
 # When she is reachable, and the budget's batch
 
-**Unreleased (on main):** spec §38 (owner request, 2026-10-31). She has **no day schedule and no bed
+**Since 3.9.0:** spec §38 (owner request, 2026-10-31). She has **no day schedule and no bed
 time**: she is reachable at any hour. Only her daily budget makes wakes wait. Until 3.8.0 her own
 `~/life/schedule.json` (busy blocks, phone checks, timed plans) and the owner's bed time
 (`availability.bedTime`: up late, dozing, asleep) decided when she was reachable; both are gone.

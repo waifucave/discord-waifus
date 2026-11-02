@@ -44,7 +44,7 @@ something first"); nothing is written.
 | `~/MEMORY.md` | Index of her notes, one short line per note linking to it | Markdown | Her (and the dream) | Yes | Yes | Path/size rules only | Copy in her prompt updates at the next epoch; stale-copy note in her result |
 | `~/` (anything else) | Her notes, any layout | Text or any file | Her (and the dream) | Yes | Yes | Path/size rules | — |
 | `~/life/` | Her daily machinery (all files here are private: never attached) | folder | App + her | Its files as below | The folder can't be removed while it holds `places.md` | — | — |
-| `~/life/<anything else>` | Hers, like a note, but private (never attached) and left alone by her dream. **Unreleased (on main), §38:** this includes `~/life/schedule.json`, her day until 3.8.0 (the upgrade archived it; [reachability-and-budget.md](reachability-and-budget.md)) | any | Her | Yes | Yes | Path/size rules only | — |
+| `~/life/<anything else>` | Hers, like a note, but private (never attached) and left alone by her dream. **Since 3.9.0 (§38):** this includes `~/life/schedule.json`, her day until 3.8.0 (the upgrade archived it; [reachability-and-budget.md](reachability-and-budget.md)) | any | Her | Yes | Yes | Path/size rules only | — |
 | `~/life/wakeups.json` | Her wakeups (`Wakeup` adds and cancels; see below) | JSON array, one entry per line: `{id?, kind: at\|every\|watch\|page, when?, places?, filter?, url?, check?, options?, note, state?, disabled?}` | Her + app (fires, removes an `at` and a once watch, ends watches and pages, saves her code's `state`, disables after errors) | Yes (Edit's patch must match the file as it is now) | Yes (= no wakeups) | Strict JSON ≤ 60 KiB as saved (the app's stop reasons may take it to 64 KiB); each entry as `Wakeup` checks it (times, places, names, her functions compiled in the sandbox); ≤ 20 timed, 10 watches, 3 pages; note ≤ 200, state ≤ 4 KiB; ids `t<n>`/`w<n>`/`p<n>` matching the kind; a once watch that already fired can't come back | New entries get the next id, `for` becomes `until`, `at`'s time becomes a local time, and the file is rewritten one entry per line; places and `from` names resolved in `life/wakeup-ids.json`; changing a stopped wakeup's code turns it back on |
 | `~/life/profile.json` | Her Discord profile: `name` (read-only), `username`, `bio`, `nicknames` keyed by server slug | JSON object | Her + app (rewritten from her config) | Yes, outside sessions | **No** | Discord username rules, bio ≤ 400, nickname 1–32, known servers, `name` unchanged | Saved to her config, then profile sync runs; the result says when Discord will show it |
 | `~/life/places.md` | Her rooms, her servers' emojis and her DMs | Markdown | App only (≤ 1/min, every turn start, when a new place folds in) | **No** (`places.md is kept up to date for you and can't be changed`) | **No** | — | — |
@@ -100,7 +100,7 @@ diary, as soon as you learn something" and says "only your files last". See
 ## The tools
 
 Fixed order (part of the cached prefix): `ReadMessages`, `SendMessage`, `Wakeup`, `Read`, `Edit`,
-`Bash`, `Web` (`src/life/tools/index.ts`). **Unreleased (on main):** every tool but `Bash` takes one
+`Bash`, `Web` (`src/life/tools/index.ts`). **Since 3.7.0:** every tool but `Bash` takes one
 JavaScript `script` calling its own function on `tools` (spec §32, below); `React` and `Write` are kept
 in the code but no longer offered (`send_message` reacts, `apply_patch` adds files), and `Web`
 replaced `WebSearch` and `WebFetch`. A life whose epoch still offers a tool that is gone or no longer
@@ -120,7 +120,7 @@ function and field names snake_case.
 
 ## Tool scripts
 
-**Unreleased (on main).** Spec §32; `src/life/tools/script.ts` (the shared host side),
+**Since 3.7.0.** Spec §32; `src/life/tools/script.ts` (the shared host side),
 `src/life/sandbox/toolScript.ts` and `toolScriptWorker.ts` (the sandbox). Each call's input is
 `{ script }` (≤ 20,000 characters): the body of an async JavaScript function, so she `await`s her
 tool's function, loops and branches:
@@ -266,7 +266,7 @@ package in their own worker per call (above).
 
 ## Web
 
-**Unreleased (on main).** One tool for the web (spec §31, §32.2; `src/life/tools/web.ts`,
+**Since 3.6.0.** One tool for the web (spec §31, §32.2; `src/life/tools/web.ts`,
 `src/life/sandbox/webPage.ts`, `src/life/search.ts`). Her script calls `tools.web__run({...})` as
 often as it likes within the caps; one call does, in order: its searches, then its opens and clicks,
 then its finds and asks (a page not open yet is opened first, once, and counts as a page). It returns

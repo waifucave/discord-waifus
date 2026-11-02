@@ -33,7 +33,7 @@ the owner, then pass the wake router's guards and land in her queue
 | `watch_timeout` | A watch's or page's `until` passed (scheduler tick, every 15 s). A `once` watch that already fired never times out. | Scheduler | `Scheduler.wakeups` |
 | `reminder` | A timed wakeup (`at` or `every` in `~/life/wakeups.json`) came due (scheduler tick). Routed under a fixed id per occurrence, then an `at` is removed (an `every` stays). A late `at` after downtime fires once at the first tick; an `every` fires its latest occurrence since it started counting. | Scheduler | `Scheduler.wakeups` |
 | `wakeup_error` | Her code (a watch's filter or a page's check) failed three times in a row: the wakeup is stopped (`disabled` in her file) and she is told `- wakeup w4 stopped: TypeError: … (line 2)`. | At once | `src/life/wakeups/run.ts` `applyRuns` |
-| `plan` | **Unreleased (on main), §38: no longer produced.** Her day file's timed plans woke her until 3.8.0; a `plan` wake queued or deferred before the upgrade is still delivered, one line per plan: `- plan · 17:30 · "<what>"`. | — | `notifications.ts` `soloLine` |
+| `plan` | **No longer produced since 3.9.0 (§38).** Her day file's timed plans woke her until 3.8.0; a `plan` wake queued or deferred before the upgrade is still delivered, one line per plan: `- plan · 17:30 · "<what>"`. | — | `notifications.ts` `soloLine` |
 | `detector` | Jev picked her for a burst nobody was addressed in (`waifu_<i>`, the `anyone` draw, `all`), or picked her to chime in. See [detector.md](detector.md). | After the burst and the detector call | `Intake.runDetector` |
 | `morning` | The batch of what waited while she was over her daily budget, released once she is under it again (the reason kept its name from her morning, §38); also releases what a 3.8 queue deferred for her bed time, at the first tick. Enqueued directly, not through the router. See [reachability-and-budget.md](reachability-and-budget.md). | Scheduler | `Scheduler.releaseDeferred` |
 | `owner` | `/wake` (Discord), the dashboard's Wake button, `waifus wake`, `POST /api/waifus/:id/wake`, the assistant's `wake_waifu`. Note ≤ 500 characters, shown as `- nudge · "<note>"`. | At once | `LivingCast.ownerWake` |
@@ -67,7 +67,7 @@ Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
   that person arrives. Only typing by a person **with a message in the pending burst**, in that same
   channel/thread/DM, holds it. Bots and other people never hold anything (`TypingHolds.typing`,
   `Intake.onTyping`). Typing comes from the House bot's and DM bots' raw `TYPING_START` packets.
-- **Unreleased (on main), §45:** a message from someone who was typing there in the last **10 s**
+- **Since 3.10.3 (§45):** a message from someone who was typing there in the last **10 s**
   (one Discord typing event) waits at least `afterTypingMs` (**5 s**) before the burst fires, still
   within the cap. Discord sends typing at most every ~10 s, so lines a phone user sends a few seconds
   apart show no new typing in between; they now stay one burst, one notification, one detector
@@ -105,7 +105,7 @@ Room bursts, DM bursts and a waifu's own bursts are held by a typing-aware timer
 ## The wake router's guards, in order
 
 `src/life/wakeRouter.ts` `WakeRouter.routeNow`. Outcomes: `queued`, `deferred`, `quiet`,
-`dropped`. **Unreleased (on main), §38:** there is no sleep guard (4, 4a) and no busy guard (4b)
+`dropped`. **Since 3.9.0 (§38):** there is no sleep guard (4, 4a) and no busy guard (4b)
 any more; she is reachable at any hour ([reachability-and-budget.md](reachability-and-budget.md)).
 
 | # | Guard | Effect | Applies to owner wakes? |
