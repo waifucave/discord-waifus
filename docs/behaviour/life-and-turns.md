@@ -138,7 +138,7 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
 - **Reasons** are the message's own: a message of the burst that woke her for nothing has no label
   (so a line never claims someone else's mention). Labels (`REASON_LABELS`): `mention`, `your name`,
   `role mention`, `@everyone`, `watch`, `watch timed out`, `dm`, `maybe for you` (detector),
-  `reminder`, `plan`, `morning`, `nudge` (owner), `follow-up`. A detector wake for `all` reads
+  `reminder`, `plan`, `morning`, `nudge` (owner), `follow-up`, `free time` (§46). A detector wake for `all` reads
   `for all of you`; a chime-in reads `people are talking: join in if you have something to add` (§43).
 - **The chat since she last looked** (§40): under a place's lines, `  the chat there since you last
   looked:` and the messages after her read cursor up to the newest notified one, as ReadMessages
@@ -152,7 +152,7 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   every other notification is inside its kind's tag (`<reminder-notification>`,
   `<watch-notification>`, `<watch-timeout-notification>`, `<plan-notification>`,
   `<nudge-notification>`, `<away-notification>`, `<follow-up-notification>`,
-  `<wakeup-error-notification>`, `<more-notification>`, `<notice-notification>`; `SOLO_TAGS`).
+  `<wakeup-error-notification>`, `<free-time-notification>`, `<more-notification>`, `<notice-notification>`; `SOLO_TAGS`).
 - **Preview**: the message rendered as a transcript body (mentions as names, attachments as
   `[image]`), whitespace collapsed, first **60 characters** then `…` (`PREVIEW_CHARS`). Quotes
   inside become `'` and line breaks spaces, so a quote always closes on its line.
@@ -164,7 +164,7 @@ Line shape: `- <reasons> · <handle> · [+N earlier] · ["<match>"] · from <nam
   the DM floor, not hers) appears on the last line only when unread exceeds the lines shown.
 - Lines without a place: `- reminder (Sat 24 Oct 14:20): "<note>"` (the due time, with its date), `- plan · 17:30 ·
   "<what>"` (only a plan wake queued before §38; her day file is gone), `- watch timed out · your note: "<note>"`,
-  `- nudge · "<owner note>"`, the budget's batch's own lines
+  `- nudge · "<owner note>"`, `- free time · nothing needs you right now · your rooms: …` (§46), the budget's batch's own lines
   ([reachability-and-budget.md](reachability-and-budget.md)).
 - **Unanswered** (2026-10-30, spec §34): a watch timeout whose watch named places (not
   "everywhere") adds, per such place where she has written at least twice since anyone else did,

@@ -338,7 +338,9 @@ export async function lifeWorld(
   const responses = fakeAdapter(OPENAI_RESPONSES, o.scripts ?? []);
   const ledger = new MemoryLedger();
   const models = o.models ? o.models({ ledger, clock }) : new ModelClient({ winter: fakeWinter(anthropic, chat, responses), credentials: () => "test-key", usageLedger: ledger, now: () => clock.ms });
-  let config = AppConfigSchema.parse(o.config ? o.config(structuredClone(DEFAULT_APP_CONFIG)) : DEFAULT_APP_CONFIG);
+  // Free time (§46) is off in these worlds: a test that moves the clock by hours would get its wakes. Its own tests turn it on.
+  const base: AppConfig = { ...DEFAULT_APP_CONFIG, life: { ...DEFAULT_APP_CONFIG.life, freeTimePerDay: 0 } };
+  let config = AppConfigSchema.parse(o.config ? o.config(structuredClone(base)) : base);
   const logger = quietLogger() as never;
   const build = (options: Partial<LivingCastOptions> = {}): LivingCast => {
     const directory = new GuildDirectory({ storage, logger, transport: async () => undefined });

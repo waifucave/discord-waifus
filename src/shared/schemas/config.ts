@@ -270,6 +270,8 @@ const LIFE_FIELDS = {
   /** One notification line per message (§20): at most this many per place, the newest. */
   notificationLinesPerPlace: z.number().int().min(1).max(50),
   maxWaifuTriggeredTurns: z.number().int().min(0).max(100),
+  /** Free time (§46): moments a day each waifu is woken with nothing to answer, to do something of her own (0 = off). */
+  freeTimePerDay: z.number().int().min(0).max(12),
   maintenanceHourLocal: z.number().int().min(0).max(23),
   dreamMaxRounds: z.number().int().min(5).max(200),
   dreamWindowMaxChars: z.number().int().min(20_000).max(2_000_000),
@@ -304,6 +306,7 @@ export const DEFAULT_LIFE_CONFIG = {
   maxWatchFiresPerDay: 24,
   notificationLinesPerPlace: 8,
   maxWaifuTriggeredTurns: 0,
+  freeTimePerDay: 3,
   maintenanceHourLocal: 5,
   dreamMaxRounds: 60,
   dreamWindowMaxChars: 200_000,
@@ -328,6 +331,7 @@ export const LifeConfigSchema = z
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.default(DEFAULT_LIFE_CONFIG.maxWatchFiresPerDay),
     notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.default(DEFAULT_LIFE_CONFIG.notificationLinesPerPlace),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.default(DEFAULT_LIFE_CONFIG.maxWaifuTriggeredTurns),
+    freeTimePerDay: LIFE_FIELDS.freeTimePerDay.default(DEFAULT_LIFE_CONFIG.freeTimePerDay),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.default(DEFAULT_LIFE_CONFIG.maintenanceHourLocal),
     dreamModel: DreamModelSchema.optional(),
     dreamMaxRounds: LIFE_FIELDS.dreamMaxRounds.default(DEFAULT_LIFE_CONFIG.dreamMaxRounds),
@@ -496,6 +500,7 @@ export const UpdateAppConfigBodySchema = z.object({
     maxWatchFiresPerDay: LIFE_FIELDS.maxWatchFiresPerDay.optional(),
     notificationLinesPerPlace: LIFE_FIELDS.notificationLinesPerPlace.optional(),
     maxWaifuTriggeredTurns: LIFE_FIELDS.maxWaifuTriggeredTurns.optional(),
+    freeTimePerDay: LIFE_FIELDS.freeTimePerDay.optional(),
     maintenanceHourLocal: LIFE_FIELDS.maintenanceHourLocal.optional(),
     // null unsets it (the dream uses her own model again).
     dreamModel: DreamModelSchema.strict().nullable().optional(),

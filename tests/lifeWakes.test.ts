@@ -517,6 +517,31 @@ describe("addressee detector (§4.3)", () => {
     expect(await reasons(w, "mina")).toEqual([]);
   });
 
+  it("a cast member's burst: another may answer her, with no 10-minute interval, at most 6 times until a person writes (§46)", async () => {
+    const w = await world();
+    // Her line needed no answer (`none`): the other one may still pick it up.
+    w.detector.answer = { choice: "none", probabilities: { none: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 0.7, nobody: 0.3 } } };
+    for (let index = 0; index < 7; index += 1) await say(w, `tarts are better than cake, ${index}`, asMina);
+    expect(w.detector.questions.map((question) => Object.keys(question))).toEqual([...Array(6).fill(["addressee", "chime_in"]), ["addressee"]]);
+    expect(w.detector.calls[0]!.candidates).toEqual(["ella"]);
+    const wakes = (await queued(w, "ella")).immediate;
+    expect(wakes.map((wake) => [wake.reason, wake.chimeIn, wake.waifuAuthored])).toEqual(Array(6).fill(["detector", true, true]));
+    expect(await reasons(w, "mina")).toEqual([]);
+    // A person writes: the count starts again. Cast members' chime-ins never used the room's interval.
+    w.detector.answer = { choice: "human", probabilities: { human: 1 }, chimeIn: { choice: "waifu_1", probabilities: { waifu_1: 1 } } };
+    await say(w, "Sam are you coming tonight?");
+    expect(await reasons(w, "mina")).toEqual(["detector"]);
+    w.detector.answer = { choice: "none", probabilities: { none: 1 }, chimeIn: { choice: "waifu_0", probabilities: { waifu_0: 1 } } };
+    await say(w, "cake people are wrong", asMina);
+    expect(await reasons(w, "ella")).toHaveLength(7);
+    // Nobody answers a goodbye, and `anyone` from a cast member is a draw as before, never a chime-in.
+    w.detector.answer = { choice: "none", probabilities: { none: 1 }, chimeIn: { choice: "nobody", probabilities: { nobody: 1 } } };
+    await say(w, "ok bye all", asMina);
+    expect(await reasons(w, "ella")).toHaveLength(7);
+    const history = DetectorHistoryFileSchema.parse(JSON.parse(await (await import("node:fs/promises")).readFile(path.join(w.root, "user/servers", GUILD, "detector-history.json"), "utf8")));
+    expect(history.entries.map((entry) => entry.chimeIn?.woke ?? null)).toEqual(["ella", "ella", "ella", "ella", "ella", "ella", null, "mina", "ella", null]);
+  });
+
   it("maps waifu_<i> to her, anyone to a weighted draw, human/none to nothing, and keeps a history", async () => {
     const w = await world();
     w.detector.answer = { choice: "waifu_1", probabilities: { waifu_1: 0.9, none: 0.1 } };

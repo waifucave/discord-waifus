@@ -37,10 +37,11 @@ the owner, then pass the wake router's guards and land in her queue
 | `detector` | Jev picked her for a burst nobody was addressed in (`waifu_<i>`, the `anyone` draw, `all`), or picked her to chime in. See [detector.md](detector.md). | After the burst and the detector call | `Intake.runDetector` |
 | `morning` | The batch of what waited while she was over her daily budget, released once she is under it again (the reason kept its name from her morning, §38); also releases what a 3.8 queue deferred for her bed time, at the first tick. Enqueued directly, not through the router. See [reachability-and-budget.md](reachability-and-budget.md). | Scheduler | `Scheduler.releaseDeferred` |
 | `owner` | `/wake` (Discord), the dashboard's Wake button, `waifus wake`, `POST /api/waifus/:id/wake`, the assistant's `wake_waifu`. Note ≤ 500 characters, shown as `- nudge · "<note>"`. | At once | `LivingCast.ownerWake` |
+| `free` | Free time (§46): `life.freeTimePerDay` moments a day (default 3, 0 = off) between 10:00 and 23:00 local, one at a random point in each equal part of the window (a hash of her id and the day). The newest moment that came wakes her when it is at most 30 minutes late, she is idle with nothing queued, her last turn ended 45+ minutes ago and she is under budget; otherwise it is skipped. Only with a bot and a model. Line: `- free time · nothing needs you right now · your rooms: <handle> (last message 12 min ago), …` (rooms and threads, never DMs, at most 6, the most recently active first). | Scheduler | `Scheduler.freeTime`, `src/life/freeTime.ts` |
 | follow-up | Not a queued wake: a turn that failed with a model error gets one follow-up turn 60 s later. | Life loop | `Life.failTurn` |
 
-There are no proactive wakes besides these: she starts conversations only from inside a turn she
-already has (her wakeups are how she plans ahead).
+Free time is the only wake with nothing behind it: she starts conversations from inside a turn she
+already has, a free-time one or any other (her wakeups are how she plans ahead).
 
 ### Staggering
 

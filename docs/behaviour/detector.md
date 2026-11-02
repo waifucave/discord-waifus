@@ -99,6 +99,14 @@ have anything to add (§43; until 3.10 `nobody` was favoured unless one "clearly
   queued (`CHIME_IN_INTERVAL_MS`); after a restart the history file is consulted; re-checked after
   the call. A chime-in that the router does not queue (held, deferred) does not use up the interval.
 - A malformed `chime_in` answer is ignored; the addressee answer stands.
+- **After a cast member's burst** (§46): the other cast members answering her. The question is
+  always asked (no room interval), with `CAST_CHIME_IN_INSTRUCTIONS` (would another awake cast member
+  naturally answer or react, as friends in a group chat do: agree, tease, disagree, joke, ask, add
+  something; `nobody` for a goodbye, a personal moment, or nothing to add), and used with the
+  addressee `human` or `none`. At most **6 per room until a person writes there again**
+  (`CAST_CHIME_IN_MAX`, in memory); they never use up the room's 10-minute interval, and after a
+  restart the history's cast chime-ins (with `authorWaifuId`) don't count for it. The room loop guard
+  still applies when set.
 
 ## Fallback (no target, or the call failed)
 

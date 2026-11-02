@@ -370,10 +370,13 @@ describe("Living cast goldens", () => {
         { id: "1300000000000000004", authorKind: "user", name: "Sam", at: "2026-10-24T13:59:30.000Z", text: "anyway what should i bake for saturday?" }
       ]
     });
-    const criteria = (name: string) => Object.entries(question.questions[name]!.criteria).map(([choice, text]) => `- ${choice}: ${text}`).join("\n");
+    const criteria = (name: string, of = question) => Object.entries(of.questions[name]!.criteria).map(([choice, text]) => `- ${choice}: ${text}`).join("\n");
+    // §46: after a cast member's burst the chime-in asks whether another cast member would answer her.
+    const cast = detectorQuestion({ target: "openrouter:cloudflare/clef", now, timeZone: "UTC", cast: [{ waifuId: "ella", names: ["Ella"], persona: ELLA.persona, availability: "awake" }], messages: [], castAuthored: true });
     await expect(
       `=== instructions ===\n${question.questions["addressee"]!.instructions}\n=== choices ===\n${criteria("addressee")}\n` +
         `=== chime_in instructions ===\n${question.questions["chime_in"]!.instructions}\n=== chime_in choices ===\n${criteria("chime_in")}\n` +
+        `=== chime_in instructions after a cast member's burst ===\n${cast.questions["chime_in"]!.instructions}\n=== its choices ===\n${criteria("chime_in", cast)}\n` +
         `=== state ===\n${question.state}\n`
     ).toMatchFileSnapshot("./__snapshots__/detector-state.txt");
   });

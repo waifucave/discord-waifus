@@ -18,7 +18,9 @@
 // never held by typing) so that, when none of them was direct, the detector decides who speaks next.
 // Messages by other waifus wake directly only through mention, role, reply-to-her and watch; her own
 // never wake her. With the detector's addressee `human`, its `chime_in` answer may wake one awake
-// cast member softly, at most once per room every `CHIME_IN_INTERVAL_MS`. DMs wake her `dmMs` after
+// cast member softly, at most once per room every `CHIME_IN_INTERVAL_MS`. After a cast member's burst
+// (addressee `human` or `none`) the chime-in is another cast member answering her (§46): no interval,
+// but at most `CAST_CHIME_IN_MAX` per room since the last human message there. DMs wake her `dmMs` after
 // the user's last message, held the same way while they type (capped at `dmMaxWaitMs`); a watch
 // matching a DM message rides on that DM wake (one wake per message).
 // Edits wake nobody except a newly added mention of her in a human message under 2 minutes old
@@ -43,6 +45,7 @@ import type { BotRoles } from "./botRoles.js";
 import type { LifeDeps } from "./deps.js";
 import {
   AddresseeDetector,
+  CAST_CHIME_IN_MAX,
   CHIME_IN_INTERVAL_MS,
   detectorQuestion,
   drawAnyone,
@@ -140,6 +143,8 @@ export class Intake {
   private readonly waifuBursts = new Map<string, Burst>();
   /** When a chime-in was last routed per room (§4.3; the history file covers a restart). */
   private readonly chimedAt = new Map<string, number>();
+  /** Chime-ins after a cast member's burst per room since its last human message (§46; in memory). */
+  private readonly castChimes = new Map<string, number>();
   private readonly dmBursts = new Map<string, DmBurst>();
   private readonly editMentions = new Set<string>();
   private readonly lastHumanAt = new Map<string, string>();
@@ -357,7 +362,10 @@ export class Intake {
     const preview = messagePreview(raw, dir, deps.timeZone, { removed });
     const fromName = removed ? "someone" : raw.authorName;
     const now = deps.now();
-    if (human) this.o.router.loopGuard.human(placeKey);
+    if (human) {
+      this.o.router.loopGuard.human(placeKey);
+      this.castChimes.delete(placeKey);
+    }
     const referenced = raw.referenceMessageId ? await this.findMessage(conversation, raw.referenceMessageId) : undefined;
     const mentionedUsers = new Set(Object.keys(raw.mentions.users));
     const mentionedRoles = new Set(Object.keys(raw.mentions.roles));
@@ -648,9 +656,18 @@ export class Intake {
     let probabilities: Record<string, number> = {};
     let chimeAnswer: DetectorAnswer["chimeIn"];
     let error: string | undefined;
-    // The chime-in question is only asked while the room's interval allows one (§4.3).
-    const chimeAllowed = await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now);
-    const question = detectorQuestion({ target: target || "openai:gpt-6-luna", now, timeZone: deps.timeZone, cast, messages, chimeIn: chimeAllowed });
+    // The chime-in question is only asked while the room's interval allows one (§4.3); after a cast
+    // member's burst, while the room has had fewer than CAST_CHIME_IN_MAX since its last human message (§46).
+    const chimeAllowed = burst.waifuAuthored ? this.castChimeAllowed(placeKey) : await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now);
+    const question = detectorQuestion({
+      target: target || "openai:gpt-6-luna",
+      now,
+      timeZone: deps.timeZone,
+      cast,
+      messages,
+      chimeIn: chimeAllowed,
+      ...(burst.waifuAuthored ? { castAuthored: true } : {})
+    });
     if (cast.length === 0) {
       // Nobody is around here: no question, and nothing wakes anyone (§24).
       choice = NOBODY_AROUND;
@@ -725,13 +742,23 @@ export class Intake {
       for (const [waifuId, outcome] of outcomes) if (outcome !== "dropped") woke.push(waifuId);
     }
     // Chime-in (§4.3): for another person, one awake cast member who would naturally join in gets a
-    // soft wake (she can still stay quiet), at most once per room every CHIME_IN_INTERVAL_MS.
+    // soft wake (she can still stay quiet), at most once per room every CHIME_IN_INTERVAL_MS. After a
+    // cast member's burst (§46) it is another cast member answering her, also when her line needed no
+    // answer (`none`), at most CAST_CHIME_IN_MAX per room until a person writes there again.
     let chimedIn: string | undefined;
-    if (choice === "human" && chimeAnswer?.choice.startsWith("waifu_")) {
+    const chimeChoice = choice === "human" || (burst.waifuAuthored === true && choice === "none");
+    if (chimeChoice && chimeAnswer?.choice.startsWith("waifu_")) {
       const candidate = question.candidates[Number(chimeAnswer.choice.slice(6))];
       const fits = candidate && candidate.availability === "awake" && !watched.has(candidate.waifuId) && candidate.waifuId !== authorWaifuId;
-      // Re-checked here: another burst in this room may have chimed in while this call ran.
-      if (fits && (await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now))) {
+      if (fits && burst.waifuAuthored) {
+        if (this.castChimeAllowed(placeKey)) {
+          this.castChimes.set(placeKey, (this.castChimes.get(placeKey) ?? 0) + 1);
+          const outcome = await this.o.router.route(candidate.waifuId, wakeFor({ chimeIn: true }), { guildId: burst.guildId });
+          if (outcome === "queued") chimedIn = candidate.waifuId;
+          else this.castChimes.set(placeKey, Math.max(0, (this.castChimes.get(placeKey) ?? 1) - 1));
+        }
+      } else if (fits && (await this.chimeInAllowed(burst.guildId, burst.channelId, placeKey, now))) {
+        // Re-checked here: another burst in this room may have chimed in while this call ran.
         this.chimedAt.set(placeKey, now.getTime());
         const outcome = await this.o.router.route(candidate.waifuId, wakeFor({ chimeIn: true }), { guildId: burst.guildId });
         if (outcome === "queued") chimedIn = candidate.waifuId;
@@ -761,6 +788,11 @@ export class Intake {
   }
 
   /** No chime-in was routed in this room for CHIME_IN_INTERVAL_MS (this process, else the history file). */
+  /** §46: another cast member may still answer a cast member's burst in this room. */
+  private castChimeAllowed(placeKey: string): boolean {
+    return (this.castChimes.get(placeKey) ?? 0) < CAST_CHIME_IN_MAX;
+  }
+
   private async chimeInAllowed(guildId: string, channelId: string, placeKey: string, now: Date): Promise<boolean> {
     const since = now.getTime() - CHIME_IN_INTERVAL_MS;
     const last = this.chimedAt.get(placeKey);
@@ -768,7 +800,8 @@ export class Intake {
     try {
       const raw = await readFile(this.deps.storage.dataPath(path.join("user", "servers", guildId, "detector-history.json")), "utf8");
       const file = DetectorHistoryFileSchema.parse(JSON.parse(raw));
-      const latest = file.entries.filter((entry) => entry.channelId === channelId && entry.chimeIn?.woke).map((entry) => Date.parse(entry.at)).reduce((a, b) => Math.max(a, b), Number.NEGATIVE_INFINITY);
+      // A cast member answering another (§46) is not a chime-in into the people's talk.
+      const latest = file.entries.filter((entry) => entry.channelId === channelId && entry.chimeIn?.woke && !entry.authorWaifuId).map((entry) => Date.parse(entry.at)).reduce((a, b) => Math.max(a, b), Number.NEGATIVE_INFINITY);
       if (Number.isFinite(latest)) this.chimedAt.set(placeKey, latest);
       return !(latest > since);
     } catch {

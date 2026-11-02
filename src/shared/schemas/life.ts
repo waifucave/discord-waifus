@@ -33,7 +33,7 @@ export const SystemSnapshotSchema = z.object({
 });
 export type SystemSnapshot = z.infer<typeof SystemSnapshotSchema>;
 
-export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "plan", "morning", "owner", "followup", "wakeup_error"]);
+export const WakeReasonSchema = z.enum(["mention", "name", "role", "everyone", "watch", "watch_timeout", "dm", "detector", "reminder", "plan", "morning", "owner", "followup", "wakeup_error", "free"]);
 
 /** One of her wakeups that fired (§30.4: several on one message are one wake, one line each). */
 export const FiredWakeupSchema = z.object({
@@ -190,6 +190,8 @@ export const LifeStateSchema = RevisionedRecordSchema.extend({
   /** §5.2 errors: the failed turn, and whether its one follow-up turn has run. */
   failedTurn: z.object({ at: IsoDateStringSchema, followUpDone: z.boolean() }).optional(),
   lastTurnEndedAt: IsoDateStringSchema.optional(),
+  /** Her free time today (§46): the local day and how many of its moments have come (fired or skipped). */
+  freeTime: z.object({ day: z.string().min(1), handled: z.number().int().nonnegative() }).optional(),
   /** Last nightly maintenance (§7.3). */
   lastMaintenanceAt: IsoDateStringSchema.optional(),
   /** Why her last `<summary>` was not used (§21.6b): said once, on her next time line. */

@@ -19,6 +19,8 @@
 //   overlaps a turn. Pending scrubs run with it.
 // - the quiet-time rest (§25): with a large context, no turn running or queued, shortly before her
 //   prompt cache expires, her life is poked; the life loop runs the rest turn (`cacheRest.ts`).
+// - free time (§46): at each of her `life.freeTimePerDay` moments a `free` wake, unless she has been
+//   around in the last 45 minutes, has a turn running or queued, or is over budget (`freeTime.ts`).
 
 import { listWaifus } from "../orchestration/stores/config.js";
 import type { WaifuConfig } from "../shared/schemas/domain.js";
@@ -39,7 +41,9 @@ import { morningBatch, type MorningLine, type MorningPlace, type NotificationVie
 import { lifeLocks } from "./paths.js";
 import { collectPlaces, handleOf } from "./places.js";
 import type { KeyedMutex } from "./sync.js";
-import { deferForBudget, hasDeferred, newWakeId, releaseLegacyHeld, takeDeferred } from "./wakeQueue.js";
+import { deferForBudget, hasDeferred, newWakeId, pendingWakeCount, releaseLegacyHeld, takeDeferred } from "./wakeQueue.js";
+import { FREE_TIME_LATE_MS, FREE_TIME_RECENT_TURN_MS, freeTimeMoments, freeTimeWake } from "./freeTime.js";
+import { dayKey } from "../orchestration/context/timeFormat.js";
 import type { WakeRouter } from "./wakeRouter.js";
 import { parseConversationKey } from "../orchestration/context/keys.js";
 import { forgottenPeople, isRemovedMessage, selfAuthorIds } from "./people.js";
@@ -164,6 +168,7 @@ export class Scheduler {
         ["deferred", () => this.releaseDeferred(waifu)],
         ["maintenance", () => this.maintenance(waifu)],
         ["cacheRest", () => this.cacheRest(waifu)],
+        ["freeTime", () => this.freeTime(waifu)],
         ["housekeeping", () => this.housekeeping(waifu)]
       ];
       for (const [step, runStep] of steps) {
@@ -306,6 +311,41 @@ export class Scheduler {
     const deps = this.o.deps;
     const state = await readLifeState(deps.storage, waifu.id);
     if (await cacheRestDueFor(deps, waifu, state, { spentToday: (waifuId, now) => this.o.cost.today(waifuId, now) })) this.o.hooks.poke(waifu.id);
+  }
+
+  /**
+   * Her free time (§46): the moments of today that came since the last tick are counted as handled
+   * (in her state) and the newest gets a `free` wake when it is not late and she is idle and under
+   * budget. A waifu without a bot or a model has none.
+   */
+  private async freeTime(waifu: WaifuConfig): Promise<void> {
+    const deps = this.o.deps;
+    const perDay = deps.config().life.freeTimePerDay;
+    if (perDay <= 0 || !waifu.botId || !waifu.model) return;
+    const now = deps.now();
+    const day = dayKey(now, deps.timeZone);
+    const state = await readLifeState(deps.storage, waifu.id, now);
+    const handled = state.freeTime?.day === day ? state.freeTime.handled : 0;
+    const came = freeTimeMoments(waifu.id, now, perDay, deps.timeZone).slice(handled).filter((at) => at.getTime() <= now.getTime());
+    if (came.length === 0) return;
+    const newest = came[came.length - 1]!.getTime();
+    const lastTurn = state.lastTurnEndedAt ? Date.parse(state.lastTurnEndedAt) : 0;
+    const budget = waifu.life.dailyBudgetUsd;
+    const idle =
+      now.getTime() - newest <= FREE_TIME_LATE_MS &&
+      state.status === "idle" &&
+      now.getTime() - lastTurn >= FREE_TIME_RECENT_TURN_MS &&
+      (await pendingWakeCount(deps.storage, waifu.id)) === 0 &&
+      (budget === null || budget === undefined || (await this.o.cost.today(waifu.id, now)) < budget);
+    // Counted first: a crash after it loses one moment rather than waking her twice.
+    await updateLifeState(deps.storage, waifu.id, (current) => ({ ...current, freeTime: { day, handled: handled + came.length } }), now);
+    if (!idle) {
+      deps.logger.info("Life free time skipped", { category: "life", waifuId: waifu.id });
+      return;
+    }
+    // One id per moment: the queue never adds the same one twice.
+    const wake = await freeTimeWake({ storage: deps.storage, waifuId: waifu.id, now, id: `w-free-${waifu.id}-${newest.toString(36)}` });
+    await this.o.router.route(waifu.id, wake);
   }
 
   /**

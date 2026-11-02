@@ -1270,6 +1270,7 @@ repaired, as before; the point is that the repaired file is then converted.
 | `life.maxWakesPerUserPerHour` | 20 |
 | `life.maxWatchFiresPerDay` | 24 |
 | `life.maxWaifuTriggeredTurns` | 0 (off) |
+| `life.freeTimePerDay` | 3 (§46) |
 | `life.maintenanceHourLocal` | 5 |
 | `search.maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | 2 / 50 / 20 (the optional Exa key is the `exa` provider credential, not config) |
 | `life.webFetch.model` | "" (the cheapest keyed curated route, §6.9) |
@@ -1300,6 +1301,7 @@ Bounds (validated by the config schema):
 | `life.maxWakesPerUserPerHour` | 1–200 |
 | `life.maxWatchFiresPerDay` | 1–100 |
 | `life.maxWaifuTriggeredTurns` | 0–100 |
+| `life.freeTimePerDay` | 0–12 (0 = off) |
 | `life.maintenanceHourLocal` | 0–23 |
 | `waifu.life.dailyBudgetUsd` | > 0, or null |
 | `search.maxPerSecond` / `maxPerDay` / `maxPerWaifuPerDay` | 0–10 / 0–10000 / 0–10000 (0 disables) |
@@ -5293,5 +5295,64 @@ quiet time; the mention + follow-up hold now waits after typing); goldens `detec
 `tests/livingCastMigrations.test.ts`).
 
 ### 45.3 Release
+
+Released in 3.10.3.
+
+## 46. Free time, and the cast answers each other (owner request, 2026-11-02)
+
+The owner: the waifus are hardly proactive; they should even talk back and forth with each other.
+On Beta, every one of their turns on 1–2 November was woken by someone's message: none of them had
+a single wakeup in `~/life/wakeups.json`, so nothing ever woke one with nothing to answer, and the
+life text's "you can start a conversation yourself" never had a moment to happen in. Between
+themselves: a cast member's burst goes to Jev like a person's, but its chime-in was asked only while
+the room's 10-minute chime-in interval allowed (4 of 9 cast bursts in the Secret Room were not asked
+at all), only with the addressee `human`, and with the instructions written for a person's message.
+When Lumi told K "not doing the kiss thing again", Sora was woken and answered herself "I'm staying
+out of this one".
+
+### 46.1 Decisions
+
+- **Free time** (`freeTime.ts`, the scheduler's `freeTime` step, `life.freeTimePerDay`, default 3,
+  0–12, 0 = off): that many moments a day between 10:00 and 23:00 local (host time zone), one at a
+  random point in each equal part of the window, from a hash of her id and the day (a restart neither
+  adds nor moves one). Her state's `freeTime: { day, handled }` counts the moments that came. The
+  newest one that came gets a `free` wake (id `w-free-<waifu>-<moment>`) when it is at most 30
+  minutes late, she is idle with nothing queued, her last turn ended 45 minutes or more ago, and she
+  is under her daily budget; otherwise it is skipped (logged "Life free time skipped"). Only a waifu
+  with a bot and a model. The wake is placeless (`<free-time-notification>`): `- free time · nothing
+  needs you right now · your rooms: <handle> (last message 12 min ago), …`, her rooms and threads
+  (never DMs, so the turn shows nothing private; paused servers left out), the most recently active
+  first, at most 6. Deferred for her budget it is dropped, not batched. Cost: up to
+  `freeTimePerDay` more turns a day per waifu.
+- **The cast answers each other** (`intake.ts`, `CAST_CHIME_IN_INSTRUCTIONS`): after a cast member's
+  burst the chime-in question is always asked (no room interval), with its own instructions (would
+  another awake cast member naturally answer or react to her, as friends in a group chat do: agree,
+  tease, disagree, joke, ask, add something; `nobody` for a goodbye, a personal moment, or nothing to
+  add; its `nobody` reads "Nobody: none of them would answer her."), and it is used with the addressee
+  `human` or `none` (her line needed no answer, but someone may still pick it up). At most
+  `CAST_CHIME_IN_MAX` (6) such chime-ins per room until a person writes there again (in memory). They
+  never touch the room's 10-minute interval for chime-ins into the people's talk, and the history's
+  cast chime-ins (with `authorWaifuId`) no longer count for it after a restart. The room loop guard
+  (`life.maxWaifuTriggeredTurns`) still applies when set.
+- **Her life text** (block A): after "join in like a friend in the group would, even when it wasn't
+  said to you." comes "The others like you who live here are part of the group too: answer them,
+  tease them, pick up what they said, like you would with anyone, not only when they ask you
+  something."; after "…never with anyone else." comes "Now and then you get free time, when nothing
+  needs you: that's your chance to do something of your own, like bringing up something you've been
+  thinking about, asking how something went, picking up an old conversation, sharing something you
+  found, or messaging a friend. Do it when you feel like it; doing nothing is fine too." (A block A
+  change: carried over as §44 when it fits.)
+
+### 46.2 Tests
+
+`tests/lifeSchedule.test.ts` (the moments: count, window parts, stable through the day, per waifu;
+a moment wakes her once with her rooms, skipped after a recent turn, counted but not fired when
+late, off with 0); `tests/lifeWakes.test.ts` (a cast member's burst: six chime-ins with no interval,
+the seventh not asked, a person's line starts the count again and its own chime-in is unaffected,
+`nobody` wakes nobody); goldens `detector-state.txt` (the cast chime-in question),
+`life-system-prompt.txt`, `life-rest-epoch.txt`. The life test worlds run with free time off unless
+a test turns it on.
+
+### 46.3 Release
 
 Unreleased (on main).

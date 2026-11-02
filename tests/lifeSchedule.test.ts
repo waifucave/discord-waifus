@@ -1,7 +1,7 @@
 // No bed time (Living cast spec §38): every wake reaches her at any hour; the batch of what waited
 // while she was over her daily budget (§4.4, §4.7, §23); a queue and a state saved before §38 (wakes
 // deferred for her bed time, held for her busy blocks, old state keys) released at the first tick;
-// reminders, watch timeouts and maintenance timing (§5.7, §6.6, §7.3, §16.4, §16.5, §30.2).
+// reminders, watch timeouts and maintenance timing (§5.7, §6.6, §7.3, §16.4, §16.5, §30.2); free time (§46).
 // Reminders and watches live in her own files. The scheduler is ticked by hand; lives never run here.
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLifeFile, readLifeState } from "../src/life/lifeStore.js";
 import { renderNotifications } from "../src/life/notifications.js";
 import { maintenanceDue } from "../src/life/scheduler.js";
+import { freeTimeMoments } from "../src/life/freeTime.js";
+import { updateLifeState } from "../src/life/lifeStore.js";
 import { nextOccurrences, parseEvery } from "../src/life/wakeups/when.js";
 import { takeImmediate } from "../src/life/wakeQueue.js";
 import { createRevisionedBase } from "../src/shared/schemas/common.js";
@@ -237,6 +239,57 @@ describe("timed wakeups and watch ends (§6.6, §5.7, §16.4, §16.5, §30.2)", 
     queue = await readLifeFile(w.storage, "ella", "wakes");
     expect(queue.immediate.map((wake) => wake.reason)).toEqual(["watch_timeout", "watch"]);
   });
+});
+
+describe("free time (§46)", () => {
+  it("her moments: life.freeTimePerDay a day between 10:00 and 23:00, one in each part, the same all day", () => {
+    const at = new Date("2026-10-25T08:00:00.000Z");
+    const moments = freeTimeMoments("ella", at, 3, "Europe/Lisbon");
+    expect(moments).toHaveLength(3);
+    // Europe/Lisbon is UTC+1 on 25 Oct 2026 until 02:00 (then UTC): 10:00–23:00 local is 10:00–23:00 UTC.
+    const hours = moments.map((moment) => (moment.getTime() - Date.parse("2026-10-25T10:00:00.000Z")) / 3_600_000);
+    hours.forEach((hour, index) => expect(hour >= (index * 13) / 3 && hour < ((index + 1) * 13) / 3).toBe(true));
+    expect(freeTimeMoments("ella", new Date("2026-10-25T22:00:00.000Z"), 3, "Europe/Lisbon")).toEqual(moments);
+    expect(freeTimeMoments("mina", at, 3, "Europe/Lisbon")).not.toEqual(moments);
+    expect(freeTimeMoments("ella", at, 0, "Europe/Lisbon")).toEqual([]);
+  });
+
+  it("a moment wakes her with her rooms, once; skipped when she was just around, and off with 0", async () => {
+    const w = await quietWorld({ config: (config) => ({ ...config, life: { ...config.life, freeTimePerDay: 3 } }) });
+    const [first, second, third] = freeTimeMoments("ella", new Date("2026-10-25T12:00:00.000Z"), 3, "UTC");
+    w.clock.ms = first!.getTime() + 60_000;
+    await w.cast.scheduler.tick();
+    await w.cast.scheduler.tick();
+    const queue = await readLifeFile(w.storage, "ella", "wakes");
+    expect(queue.immediate.map((wake) => wake.reason)).toEqual(["free"]);
+    const [wake] = queue.immediate;
+    const view = { handle: () => "bake-club/#general", unread: () => undefined, timeZone: "UTC" };
+    // Her rooms, the most recently active first (no transcript yet here); never her DMs.
+    expect(renderNotifications({ wakes: [wake!] }, view)).toContain(
+      "<free-time-notification>\n- free time · nothing needs you right now · your rooms: bake-club/#general (no messages yet), bake-club/#recipes (no messages yet)\n</free-time-notification>"
+    );
+    expect((await readLifeState(w.storage, "ella")).freeTime).toEqual({ day: "2026-10-25", handled: 1 });
+
+    // She had a turn 10 minutes before the next one: it is skipped (and counted).
+    await takeImmediate(w.storage, "ella");
+    await updateLifeState(w.storage, "ella", (state) => ({ ...state, lastTurnEndedAt: new Date(second!.getTime() - 10 * 60_000).toISOString() }));
+    w.clock.ms = second!.getTime() + 1_000;
+    await w.cast.scheduler.tick();
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toEqual([]);
+    expect((await readLifeState(w.storage, "ella")).freeTime).toEqual({ day: "2026-10-25", handled: 2 });
+
+    // Found more than 30 minutes late (the app was down): counted, not fired.
+    w.clock.ms = third!.getTime() + 31 * 60_000;
+    await w.cast.scheduler.tick();
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toEqual([]);
+    expect((await readLifeState(w.storage, "ella")).freeTime).toEqual({ day: "2026-10-25", handled: 3 });
+
+    // Off: nothing the next day.
+    w.setConfig((config) => ({ ...config, life: { ...config.life, freeTimePerDay: 0 } }));
+    w.clock.ms = Date.parse("2026-10-26T22:59:00.000Z");
+    await w.cast.scheduler.tick();
+    expect((await readLifeFile(w.storage, "ella", "wakes")).immediate).toEqual([]);
+  }, 30_000);
 });
 
 describe("maintenance timing (§7.3, §38)", () => {

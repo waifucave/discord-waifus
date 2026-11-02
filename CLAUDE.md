@@ -71,7 +71,8 @@ everything else, a person's burst or a waifu's own burst (her lines per place, 1
 held by typing; she is left out of the candidates), goes to the addressee detector in `detector/`:
 one native-choice call with `addressee` and, when some cast member is awake and the room had no
 chime-in for 10 minutes (`CHIME_IN_INTERVAL_MS`), `chime_in`; with `human` a chime-in pick gets a soft
-`detector` wake with `chimeIn`; only waifus around are candidates (spec §24/§38, `intake.ts`
+`detector` wake with `chimeIn`; after a cast member's burst the chime-in is another cast member answering
+her (§46: always asked, with `human` or `none`, at most `CAST_CHIME_IN_MAX` per room until a person writes); only waifus around are candidates (spec §24/§38, `intake.ts`
 `overBudget`: every cast member except one over her daily budget; the rest are in the history's
 `leftOut` with `why: "budget"`; nobody around = no call, choice `nobody_around`; the `anyone` draw is ×3 × recency
 over them); the state carries each line's
@@ -265,7 +266,10 @@ runs her wakeups (`Scheduler.wakeups`, spec §30.2: a due `at`/`every` is a `rem
 under a deterministic wake id before an `at` is removed; watch and page ends are `watch_timeout`;
 pages are checked; her code's state is saved at most once a minute; a file changed outside
 `HomeStore` is resolved again), releases what a 3.8 queue still holds (`held` wakes as ordinary
-wakes, `releaseLegacyHeld`), releases the budget's deferred wakes as one batch once she is under
+wakes, `releaseLegacyHeld`), gives her free time (`Scheduler.freeTime`, `freeTime.ts`, spec §46:
+`life.freeTimePerDay` moments a day between 10:00 and 23:00 local from a hash of her id and the day, counted in
+her state's `freeTime`; the newest that came is a placeless `free` wake naming her rooms when she is idle, nothing
+queued, no turn in 45 minutes, under budget and it is at most 30 minutes late), releases the budget's deferred wakes as one batch once she is under
 budget again (`Scheduler.releaseDeferred`, spec §23/§38: reason `morning` kept as the name, `batch`
 lines from `notifications.ts` `morningBatch` under `- while you were away (since …):`: DMs one line
 per message with time, ref and preview, rooms by most mentions with their span and one line per

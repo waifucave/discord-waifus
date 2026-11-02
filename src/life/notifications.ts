@@ -42,7 +42,8 @@ export const REASON_LABELS: Record<WakeReason, string> = {
   morning: "morning",
   owner: "nudge",
   followup: "follow-up",
-  wakeup_error: "wakeup stopped"
+  wakeup_error: "wakeup stopped",
+  free: "free time"
 };
 
 /** A `detector` wake for the whole cast (`all`, §4.3) reads differently from a single pick. */
@@ -225,6 +226,9 @@ function soloLine(wake: Wake, view: NotificationView): string[] {
       return [`- ${REASON_LABELS.watch_timeout} · your note: ${quote(wake.note ?? "")}${unansweredParts(wake, view)}`];
     case "owner":
       return [`- ${REASON_LABELS.owner}${wake.note ? ` · ${quote(wake.note)}` : ""}`];
+    case "free":
+      // §46: `- free time · nothing needs you right now · your rooms: <handle> (last message 12 min ago), …`.
+      return [`- ${REASON_LABELS.free} · nothing needs you right now${wake.note ? ` · ${wake.note}` : ""}`];
     case "morning":
       return wake.batch && wake.batch.length > 0 ? wake.batch : [];
     case "watch":
@@ -265,7 +269,8 @@ export const SOLO_TAGS: Record<WakeReason, string> = {
   morning: "away-notification",
   owner: "nudge-notification",
   followup: "follow-up-notification",
-  wakeup_error: "wakeup-error-notification"
+  wakeup_error: "wakeup-error-notification",
+  free: "free-time-notification"
 };
 /** The tag of a "+3 more from Kevin" line and of a notice from the app. */
 export const MORE_TAG = "more-notification";
