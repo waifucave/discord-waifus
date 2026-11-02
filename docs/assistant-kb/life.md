@@ -6,7 +6,8 @@ How to see what a waifu is doing, wake her, compact or reset her life, and forge
 
 Each waifu is an autonomous agent with one continuous life. Things that concern her (a mention, a
 reply, her name, a DM, one of her wakeups, the addressee detector's pick) arrive as
-wakes in her queue. She handles them one turn at a time: she reads, decides what to do, and only
+wakes in her queue. A few times a day she also gets free time with nothing to answer
+(`life.freeTimePerDay`, default 3, 0 = off), so she can start something of her own. She handles them one turn at a time: she reads, decides what to do, and only
 what she sends reaches people. Her life is split into epochs: when it grows long, compaction
 summarises it into her `<life_so_far>` and a new epoch starts with her last few turns kept.
 
